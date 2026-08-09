@@ -7,7 +7,7 @@
 
 ## 1. 目标
 
-本项目是一个 PyQt6 前端、Python 后端的桌面应用，将角色扮演式陪伴聊天与本地 AI 编程 Harness 放在同一套会话系统中。
+本项目是一个 PyQt5 前端、Python 后端的桌面应用，将角色扮演式陪伴聊天与本地 AI 编程 Harness 放在同一套会话系统中。
 
 系统包含三组固定搭档：
 
@@ -157,7 +157,7 @@ MVP 在整个应用范围内最多存在一个活动编程 turn。活动 turn �
 
 ```mermaid
 flowchart LR
-    UI["PyQt6 界面"] <--> O["ConversationOrchestrator<br/>路由与状态机"]
+    UI["PyQt5 界面"] <--> O["ConversationOrchestrator<br/>路由与状态机"]
     O <--> DB[("SQLite<br/>项目与聊天记录")]
     O --> D["DialogueModel<br/>角色模型接口"]
     O --> C["CodingEngine<br/>编程 Harness 接口"]
@@ -169,7 +169,9 @@ flowchart LR
     A --> Q["Qwen 流式 ASR / TTS<br/>本地 Python VAD"]
 ```
 
-主应用是单个 PyQt6 + Python 进程，不额外启动本地 HTTP 服务。Codex app-server 作为子进程运行，通过标准输入输出交换 JSONL 事件。
+主应用是单个 PyQt5 + Python 进程，不额外启动本地 HTTP 服务。Codex app-server 作为子进程运行，通过标准输入输出交换 JSONL 事件。
+
+`qasync` 负责衔接 Qt 与 `asyncio` 事件循环，`sounddevice` 负责本地麦克风采集和音频播放。
 
 `ConversationOrchestrator` 是唯一的消息路由入口。PyQt 组件不直接调用模型、ASR、TTS 或工具。
 
@@ -196,6 +198,20 @@ class CodingEngine:
         self,
         session_ref: EngineSessionRef,
         turn_id,
+    ): ...
+
+    async def amend_turn(
+        self,
+        session_ref: EngineSessionRef,
+        engine_turn_id,
+        amendment: TaskAmendment,
+    ): ...
+
+    async def resolve_approval(
+        self,
+        session_ref: EngineSessionRef,
+        approval_id,
+        decision,
     ): ...
 
 class SpeechRecognizer:
@@ -472,7 +488,7 @@ VAD 在 Python 中重新实现，只复用行为和参数，不复制浏览器 T
 
 1. 定义消息、委派、回执和不透明编程会话引用协议。
 2. 跑通白厄与神秘的古代机械纯文本闭环，包括 Codex app-server 工具执行。
-3. 接入最小 PyQt6 双栏、折叠工具卡片和取消操作。
+3. 接入最小 PyQt5 双栏、折叠工具卡片和取消操作。
 4. 增加 SQLite 项目、聊天历史和编程会话恢复。
 5. 接入 Python VAD、Qwen ASR 和两套声音。
 6. 扩展流萤与萨姆、三月七与第四面镜。
