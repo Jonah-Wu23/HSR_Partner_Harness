@@ -100,6 +100,9 @@ def main(argv: list[str] | None = None) -> int:
     # 挂载项目与聊天库（计划 A6 第 4 步）
     window.set_project_library(ProjectLibrary(store))
     snapshot = store.load_conversation("demo-conversation")
+    # O2.2：恢复旧聊天时回填编排器的消息历史与会话引用，
+    # 角色不失忆，Codex 可 thread/resume 而非重新 thread/start
+    orchestrator.restore_conversation(snapshot)
     for message in snapshot["messages"]:
         window.add_message(message)
     for tool_run in snapshot["tool_runs"]:

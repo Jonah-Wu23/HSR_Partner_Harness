@@ -97,6 +97,21 @@ class ConversationOrchestrator:
         for manager in self._approval_managers.values():
             manager.mode = mode
 
+    def restore_conversation(self, snapshot: dict) -> None:
+        """O2.2：打开旧聊天时回填消息历史与会话引用。
+
+        接受 :meth:`StateStore.load_conversation` 的返回值：
+        - ``messages`` 回填 ``_history``，恢复后 ``recent_messages`` 不再为空
+          （角色不失忆）；
+        - ``engine_session`` 回填 ``_sessions``，后续 ``open_session`` 收到
+          已保存的 ``stored_ref``，可走 thread/resume 而非 thread/start。
+        """
+        conversation_id = snapshot["conversation"].conversation_id
+        self._history[conversation_id] = list(snapshot.get("messages", ()))
+        session_ref = snapshot.get("engine_session")
+        if session_ref is not None:
+            self._sessions[conversation_id] = session_ref
+
     def _message(
         self,
         *,
