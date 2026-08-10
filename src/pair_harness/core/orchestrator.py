@@ -418,14 +418,18 @@ class ConversationOrchestrator:
                 self.store.save_engine_session(task.conversation_id, session)
 
             async for raw_event in self.coding_engine.run_turn(session, task):
+                # O4.1：事件序号单一源头——到达事件在循环入口统一分配；
+                # 合成事件（审批 gate/否决/resolved）经同一计数器分配，
+                # 出口事件流序号连续无碰撞，不再信任适配器自带序号。
                 event = raw_event.model_copy(
                     update={
                         "conversation_id": task.conversation_id,
                         "task_id": task.task_id,
+                        "sequence": sequence,
                     }
                 )
+                sequence += 1
                 engine_turn_id = event.engine_turn_id
-                sequence = max(sequence, event.sequence + 1)
                 if self.state.active and self.state.active.engine_turn_id is None:
                     self.state.bind_engine_turn(engine_turn_id)
 
@@ -450,6 +454,9 @@ class ConversationOrchestrator:
                         else "user",
                     )
                     event = event.model_copy(update={"payload": payload})
+                    # O4.1：请求事件在分支入口先入列——出口列表与推送顺序
+                    # 一致（请求→裁决→工具），沙箱否决路径（continue）也不会丢事件
+                    events.append(event)
                     approval_id = str(event.payload.get("approval_id") or "")
                     try:
                         self._check_sandbox(sandbox, op)
@@ -486,7 +493,8 @@ class ConversationOrchestrator:
                         request_decision=self._request_approval,
                     )
                     for gate_event in outcome.events:
-                        sequence = max(sequence, gate_event.sequence + 1)
+                        gate_event = gate_event.model_copy(update={"sequence": sequence})
+                        sequence += 1
                         events.append(gate_event)
                         self._emit_event(gate_event)
                     # 设计 §4.3：裁决结果以 system 卡片留在消息时间线
@@ -508,6 +516,9 @@ class ConversationOrchestrator:
 
                 elif event.type == EngineEventType.TOOL_STARTED:
                     op = self._operation_from_event(event)
+                    # O4.1：工具事件在门控处理前先入列，出口列表与推送顺序
+                    # 一致（工具开始→审批裁决/否决），序号连续
+                    events.append(event)
                     # O3.3：当前步骤用中性标签（不泄露命令/路径原文）
                     progress.current_step = self._step_label(event)
                     try:
@@ -548,9 +559,12 @@ class ConversationOrchestrator:
                                 # 计划 A3：审查智能体需要近期上下文（最近 3 条）
                                 context=self._history.get(task.conversation_id, [])[-3:],
                             )
-                            events.extend(outcome.events)
-                            sequence += len(outcome.events)
                             for gate_event in outcome.events:
+                                gate_event = gate_event.model_copy(
+                                    update={"sequence": sequence}
+                                )
+                                sequence += 1
+                                events.append(gate_event)
                                 self._emit_event(gate_event)
                             # 设计 §4.3：裁决结果以 system 卡片留在消息时间线
                             notice = self._approval_notice(outcome)
@@ -573,8 +587,11 @@ class ConversationOrchestrator:
                                 errors.append("审批否决")
                                 break
                         except ApprovalRequired as req:
-                            events.append(req.event)
+                            # O4.1：req.event 也走统一计数器（gate 内相对编号
+                            # 不参与出口序号，避免与后续合成事件碰撞）
+                            req.event = req.event.model_copy(update={"sequence": sequence})
                             sequence += 1
+                            events.append(req.event)
                             self._emit_event(req.event)
                             # O1.7：把真实理由与 approval_id 传给回调，UI 不再用
                             # 命令文本冒充理由，也不再用 FIFO 顺序猜测对应关系
@@ -586,10 +603,10 @@ class ConversationOrchestrator:
                             )
                             op = approval.resolve(req.approval_id, decision)
                             resolved_event = self._approval_resolved_event(
-                                req.event, decision, "user", op
+                                req.event, decision, "user", op, sequence
                             )
-                            events.append(resolved_event)
                             sequence += 1
+                            events.append(resolved_event)
                             self._emit_event(resolved_event)
                             # 设计 §4.3：用户裁决以 system 卡片留在消息时间线
                             self._message(
@@ -610,7 +627,12 @@ class ConversationOrchestrator:
                                 errors.append("用户否决")
                                 break
 
-                events.append(event)
+                if event.type not in (
+                    EngineEventType.APPROVAL_REQUESTED,
+                    EngineEventType.TOOL_STARTED,
+                ):
+                    # O4.1：这两类事件已在各自分支入口入列，避免重复
+                    events.append(event)
                 if event.type == EngineEventType.ASSISTANT_FINAL:
                     assistant_text = str(event.payload.get("text", ""))
                     # O3.3：助手进入收尾阶段
@@ -837,12 +859,15 @@ class ConversationOrchestrator:
         decision: ApprovalDecision,
         actor: str,
         op: PendingOperation,
+        sequence: int,
     ) -> EngineEvent:
+        # O4.1：sequence 由调用方（统一计数器）显式传入，
+        # 不再隐式取 requested.sequence + 1
         return EngineEvent(
             conversation_id=requested.conversation_id,
             task_id=requested.task_id,
             engine_turn_id=requested.engine_turn_id,
-            sequence=requested.sequence + 1,
+            sequence=sequence,
             type=EngineEventType.APPROVAL_RESOLVED,
             tool_call_id=requested.tool_call_id,
             payload={

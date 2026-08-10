@@ -14,10 +14,12 @@ class EventBinding:
 
 
 class CodexCodec:
-    """Map native app-server notifications to stable Pair Harness events."""
+    """Map native app-server notifications to stable Pair Harness events.
 
-    def __init__(self) -> None:
-        self._sequence = 0
+    O4.1：适配器不再自定事件序号——``_event`` 固定 ``sequence=0``，
+    最终序号由 orchestrator 在出口处统一重排（含合成事件），
+    避免“codec 自编号 + 编排器合成事件本地编号”双源头碰撞。
+    """
 
     def _event(
         self,
@@ -27,17 +29,15 @@ class CodexCodec:
         tool_call_id: str | None = None,
         payload: dict[str, Any] | None = None,
     ) -> EngineEvent:
-        event = EngineEvent(
+        return EngineEvent(
             conversation_id=binding.conversation_id,
             task_id=binding.task_id,
             engine_turn_id=binding.engine_turn_id,
-            sequence=self._sequence,
+            sequence=0,
             type=event_type,
             tool_call_id=tool_call_id,
             payload=payload or {},
         )
-        self._sequence += 1
-        return event
 
     def map_notification(
         self, notification: dict[str, Any], binding: EventBinding

@@ -109,11 +109,12 @@ class CodexAppServerEngine(CodingEngine):
                 if event.type in (EngineEventType.TURN_COMPLETED, EngineEventType.TURN_FAILED):
                     return
         except TransportClosed as exc:
+            # O4.1：序号统一由 orchestrator 出口重排，这里不再用 10**9 魔法值
             yield EngineEvent(
                 conversation_id=request.conversation_id,
                 task_id=request.task_id,
                 engine_turn_id=turn_id,
-                sequence=10**9,
+                sequence=0,
                 type=EngineEventType.TURN_FAILED,
                 payload={"error": str(exc)},
             )

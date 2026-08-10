@@ -49,7 +49,9 @@ def test_maps_assistant_and_tool_notifications() -> None:
     assert finished.type == "tool.finished"
     assert finished.payload["status"] == "succeeded"
     assert assistant.type == "assistant.final"
-    assert [started.sequence, finished.sequence, assistant.sequence] == [0, 1, 2]
+    # O4.1：适配器不再自定序号，全部固定为 0；最终序号由
+    # orchestrator 出口统一重排（见 test_event_sequence.py）
+    assert [started.sequence, finished.sequence, assistant.sequence] == [0, 0, 0]
 
 
 def test_maps_failed_turn_and_ignores_other_turn() -> None:
