@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 
-from .approval import ApprovalManager, ApprovalRequired
+from .approval import ApprovalManager, ApprovalRequired, GateOutcome
 from .context import recent_roleplay_context
 from .contracts import (
     ApprovalDecision,
@@ -75,6 +75,12 @@ class ConversationOrchestrator:
         self._sessions: dict[str, EngineSessionRef] = {}
         self._approval_managers: dict[str, ApprovalManager] = {}
         self._active_lifecycle: TaskLifecycle | None = None
+
+    def set_approval_mode(self, mode: ApprovalMode) -> None:
+        """切换项目级审批模式（计划 A5：输入区下拉框切换）。"""
+        self.approval_mode = mode
+        for manager in self._approval_managers.values():
+            manager.mode = mode
 
     def _message(
         self,
@@ -215,6 +221,8 @@ class ConversationOrchestrator:
         checks: list[str] = []
         engine_turn_id = "unavailable"
         sequence = 0
+        # 本次执行产生的新消息（含沙箱与审批 system 卡片）从这里开始
+        history_start = len(self._history.get(task.conversation_id, []))
         sandbox = ProjectSandbox(Path(self.project.root_path))
         approval = self._approval_managers.setdefault(
             task.conversation_id,
@@ -277,6 +285,16 @@ class ConversationOrchestrator:
                         )
                         events.extend(outcome.events)
                         sequence += len(outcome.events)
+                        # 设计 §4.3：裁决结果以 system 卡片留在消息时间线
+                        notice = self._approval_notice(outcome)
+                        if notice is not None:
+                            self._message(
+                                conversation_id=task.conversation_id,
+                                source=MessageSource.SYSTEM,
+                                kind=MessageKind.APPROVAL,
+                                text=notice,
+                                turn_id=engine_turn_id,
+                            )
                         if outcome.decision == ApprovalDecision.DENY:
                             denied_event = self._deny_tool_event(
                                 event, "审批否决", sequence
@@ -296,6 +314,14 @@ class ConversationOrchestrator:
                         )
                         events.append(resolved_event)
                         sequence += 1
+                        # 设计 §4.3：用户裁决以 system 卡片留在消息时间线
+                        self._message(
+                            conversation_id=task.conversation_id,
+                            source=MessageSource.SYSTEM,
+                            kind=MessageKind.APPROVAL,
+                            text=self._decision_text(decision),
+                            turn_id=engine_turn_id,
+                        )
                         if decision == ApprovalDecision.DENY:
                             denied_event = self._deny_tool_event(
                                 event, "用户否决", sequence
@@ -353,20 +379,17 @@ class ConversationOrchestrator:
                 checks=tuple(checks),
                 errors=tuple(errors),
             )
-            messages: list[Message] = []
-            if assistant_text:
-                messages.append(
-                    self._message(
-                        conversation_id=task.conversation_id,
-                        source=MessageSource.ASSISTANT,
-                        kind=MessageKind.ASSISTANT_NATURAL_LANGUAGE,
-                        text=assistant_text,
-                        turn_id=engine_turn_id,
-                    )
-                )
             for tool_run in tool_runs.values():
                 if self.store is not None:
                     self.store.save_tool_run(tool_run)
+            if assistant_text:
+                self._message(
+                    conversation_id=task.conversation_id,
+                    source=MessageSource.ASSISTANT,
+                    kind=MessageKind.ASSISTANT_NATURAL_LANGUAGE,
+                    text=assistant_text,
+                    turn_id=engine_turn_id,
+                )
 
             result_summary = CharacterResultSummary(
                 task_id=task.task_id,
@@ -397,15 +420,15 @@ class ConversationOrchestrator:
                 if dialogue_event.type == "character.final":
                     result_turn = dialogue_event.turn
             if result_turn is not None:
-                messages.append(
-                    self._message(
-                        conversation_id=task.conversation_id,
-                        source=MessageSource.CHARACTER,
-                        kind=MessageKind.CHARACTER_SPEECH,
-                        text=result_turn.speech,
-                        turn_id=engine_turn_id,
-                    )
+                self._message(
+                    conversation_id=task.conversation_id,
+                    source=MessageSource.CHARACTER,
+                    kind=MessageKind.CHARACTER_SPEECH,
+                    text=result_turn.speech,
+                    turn_id=engine_turn_id,
                 )
+            # 本次执行的全部新消息：审批 system 卡片、助手说明与角色回应
+            messages = self._history.get(task.conversation_id, [])[history_start:]
             return ConversationOutcome(
                 messages=tuple(messages),
                 engine_events=tuple(events),
@@ -486,3 +509,35 @@ class ConversationOrchestrator:
                 "suggestion": "",
             },
         )
+
+    @staticmethod
+    def _decision_text(decision: ApprovalDecision) -> str:
+        """用户裁决的 system 卡片文案。"""
+        return {
+            ApprovalDecision.ALLOW: "审批结果：允许",
+            ApprovalDecision.ALLOW_FOR_CONVERSATION: "审批结果：本对话内允许",
+            ApprovalDecision.DENY: "审批结果：否决",
+        }[decision]
+
+    @staticmethod
+    def _approval_notice(outcome: GateOutcome) -> str | None:
+        """从审批门控结果生成时间线 system 卡片文案。
+
+        - 完全允许运行与审查模式低风险直接放行不产生提示（返回 None）；
+        - 审查智能体的裁决记录理由与调整建议；
+        - 请求批准模式的“本对话内允许”缓存命中也留一条提示。
+        """
+        if outcome.decision == ApprovalDecision.ALLOW and not outcome.events:
+            return None
+        resolved = [e for e in outcome.events if e.type == "approval.resolved"]
+        if resolved and resolved[-1].payload.get("actor") == "reviewer":
+            payload = resolved[-1].payload
+            text = "审查结果：" + (
+                "允许" if payload.get("decision") == "allow" else "否决"
+            )
+            if payload.get("reason"):
+                text += f"（{payload['reason']}）"
+            if payload.get("suggestion"):
+                text += f"；调整建议：{payload['suggestion']}"
+            return text
+        return ConversationOrchestrator._decision_text(outcome.decision)
