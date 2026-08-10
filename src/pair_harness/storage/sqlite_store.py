@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from pair_harness.core.contracts import EngineSessionRef, Message, ToolRun
+from pair_harness.core.contracts import EngineSessionRef, Message, ToolRun, enum_value
 from pair_harness.core.ports import StateStore
 from pair_harness.core.repository import Conversation, Project
 
@@ -189,8 +189,8 @@ class SQLiteStore(StateStore):
             (
                 message.message_id,
                 message.conversation_id,
-                str(message.source),
-                str(message.kind),
+                enum_value(message.source),
+                enum_value(message.kind),
                 message.created_at.isoformat(),
                 message.model_dump_json(),
             ),

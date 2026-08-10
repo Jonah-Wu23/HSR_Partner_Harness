@@ -124,3 +124,28 @@ def test_missing_project_path_keeps_history_readable(tmp_path: Path) -> None:
         assert not store.get_project("p").path_available
         assert store.load_conversation("c")["conversation"].conversation_id == "c"
 
+
+def test_message_source_kind_columns_store_enum_values(tmp_path: Path) -> None:
+    """O1.2：source/kind 列存枚举值（user / character.speech），不存枚举名。"""
+    with SQLiteStore(tmp_path / "db.sqlite") as store:
+        store.create_project(name="Repo", root_path=str(tmp_path), project_id="p")
+        store.create_conversation(
+            project_id="p", pair_id="phainon_ancient_machine", conversation_id="c"
+        )
+        message = Message(
+            conversation_id="c",
+            pair_id="phainon_ancient_machine",
+            source=MessageSource.CHARACTER,
+            kind=MessageKind.CHARACTER_SPEECH,
+            text="我在。",
+            tts_eligible=True,
+        )
+        store.save_message(message)
+        row = store.connection.execute(
+            "SELECT source, kind FROM messages WHERE message_id = ?",
+            (message.message_id,),
+        ).fetchone()
+        assert row["source"] == "character"
+        assert row["kind"] == "character.speech"
+        assert row["source"] != "MessageSource.CHARACTER"
+

@@ -70,6 +70,48 @@ def test_approval_mode_change_updates_window_and_emits_signal(qtbot) -> None:
     assert changes == ["full_auto"]
 
 
+def test_bubble_shows_chinese_source_label_and_safe_object_name(qtbot) -> None:
+    """O1.2：气泡来源标签为中文，objectName 不含枚举名与点号，样式表已应用。"""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    character = Message(
+        conversation_id="c",
+        pair_id="phainon_ancient_machine",
+        source=MessageSource.CHARACTER,
+        kind=MessageKind.CHARACTER_SPEECH,
+        text="我在。",
+        tts_eligible=True,
+    )
+    window.add_message(character)
+    bubble = window.character_messages.bubbles[-1]
+    assert bubble.objectName() == "message-character"
+    assert "." not in bubble.objectName()
+    assert "MessageSource" not in bubble.objectName()
+    assert bubble.source_label.text() == "角色"
+    assert "message-character" in bubble.styleSheet()
+    # 其他来源的中文标签映射（按 add_message 的路由取对应列表）
+    for source, label in [
+        (MessageSource.USER, "用户"),
+        (MessageSource.ASSISTANT, "助手"),
+        (MessageSource.TOOL, "工具"),
+        (MessageSource.SYSTEM, "系统"),
+    ]:
+        msg = Message(
+            conversation_id="c",
+            pair_id="phainon_ancient_machine",
+            source=source,
+            kind=MessageKind.SYSTEM_STATUS,
+            text="x",
+        )
+        window.add_message(msg)
+        target = (
+            window.assistant_messages
+            if source in (MessageSource.ASSISTANT, MessageSource.TOOL)
+            else window.character_messages
+        )
+        assert target.bubbles[-1].source_label.text() == label
+
+
 def test_library_toggle_shows_and_hides_library(qtbot) -> None:
     from PyQt5.QtWidgets import QLabel
 

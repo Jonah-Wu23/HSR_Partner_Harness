@@ -3,7 +3,7 @@ from __future__ import annotations
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QFrame, QLabel, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
-from pair_harness.core.contracts import Message, MessageSource
+from pair_harness.core.contracts import Message, MessageSource, enum_value
 
 
 SOURCE_STYLES = {
@@ -14,12 +14,22 @@ SOURCE_STYLES = {
     MessageSource.SYSTEM: "background:#24262B;color:#9CA3AF;border:1px solid #373A40;",
 }
 
+# 气泡来源标签：界面上不显示枚举名（O1.2）
+SOURCE_LABELS = {
+    MessageSource.USER: "用户",
+    MessageSource.CHARACTER: "角色",
+    MessageSource.ASSISTANT: "助手",
+    MessageSource.TOOL: "工具",
+    MessageSource.SYSTEM: "系统",
+}
+
 
 class MessageBubble(QFrame):
     def __init__(self, message: Message, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.message = message
-        self.setObjectName(f"message-{message.source}")
+        # objectName 只使用枚举值（不含点号），保证 QSS ID 选择器可用（O1.2）
+        self.setObjectName(f"message-{enum_value(message.source)}")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         self.setStyleSheet(
             f"QFrame#{self.objectName()}{{{SOURCE_STYLES[message.source]}"
@@ -27,16 +37,16 @@ class MessageBubble(QFrame):
         )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
-        source_label = QLabel(str(message.source))
-        source_label.setObjectName("sourceLabel")
-        source_label.setStyleSheet("font-size:11px;font-weight:600;background:transparent;")
-        text_label = QLabel(message.text)
-        text_label.setObjectName("textLabel")
-        text_label.setWordWrap(True)
-        text_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        text_label.setStyleSheet("background:transparent;")
-        layout.addWidget(source_label)
-        layout.addWidget(text_label)
+        self.source_label = QLabel(SOURCE_LABELS[message.source])
+        self.source_label.setObjectName("sourceLabel")
+        self.source_label.setStyleSheet("font-size:11px;font-weight:600;background:transparent;")
+        self.text_label = QLabel(message.text)
+        self.text_label.setObjectName("textLabel")
+        self.text_label.setWordWrap(True)
+        self.text_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.text_label.setStyleSheet("background:transparent;")
+        layout.addWidget(self.source_label)
+        layout.addWidget(self.text_label)
 
 
 class MessageList(QScrollArea):

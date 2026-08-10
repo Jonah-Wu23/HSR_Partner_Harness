@@ -20,6 +20,15 @@ class FrozenModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", use_enum_values=True)
 
 
+def enum_value(value: "MessageSource | MessageKind | str") -> str:
+    """把枚举字段规范化为字符串值（O1.2）。
+
+    FrozenModel 开启 use_enum_values 后字段运行时就是 str；
+    这里兼容两种形态，保证入库与上屏统一使用枚举值而非枚举名。
+    """
+    return value.value if isinstance(value, Enum) else str(value)
+
+
 class MessageSource(str, Enum):
     USER = "user"
     CHARACTER = "character"
