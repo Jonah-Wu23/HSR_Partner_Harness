@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
+
+logger = logging.getLogger(__name__)
 
 
 class TransportClosed(RuntimeError):
@@ -24,12 +27,14 @@ class SubprocessJsonLineConnection:
 
     @classmethod
     async def create(cls, executable: str) -> "SubprocessJsonLineConnection":
+        # stderr 无人消费会打满管道缓冲并阻塞子进程（O1.3）。
+        # MVP 阶段丢弃 stderr；B1 联调需要诊断输出时再改为独立任务消费并接入日志。
         process = await asyncio.create_subprocess_exec(
             executable,
             "app-server",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
         )
         return cls(process)
 
@@ -63,14 +68,18 @@ class JsonlProcessTransport:
         executable: str,
         *,
         connection_factory: ConnectionFactory | None = None,
+        request_timeout: float | None = None,
     ) -> None:
         self.executable = executable
         self.connection_factory = connection_factory
+        self.request_timeout = request_timeout
         self._connection: JsonLineConnection | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._notifications: asyncio.Queue[dict[str, Any] | BaseException] = asyncio.Queue()
         self._next_id = 1
+        # 坏行容错计数（O1.3）：读循环跳过无法解析的行，不中断
+        self.bad_line_count = 0
 
     @property
     def is_running(self) -> bool:
@@ -85,7 +94,13 @@ class JsonlProcessTransport:
             self._connection = await SubprocessJsonLineConnection.create(self.executable)
         self._reader_task = asyncio.create_task(self._read_loop(), name="codex-jsonl-reader")
 
-    async def request(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def request(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
         if not self.is_running or self._connection is None:
             await self.start()
         assert self._connection is not None
@@ -100,7 +115,15 @@ class JsonlProcessTransport:
         except BaseException:
             self._pending.pop(request_id, None)
             raise
-        return await future
+        effective_timeout = self.request_timeout if timeout is None else timeout
+        if effective_timeout is None:
+            return await future
+        try:
+            return await asyncio.wait_for(future, effective_timeout)
+        except asyncio.TimeoutError:
+            # 超时后移除挂起项，迟到的响应直接丢弃，避免污染后续请求
+            self._pending.pop(request_id, None)
+            raise
 
     async def next_notification(self) -> dict[str, Any]:
         item = await self._notifications.get()
@@ -116,7 +139,14 @@ class JsonlProcessTransport:
                 line = await self._connection.read_line()
                 if not line:
                     raise failure
-                message = json.loads(line.decode("utf-8"))
+                # 单行坏 JSON 只跳过并计数，不杀掉整个读循环（O1.3）；
+                # 只有连接关闭（空行）才终止循环。
+                try:
+                    message = json.loads(line.decode("utf-8"))
+                except (ValueError, UnicodeDecodeError):
+                    self.bad_line_count += 1
+                    logger.warning("忽略无法解析的 JSONL 行: %r", line[:200])
+                    continue
                 if "id" in message:
                     request_id = int(message["id"])
                     future = self._pending.pop(request_id, None)
