@@ -578,7 +578,7 @@ class ScriptedReviewer:
 class DialogueModelReviewer:
     """计划 B 的真实实现：复用当前 DialogueModel 适配器。
     提示词要求模型只输出 JSON：{"allow": bool, "reason": str, "suggestion": str}。
-    输入只包含 PendingOperation 摘要和最近 10 条消息，不给任何工具。"""
+    输入只包含 PendingOperation 摘要和最近 3 条消息，不给任何工具。"""
 ```
 
 约束（与设计文档 §6.3 一致）：审查智能体不能修改文件、调用执行工具、创建子助手或继续委派；否决时 `reason` 和 `suggestion` 都必须非空，测试实现也要遵守。

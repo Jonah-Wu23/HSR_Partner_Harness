@@ -280,8 +280,8 @@ class ConversationOrchestrator:
                             engine_turn_id=engine_turn_id,
                             sequence=sequence,
                             tool_call_id=event.tool_call_id,
-                            # 计划 A3：审查智能体需要近期上下文（最近 10 条）
-                            context=self._history.get(task.conversation_id, [])[-10:],
+                            # 计划 A3：审查智能体需要近期上下文（最近 3 条）
+                            context=self._history.get(task.conversation_id, [])[-3:],
                         )
                         events.extend(outcome.events)
                         sequence += len(outcome.events)

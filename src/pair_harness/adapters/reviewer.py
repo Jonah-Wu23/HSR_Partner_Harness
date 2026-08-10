@@ -40,7 +40,7 @@ class DialogueModelReviewer:
     """计划 B 的真实实现：复用当前 DialogueModel 适配器。
 
     提示词要求模型只输出 JSON：{"allow": bool, "reason": str, "suggestion": str}。
-    输入只包含 PendingOperation 摘要和最近 10 条消息，不给任何工具。
+    输入只包含 PendingOperation 摘要和最近 3 条消息，不给任何工具。
     """
 
     def __init__(self, model: DialogueModel) -> None:
@@ -49,7 +49,7 @@ class DialogueModelReviewer:
     async def review(
         self, op: PendingOperation, context: list[Message]
     ) -> ReviewerVerdict:
-        prompt = self._build_prompt(op, context[-10:])
+        prompt = self._build_prompt(op, context[-3:])
         synthetic = Message(
             conversation_id="reviewer",
             pair_id="reviewer",
