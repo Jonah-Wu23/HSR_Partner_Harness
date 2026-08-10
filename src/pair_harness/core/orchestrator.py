@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePath
@@ -82,6 +83,11 @@ class ConversationOrchestrator:
         self._sessions: dict[str, EngineSessionRef] = {}
         self._approval_managers: dict[str, ApprovalManager] = {}
         self._active_lifecycle: TaskLifecycle | None = None
+        # O2.5：每会话入口锁——聊天轮（用户消息+角色台词）在锁内整体落库，
+        # 轮内顺序固定为用户→角色且不与其他轮交错；任务执行（_execute）
+        # 刻意不在锁内，执行期间到达的聊天轮与执行产生的系统/助手消息按
+        # 落库先后交错，运行中直接输入/修改仍可并发 steer 活动 turn。
+        self._conversation_locks: dict[str, asyncio.Lock] = {}
         # 执行生命周期回调（O1.4）：busy 状态由任务开始/结束驱动，UI 不做文本猜测
         self.on_execution_started: Callable[[], None] | None = None
         self.on_execution_finished: Callable[[], None] | None = None
@@ -111,6 +117,17 @@ class ConversationOrchestrator:
         session_ref = snapshot.get("engine_session")
         if session_ref is not None:
             self._sessions[conversation_id] = session_ref
+
+    def _conversation_lock(self, conversation_id: str) -> asyncio.Lock:
+        """O2.5：获取会话级入口锁（首次访问时惰性创建）。
+
+        不同会话的入口互不阻塞；同一会话的聊天轮按到达顺序串行。
+        """
+        lock = self._conversation_locks.get(conversation_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._conversation_locks[conversation_id] = lock
+        return lock
 
     def _message(
         self,
@@ -143,31 +160,35 @@ class ConversationOrchestrator:
     async def handle_character_input(
         self, *, conversation_id: str, text: str
     ) -> ConversationOutcome:
-        user = self._message(
-            conversation_id=conversation_id,
-            source=MessageSource.USER,
-            kind=MessageKind.USER_TEXT,
-            text=text,
-        )
-        request = DialogueRequest(
-            pair_id=self.pair_id,
-            conversation_id=conversation_id,
-            user_message=user,
-            recent_messages=recent_roleplay_context(self._history[conversation_id][:-1]),
-        )
-        character_turn = None
-        async for event in self.dialogue_model.stream_reply(request):
-            if event.type == "character.final":
-                character_turn = event.turn
-        if character_turn is None:
-            raise RuntimeError("dialogue model ended without character.final")
-        character = self._message(
-            conversation_id=conversation_id,
-            source=MessageSource.CHARACTER,
-            kind=MessageKind.CHARACTER_SPEECH,
-            text=character_turn.speech,
-        )
-        messages = [user, character]
+        # O2.5：聊天轮（用户消息+角色台词）在会话锁内整体落库，轮内顺序
+        # 固定为用户→角色，不与其他轮交错；委派处理（_execute/修改路由）
+        # 在锁外进行，执行期间到达的聊天轮可与运行中任务并发。
+        async with self._conversation_lock(conversation_id):
+            user = self._message(
+                conversation_id=conversation_id,
+                source=MessageSource.USER,
+                kind=MessageKind.USER_TEXT,
+                text=text,
+            )
+            request = DialogueRequest(
+                pair_id=self.pair_id,
+                conversation_id=conversation_id,
+                user_message=user,
+                recent_messages=recent_roleplay_context(self._history[conversation_id][:-1]),
+            )
+            character_turn = None
+            async for event in self.dialogue_model.stream_reply(request):
+                if event.type == "character.final":
+                    character_turn = event.turn
+            if character_turn is None:
+                raise RuntimeError("dialogue model ended without character.final")
+            character = self._message(
+                conversation_id=conversation_id,
+                source=MessageSource.CHARACTER,
+                kind=MessageKind.CHARACTER_SPEECH,
+                text=character_turn.speech,
+            )
+            messages = [user, character]
 
         if isinstance(character_turn.delegation, TaskRequestDraft):
             task = TaskRequest(
@@ -215,12 +236,15 @@ class ConversationOrchestrator:
     async def handle_direct_input(
         self, *, conversation_id: str, text: str, constraints: tuple[str, ...] = ()
     ) -> ConversationOutcome:
-        user = self._message(
-            conversation_id=conversation_id,
-            source=MessageSource.USER,
-            kind=MessageKind.USER_TEXT,
-            text=text,
-        )
+        # O2.5：直接输入的用户消息同样在会话锁内落库，避免拆散进行中的
+        # 聊天轮；后续任务执行/修改路由在锁外进行。
+        async with self._conversation_lock(conversation_id):
+            user = self._message(
+                conversation_id=conversation_id,
+                source=MessageSource.USER,
+                kind=MessageKind.USER_TEXT,
+                text=text,
+            )
         if self.state.active is not None:
             # O2.4：设计 §3.2——运行中用户直接发给助手的新指令拥有最高优先级，
             # 归一为 TaskAmendment 走 amend_turn，来源标记 user 与角色建议区分
