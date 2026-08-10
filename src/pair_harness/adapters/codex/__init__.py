@@ -1,0 +1,2 @@
+"""Codex app-server adapter."""
+
