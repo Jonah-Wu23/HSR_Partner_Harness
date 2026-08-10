@@ -30,6 +30,13 @@ class DialogueModel(ABC):
         if False:
             yield
 
+    async def aclose(self) -> None:
+        """O3.2：释放对话模型持有的资源（如自建 HTTP client）。
+
+        注入外部 client 的适配器应把关闭留给调用方；默认实现不做任何事。
+        """
+        return
+
 
 class CodingEngine(ABC):
     @abstractmethod
