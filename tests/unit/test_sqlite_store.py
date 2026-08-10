@@ -49,6 +49,20 @@ def test_store_persists_core_records(tmp_path: Path) -> None:
     store.close()
 
 
+def test_approval_mode_is_persisted_per_project(tmp_path: Path) -> None:
+    database = tmp_path / "data" / "pair_harness.db"
+    with SQLiteStore(database) as store:
+        project = store.create_project(name="Repo", root_path=str(tmp_path), project_id="p")
+        # 计划 A6：默认“请求批准”
+        assert project.approval_mode == "request_approval"
+        store.update_project_approval_mode("p", "full_auto")
+        assert store.get_project("p").approval_mode == "full_auto"
+
+    # 重建 store（模拟关闭重开），审批模式必须恢复
+    with SQLiteStore(database) as reopened:
+        assert reopened.get_project("p").approval_mode == "full_auto"
+
+
 def test_new_conversation_does_not_inherit_history_or_session(tmp_path: Path) -> None:
     with SQLiteStore(tmp_path / "db.sqlite") as store:
         store.create_project(name="Repo", root_path=str(tmp_path), project_id="p")
