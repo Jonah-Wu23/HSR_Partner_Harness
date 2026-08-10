@@ -41,15 +41,37 @@ class CodexAppServerEngine(CodingEngine):
         return str(data["thread_id"])
 
     async def open_session(
-        self, project: ProjectRef, stored_ref: EngineSessionRef | None = None
+        self,
+        project: ProjectRef,
+        stored_ref: EngineSessionRef | None = None,
+        *,
+        approval_policy: str | None = None,
+        sandbox: str | None = None,
+        approvals_reviewer: str | None = None,
     ) -> EngineSessionRef:
+        """打开（或恢复）app-server 线程。
+
+        O3.1：``approval_policy``/``sandbox``/``approvals_reviewer`` 映射到
+        thread/start 的 approvalPolicy / sandbox / approvalsReviewer 字段
+        （字段名经 codex app-server generate-json-schema 0.147.0 确认）。
+        仅新开线程时发送；恢复线程（thread/resume）沿用线程既有设置。
+        B1 联调时由编排器按审批模式（request_approval → "on-request" 等）
+        与沙箱配置（MVP → "workspace-write"）传入真实参数。
+        """
         await self.transport.start()
         if stored_ref is not None:
             thread_id = self._decode_ref(stored_ref)
             result = await self.transport.request("thread/resume", {"threadId": thread_id})
             resumed = result.get("thread") or {}
             return self._encode_ref(str(resumed.get("id") or thread_id))
-        result = await self.transport.request("thread/start", {"cwd": project.root_path})
+        params: dict[str, object] = {"cwd": project.root_path}
+        if approval_policy is not None:
+            params["approvalPolicy"] = approval_policy
+        if sandbox is not None:
+            params["sandbox"] = sandbox
+        if approvals_reviewer is not None:
+            params["approvalsReviewer"] = approvals_reviewer
+        result = await self.transport.request("thread/start", params)
         thread = result.get("thread") or {}
         thread_id = thread.get("id")
         if not thread_id:
@@ -123,12 +145,21 @@ class CodexAppServerEngine(CodingEngine):
         approval_id: str,
         decision: ApprovalDecision,
     ) -> None:
-        await self.transport.request(
-            "item/approval/respond",
-            {
-                "threadId": self._decode_ref(session_ref),
-                "approvalId": approval_id,
-                "decision": decision,
-            },
-        )
+        """O3.1：回复 app-server 挂起的审批请求（requestApproval）。
+
+        ``approval_id`` 是服务端请求的 JSON-RPC id（codec 映射时写入
+        APPROVAL_REQUESTED 事件的 payload），此处按 id 直接回复 result。
+        决策映射（B1 联调可调）：
+        - ALLOW / ALLOW_FOR_CONVERSATION → "accept"
+          （“本对话内允许”由应用层会话缓存实现，不依赖原生 acceptForSession，
+          保证 O1.5 的敏感路径/高风险收紧规则始终生效）；
+        - DENY → "decline"（引擎继续 turn，把拒绝反馈给模型）。
+        """
+        del session_ref
+        native = {
+            ApprovalDecision.ALLOW: "accept",
+            ApprovalDecision.ALLOW_FOR_CONVERSATION: "accept",
+            ApprovalDecision.DENY: "decline",
+        }[decision]
+        await self.transport.respond(int(approval_id), {"decision": native})
 

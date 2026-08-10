@@ -376,6 +376,11 @@ CharacterResultSummary(
 
 ### 6.3 沙箱与审批模式
 
+> 修订说明（O3.1，2026-08-11）：本节描述的审批职责划分已被 §14 修订——
+> 真正暂停执行的一方是 app-server（approval policy + workspace-write），
+> orchestrator 的 ApprovalManager 裁决后统一经 `resolve_approval` 转发，
+> 应用层沙箱降级为兜底校验；原生审批事件不再单独透传为交互卡片。
+
 MVP 沙箱是目录级约束：文件读写限制在项目根目录之内，命令执行的工作目录锁定为项目根。`..`、目录外绝对路径和指向目录外的符号链接由 Orchestrator 统一拦截。`CodexAppServerEngine` 把沙箱映射到 app-server 的 workspace-write 策略，应用层保留兜底校验。容器隔离不进入 MVP。
 
 审批模式是项目级设置，在输入区左下角的下拉选择框切换（见 §4.2），默认“请求批准”：
@@ -589,3 +594,123 @@ VAD 在 Python 中重新实现，只复用行为和参数，不复制浏览器 T
 - TTS 失败：文字正常显示，不阻塞会话。
 
 MVP 不建设生产级遥测、复杂恢复系统或自定义权限治理。
+
+## 14. O3.1 审批体系统一修订（2026-08-11）
+
+> 本修订稿由优化计划 O3.1 产出，经用户确认后并入设计基线。
+> 涉及章节：§5.1（CodingEngine 接口）、§6.1（统一事件）、§6.3（沙箱与审批）。
+
+### 14.1 背景与问题
+
+1. **门控名不副实**：orchestrator 在 `tool.started` 事件之后做沙箱与审批门控。
+   对真实引擎而言，工具操作此时已经执行，门控只能事后标记，无法阻止。
+2. **`resolve_approval` 悬空**：`CodingEngine.resolve_approval` 定义在接口中
+   但全仓无人调用，引擎侧审批与应用层审批两套机制并存、互不接通。
+3. **协议假设错误**：原 codec 假设 app-server 以通知形式发送
+   `item/approval/requested`、并以 `item/approval/respond` 请求回复。
+   经 `codex app-server generate-json-schema`（0.147.0）确认，真实协议是
+   **服务端发起的 JSON-RPC 请求**（带 `id` 与方法名），以 `result` 回复决策。
+
+### 14.2 修订后的职责划分
+
+| 职责 | 承担方 | 说明 |
+|---|---|---|
+| 真正暂停执行 | app-server | thread/start 配置 `approvalPolicy`（如 `"on-request"`）后，工具操作执行前挂起并发起 `requestApproval` 请求 |
+| 执行边界 | app-server | thread/start 配置 `sandbox: "workspace-write"`（MVP 目录级约束的引擎侧实现） |
+| 裁决中枢 | orchestrator `ApprovalManager` | 三种审批模式逻辑不变；裁决结果统一经 `CodingEngine.resolve_approval` 转发回引擎 |
+| 兜底校验 | orchestrator 沙箱 | app-server 策略未配置或演示引擎路径下仍执行目录级拦截；原生路径下在挂起时同步检查（越界直接否决） |
+| 交互卡片 | ApprovalManager 裁决流程 | 请求批准模式的按钮卡片由 approval_callback 驱动；审查模式的状态展示由合成事件驱动；**原生事件不再单独透传为交互卡片** |
+
+### 14.3 真实协议事实（schema 确认，0.147.0）
+
+**thread/start 策略字段**（v2 协议，`ThreadStartParams`）：
+
+| 字段 | 取值 | 用途 |
+|---|---|---|
+| `approvalPolicy` | `"untrusted"` / `"on-request"` / `"never"` / `{"granular": {...}}` | 何时请求批准 |
+| `sandbox` | `"read-only"` / `"workspace-write"` / `"danger-full-access"` | 执行沙箱 |
+| `approvalsReviewer` | `"user"` / `"auto_review"` / `"guardian_subagent"` | 审批请求的默认裁决方 |
+
+**审批请求**（v1 协议，服务端 → 客户端，带 JSON-RPC `id`，客户端以
+`{"id": ..., "result": {"decision": ...}}` 回复）：
+
+| 方法 | params 关键字段 | 语义 |
+|---|---|---|
+| `item/commandExecution/requestApproval` | `itemId`、`command`、`cwd`、`reason` | 命令执行前挂起 |
+| `item/fileChange/requestApproval` | `itemId`、`grantRoot`、`reason`、`threadId`、`turnId` | 文件写入/修改前挂起 |
+| `item/permissions/requestApproval` | `itemId`、`permissions`、`reason`、`threadId`、`turnId` | 权限扩展（网络等）前挂起 |
+
+**决策枚举**（`CommandExecutionApprovalDecision`）：`accept`、
+`acceptForSession`、`acceptWithExecpolicyAmendment`、
+`applyNetworkPolicyAmendment`、`decline`、`declineAndInterrupt`。
+
+### 14.4 事件流（请求批准模式示例）
+
+```text
+模型调用工具
+  → app-server 挂起，发起 item/commandExecution/requestApproval（id=N）
+  → codec 映射为 EngineEvent APPROVAL_REQUESTED
+     （payload：approval_id=N、tool_kind、command、paths、reason）
+  → orchestrator 沙箱兜底（越界 → 回复 decline）
+  → ApprovalManager.adjudicate：
+      缓存命中 → 直接 ALLOW
+      未命中   → approval_callback 询问用户（交互卡片）
+  → 合成 APPROVAL_RESOLVED 事件（payload 记录 decision/actor/reason）
+  → coding_engine.resolve_approval(session, N, decision)
+       → transport.respond(N, {"decision": "accept"|"decline"})
+  → app-server 执行或拒绝；后续 item/started、item/completed 等照常推送
+```
+
+审查模式：同一路径，裁决主体为审查智能体（REVIEW 高风险时），
+`actor=reviewer`，附带理由与调整建议。完全允许运行模式：无用户交互，
+直接回复 `accept`（仅当引擎仍发起请求时）。
+
+被否决（`decline`）时 orchestrator **不中断执行循环**：引擎把拒绝反馈给
+模型后继续 turn，任务成败由 turn 终态决定。这与兜底路径（`tool.started`
+后门控，否决即中断任务）的语义不同，两者按引擎是否发起原生请求区分。
+
+### 14.5 决策映射（应用层 → 原生）
+
+| 应用层 ApprovalDecision | 原生 decision | 说明 |
+|---|---|---|
+| `ALLOW` | `accept` | 允许执行 |
+| `ALLOW_FOR_CONVERSATION` | `accept` | “本对话内允许”由应用层会话缓存实现（O1.5 收紧规则始终生效），不依赖原生 `acceptForSession`；B1 联调可评估切换 |
+| `DENY` | `decline` | 拒绝，引擎继续 turn |
+
+### 14.6 策略映射（应用层 → thread/start，B1 联调落实）
+
+| 应用层审批模式 | approvalPolicy | sandbox | approvalsReviewer |
+|---|---|---|---|
+| 请求批准 | `"on-request"` | `"workspace-write"` | `"user"` |
+| 帮我审核 | `"on-request"` | `"workspace-write"` | `"user"`（应用层审查智能体裁决；原生 `auto_review` 作为备选评估项） |
+| 完全允许运行 | `"never"` | `"workspace-write"` | `"user"` |
+
+`open_session` 已预留 `approval_policy`/`sandbox`/`approvals_reviewer` 参数
+（§5.1），编排器在 B1 联调时按上表传入；`None` 表示不设置。
+
+### 14.7 适配器预备改动清单（O3.1 已实现）
+
+- `transport.py`：读循环区分“服务端请求”（id + method）与“响应”，
+  服务端请求进通知队列；新增 `respond(request_id, result)`。
+- `codec.py`：`item/*/requestApproval` 映射为 `APPROVAL_REQUESTED`，
+  `approval_id` 取请求 id；保留旧 `item/approval/requested|resolved` 兼容映射。
+- `engine.py`：`open_session` 预留策略参数；`resolve_approval` 改为按请求
+  id 回复 result（决策映射见 §14.5）。
+- `approval.py`：`ApprovalManager.adjudicate()`——裁决引擎侧挂起请求，
+  不重复合成请求事件，只返回 resolved 事件。
+- `orchestrator.py`：事件循环处理 `APPROVAL_REQUESTED`（沙箱兜底 +
+  adjudicate + resolve_approval 转发）；`tool.started` 门控仅对未原生裁决
+  的操作执行（`adjudicated_tool_ids` 去重）；新增
+  `_operation_from_approval_event`。
+
+### 14.8 B1 联调清单
+
+1. 以真实 app-server 启动，按 §14.6 传入 thread/start 策略参数，确认
+   `requestApproval` 请求的 params 字段与 §14.3 一致（尤其
+   `item/fileChange/requestApproval` 的 `grantRoot` 语义）。
+2. 三种审批模式全链路走通：挂起 → 应用层裁决 → respond → 执行/拒绝。
+3. 验证 `decline` 后模型能否收到拒绝反馈并调整方案（决定是否需要在
+   编排器层补 TOOL_FINISHED(denied) 事件）。
+4. 评估原生 `acceptForSession` 与应用层会话缓存的取舍（§14.5）。
+5. 沙箱兜底在原生路径下的行为对齐（越界请求直接 decline）。
+

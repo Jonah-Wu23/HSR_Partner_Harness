@@ -131,6 +131,17 @@ class JsonlProcessTransport:
             raise item
         return item
 
+    async def respond(self, request_id: int, result: dict[str, Any]) -> None:
+        """O3.1：回复服务端发起的请求（如审批裁决结果）。
+
+        请求带 JSON-RPC id 与方法名进入通知队列，调用方识别后在此回复。
+        """
+        if self._connection is None:
+            raise TransportClosed("transport is not started")
+        message = {"id": request_id, "result": result}
+        encoded = json.dumps(message, ensure_ascii=False).encode("utf-8") + b"\n"
+        await self._connection.write_line(encoded)
+
     async def _read_loop(self) -> None:
         assert self._connection is not None
         failure: BaseException = TransportClosed("Codex app-server exited")
@@ -147,7 +158,12 @@ class JsonlProcessTransport:
                     self.bad_line_count += 1
                     logger.warning("忽略无法解析的 JSONL 行: %r", line[:200])
                     continue
-                if "id" in message:
+                if "id" in message and "method" in message:
+                    # O3.1：服务端发起的请求（如 item/commandExecution/requestApproval）
+                    # 带 JSON-RPC id 与方法名，与通知同队列消费，由调用方
+                    # （run_turn 循环）经 respond() 回复；不能当作客户端请求的响应。
+                    await self._notifications.put(message)
+                elif "id" in message:
                     request_id = int(message["id"])
                     future = self._pending.pop(request_id, None)
                     if future is None:

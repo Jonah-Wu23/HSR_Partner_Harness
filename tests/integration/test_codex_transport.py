@@ -104,3 +104,44 @@ async def test_cancel_turn_sends_interrupt_with_thread_and_turn_ids() -> None:
     await cancel
     await transport.close()
 
+
+@pytest.mark.asyncio
+async def test_server_initiated_request_goes_to_notification_queue() -> None:
+    """O3.1：服务端发起的请求（带 id+method，如 requestApproval）不得被
+    当作客户端请求的响应（否则挂起请求被错误消费、裁决回复丢失）。"""
+    connection = QueueJsonLineConnection()
+
+    async def factory():
+        return connection
+
+    transport = JsonlProcessTransport("unused", connection_factory=factory)
+    server = FakeCodexAppServer(connection)
+    pending = asyncio.create_task(transport.request("thread/start", {"cwd": "C:\\p"}))
+    request = await connection.receive_request()
+    assert request["method"] == "thread/start"
+
+    # 服务端先发审批请求（带 id），再回 thread/start 的响应
+    await server.connection.send(
+        {
+            "id": 100,
+            "method": "item/commandExecution/requestApproval",
+            "params": {"itemId": "tool-1", "command": "pytest", "cwd": "C:\\p"},
+        }
+    )
+    await server.connection.send(
+        {"id": request["id"], "result": {"thread": {"id": "thread-1"}}}
+    )
+
+    # 响应仍然路由回挂起的 request（id 未串扰）
+    result = await pending
+    assert result["thread"]["id"] == "thread-1"
+
+    # 审批请求进入通知队列，可经 respond 回复
+    notification = await transport.next_notification()
+    assert notification["method"] == "item/commandExecution/requestApproval"
+    assert notification["id"] == 100
+    await transport.respond(100, {"decision": "accept"})
+    reply = await server.connection.receive_request()
+    assert reply == {"id": 100, "result": {"decision": "accept"}}
+    await transport.close()
+

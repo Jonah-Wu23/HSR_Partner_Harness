@@ -73,8 +73,15 @@ class ScriptedCodingEngine(CodingEngine):
         self.approvals: list[tuple[EngineSessionRef, str, ApprovalDecision]] = []
 
     async def open_session(
-        self, project: ProjectRef, stored_ref: EngineSessionRef | None = None
+        self,
+        project: ProjectRef,
+        stored_ref: EngineSessionRef | None = None,
+        *,
+        approval_policy: str | None = None,
+        sandbox: str | None = None,
+        approvals_reviewer: str | None = None,
     ) -> EngineSessionRef:
+        del approval_policy, sandbox, approvals_reviewer
         self.opened_sessions.append((project, stored_ref))
         return stored_ref or EngineSessionRef(
             engine_type="scripted",

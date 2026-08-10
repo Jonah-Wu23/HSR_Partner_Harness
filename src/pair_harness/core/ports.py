@@ -34,8 +34,21 @@ class DialogueModel(ABC):
 class CodingEngine(ABC):
     @abstractmethod
     async def open_session(
-        self, project: ProjectRef, stored_ref: EngineSessionRef | None = None
+        self,
+        project: ProjectRef,
+        stored_ref: EngineSessionRef | None = None,
+        *,
+        approval_policy: str | None = None,
+        sandbox: str | None = None,
+        approvals_reviewer: str | None = None,
     ) -> EngineSessionRef:
+        """打开（或恢复）引擎会话。
+
+        O3.1：``approval_policy``/``sandbox``/``approvals_reviewer`` 是
+        app-server 策略映射的预留位置（thread/start 的 approvalPolicy /
+        sandbox / approvalsReviewer 字段），B1 联调时由编排器按审批模式
+        与沙箱配置传入；None 表示不设置，交给引擎默认值。
+        """
         raise NotImplementedError
 
     @abstractmethod

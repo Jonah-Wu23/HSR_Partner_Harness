@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import PurePath
 
@@ -154,6 +155,94 @@ class ApprovalManager:
             suggestion=verdict.suggestion,
         )
         return GateOutcome(decision=ApprovalDecision.DENY, events=(event, resolved))
+
+    async def adjudicate(
+        self,
+        op: PendingOperation,
+        *,
+        requested_event: EngineEvent,
+        conversation_id: str,
+        task_id: str,
+        engine_turn_id: str,
+        tool_call_id: str | None = None,
+        context: list[Message] | None = None,
+        request_decision: Callable[
+            [PendingOperation, str, str], Awaitable[ApprovalDecision]
+        ]
+        | None = None,
+    ) -> GateOutcome:
+        """O3.1：裁决引擎侧挂起的原生审批请求。
+
+        与 :meth:`gate` 的差异：
+        - ``approval_id`` 来自 app-server（requestApproval 请求 id），
+          由调用方从 ``requested_event.payload`` 读取，不再本地生成；
+        - 裁决结果由调用方经 ``CodingEngine.resolve_approval`` 回复引擎，
+          本方法不直接接触引擎；
+        - 返回的 ``GateOutcome.events`` 只含 ``approval.resolved``
+          （请求事件由 codec 映射产生，不重复合成）。
+        ``request_decision`` 供“请求批准”模式询问用户（等价于编排器的
+        approval_callback）；未提供时按否决处理（与 gate 路径一致）。
+        """
+        approval_id = str(requested_event.payload.get("approval_id") or "")
+        reason = str(
+            requested_event.payload.get("reason") or op.summary or "需要用户审批"
+        )
+
+        if self.mode == ApprovalMode.FULL_AUTO:
+            return GateOutcome(decision=ApprovalDecision.ALLOW)
+
+        if self.mode == ApprovalMode.REQUEST_APPROVAL:
+            if self._signature(op) in self._session_allow:
+                return GateOutcome(decision=ApprovalDecision.ALLOW_FOR_CONVERSATION)
+            if request_decision is None:
+                decision = ApprovalDecision.DENY
+                resolved_reason = "未配置审批回调"
+            else:
+                decision = await request_decision(op, approval_id, reason)
+                resolved_reason = reason
+            if (
+                decision == ApprovalDecision.ALLOW_FOR_CONVERSATION
+                and match_high_risk(op, self.rules) is None
+            ):
+                # O1.5：命中敏感路径或高风险规则的操作永不写入会话缓存
+                self._session_allow.add(self._signature(op))
+            resolved = self._approval_resolved_event(
+                requested_event,
+                decision,
+                actor="user",
+                reason=resolved_reason,
+            )
+            return GateOutcome(decision=decision, events=(resolved,))
+
+        # REVIEW 模式
+        risk_reason = match_high_risk(op, self.rules)
+        if risk_reason is None:
+            return GateOutcome(decision=ApprovalDecision.ALLOW)
+        if self.reviewer is None:
+            resolved = self._approval_resolved_event(
+                requested_event,
+                ApprovalDecision.DENY,
+                actor="reviewer",
+                reason="未配置审查智能体",
+            )
+            return GateOutcome(decision=ApprovalDecision.DENY, events=(resolved,))
+        verdict = await self.reviewer.review(op, context or [])
+        if verdict.allow:
+            resolved = self._approval_resolved_event(
+                requested_event,
+                ApprovalDecision.ALLOW,
+                actor="reviewer",
+                reason="审查通过",
+            )
+            return GateOutcome(decision=ApprovalDecision.ALLOW, events=(resolved,))
+        resolved = self._approval_resolved_event(
+            requested_event,
+            ApprovalDecision.DENY,
+            actor="reviewer",
+            reason=verdict.reason,
+            suggestion=verdict.suggestion,
+        )
+        return GateOutcome(decision=ApprovalDecision.DENY, events=(resolved,))
 
     def resolve(self, approval_id: str, decision: ApprovalDecision) -> PendingOperation:
         """处理用户或审查智能体的裁决。

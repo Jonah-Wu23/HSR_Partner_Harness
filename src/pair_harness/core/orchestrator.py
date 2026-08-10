@@ -366,6 +366,9 @@ class ConversationOrchestrator:
         checks: list[str] = []
         engine_turn_id = "unavailable"
         sequence = 0
+        # O3.1：已被原生审批请求（requestApproval）裁决过的工具操作集合。
+        # 引擎侧挂起时已裁决并回复，后续到达的 tool.started 不再重复门控。
+        adjudicated_tool_ids: set[str] = set()
         # 本次执行产生的新消息（含沙箱与审批 system 卡片）从这里开始
         history_start = len(self._history.get(task.conversation_id, []))
         sandbox = ProjectSandbox(Path(self.project.root_path))
@@ -400,7 +403,80 @@ class ConversationOrchestrator:
                 # 保证“运行中的工具卡片”立即出现）
                 self._emit_event(event)
 
-                if event.type == EngineEventType.TOOL_STARTED:
+                if event.type == EngineEventType.APPROVAL_REQUESTED:
+                    # O3.1：引擎侧挂起通知（app-server requestApproval）——
+                    # 操作尚未执行，这里做真正的裁决：沙箱兜底（越界直接
+                    # 否决）+ ApprovalManager 裁决，结果经 resolve_approval
+                    # 回复引擎。原生审批不再作为独立交互卡片直透 UI。
+                    op = self._operation_from_approval_event(event)
+                    if event.tool_call_id:
+                        adjudicated_tool_ids.add(event.tool_call_id)
+                    # 设计 §6.3：请求 payload 记录决策方（user 或 reviewer）
+                    payload = dict(event.payload)
+                    payload.setdefault(
+                        "actor",
+                        "reviewer"
+                        if self.approval_mode == ApprovalMode.REVIEW
+                        else "user",
+                    )
+                    event = event.model_copy(update={"payload": payload})
+                    approval_id = str(event.payload.get("approval_id") or "")
+                    try:
+                        self._check_sandbox(sandbox, op)
+                    except SandboxViolation as exc:
+                        # 挂起中的越界操作直接否决，引擎不会执行
+                        await self.coding_engine.resolve_approval(
+                            session, approval_id, ApprovalDecision.DENY
+                        )
+                        denied_event = self._deny_tool_event(
+                            event, f"沙箱拦截：{exc}", sequence
+                        )
+                        sequence += 1
+                        events.append(denied_event)
+                        self._emit_event(denied_event)
+                        failed = True
+                        errors.append(str(exc))
+                        self._message(
+                            conversation_id=task.conversation_id,
+                            source=MessageSource.SYSTEM,
+                            kind=MessageKind.SYSTEM_STATUS,
+                            text=f"沙箱拦截：{exc}",
+                            turn_id=engine_turn_id,
+                        )
+                        continue
+                    outcome = await approval.adjudicate(
+                        op,
+                        requested_event=event,
+                        conversation_id=task.conversation_id,
+                        task_id=task.task_id,
+                        engine_turn_id=engine_turn_id,
+                        tool_call_id=event.tool_call_id,
+                        # 计划 A3：审查智能体需要近期上下文（最近 3 条）
+                        context=self._history.get(task.conversation_id, [])[-3:],
+                        request_decision=self._request_approval,
+                    )
+                    for gate_event in outcome.events:
+                        sequence = max(sequence, gate_event.sequence + 1)
+                        events.append(gate_event)
+                        self._emit_event(gate_event)
+                    # 设计 §4.3：裁决结果以 system 卡片留在消息时间线
+                    notice = self._approval_notice(outcome)
+                    if notice is not None:
+                        self._message(
+                            conversation_id=task.conversation_id,
+                            source=MessageSource.SYSTEM,
+                            kind=MessageKind.APPROVAL,
+                            text=notice,
+                            turn_id=engine_turn_id,
+                        )
+                    # O3.1：统一经 resolve_approval 转发裁决；被否决时
+                    # 不中断执行循环——引擎把拒绝反馈给模型后继续 turn，
+                    # 任务成败由 turn 终态决定。
+                    await self.coding_engine.resolve_approval(
+                        session, approval_id, outcome.decision
+                    )
+
+                elif event.type == EngineEventType.TOOL_STARTED:
                     op = self._operation_from_event(event)
                     try:
                         self._check_sandbox(sandbox, op)
@@ -422,78 +498,85 @@ class ConversationOrchestrator:
                         )
                         break
 
-                    try:
-                        outcome = await approval.gate(
-                            op,
-                            conversation_id=task.conversation_id,
-                            task_id=task.task_id,
-                            engine_turn_id=engine_turn_id,
-                            sequence=sequence,
-                            tool_call_id=event.tool_call_id,
-                            # 计划 A3：审查智能体需要近期上下文（最近 3 条）
-                            context=self._history.get(task.conversation_id, [])[-3:],
-                        )
-                        events.extend(outcome.events)
-                        sequence += len(outcome.events)
-                        for gate_event in outcome.events:
-                            self._emit_event(gate_event)
-                        # 设计 §4.3：裁决结果以 system 卡片留在消息时间线
-                        notice = self._approval_notice(outcome)
-                        if notice is not None:
+                    # O3.1：该工具操作已由原生审批请求裁决并回复
+                    # （adjudicated），兜底 gate 不再重复执行；
+                    # 演示引擎等不产生原生请求的路径仍走完整门控。
+                    if not (
+                        event.tool_call_id
+                        and event.tool_call_id in adjudicated_tool_ids
+                    ):
+                        try:
+                            outcome = await approval.gate(
+                                op,
+                                conversation_id=task.conversation_id,
+                                task_id=task.task_id,
+                                engine_turn_id=engine_turn_id,
+                                sequence=sequence,
+                                tool_call_id=event.tool_call_id,
+                                # 计划 A3：审查智能体需要近期上下文（最近 3 条）
+                                context=self._history.get(task.conversation_id, [])[-3:],
+                            )
+                            events.extend(outcome.events)
+                            sequence += len(outcome.events)
+                            for gate_event in outcome.events:
+                                self._emit_event(gate_event)
+                            # 设计 §4.3：裁决结果以 system 卡片留在消息时间线
+                            notice = self._approval_notice(outcome)
+                            if notice is not None:
+                                self._message(
+                                    conversation_id=task.conversation_id,
+                                    source=MessageSource.SYSTEM,
+                                    kind=MessageKind.APPROVAL,
+                                    text=notice,
+                                    turn_id=engine_turn_id,
+                                )
+                            if outcome.decision == ApprovalDecision.DENY:
+                                denied_event = self._deny_tool_event(
+                                    event, "审批否决", sequence
+                                )
+                                sequence += 1
+                                events.append(denied_event)
+                                self._emit_event(denied_event)
+                                failed = True
+                                errors.append("审批否决")
+                                break
+                        except ApprovalRequired as req:
+                            events.append(req.event)
+                            sequence += 1
+                            self._emit_event(req.event)
+                            # O1.7：把真实理由与 approval_id 传给回调，UI 不再用
+                            # 命令文本冒充理由，也不再用 FIFO 顺序猜测对应关系
+                            reason = str(
+                                req.event.payload.get("reason", "") or "需要用户审批"
+                            )
+                            decision = await self._request_approval(
+                                req.op, req.approval_id, reason
+                            )
+                            op = approval.resolve(req.approval_id, decision)
+                            resolved_event = self._approval_resolved_event(
+                                req.event, decision, "user", op
+                            )
+                            events.append(resolved_event)
+                            sequence += 1
+                            self._emit_event(resolved_event)
+                            # 设计 §4.3：用户裁决以 system 卡片留在消息时间线
                             self._message(
                                 conversation_id=task.conversation_id,
                                 source=MessageSource.SYSTEM,
                                 kind=MessageKind.APPROVAL,
-                                text=notice,
+                                text=self._decision_text(decision),
                                 turn_id=engine_turn_id,
                             )
-                        if outcome.decision == ApprovalDecision.DENY:
-                            denied_event = self._deny_tool_event(
-                                event, "审批否决", sequence
-                            )
-                            sequence += 1
-                            events.append(denied_event)
-                            self._emit_event(denied_event)
-                            failed = True
-                            errors.append("审批否决")
-                            break
-                    except ApprovalRequired as req:
-                        events.append(req.event)
-                        sequence += 1
-                        self._emit_event(req.event)
-                        # O1.7：把真实理由与 approval_id 传给回调，UI 不再用
-                        # 命令文本冒充理由，也不再用 FIFO 顺序猜测对应关系
-                        reason = str(
-                            req.event.payload.get("reason", "") or "需要用户审批"
-                        )
-                        decision = await self._request_approval(
-                            req.op, req.approval_id, reason
-                        )
-                        op = approval.resolve(req.approval_id, decision)
-                        resolved_event = self._approval_resolved_event(
-                            req.event, decision, "user", op
-                        )
-                        events.append(resolved_event)
-                        sequence += 1
-                        self._emit_event(resolved_event)
-                        # 设计 §4.3：用户裁决以 system 卡片留在消息时间线
-                        self._message(
-                            conversation_id=task.conversation_id,
-                            source=MessageSource.SYSTEM,
-                            kind=MessageKind.APPROVAL,
-                            text=self._decision_text(decision),
-                            turn_id=engine_turn_id,
-                        )
-                        if decision == ApprovalDecision.DENY:
-                            denied_event = self._deny_tool_event(
-                                event, "用户否决", sequence
-                            )
-                            sequence += 1
-                            events.append(denied_event)
-                            self._emit_event(denied_event)
-                            failed = True
-                            errors.append("用户否决")
-                            break
+                            if decision == ApprovalDecision.DENY:
+                                denied_event = self._deny_tool_event(
+                                    event, "用户否决", sequence
+                                )
+                                sequence += 1
+                                events.append(denied_event)
+                                self._emit_event(denied_event)
+                                failed = True
+                                errors.append("用户否决")
+                                break
 
                 events.append(event)
                 if event.type == EngineEventType.ASSISTANT_FINAL:
@@ -638,6 +721,24 @@ class ConversationOrchestrator:
             patch_file_count=payload.get("patch_file_count")
             or len(payload.get("paths", [])),
             summary=payload.get("title", "") or payload.get("summary", "") or "工具操作",
+        )
+
+    @staticmethod
+    def _operation_from_approval_event(event: EngineEvent) -> PendingOperation:
+        """O3.1：从原生审批请求事件构造待裁决操作。
+
+        codec 已把 requestApproval 的字段归一进 payload
+        （tool_kind/command/paths/summary），这里直接透传。
+        """
+        payload = event.payload
+        return PendingOperation(
+            tool_kind=payload.get("tool_kind", "shell"),
+            command=payload.get("command"),
+            paths=[str(p) for p in payload.get("paths", []) or []],
+            patch_file_count=None,
+            summary=str(
+                payload.get("summary") or payload.get("reason") or "工具操作"
+            ),
         )
 
     @staticmethod

@@ -106,7 +106,47 @@ class CodexCodec:
                 tool_call_id=item_id,
                 payload={"path": item.get("path", ""), "patch": item.get("patch", "")},
             )
+        if method in (
+            "item/commandExecution/requestApproval",
+            "item/fileChange/requestApproval",
+            "item/permissions/requestApproval",
+        ):
+            # O3.1：app-server 在工具操作执行前挂起并发起审批请求
+            # （服务端发起的 JSON-RPC 请求，带 id）。orchestrator 裁决后
+            # 经 respond() 回复；approval_id 取请求 id，保证 resolve_approval
+            # 能路由回挂起中的请求。字段名依据 codex app-server
+            # generate-json-schema（0.147.0）确认；B1 联调以实际通知为准。
+            request_id = notification.get("id")
+            tool_kind = {
+                "item/commandExecution/requestApproval": "shell",
+                "item/fileChange/requestApproval": "file_write",
+                "item/permissions/requestApproval": "shell",
+            }[method]
+            command = params.get("command")
+            paths = params.get("paths")
+            if not paths and params.get("grantRoot"):
+                paths = [params["grantRoot"]]
+            return self._event(
+                binding,
+                EngineEventType.APPROVAL_REQUESTED,
+                tool_call_id=item_id,
+                payload={
+                    "approval_id": (
+                        str(request_id)
+                        if request_id is not None
+                        else params.get("approvalId")
+                    ),
+                    "request_id": request_id,
+                    "reason": params.get("reason", ""),
+                    "summary": params.get("reason") or command or "工具操作",
+                    "tool_kind": tool_kind,
+                    "command": command,
+                    "paths": paths or [],
+                },
+            )
         if method == "item/approval/requested":
+            # 旧协议兼容映射（O3.1 后不再作为交互卡片直透，
+            # 统一由 orchestrator 裁决后经 resolve_approval 转发）。
             return self._event(
                 binding,
                 EngineEventType.APPROVAL_REQUESTED,

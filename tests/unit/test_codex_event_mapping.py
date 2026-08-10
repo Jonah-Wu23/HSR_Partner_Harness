@@ -87,3 +87,52 @@ def test_maps_native_approval_cards() -> None:
     assert event.type == "approval.requested"
     assert event.payload["approval_id"] == "approval-1"
 
+
+def test_maps_server_initiated_request_approval_payload() -> None:
+    """O3.1：app-server 服务端发起的 requestApproval（带 JSON-RPC id）。
+
+    approval_id 取请求 id（orchestrator 据此经 respond 回复）；字段归一为
+    tool_kind/command/paths/summary，供沙箱与审批管理器直接使用。
+    """
+    event = CodexCodec().map_notification(
+        {
+            "id": 100,
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "itemId": "tool-1",
+                "command": "pytest tests/",
+                "cwd": "C:\\project",
+                "reason": "需要用户审批",
+            },
+        },
+        binding(),
+    )
+    assert event.type == "approval.requested"
+    assert event.tool_call_id == "tool-1"
+    assert event.payload["approval_id"] == "100"
+    assert event.payload["request_id"] == 100
+    assert event.payload["tool_kind"] == "shell"
+    assert event.payload["command"] == "pytest tests/"
+    assert event.payload["paths"] == []
+    assert event.payload["reason"] == "需要用户审批"
+
+
+def test_maps_file_change_request_approval_grant_root_to_paths() -> None:
+    """O3.1：fileChange 审批把 grantRoot 归一进 paths 供沙箱检查。"""
+    event = CodexCodec().map_notification(
+        {
+            "id": 7,
+            "method": "item/fileChange/requestApproval",
+            "params": {
+                "itemId": "tool-2",
+                "grantRoot": "C:\\project\\src",
+                "reason": "写文件",
+            },
+        },
+        binding(),
+    )
+    assert event.type == "approval.requested"
+    assert event.payload["approval_id"] == "7"
+    assert event.payload["tool_kind"] == "file_write"
+    assert event.payload["paths"] == ["C:\\project\\src"]
+
