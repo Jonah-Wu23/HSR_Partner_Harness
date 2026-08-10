@@ -1,0 +1,2 @@
+"""Core contracts and orchestration."""
+

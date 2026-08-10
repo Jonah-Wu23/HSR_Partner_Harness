@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pair-harness"
+version = "0.1.0"
+description = "Desktop roleplay and coding harness research MVP"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.6",
+    "PyYAML>=6.0",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+ui = ["PyQt5>=5.15", "qasync>=0.28"]
+voice = ["numpy>=1.26", "sounddevice>=0.5", "onnxruntime>=1.18", "dashscope>=1.20"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-qt>=4.4", "PyQt5>=5.15"]
+
+[project.scripts]
+pair-harness = "pair_harness.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "live_qwen: requires live DashScope credentials",
+]
