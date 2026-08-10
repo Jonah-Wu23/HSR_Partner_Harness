@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
+
+from pydantic import ValidationError
 
 from pair_harness.core.contracts import EngineSessionRef, Message, ToolRun
 from pair_harness.core.ports import StateStore
@@ -264,13 +267,30 @@ class SQLiteStore(StateStore):
         return {
             "conversation": conversation,
             "messages": tuple(Message.model_validate_json(row["message_json"]) for row in message_rows),
-            "tool_runs": tuple(ToolRun.model_validate_json(row["tool_json"]) for row in tool_rows),
+            "tool_runs": tuple(self._parse_tool_run(row["tool_json"]) for row in tool_rows),
             "engine_session": (
                 EngineSessionRef.model_validate_json(session_row["session_ref"])
                 if session_row is not None
                 else None
             ),
         }
+
+    @staticmethod
+    def _parse_tool_run(raw: str) -> ToolRun:
+        """解析持久化的工具卡片，兼容旧协议的状态值。
+
+        A1 对齐协议前，工具状态使用过 "completed"；当前协议只允许
+        running / succeeded / failed / denied，这里把旧值映射为 succeeded，
+        保证旧聊天重开时工具卡片可以恢复。
+        """
+        try:
+            return ToolRun.model_validate_json(raw)
+        except ValidationError:
+            data = json.loads(raw)
+            if data.get("status") == "completed":
+                data["status"] = "succeeded"
+                return ToolRun.model_validate(data)
+            raise
 
     def rename_conversation(self, conversation_id: str, title: str) -> None:
         self.connection.execute(

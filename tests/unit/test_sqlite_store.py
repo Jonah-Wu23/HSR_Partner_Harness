@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from pair_harness.core.contracts import (
@@ -47,6 +48,37 @@ def test_store_persists_core_records(tmp_path: Path) -> None:
     assert snapshot["tool_runs"] == (tool_run,)
     assert snapshot["engine_session"] == session
     store.close()
+
+
+def test_legacy_tool_run_status_completed_reads_back_as_succeeded(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "db.sqlite") as store:
+        store.create_project(name="Repo", root_path=str(tmp_path), project_id="p")
+        store.create_conversation(
+            project_id="p", pair_id="phainon_ancient_machine", conversation_id="c"
+        )
+        # A1 对齐协议前，工具状态使用过 "completed"，旧聊天重开必须可恢复
+        legacy = {
+            "tool_call_id": "tool-1",
+            "conversation_id": "c",
+            "task_id": "t",
+            "engine_turn_id": "turn",
+            "sequence": 1,
+            "status": "completed",
+            "title": "旧工具",
+            "summary": "旧记录",
+        }
+        store.connection.execute(
+            """INSERT INTO tool_runs(
+                conversation_id, tool_call_id, task_id, engine_turn_id,
+                sequence, status, tool_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            ("c", "tool-1", "t", "turn", 1, "completed", json.dumps(legacy)),
+        )
+        store.connection.commit()
+
+        snapshot = store.load_conversation("c")
+        assert snapshot["tool_runs"][0].status == "succeeded"
+        assert snapshot["tool_runs"][0].title == "旧工具"
 
 
 def test_approval_mode_is_persisted_per_project(tmp_path: Path) -> None:
