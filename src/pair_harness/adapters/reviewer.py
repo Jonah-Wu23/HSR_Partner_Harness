@@ -62,16 +62,19 @@ class DialogueModelReviewer:
             conversation_id="reviewer",
             user_message=synthetic,
         )
-        text_parts: list[str] = []
-        async for event in self._model.stream_reply(request):
-            if event.type == "speech.delta" and event.delta:
-                text_parts.append(event.delta)
-            elif event.type == "character.final" and event.turn:
-                text_parts.append(event.turn.speech)
         import json
 
+        # 只取 character.final 的台词作为解析输入：
+        # 对话适配器是“增量 delta + 全量 final”形态，delta 片段与 final 全量
+        # 拼接必然重复导致 JSON 解析失败（O1.1）。
+        final_speech: str | None = None
+        async for event in self._model.stream_reply(request):
+            if event.type == "character.final" and event.turn:
+                final_speech = event.turn.speech
+        if final_speech is None:
+            return ReviewerVerdict(allow=False, reason="审查智能体没有返回内容", suggestion="请重试")
         try:
-            data = json.loads("".join(text_parts).strip())
+            data = json.loads(final_speech.strip())
         except json.JSONDecodeError:
             return ReviewerVerdict(allow=False, reason="审查智能体返回格式错误", suggestion="请重试")
         return ReviewerVerdict(
