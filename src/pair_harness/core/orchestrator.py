@@ -272,6 +272,8 @@ class ConversationOrchestrator:
                             engine_turn_id=engine_turn_id,
                             sequence=sequence,
                             tool_call_id=event.tool_call_id,
+                            # 计划 A3：审查智能体需要近期上下文（最近 10 条）
+                            context=self._history.get(task.conversation_id, [])[-10:],
                         )
                         events.extend(outcome.events)
                         sequence += len(outcome.events)
@@ -452,7 +454,9 @@ class ConversationOrchestrator:
             type=EngineEventType.TOOL_FINISHED,
             tool_call_id=event.tool_call_id,
             payload={
-                "status": "failed",
+                # 计划 A3：沙箱越界与审批否决的工具操作以 denied 状态收尾，
+                # 与 ToolRun.status 的 "denied" 枚举值对齐；任务本身仍标记失败。
+                "status": "denied",
                 "title": event.payload.get("title", "工具"),
                 "summary": reason,
                 "details": reason,

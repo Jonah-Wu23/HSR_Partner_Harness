@@ -8,6 +8,7 @@ from .contracts import (
     ApprovalMode,
     EngineEvent,
     EngineEventType,
+    Message,
     PendingOperation,
     ReviewerVerdict,
 )
@@ -67,12 +68,14 @@ class ApprovalManager:
         engine_turn_id: str,
         sequence: int,
         tool_call_id: str | None = None,
+        context: list[Message] | None = None,
     ) -> GateOutcome:
         """对单个操作进行门控。
 
         - ``FULL_AUTO``：直接放行，不产生审批事件。
         - ``REQUEST_APPROVAL``：未缓存时抛出 :class:`ApprovalRequired`。
-        - ``REVIEW``：低风险直接放行；高风险交审查智能体裁决，并返回审批事件。
+        - ``REVIEW``：低风险直接放行；高风险连同近期上下文交审查智能体裁决，
+          并返回审批事件。
         """
         if self.mode == ApprovalMode.FULL_AUTO:
             return GateOutcome(decision=ApprovalDecision.ALLOW)
@@ -109,6 +112,8 @@ class ApprovalManager:
             engine_turn_id=engine_turn_id,
             sequence=sequence,
             tool_call_id=tool_call_id,
+            # 计划 A3：审查模式下的裁决由审查智能体做出，actor 记为 reviewer
+            actor="reviewer",
         )
         if self.reviewer is None:
             resolved = self._approval_resolved_event(
@@ -121,7 +126,8 @@ class ApprovalManager:
                 decision=ApprovalDecision.DENY,
                 events=(event, resolved),
             )
-        verdict = await self.reviewer.review(op, [])
+        # 计划 A3：把操作连同近期上下文交给审查智能体
+        verdict = await self.reviewer.review(op, context or [])
         if verdict.allow:
             resolved = self._approval_resolved_event(
                 event=event,
@@ -172,6 +178,7 @@ class ApprovalManager:
         engine_turn_id: str,
         sequence: int,
         tool_call_id: str | None,
+        actor: str = "user",
     ) -> EngineEvent:
         return EngineEvent(
             conversation_id=conversation_id,
@@ -184,7 +191,7 @@ class ApprovalManager:
                 "approval_id": approval_id,
                 "summary": op.summary,
                 "reason": reason,
-                "actor": "user",
+                "actor": actor,
                 "options": [
                     ApprovalDecision.ALLOW.value,
                     ApprovalDecision.ALLOW_FOR_CONVERSATION.value,

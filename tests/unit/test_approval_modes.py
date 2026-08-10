@@ -143,6 +143,9 @@ async def test_sandbox_violation_denies_tool(tmp_path) -> None:
     assert outcome.receipt is not None
     assert outcome.receipt.status == "failed"
     assert any("沙箱" in err or "越界" in err for err in outcome.receipt.errors)
+    # 计划 A3：沙箱越界产生的 tool.finished 状态必须是 denied
+    finished = [e for e in outcome.engine_events if e.type == "tool.finished"]
+    assert finished and finished[-1].payload["status"] == "denied"
 
 
 @pytest.mark.asyncio
@@ -188,6 +191,14 @@ async def test_review_mode_high_risk_calls_reviewer(tmp_path) -> None:
     assert outcome.receipt is not None
     assert outcome.receipt.status == "failed"
     assert len(reviewer.requests) == 1
+    # 计划 A3：审查智能体必须收到近期上下文，而不是空列表
+    _, context = reviewer.requests[0]
+    assert context, "审查智能体应收到近期上下文"
+    assert any(message.source == "user" for message in context)
     resolved = [e for e in outcome.engine_events if e.type == "approval.resolved"]
     assert len(resolved) == 1
     assert resolved[0].payload["actor"] == "reviewer"
+    requested = [e for e in outcome.engine_events if e.type == "approval.requested"]
+    assert len(requested) == 1
+    # 计划 A3：审查模式下的审批请求 actor 也记为 reviewer
+    assert requested[0].payload["actor"] == "reviewer"
