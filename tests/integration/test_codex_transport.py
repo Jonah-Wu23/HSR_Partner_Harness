@@ -83,3 +83,24 @@ async def test_offline_engine_opens_session_and_streams_mapped_events() -> None:
     assert {event.conversation_id for event in events} == {"conversation-1"}
     await transport.close()
 
+
+@pytest.mark.asyncio
+async def test_cancel_turn_sends_interrupt_with_thread_and_turn_ids() -> None:
+    """O2.3：取消任务发出 turn/interrupt，参数携带 threadId 与 turnId。"""
+    connection = QueueJsonLineConnection()
+
+    async def factory():
+        return connection
+
+    transport = JsonlProcessTransport("unused", connection_factory=factory)
+    engine = CodexAppServerEngine(transport)
+    server = FakeCodexAppServer(connection)
+    session_ref = engine._encode_ref("thread-1")
+
+    cancel = asyncio.create_task(engine.cancel_turn(session_ref, "turn-9"))
+    request = await server.serve_request({})
+    assert request["method"] == "turn/interrupt"
+    assert request["params"] == {"threadId": "thread-1", "turnId": "turn-9"}
+    await cancel
+    await transport.close()
+

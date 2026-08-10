@@ -233,7 +233,35 @@ class ConversationOrchestrator:
         )
         session = self._sessions[active.conversation_id]
         await self.coding_engine.amend_turn(session, active.engine_turn_id, amendment)
-        self._active_lifecycle.transition(TaskStatus.RUNNING)
+        # O2.3：取消请求可能已在 amend 期间把生命周期落到 CANCELLED（终态），
+        # 此时不再回拨 RUNNING，避免 InvalidTaskTransition。
+        if self._active_lifecycle.status == TaskStatus.AMENDMENT_PENDING:
+            self._active_lifecycle.transition(TaskStatus.RUNNING)
+
+    async def cancel_active_task(self) -> bool:
+        """O2.3：请求取消当前活动任务（取消按钮入口）。
+
+        经 ``GlobalEngineState`` 找到活动 turn，调用引擎 ``cancel_turn``
+        发送 turn/interrupt；生命周期先行落到 CANCELLED（终态），
+        ``_execute`` 收尾时只做去重转移，不再重复 transition。
+        无活动任务、引擎 turn 尚未绑定（还没收到任何事件）、
+        生命周期已终态或会话引用缺失时返回 False（按钮保持禁用兜底）。
+        """
+        active = self.state.active
+        lifecycle = self._active_lifecycle
+        if (
+            active is None
+            or active.engine_turn_id is None
+            or lifecycle is None
+            or lifecycle.status not in (TaskStatus.RUNNING, TaskStatus.AMENDMENT_PENDING)
+        ):
+            return False
+        session = self._sessions.get(active.conversation_id)
+        if session is None:
+            return False
+        lifecycle.transition(TaskStatus.CANCELLED)
+        await self.coding_engine.cancel_turn(session, active.engine_turn_id)
+        return True
 
     async def _execute(self, task: TaskRequest) -> ConversationOutcome:
         self.state.start(
@@ -420,9 +448,26 @@ class ConversationOrchestrator:
                 elif event.type == EngineEventType.TURN_COMPLETED:
                     cancelled = event.payload.get("status") == "cancelled"
 
-            status = "cancelled" if cancelled else "failed" if failed else "completed"
-            lifecycle.transition(TaskStatus(status))
-            summary = assistant_text or ("任务执行失败" if failed else "任务执行完成")
+            # O2.3：取消链路接通后，生命周期可能已被 cancel_active_task
+            # 先行落到 CANCELLED（终态），这里只做去重转移——目标状态与
+            # 当前相同就不再 transition，避免 InvalidTaskTransition。
+            target_status = (
+                "cancelled"
+                if cancelled or lifecycle.status == TaskStatus.CANCELLED
+                else "failed"
+                if failed
+                else "completed"
+            )
+            if TaskStatus(target_status) != lifecycle.status:
+                lifecycle.transition(TaskStatus(target_status))
+            status = target_status
+            if status == "cancelled":
+                # O2.3：中断的演示流程没有收尾文案，回执如实标注已取消
+                summary = assistant_text or "任务已取消"
+            elif failed:
+                summary = assistant_text or "任务执行失败"
+            else:
+                summary = assistant_text or "任务执行完成"
             receipt = ExecutionReceipt(
                 task_id=task.task_id,
                 engine_turn_id=engine_turn_id,

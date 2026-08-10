@@ -143,6 +143,14 @@ def main(argv: list[str] | None = None) -> int:
     orchestrator.on_execution_finished = lambda: bridge.busy_changed.emit(False)
 
     window.input_submitted.connect(submit)
+
+    @asyncSlot()
+    async def cancel_task() -> None:
+        # O2.3：取消按钮接通编排器取消入口；无活动任务时 cancel_active_task
+        # 返回 False，由 set_busy 的按钮禁用兜底。
+        await orchestrator.cancel_active_task()
+
+    window.cancel_requested.connect(cancel_task)
     window.show()
     if os.getenv("QT_QPA_PLATFORM") == "offscreen":
         QTimer.singleShot(250, app.quit)
