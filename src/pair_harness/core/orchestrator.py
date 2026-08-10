@@ -27,7 +27,7 @@ from .contracts import (
     TaskStatus,
     ToolRun,
 )
-from .engine_state import GlobalEngineState, TaskLifecycle
+from .engine_state import BusyTurnError, GlobalEngineState, TaskLifecycle
 from .ports import CodingEngine, DialogueModel, Reviewer, StateStore
 from .risk_rules import RiskRules, default_risk_rules
 from .sandbox import ProjectSandbox, SandboxViolation
@@ -176,7 +176,18 @@ class ConversationOrchestrator:
                 instructions=character_turn.delegation.instructions,
                 constraints=character_turn.delegation.constraints,
             )
-            execution = await self._execute(task)
+            try:
+                execution = await self._execute(task)
+            except BusyTurnError as exc:
+                # O2.4：任务运行中角色再委派新任务——冲突转为用户可见的
+                # 系统提示，不再静默失败；用户直接指令不受影响（走修改路由）。
+                notice = self._message(
+                    conversation_id=conversation_id,
+                    source=MessageSource.SYSTEM,
+                    kind=MessageKind.SYSTEM_STATUS,
+                    text=f"任务仍在执行，本次委派暂未受理：{exc}",
+                )
+                return ConversationOutcome(messages=(user, character, notice))
             messages.extend(execution.messages)
             return ConversationOutcome(
                 messages=tuple(messages),
@@ -187,7 +198,18 @@ class ConversationOrchestrator:
             )
 
         if isinstance(character_turn.delegation, TaskAmendmentDraft):
-            await self._apply_amendment(user.message_id, character_turn.delegation)
+            try:
+                await self._apply_amendment(user.message_id, character_turn.delegation)
+            except (RuntimeError, ValueError) as exc:
+                # O2.4：角色建议的修改无法路由（无活动任务、生命周期已终态等）
+                # 时同样转为可见系统提示，不静默
+                notice = self._message(
+                    conversation_id=conversation_id,
+                    source=MessageSource.SYSTEM,
+                    kind=MessageKind.SYSTEM_STATUS,
+                    text=f"修改未能应用：{exc}",
+                )
+                return ConversationOutcome(messages=(user, character, notice))
         return ConversationOutcome(messages=tuple(messages))
 
     async def handle_direct_input(
@@ -199,6 +221,30 @@ class ConversationOrchestrator:
             kind=MessageKind.USER_TEXT,
             text=text,
         )
+        if self.state.active is not None:
+            # O2.4：设计 §3.2——运行中用户直接发给助手的新指令拥有最高优先级，
+            # 归一为 TaskAmendment 走 amend_turn，来源标记 user 与角色建议区分
+            try:
+                amendment = TaskAmendment(
+                    target_task_id=self.state.active.task_id,
+                    origin_message_id=user.message_id,
+                    revision=1,
+                    instructions=text,
+                    origin="user",
+                )
+                await self._steer_turn(amendment)
+            except (RuntimeError, ValueError) as exc:
+                # 冲突场景（引擎 turn 尚未绑定、生命周期已终态等）：
+                # 转用户可见系统提示，不再静默失败
+                notice = self._message(
+                    conversation_id=conversation_id,
+                    source=MessageSource.SYSTEM,
+                    kind=MessageKind.SYSTEM_STATUS,
+                    text=f"修改未能应用：{exc}",
+                )
+                return ConversationOutcome(messages=(user, notice))
+            # 修改已交给运行中的任务，本次直接输入不再开启新任务
+            return ConversationOutcome(messages=(user,))
         task = TaskRequest(
             conversation_id=conversation_id,
             origin_message_id=user.message_id,
@@ -224,17 +270,29 @@ class ConversationOrchestrator:
             raise ValueError("amendment target does not match active task")
         if self._active_lifecycle is None:
             raise RuntimeError("active task lifecycle is missing")
-        self._active_lifecycle.transition(TaskStatus.AMENDMENT_PENDING)
         amendment = TaskAmendment(
             target_task_id=active.task_id,
             origin_message_id=origin_message_id,
             revision=draft.revision or 1,
             instructions=draft.instructions,
+            # O2.4：角色建议的修改，来源与用户直接指令区分
+            origin="character",
         )
+        await self._steer_turn(amendment)
+
+    async def _steer_turn(self, amendment: TaskAmendment) -> None:
+        """把 amendment 发送给运行中的引擎 turn，并切换生命周期状态。
+
+        O2.4：角色建议与用户直接指令共用此路径；生命周期先转
+        AMENDMENT_PENDING 再回拨 RUNNING——期间若已被取消请求落到
+        CANCELLED（终态）则不再回拨，避免 InvalidTaskTransition。
+        """
+        active = self.state.active
+        if active is None or active.engine_turn_id is None or self._active_lifecycle is None:
+            raise RuntimeError("no running task can accept an amendment")
+        self._active_lifecycle.transition(TaskStatus.AMENDMENT_PENDING)
         session = self._sessions[active.conversation_id]
         await self.coding_engine.amend_turn(session, active.engine_turn_id, amendment)
-        # O2.3：取消请求可能已在 amend 期间把生命周期落到 CANCELLED（终态），
-        # 此时不再回拨 RUNNING，避免 InvalidTaskTransition。
         if self._active_lifecycle.status == TaskStatus.AMENDMENT_PENDING:
             self._active_lifecycle.transition(TaskStatus.RUNNING)
 

@@ -133,6 +133,9 @@ class TaskAmendment(FrozenModel):
     origin_message_id: str
     revision: int = Field(ge=1)
     instructions: str = Field(min_length=1)
+    # O2.4：修改来源——用户直接指令（最高优先级）或角色建议，
+    # 便于编排器区分“用户发给助手的新指令”与角色生成的修改。
+    origin: Literal["user", "character"] = "character"
 
 
 class EngineEventType(str, Enum):
