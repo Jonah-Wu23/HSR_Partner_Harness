@@ -194,6 +194,10 @@ class MainWindow(QMainWindow):
         return card
 
     def apply_engine_event(self, event: EngineEvent) -> None:
+        # O2.1：工具卡片增量渲染对所有模式生效（流式通道 + 事后回放共用此路径）
+        if event.type in (EngineEventType.TOOL_STARTED, EngineEventType.TOOL_FINISHED):
+            self._apply_tool_event(event)
+            return
         # 设计 §4.3：帮我审核模式只显示审查状态与最终裁决文字，无按钮；
         # 请求批准模式的交互由 ApprovalBar 与 approval_callback 桥完成，
         # 完全允许运行模式下审批区不出现。
@@ -213,4 +217,37 @@ class MainWindow(QMainWindow):
             if suggestion:
                 text += f"；调整建议：{suggestion}"
             self.approval_bar.show_review(text)
+
+    def _apply_tool_event(self, event: EngineEvent) -> None:
+        """O2.1：由 tool 事件构造 ToolRun 并创建/更新工具卡片。
+
+        - tool.started：以 running 状态立即出现卡片；
+        - tool.finished：按事件 payload 更新状态与摘要。
+        """
+        payload = event.payload
+        if event.type == EngineEventType.TOOL_STARTED:
+            run = ToolRun(
+                tool_call_id=event.tool_call_id or "",
+                conversation_id=event.conversation_id,
+                task_id=event.task_id,
+                engine_turn_id=event.engine_turn_id,
+                sequence=event.sequence,
+                status="running",
+                title=str(payload.get("title", "工具")),
+                summary=str(payload.get("summary", "")),
+                details=str(payload.get("details", "")),
+            )
+        else:
+            run = ToolRun(
+                tool_call_id=event.tool_call_id or "",
+                conversation_id=event.conversation_id,
+                task_id=event.task_id,
+                engine_turn_id=event.engine_turn_id,
+                sequence=event.sequence,
+                status=str(payload.get("status", "succeeded")),  # type: ignore[arg-type]
+                title=str(payload.get("title", "工具")),
+                summary=str(payload.get("summary", "")),
+                details=str(payload.get("details", "")),
+            )
+        self.update_tool_run(run)
 

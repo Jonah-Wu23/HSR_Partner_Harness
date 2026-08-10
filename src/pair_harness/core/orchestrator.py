@@ -85,6 +85,11 @@ class ConversationOrchestrator:
         # 执行生命周期回调（O1.4）：busy 状态由任务开始/结束驱动，UI 不做文本猜测
         self.on_execution_started: Callable[[], None] | None = None
         self.on_execution_finished: Callable[[], None] | None = None
+        # O2.1：流式事件通道——消息与引擎事件产生时即推送，UI 增量渲染；
+        # ConversationOutcome 保留为最终汇总（事后回放）。
+        # 推送顺序约定（设计 §3.2）：角色接受委派的台词先于执行事件到达界面。
+        self.on_message: Callable[[Message], None] | None = None
+        self.on_engine_event: Callable[[EngineEvent], None] | None = None
 
     def set_approval_mode(self, mode: ApprovalMode) -> None:
         """切换项目级审批模式（计划 A5：输入区下拉框切换）。"""
@@ -115,6 +120,9 @@ class ConversationOrchestrator:
         self._history.setdefault(conversation_id, []).append(message)
         if self.store is not None:
             self.store.save_message(message)
+        # O2.1：消息产生即推送，UI 增量渲染不等整轮任务结束
+        if self.on_message is not None:
+            self.on_message(message)
         return message
 
     async def handle_character_input(
@@ -263,6 +271,10 @@ class ConversationOrchestrator:
                 if self.state.active and self.state.active.engine_turn_id is None:
                     self.state.bind_engine_turn(engine_turn_id)
 
+                # O2.1：原始事件到达即推送（tool.started 先于审批/沙箱结果到达 UI，
+                # 保证“运行中的工具卡片”立即出现）
+                self._emit_event(event)
+
                 if event.type == EngineEventType.TOOL_STARTED:
                     op = self._operation_from_event(event)
                     try:
@@ -273,6 +285,7 @@ class ConversationOrchestrator:
                         )
                         sequence += 1
                         events.append(denied_event)
+                        self._emit_event(denied_event)
                         failed = True
                         errors.append(str(exc))
                         self._message(
@@ -297,6 +310,8 @@ class ConversationOrchestrator:
                         )
                         events.extend(outcome.events)
                         sequence += len(outcome.events)
+                        for gate_event in outcome.events:
+                            self._emit_event(gate_event)
                         # 设计 §4.3：裁决结果以 system 卡片留在消息时间线
                         notice = self._approval_notice(outcome)
                         if notice is not None:
@@ -313,12 +328,14 @@ class ConversationOrchestrator:
                             )
                             sequence += 1
                             events.append(denied_event)
+                            self._emit_event(denied_event)
                             failed = True
                             errors.append("审批否决")
                             break
                     except ApprovalRequired as req:
                         events.append(req.event)
                         sequence += 1
+                        self._emit_event(req.event)
                         # O1.7：把真实理由与 approval_id 传给回调，UI 不再用
                         # 命令文本冒充理由，也不再用 FIFO 顺序猜测对应关系
                         reason = str(
@@ -333,6 +350,7 @@ class ConversationOrchestrator:
                         )
                         events.append(resolved_event)
                         sequence += 1
+                        self._emit_event(resolved_event)
                         # 设计 §4.3：用户裁决以 system 卡片留在消息时间线
                         self._message(
                             conversation_id=task.conversation_id,
@@ -347,6 +365,7 @@ class ConversationOrchestrator:
                             )
                             sequence += 1
                             events.append(denied_event)
+                            self._emit_event(denied_event)
                             failed = True
                             errors.append("用户否决")
                             break
@@ -460,6 +479,11 @@ class ConversationOrchestrator:
             self._active_lifecycle = None
             if self.on_execution_finished is not None:
                 self.on_execution_finished()
+
+    def _emit_event(self, event: EngineEvent) -> None:
+        """O2.1：把引擎事件立即推送给 UI（流式通道）。"""
+        if self.on_engine_event is not None:
+            self.on_engine_event(event)
 
     @staticmethod
     def _operation_from_event(event: EngineEvent) -> PendingOperation:

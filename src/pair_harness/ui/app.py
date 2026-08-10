@@ -23,6 +23,7 @@ from pair_harness.storage.sqlite_store import SQLiteStore
 from pair_harness.ui.project_library import ProjectLibrary
 
 from .main_window import MainWindow
+from .qt_bridge import OrchestratorBridge
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -115,26 +116,28 @@ def main(argv: list[str] | None = None) -> int:
 
     @asyncSlot(str, str)
     async def submit(target: str, text: str) -> None:
+        # O2.1：消息、工具事件与审批展示已由流式回调实时到达界面，
+        # ConversationOutcome 仅保留为最终汇总，不再事后回放。
         if target == "assistant":
-            outcome = await orchestrator.handle_direct_input(
+            await orchestrator.handle_direct_input(
                 conversation_id="demo-conversation", text=text
             )
         else:
-            outcome = await orchestrator.handle_character_input(
+            await orchestrator.handle_character_input(
                 conversation_id="demo-conversation", text=text
             )
-        for message in outcome.messages:
-            window.add_message(message)
-        for tool_run in outcome.tool_runs:
-            window.update_tool_run(tool_run)
-        # 帮我审核模式的审查状态与裁决文字由事件流回放显示
-        for event in outcome.engine_events:
-            window.apply_engine_event(event)
-        # busy 开始/复位由 orchestrator 执行生命周期回调驱动（O1.4）
 
-    # O1.4：busy 状态由 orchestrator 执行生命周期驱动，不再用演示触发词猜测
-    orchestrator.on_execution_started = lambda: window.set_busy(True)
-    orchestrator.on_execution_finished = lambda: window.set_busy(False)
+    # O2.1：流式事件通道——orchestrator 产生消息/事件即推送，UI 增量渲染
+    bridge = OrchestratorBridge()
+    bridge.message_ready.connect(window.add_message)
+    bridge.tool_run_ready.connect(window.update_tool_run)
+    bridge.engine_event_ready.connect(window.apply_engine_event)
+    bridge.busy_changed.connect(window.set_busy)
+    orchestrator.on_message = bridge.message_ready.emit
+    orchestrator.on_engine_event = bridge.engine_event_ready.emit
+    # busy 开始/复位由 orchestrator 执行生命周期回调驱动（O1.4 + O2.1 桥接）
+    orchestrator.on_execution_started = lambda: bridge.busy_changed.emit(True)
+    orchestrator.on_execution_finished = lambda: bridge.busy_changed.emit(False)
 
     window.input_submitted.connect(submit)
     window.show()
