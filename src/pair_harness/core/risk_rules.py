@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from fnmatch import fnmatch
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from .contracts import PendingOperation
 
@@ -70,8 +70,11 @@ def match_high_risk(op: PendingOperation, rules: RiskRules) -> str | None:
             return f"批量 patch: {op.patch_file_count} 个文件"
 
     for path in op.paths:
+        # O1.6：Windows 反斜杠路径统一规范为 POSIX 风格后再匹配，
+        # 规则表保持正斜杠写法不变；展示仍用原始路径。
+        normalized = PurePath(path).as_posix()
         for pattern in rules.sensitive_paths:
-            if fnmatch(path, pattern):
+            if fnmatch(normalized, pattern):
                 return f"敏感路径: {path}"
 
     return None
