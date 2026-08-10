@@ -135,6 +135,20 @@ class ConversationOrchestrator:
         if session_ref is not None:
             self._sessions[conversation_id] = session_ref
 
+    def close_conversation(self, conversation_id: str) -> None:
+        """O4.2：聊天结束/切换钩子——清理该会话的审批缓存。
+
+        “本对话内允许”缓存的生命周期是单次聊天：聊天关闭或切换后
+        必须失效。这里取出会话的 :class:`ApprovalManager`，先清空
+        ``_session_allow`` 缓存，再移除常驻引用（下次使用该会话时
+        新建管理器，缓存与挂起请求均为空）。运行中的任务不受影响：
+        ``_execute`` 在开始时已持有本地 manager 引用，收尾照常。
+        未打开过的会话调用是无害空操作。
+        """
+        manager = self._approval_managers.pop(conversation_id, None)
+        if manager is not None:
+            manager.clear_session_cache()
+
     def _conversation_lock(self, conversation_id: str) -> asyncio.Lock:
         """O2.5：获取会话级入口锁（首次访问时惰性创建）。
 

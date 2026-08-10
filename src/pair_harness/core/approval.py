@@ -260,7 +260,13 @@ class ApprovalManager:
         return op
 
     def clear_session_cache(self) -> None:
-        """当前聊天结束时清空“本对话内允许”缓存。"""
+        """聊天结束/切换时清空“本对话内允许”缓存。
+
+        O4.2：由编排器的 :meth:`close_conversation` 在聊天结束/切换
+        钩子处调用（此前无人调用，缓存没有生命周期）。只清理
+        ALLOW_FOR_CONVERSATION 缓存，不影响已挂起的审批请求
+        （``_pending`` 由裁决流程自行消费）。
+        """
         self._session_allow.clear()
 
     @staticmethod
