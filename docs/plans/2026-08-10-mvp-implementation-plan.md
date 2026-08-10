@@ -1,7 +1,7 @@
 # Pair Harness MVP 实现计划（详细版）
 
 - 日期：2026-08-10
-- 设计依据：`docs/superpowers/specs/2026-08-10-roleplay-coding-harness-design.md`
+- 设计依据：`docs/specs/2026-08-10-roleplay-coding-harness-design.md`
 - 当前阶段：详细实施计划已确认，等待用户安排实施者执行
 - 实施原则：先完成白厄单组闭环，再接真实外部服务，最后扩展另外两组
 
@@ -902,7 +902,7 @@ Demo ASR 接收注入文本产出转写事件；Demo TTS 产出测试音频或�
 
 ## 5. 计划 B：完整 MVP 闭环
 
-### B1. 真实角色对话 API 与 Codex app-server
+### B1. 外部模型 API 接入（DeepSeek 优先）与 Codex app-server
 
 状态：**⏳ 未开始，等待外部前置**
 
@@ -910,7 +910,7 @@ Demo ASR 接收注入文本产出转写事件；Demo TTS 产出测试音频或�
 
 - 可以由 Python `subprocess` 启动的 Codex app-server 命令。
 - Codex 的本地登录或认证状态。
-- 角色对话 API 的 base URL、API Key 和模型名。
+- 角色对话 API 的 base URL、API Key 和模型名。**首选 DeepSeek 官方 API**（`https://api.deepseek.com`，模型从预设列表选择）；其他 OpenAI 兼容端点通过同一套配置接入。
 
 配置项：
 
@@ -921,15 +921,28 @@ PAIR_HARNESS_DIALOGUE_API_KEY
 PAIR_HARNESS_DIALOGUE_MODEL
 ```
 
+#### B1.1 外部模型 API 接入设计（参考 DeepSeek-Reasonix）
+
+角色对话模型的外部 API 接入是 MVP 的明确功能，参考仓库内 `DeepSeek-Reasonix/`（MIT License）的实现方式，但不引入 Go 代码本身：
+
+- **供应商预设 + 环境变量密钥**：参考 `DeepSeek-Reasonix/internal/config/provider_presets.go` 与其 `reasonix.example.toml` 的 `[[providers]]` 模式——预设只保存 base URL、模型列表、默认模型和上下文窗口等公开信息，API Key 一律经环境变量（如 `DEEPSEEK_API_KEY`）注入，配置文件永不持有密钥。本项目落为 `Settings` 扩展 + 环境变量，预设数据进入 `config/`。
+- **按 Base URL 识别后端**：参考 `internal/provider/openai/host.go` 的 `IsDeepSeek` 等识别函数——识别 `api.deepseek.com` / `*.deepseek.com` 后自动应用 DeepSeek 请求形态，用户只填 base URL 即可获得正确行为。
+- **DeepSeek 请求形态**：参考 `docs/REASONING_PROVIDERS.zh-CN.md` 与 `internal/provider/openai/` 的实现——`thinking.type` 控制思考开关、`reasoning_effort` 档位归一化、依赖 DeepSeek 自动前缀缓存降低重复提示词成本；角色扮演对话默认开启流式输出。
+- **请求健壮性**：参考 `internal/provider/retry.go`（有界重试、尊重 `Retry-After`、响应体读取超时、401/403 区分瞬时拒绝与配置错误）与 `stream_error.go`——本阶段在 Python 适配器中实现等价语义，不照搬代码。
+- **提示词装配与委派解析**属优化计划 O3.2（`docs/plans/2026-08-11-harness-optimization-plan.md`），先于本阶段联调完成；B1 只负责让装配好的请求在真实 API 上跑通。
+
 新增测试：
 
+- `tests/unit/test_dialogue_provider_presets.py`
+- `tests/unit/test_deepseek_request_shape.py`
 - `tests/integration/test_text_loop_live.py`
 
 实施内容：
 
 - 对可执行命令运行 `app-server --help` 预检。
+- 实现供应商预设加载与 DeepSeek 请求形态，离线单测验证请求体字段（不发起真实请求）。
 - 真实创建和恢复 app-server 会话。
-- 把目录级沙箱映射到 app-server 的 workspace-write 策略。
+- 把目录级沙箱映射到 app-server 的 workspace-write 策略（按优化计划 O3.1 的统一审批设计执行）。
 - 在临时项目内执行一次真实文件修改任务，并验证三种审批模式的实际拦截行为。
 - 验证工具事件、文件差异和真实回执。
 - 让白厄只依据 `CharacterResultSummary` 作结果回应。
@@ -939,16 +952,17 @@ PAIR_HARNESS_DIALOGUE_MODEL
 
 ```powershell
 $env:PAIR_HARNESS_CODEX_BIN = "C:\可执行路径\codex.exe"
-$env:PAIR_HARNESS_DIALOGUE_BASE_URL = "..."
+$env:PAIR_HARNESS_DIALOGUE_BASE_URL = "https://api.deepseek.com"
 $env:PAIR_HARNESS_DIALOGUE_API_KEY = "..."
-$env:PAIR_HARNESS_DIALOGUE_MODEL = "..."
+$env:PAIR_HARNESS_DIALOGUE_MODEL = "deepseek-v4-flash"
 
+.\.venv\Scripts\python.exe -m pytest -q tests\unit\test_dialogue_provider_presets.py tests\unit\test_deepseek_request_shape.py
 New-Item -ItemType Directory -Path .\.tmp\codex-smoke -Force | Out-Null
 .\.venv\Scripts\python.exe -m pair_harness.cli --real --pair phainon_ancient_machine --project .\.tmp\codex-smoke --message "请让古代机械创建 hello.txt，内容为 hello"
 Get-Content -LiteralPath .\.tmp\codex-smoke\hello.txt
 ```
 
-完成标准：真实文件存在，旧聊天可以恢复同一编程会话，新聊天不会继承旧会话。
+完成标准：真实文件存在，旧聊天可以恢复同一编程会话，新聊天不会继承旧会话；DeepSeek 端点上角色回复、结构化委派与结果回应全部可用；切换任意 OpenAI 兼容端点只需改三个环境变量。
 
 建议提交：`feat: connect live dialogue and codex backends`
 
@@ -1055,7 +1069,7 @@ $env:RUN_LIVE_QWEN = "1"
 
 - [ ] 提供可从终端启动的 Codex app-server 命令或可执行路径。
 - [ ] 确认 Codex 已登录。
-- [ ] 在本地 `.env` 中填写角色对话 API 配置。
+- [ ] 在本地 `.env` 中填写角色对话 API 配置；首选 DeepSeek（`DEEPSEEK_API_KEY` 或映射到 `PAIR_HARNESS_DIALOGUE_API_KEY`），也可填其他 OpenAI 兼容端点。
 
 ### 启动 B2 前
 
@@ -1077,7 +1091,7 @@ $env:RUN_LIVE_QWEN = "1"
 | 环境依赖检查 | ✅ 完成 | 100% |
 | qasync 与 sounddevice 安装 | ✅ 完成 | 100% |
 | 计划 A：当前可实现闭环 | 🟦 可开始 | 0% |
-| B1：真实角色 API + Codex | ⏳ 等待外部前置 | 0% |
+| B1：外部模型 API（DeepSeek 优先）+ Codex | ⏳ 等待外部前置 | 0% |
 | B2：Qwen 语音 | ⏳ 等待外部前置 | 0% |
 | B3：另外两组搭档 | ⬜ 后续 | 0% |
 

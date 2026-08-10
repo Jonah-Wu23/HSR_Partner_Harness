@@ -76,17 +76,19 @@
 - ASR 能流式形成用户输入；自然语言发言可合成语音；命令、日志与代码不进入 TTS。
 - 不加载任何 3D/MMD 资源，也不依赖浏览器前端。
 
-## 当前项目状态（2026-08-10）
+## 当前项目状态（2026-08-11）
 
 ### 项目位置与文档
 
 - 当前项目根目录：`E:\AI\HSR Partner Harness`。
 - 原目录名已经由用户手动更改，后续不得再使用 `E:\AI\白厄Harness` 作为项目路径。
 - 远程仓库：`https://github.com/Jonah-Wu23/HSR_Partner_Harness`，本地 `main` 与 `origin/main` 已同步。
-- 已完成并确认总体设计：`docs/superpowers/specs/2026-08-10-roleplay-coding-harness-design.md`。同日修订：项目级沙箱、三种审批模式与审查智能体进入 MVP（见 §4.2、§4.3、§6.3）。
-- 已完成详细版两阶段实施计划：`docs/superpowers/plans/2026-08-10-mvp-implementation-plan.md`。
-- 实施模型的审查与修补提示词：`docs/superpowers/plans/2026-08-10-implementer-kickoff-prompt.md`。
-- 计划 A 已由另一个模型实施完成，经审查修复后验收通过；最新提交 `3a48c7f`，工作区干净。
+- 已完成并确认总体设计：`docs/specs/2026-08-10-roleplay-coding-harness-design.md`。同日修订：项目级沙箱、三种审批模式与审查智能体进入 MVP（见 §4.2、§4.3、§6.3）。
+- 已完成详细版两阶段实施计划：`docs/plans/2026-08-10-mvp-implementation-plan.md`。2026-08-11 修订：B1 扩展为外部模型 API 接入（DeepSeek 优先），新增 B1.1 设计小节（参考仓库内 `DeepSeek-Reasonix/`，MIT License）。
+- 实施模型的审查与修补提示词：`docs/plans/2026-08-10-implementer-kickoff-prompt.md`。
+- 已完成 Harness 全仓设计评审，优化计划：`docs/plans/2026-08-11-harness-optimization-plan.md`（O1 正确性修复、O2 编排器链路、O3 B1 前置、O4 打磨），待用户确认后实施。
+- 已完成 MVP 后续计划：`docs/plans/2026-08-11-post-mvp-plan.md`（P1 DeepSeek 特别优化、P2 角色扮演特别优化），待用户确认后实施。
+- 计划 A 已由另一个模型实施完成，经审查修复后验收通过（验收时提交 `3a48c7f`）。
 
 ### 已确认的产品方案
 

@@ -11,8 +11,8 @@
 开工前按顺序读完这三份文件：
 
 1. `AGENTS.md`（项目根目录）
-2. `docs\superpowers\specs\2026-08-10-roleplay-coding-harness-design.md`
-3. `docs\superpowers\plans\2026-08-10-mvp-implementation-plan.md`
+2. `docs\specs\2026-08-10-roleplay-coding-harness-design.md`
+3. `docs\plans\2026-08-10-mvp-implementation-plan.md`
 
 工作流程：
 

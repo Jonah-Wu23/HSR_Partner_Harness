@@ -1,4 +1,3 @@
-.superpowers/
 .venv/
 __pycache__/
 *.py[cod]
@@ -10,4 +9,7 @@ build/
 dist/
 .tmp/
 *.egg-info/
-brainstorm
+# 开发工具与参考仓库（不入库）
+.claude/
+.qwen/
+DeepSeek-Reasonix/

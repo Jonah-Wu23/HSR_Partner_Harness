@@ -9,7 +9,7 @@
   - `config/prompts/assistants/ancient_machine.md`（古代机械助手提示词，重写）
   - `config/pairs/phainon_ancient_machine.yaml`（对配置，只读核对）
   - `src/pair_harness/**`（契约代码，只读核对）
-  - `docs/superpowers/plans/2026-08-10-mvp-implementation-plan.md`（只读核对）
+  - `docs/plans/2026-08-10-mvp-implementation-plan.md`（只读核对）
 - **任务性质**：按用户要求全面重写两份提示词，去除 AI 味，覆盖回原路径。
 
 ---
