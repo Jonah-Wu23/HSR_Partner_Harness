@@ -1,15 +1,18 @@
 import pytest
 
 from pair_harness.adapters.reviewer import ScriptedReviewer
+from pair_harness.core.approval import ApprovalManager, ApprovalRequired
 from pair_harness.core.contracts import (
     ApprovalDecision,
     ApprovalMode,
     CharacterTurn,
+    PendingOperation,
     ProjectRef,
     ReviewerVerdict,
     TaskRequestDraft,
 )
 from pair_harness.core.orchestrator import ConversationOrchestrator
+from pair_harness.core.risk_rules import default_risk_rules
 from tests.fakes import FixedDialogueModel, RecordingCodingEngine
 
 
@@ -119,6 +122,138 @@ async def test_allow_for_conversation_caches_same_signature(tmp_path) -> None:
     outcome2 = await orchestrator.handle_character_input(conversation_id="c", text="再执行")
     assert outcome2.receipt.status == "completed"
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_allow_for_conversation_shell_signature_needs_two_tokens() -> None:
+    """O1.5：shell 签名取前两个词元。
+
+    允许 ``git status`` 后，``git push --force origin main`` 的签名是
+    ``git push``，不得命中缓存；且破坏性命令命中高风险规则，即便用户
+    再次选择“本对话内允许”也不写缓存，第三次执行仍要求审批。
+    """
+    manager = ApprovalManager(
+        mode=ApprovalMode.REQUEST_APPROVAL,
+        rules=default_risk_rules(),
+    )
+
+    async def require(command: str) -> ApprovalRequired:
+        op = PendingOperation(tool_kind="shell", command=command)
+        with pytest.raises(ApprovalRequired) as exc:
+            await manager.gate(
+                op,
+                conversation_id="c",
+                task_id="t",
+                engine_turn_id="e",
+                sequence=1,
+            )
+        return exc.value
+
+    first = await require("git status")
+    manager.resolve(first.approval_id, ApprovalDecision.ALLOW_FOR_CONVERSATION)
+
+    # 同一签名命中缓存直接放行
+    cached = await manager.gate(
+        PendingOperation(tool_kind="shell", command="git status"),
+        conversation_id="c",
+        task_id="t",
+        engine_turn_id="e",
+        sequence=2,
+    )
+    assert cached.decision == ApprovalDecision.ALLOW_FOR_CONVERSATION
+
+    # 前两个词元不同（git push），仍需审批
+    second = await require("git push --force origin main")
+    assert second.approval_id != first.approval_id
+
+    # 破坏性命令命中高风险规则，resolve 时不写缓存
+    manager.resolve(second.approval_id, ApprovalDecision.ALLOW_FOR_CONVERSATION)
+    third = await require("git push --force origin main")
+    assert third.approval_id != second.approval_id
+
+
+@pytest.mark.asyncio
+async def test_allow_for_conversation_never_caches_sensitive_path() -> None:
+    """O1.5：命中敏感路径的操作永不写入会话缓存。
+
+    用户对 ``.env`` 写入选择“本对话内允许”后，同对话内再次执行同一
+    操作仍必须重新审批。
+    """
+    manager = ApprovalManager(
+        mode=ApprovalMode.REQUEST_APPROVAL,
+        rules=default_risk_rules(),
+    )
+    op = PendingOperation(
+        tool_kind="file_write",
+        paths=["C:/proj/.env"],
+        summary="写入环境变量",
+    )
+
+    with pytest.raises(ApprovalRequired) as exc:
+        await manager.gate(
+            op,
+            conversation_id="c",
+            task_id="t",
+            engine_turn_id="e",
+            sequence=1,
+        )
+    req = exc.value
+    manager.resolve(req.approval_id, ApprovalDecision.ALLOW_FOR_CONVERSATION)
+
+    with pytest.raises(ApprovalRequired) as exc2:
+        await manager.gate(
+            op,
+            conversation_id="c",
+            task_id="t",
+            engine_turn_id="e",
+            sequence=2,
+        )
+    assert exc2.value.approval_id != req.approval_id
+
+
+@pytest.mark.asyncio
+async def test_allow_for_conversation_file_signature_includes_parent_dir() -> None:
+    """O1.5：file 类签名纳入父目录维度。
+
+    允许 ``proj/src/a.py`` 后，同目录 ``proj/src/b.py`` 缓存命中直接
+    放行；不同目录 ``proj/other/c.py`` 仍要求审批。
+    """
+    manager = ApprovalManager(
+        mode=ApprovalMode.REQUEST_APPROVAL,
+        rules=default_risk_rules(),
+    )
+
+    async def require(op: PendingOperation) -> ApprovalRequired:
+        with pytest.raises(ApprovalRequired) as exc:
+            await manager.gate(
+                op,
+                conversation_id="c",
+                task_id="t",
+                engine_turn_id="e",
+                sequence=1,
+            )
+        return exc.value
+
+    first = await require(
+        PendingOperation(tool_kind="file_write", paths=["proj/src/a.py"])
+    )
+    manager.resolve(first.approval_id, ApprovalDecision.ALLOW_FOR_CONVERSATION)
+
+    # 同父目录、同工具类型：缓存命中
+    same_dir = await manager.gate(
+        PendingOperation(tool_kind="file_write", paths=["proj/src/b.py"]),
+        conversation_id="c",
+        task_id="t",
+        engine_turn_id="e",
+        sequence=2,
+    )
+    assert same_dir.decision == ApprovalDecision.ALLOW_FOR_CONVERSATION
+
+    # 不同父目录：仍需审批
+    other = await require(
+        PendingOperation(tool_kind="file_write", paths=["proj/other/c.py"])
+    )
+    assert other.approval_id != first.approval_id
 
 
 @pytest.mark.asyncio

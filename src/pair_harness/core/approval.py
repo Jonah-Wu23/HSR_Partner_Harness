@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import PurePath
 
 from .contracts import (
     ApprovalDecision,
@@ -51,13 +51,23 @@ class ApprovalManager:
         self._pending: dict[str, PendingOperation] = {}
 
     def _signature(self, op: PendingOperation) -> str:
-        """操作签名，用于“本对话内允许”缓存。"""
+        """操作签名，用于“本对话内允许”缓存。
+
+        O1.5 收紧规则（依据见优化计划 §O1.5）：
+        - shell 至少取命令与子命令两个词元：允许过 ``git status`` 后，
+          ``git push --force`` 不得同对话内直接放行；
+        - file 类签名纳入父目录维度：同目录下同类文件共享签名，
+          不同目录不共享；
+        - patch 统一为 ``patch``。
+        命中敏感路径或高风险规则的操作不写入缓存（见 :meth:`resolve`）。
+        """
         if op.tool_kind == "shell" and op.command:
-            return op.command.split()[0]
+            words = op.command.split()
+            return " ".join(words[:2]) if len(words) >= 2 else words[0]
         if op.tool_kind == "patch":
             return "patch"
-        ext = Path(op.paths[0]).suffix if op.paths else ""
-        return f"{op.tool_kind}{ext}"
+        parent = PurePath(op.paths[0]).parent.as_posix() if op.paths else ""
+        return f"{op.tool_kind}:{parent}"
 
     async def gate(
         self,
@@ -154,7 +164,10 @@ class ApprovalManager:
         if op is None:
             raise KeyError(f"unknown approval_id: {approval_id}")
         if decision == ApprovalDecision.ALLOW_FOR_CONVERSATION:
-            self._session_allow.add(self._signature(op))
+            # O1.5：命中敏感路径或高风险规则的操作永不写入会话缓存，
+            # 保证同对话内再次执行时仍要求审批。
+            if match_high_risk(op, self.rules) is None:
+                self._session_allow.add(self._signature(op))
         return op
 
     def clear_session_cache(self) -> None:
