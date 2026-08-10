@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from pathlib import PurePath
+from pathlib import Path, PurePath
 
+from .approval import ApprovalManager, ApprovalRequired
 from .context import recent_roleplay_context
 from .contracts import (
+    ApprovalDecision,
+    ApprovalMode,
     CharacterResultSummary,
     DialogueRequest,
     EngineEvent,
@@ -14,6 +18,7 @@ from .contracts import (
     Message,
     MessageKind,
     MessageSource,
+    PendingOperation,
     ProjectRef,
     TaskAmendment,
     TaskAmendmentDraft,
@@ -23,7 +28,9 @@ from .contracts import (
     ToolRun,
 )
 from .engine_state import GlobalEngineState, TaskLifecycle
-from .ports import CodingEngine, DialogueModel, StateStore
+from .ports import CodingEngine, DialogueModel, Reviewer, StateStore
+from .risk_rules import RiskRules, default_risk_rules
+from .sandbox import ProjectSandbox, SandboxViolation
 from .voice_policy import is_tts_eligible
 
 
@@ -36,6 +43,9 @@ class ConversationOutcome:
     receipt: ExecutionReceipt | None = None
 
 
+ApprovalCallback = Callable[[PendingOperation], Awaitable[ApprovalDecision]]
+
+
 class ConversationOrchestrator:
     def __init__(
         self,
@@ -46,6 +56,10 @@ class ConversationOrchestrator:
         coding_engine: CodingEngine,
         state: GlobalEngineState | None = None,
         store: StateStore | None = None,
+        approval_mode: ApprovalMode = ApprovalMode.REQUEST_APPROVAL,
+        risk_rules: RiskRules | None = None,
+        reviewer: Reviewer | None = None,
+        approval_callback: ApprovalCallback | None = None,
     ) -> None:
         self.pair_id = pair_id
         self.project = project
@@ -53,8 +67,13 @@ class ConversationOrchestrator:
         self.coding_engine = coding_engine
         self.state = state or GlobalEngineState()
         self.store = store
+        self.approval_mode = approval_mode
+        self.risk_rules = risk_rules or default_risk_rules()
+        self.reviewer = reviewer
+        self.approval_callback = approval_callback
         self._history: dict[str, list[Message]] = {}
         self._sessions: dict[str, EngineSessionRef] = {}
+        self._approval_managers: dict[str, ApprovalManager] = {}
         self._active_lifecycle: TaskLifecycle | None = None
 
     def _message(
@@ -195,6 +214,16 @@ class ConversationOrchestrator:
         changed_files: list[str] = []
         checks: list[str] = []
         engine_turn_id = "unavailable"
+        sequence = 0
+        sandbox = ProjectSandbox(Path(self.project.root_path))
+        approval = self._approval_managers.setdefault(
+            task.conversation_id,
+            ApprovalManager(
+                mode=self.approval_mode,
+                rules=self.risk_rules,
+                reviewer=self.reviewer,
+            ),
+        )
         try:
             session = self._sessions.get(task.conversation_id)
             session = await self.coding_engine.open_session(self.project, session)
@@ -209,10 +238,73 @@ class ConversationOrchestrator:
                         "task_id": task.task_id,
                     }
                 )
-                events.append(event)
                 engine_turn_id = event.engine_turn_id
+                sequence = max(sequence, event.sequence + 1)
                 if self.state.active and self.state.active.engine_turn_id is None:
                     self.state.bind_engine_turn(engine_turn_id)
+
+                if event.type == EngineEventType.TOOL_STARTED:
+                    op = self._operation_from_event(event)
+                    try:
+                        self._check_sandbox(sandbox, op)
+                    except SandboxViolation as exc:
+                        denied_event = self._deny_tool_event(
+                            event, str(exc), sequence
+                        )
+                        sequence += 1
+                        events.append(denied_event)
+                        failed = True
+                        errors.append(str(exc))
+                        self._message(
+                            conversation_id=task.conversation_id,
+                            source=MessageSource.SYSTEM,
+                            kind=MessageKind.SYSTEM_STATUS,
+                            text=f"沙箱拦截：{exc}",
+                            turn_id=engine_turn_id,
+                        )
+                        break
+
+                    try:
+                        outcome = await approval.gate(
+                            op,
+                            conversation_id=task.conversation_id,
+                            task_id=task.task_id,
+                            engine_turn_id=engine_turn_id,
+                            sequence=sequence,
+                            tool_call_id=event.tool_call_id,
+                        )
+                        events.extend(outcome.events)
+                        sequence += len(outcome.events)
+                        if outcome.decision == ApprovalDecision.DENY:
+                            denied_event = self._deny_tool_event(
+                                event, "审批否决", sequence
+                            )
+                            sequence += 1
+                            events.append(denied_event)
+                            failed = True
+                            errors.append("审批否决")
+                            break
+                    except ApprovalRequired as req:
+                        events.append(req.event)
+                        sequence += 1
+                        decision = await self._request_approval(req.op)
+                        op = approval.resolve(req.approval_id, decision)
+                        resolved_event = self._approval_resolved_event(
+                            req.event, decision, "user", op
+                        )
+                        events.append(resolved_event)
+                        sequence += 1
+                        if decision == ApprovalDecision.DENY:
+                            denied_event = self._deny_tool_event(
+                                event, "用户否决", sequence
+                            )
+                            sequence += 1
+                            events.append(denied_event)
+                            failed = True
+                            errors.append("用户否决")
+                            break
+
+                events.append(event)
                 if event.type == EngineEventType.ASSISTANT_FINAL:
                     assistant_text = str(event.payload.get("text", ""))
                 elif event.type == EngineEventType.FILE_PATCH:
@@ -323,3 +415,70 @@ class ConversationOrchestrator:
             self.state.finish(task.task_id)
             self._active_lifecycle = None
 
+    @staticmethod
+    def _operation_from_event(event: EngineEvent) -> PendingOperation:
+        payload = event.payload
+        tool_kind = payload.get("tool_kind", "shell")
+        return PendingOperation(
+            tool_kind=tool_kind,
+            command=payload.get("command"),
+            paths=[str(p) for p in payload.get("paths", [])] or ([payload["path"]] if payload.get("path") else []),
+            patch_file_count=payload.get("patch_file_count")
+            or len(payload.get("paths", [])),
+            summary=payload.get("title", "") or payload.get("summary", "") or "工具操作",
+        )
+
+    @staticmethod
+    def _check_sandbox(sandbox: ProjectSandbox, op: PendingOperation) -> None:
+        for path in op.paths:
+            sandbox.resolve_write_path(path)
+        if op.command is not None and op.tool_kind == "shell":
+            sandbox.enforce_cwd(None)
+
+    async def _request_approval(self, op: PendingOperation) -> ApprovalDecision:
+        if self.approval_callback is None:
+            return ApprovalDecision.DENY
+        return await self.approval_callback(op)
+
+    @staticmethod
+    def _deny_tool_event(
+        event: EngineEvent, reason: str, sequence: int
+    ) -> EngineEvent:
+        return EngineEvent(
+            conversation_id=event.conversation_id,
+            task_id=event.task_id,
+            engine_turn_id=event.engine_turn_id,
+            sequence=sequence,
+            type=EngineEventType.TOOL_FINISHED,
+            tool_call_id=event.tool_call_id,
+            payload={
+                "status": "failed",
+                "title": event.payload.get("title", "工具"),
+                "summary": reason,
+                "details": reason,
+                "error": reason,
+            },
+        )
+
+    @staticmethod
+    def _approval_resolved_event(
+        requested: EngineEvent,
+        decision: ApprovalDecision,
+        actor: str,
+        op: PendingOperation,
+    ) -> EngineEvent:
+        return EngineEvent(
+            conversation_id=requested.conversation_id,
+            task_id=requested.task_id,
+            engine_turn_id=requested.engine_turn_id,
+            sequence=requested.sequence + 1,
+            type=EngineEventType.APPROVAL_RESOLVED,
+            tool_call_id=requested.tool_call_id,
+            payload={
+                "approval_id": requested.payload.get("approval_id"),
+                "decision": decision.value,
+                "actor": actor,
+                "reason": op.summary,
+                "suggestion": "",
+            },
+        )

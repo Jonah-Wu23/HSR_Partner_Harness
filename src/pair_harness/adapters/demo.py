@@ -55,8 +55,14 @@ class ScriptedDialogueModel(DialogueModel):
 class ScriptedCodingEngine(CodingEngine):
     """Emits tool-shaped events without touching the filesystem."""
 
-    def __init__(self, *, fail_tool: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_tool: bool = False,
+        tool_payload: dict | None = None,
+    ) -> None:
         self.fail_tool = fail_tool
+        self.tool_payload = tool_payload or {}
         self.opened_sessions: list[tuple[ProjectRef, EngineSessionRef | None]] = []
         self.requests: list[TaskRequest] = []
         self.cancelled: list[tuple[EngineSessionRef, str]] = []
@@ -91,11 +97,13 @@ class ScriptedCodingEngine(CodingEngine):
             payload={"text": "正在进行本地演示。"},
             **common,
         )
+        started_payload = {"title": "演示文件操作", "details": request.instructions}
+        started_payload.update(self.tool_payload)
         yield EngineEvent(
             sequence=2,
             type=EngineEventType.TOOL_STARTED,
             tool_call_id=tool_call_id,
-            payload={"title": "演示文件操作", "details": request.instructions},
+            payload=started_payload,
             **common,
         )
         yield EngineEvent(

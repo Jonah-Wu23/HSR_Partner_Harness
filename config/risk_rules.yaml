@@ -1,0 +1,58 @@
+# 高风险操作判定规则表
+# 只在“帮我审核”模式下使用；“请求批准”模式所有操作都走人工审批。
+version: 1
+
+# 文件工具层面直接判高风险的操作类型
+high_risk_tool_kinds:
+  - file_delete
+
+# shell 命令正则（re.IGNORECASE，命中任一 pattern 即高风险）
+shell_rules:
+  - id: shell.delete
+    label: 删除类命令
+    patterns:
+      - '\brm\b'
+      - '\bdel\b'
+      - '\berase\b'
+      - '\brmdir\b'
+      - '\bRemove-Item\b'
+      - '\bshred\b'
+  - id: shell.git_destructive
+    label: git 破坏性命令
+    patterns:
+      - 'git\s+reset\s+--hard'
+      - 'git\s+clean\s+-\w*f'
+      - 'git\s+checkout\s+--'
+      - 'git\s+push\s+.*(--force|-f\b)'
+      - 'git\s+branch\s+-D'
+      - 'git\s+commit\s+--amend'
+      - 'git\s+stash\s+(drop|clear)'
+      - 'git\s+rebase\b'
+  - id: shell.network
+    label: 网络访问
+    patterns:
+      - '\b(curl|wget|Invoke-WebRequest|Invoke-RestMethod|iwr|irm)\b'
+      - '\b(ssh|scp|sftp|nc|ncat)\b'
+      - 'git\s+(push|fetch|pull|clone)\b'
+  - id: shell.package
+    label: 依赖安装与环境变更
+    patterns:
+      - '\b(pip|pip3|npm|pnpm|yarn|bun|choco|winget|scoop|apt|apt-get|brew)\b\s+(install|add|remove|uninstall|upgrade)'
+  - id: shell.system
+    label: 系统级操作
+    patterns:
+      - '\b(reg|regedit|shutdown|restart-computer|taskkill|Stop-Process|Format-Volume|diskpart|sudo|chmod|chown)\b'
+
+# 单次 patch 涉及文件数超过该值视为批量修改
+patch_max_files: 5
+
+# 敏感路径（fnmatch 风格，命中即高风险，读取和写入都算）
+sensitive_paths:
+  - '**/.env'
+  - '**/.env.*'
+  - '**/*.pem'
+  - '**/*.key'
+  - '**/id_rsa*'
+  - '**/id_ed25519*'
+  - '**/secrets*'
+  - '**/credentials*'
