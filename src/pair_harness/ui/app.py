@@ -113,25 +113,26 @@ def main(argv: list[str] | None = None) -> int:
 
     @asyncSlot(str, str)
     async def submit(target: str, text: str) -> None:
-        window.set_busy(target == "assistant" or "请让古代机械" in text)
-        try:
-            if target == "assistant":
-                outcome = await orchestrator.handle_direct_input(
-                    conversation_id="demo-conversation", text=text
-                )
-            else:
-                outcome = await orchestrator.handle_character_input(
-                    conversation_id="demo-conversation", text=text
-                )
-            for message in outcome.messages:
-                window.add_message(message)
-            for tool_run in outcome.tool_runs:
-                window.update_tool_run(tool_run)
-            # 帮我审核模式的审查状态与裁决文字由事件流回放显示
-            for event in outcome.engine_events:
-                window.apply_engine_event(event)
-        finally:
-            window.set_busy(False)
+        if target == "assistant":
+            outcome = await orchestrator.handle_direct_input(
+                conversation_id="demo-conversation", text=text
+            )
+        else:
+            outcome = await orchestrator.handle_character_input(
+                conversation_id="demo-conversation", text=text
+            )
+        for message in outcome.messages:
+            window.add_message(message)
+        for tool_run in outcome.tool_runs:
+            window.update_tool_run(tool_run)
+        # 帮我审核模式的审查状态与裁决文字由事件流回放显示
+        for event in outcome.engine_events:
+            window.apply_engine_event(event)
+        # busy 开始/复位由 orchestrator 执行生命周期回调驱动（O1.4）
+
+    # O1.4：busy 状态由 orchestrator 执行生命周期驱动，不再用演示触发词猜测
+    orchestrator.on_execution_started = lambda: window.set_busy(True)
+    orchestrator.on_execution_finished = lambda: window.set_busy(False)
 
     window.input_submitted.connect(submit)
     window.show()

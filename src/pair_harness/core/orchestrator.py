@@ -75,6 +75,9 @@ class ConversationOrchestrator:
         self._sessions: dict[str, EngineSessionRef] = {}
         self._approval_managers: dict[str, ApprovalManager] = {}
         self._active_lifecycle: TaskLifecycle | None = None
+        # 执行生命周期回调（O1.4）：busy 状态由任务开始/结束驱动，UI 不做文本猜测
+        self.on_execution_started: Callable[[], None] | None = None
+        self.on_execution_finished: Callable[[], None] | None = None
 
     def set_approval_mode(self, mode: ApprovalMode) -> None:
         """切换项目级审批模式（计划 A5：输入区下拉框切换）。"""
@@ -208,6 +211,8 @@ class ConversationOrchestrator:
             conversation_id=task.conversation_id,
             task_id=task.task_id,
         )
+        if self.on_execution_started is not None:
+            self.on_execution_started()
         lifecycle = TaskLifecycle(task_id=task.task_id)
         lifecycle.transition(TaskStatus.RUNNING)
         self._active_lifecycle = lifecycle
@@ -439,6 +444,8 @@ class ConversationOrchestrator:
         finally:
             self.state.finish(task.task_id)
             self._active_lifecycle = None
+            if self.on_execution_finished is not None:
+                self.on_execution_finished()
 
     @staticmethod
     def _operation_from_event(event: EngineEvent) -> PendingOperation:
