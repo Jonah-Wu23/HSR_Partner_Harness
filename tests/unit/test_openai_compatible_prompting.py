@@ -17,6 +17,7 @@ import pytest
 
 from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDialogueModel
 from pair_harness.core.contracts import (
+    CharacterProgressSummary,
     CharacterResultSummary,
     CharacterTurn,
     DialogueRequest,
@@ -114,7 +115,11 @@ def make_request(*, with_result: bool = False) -> DialogueRequest:
         conversation_id="c",
         user_message=user,
         recent_messages=(previous_character,),
-        progress_summary="正在整理报告数据，已完成 2/3 步骤。",
+        progress_summary=CharacterProgressSummary(
+            current_step="正在整理报告数据",
+            completed_steps=2,
+            total_steps=3,
+        ),
         result_summary=result,
     )
 
@@ -152,7 +157,7 @@ async def test_prompt_assembly_injects_role_card_partner_and_summaries(
     assert {"role": "assistant", "content": "好，我陪着你弄。"} in messages
     # 进度与结果摘要注入
     assert any(
-        m["role"] == "system" and "任务进度" in m["content"] and "已完成 2/3" in m["content"]
+        m["role"] == "system" and "任务进度" in m["content"] and "已完成：2/3" in m["content"]
         for m in messages
     )
     assert any(

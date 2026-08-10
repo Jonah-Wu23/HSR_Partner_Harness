@@ -10,6 +10,7 @@ from .context import recent_roleplay_context
 from .contracts import (
     ApprovalDecision,
     ApprovalMode,
+    CharacterProgressSummary,
     CharacterResultSummary,
     DialogueRequest,
     EngineEvent,
@@ -42,6 +43,20 @@ class ConversationOutcome:
     tool_runs: tuple[ToolRun, ...] = ()
     task: TaskRequest | None = None
     receipt: ExecutionReceipt | None = None
+
+
+@dataclass
+class _TaskProgress:
+    """O3.3：执行期间的活动任务进度（事件驱动更新、按需生成摘要）。
+
+    只保存中性描述（当前步骤标签、已完成步骤数），不保存命令、路径与
+    输出原文；节流策略：进度状态只在工具事件到达时更新，摘要文本只在
+    角色请求（执行期间的聊天轮）到达时生成——不逐事件注入。
+    """
+
+    current_step: str = "任务准备中"
+    completed_steps: int = 0
+    total_steps: int | None = None
 
 
 ApprovalCallback = Callable[
@@ -82,6 +97,8 @@ class ConversationOrchestrator:
         self._history: dict[str, list[Message]] = {}
         self._sessions: dict[str, EngineSessionRef] = {}
         self._approval_managers: dict[str, ApprovalManager] = {}
+        # O3.3：活动任务的执行进度（_execute 期间填充，结束时清理）
+        self._progress: dict[str, _TaskProgress] = {}
         self._active_lifecycle: TaskLifecycle | None = None
         # O2.5：每会话入口锁——聊天轮（用户消息+角色台词）在锁内整体落库，
         # 轮内顺序固定为用户→角色且不与其他轮交错；任务执行（_execute）
@@ -170,11 +187,22 @@ class ConversationOrchestrator:
                 kind=MessageKind.USER_TEXT,
                 text=text,
             )
+            # O3.3：执行期间（_execute 未结束）注入压缩进度摘要；
+            # 任务结束后 _progress 已清理，聊天轮回到纯角色对话
+            progress = self._progress.get(conversation_id)
+            progress_summary = None
+            if progress is not None:
+                progress_summary = CharacterProgressSummary(
+                    current_step=progress.current_step,
+                    completed_steps=progress.completed_steps,
+                    total_steps=progress.total_steps,
+                )
             request = DialogueRequest(
                 pair_id=self.pair_id,
                 conversation_id=conversation_id,
                 user_message=user,
                 recent_messages=recent_roleplay_context(self._history[conversation_id][:-1]),
+                progress_summary=progress_summary,
             )
             character_turn = None
             async for event in self.dialogue_model.stream_reply(request):
@@ -380,6 +408,8 @@ class ConversationOrchestrator:
                 reviewer=self.reviewer,
             ),
         )
+        # O3.3：执行期间的活动任务进度（事件驱动更新，结束时清理）
+        progress = self._progress.setdefault(task.conversation_id, _TaskProgress())
         try:
             session = self._sessions.get(task.conversation_id)
             session = await self.coding_engine.open_session(self.project, session)
@@ -478,6 +508,8 @@ class ConversationOrchestrator:
 
                 elif event.type == EngineEventType.TOOL_STARTED:
                     op = self._operation_from_event(event)
+                    # O3.3：当前步骤用中性标签（不泄露命令/路径原文）
+                    progress.current_step = self._step_label(event)
                     try:
                         self._check_sandbox(sandbox, op)
                     except SandboxViolation as exc:
@@ -581,6 +613,8 @@ class ConversationOrchestrator:
                 events.append(event)
                 if event.type == EngineEventType.ASSISTANT_FINAL:
                     assistant_text = str(event.payload.get("text", ""))
+                    # O3.3：助手进入收尾阶段
+                    progress.current_step = "助手整理结果"
                 elif event.type == EngineEventType.FILE_PATCH:
                     path = event.payload.get("path")
                     if path:
@@ -593,6 +627,9 @@ class ConversationOrchestrator:
                             errors.append(str(event.payload["error"]))
                     if event.payload.get("check"):
                         checks.append(str(event.payload["check"]))
+                    # O3.3：工具步骤收尾后计数
+                    progress.completed_steps += 1
+                    progress.current_step = "任务收尾中"
                     if event.tool_call_id:
                         tool_runs[event.tool_call_id] = ToolRun(
                             tool_call_id=event.tool_call_id,
@@ -700,6 +737,8 @@ class ConversationOrchestrator:
                 receipt=receipt,
             )
         finally:
+            # O3.3：任务结束清理进度，后续聊天轮不再注入摘要
+            self._progress.pop(task.conversation_id, None)
             self.state.finish(task.task_id)
             self._active_lifecycle = None
             if self.on_execution_finished is not None:
@@ -709,6 +748,21 @@ class ConversationOrchestrator:
         """O2.1：把引擎事件立即推送给 UI（流式通道）。"""
         if self.on_engine_event is not None:
             self.on_engine_event(event)
+
+    @staticmethod
+    def _step_label(event: EngineEvent) -> str:
+        """O3.3：工具步骤的中性标签（不含命令、路径与输出原文）。
+
+        只区分工具类别，避免把引擎事件里的原始内容带进角色摘要。
+        """
+        payload = event.payload
+        if payload.get("path") or payload.get("paths"):
+            return "正在修改文件"
+        if payload.get("command") is not None:
+            return "正在执行命令"
+        if payload.get("title"):
+            return "正在执行工具操作"
+        return "正在处理任务"
 
     @staticmethod
     def _operation_from_event(event: EngineEvent) -> PendingOperation:

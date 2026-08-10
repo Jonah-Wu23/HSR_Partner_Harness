@@ -108,7 +108,7 @@ class DialogueRequest(FrozenModel):
     conversation_id: str
     user_message: Message
     recent_messages: tuple[Message, ...] = ()
-    progress_summary: str | None = None
+    progress_summary: "CharacterProgressSummary | None" = None
     result_summary: "CharacterResultSummary | None" = None
 
 
@@ -189,6 +189,19 @@ class ExecutionReceipt(FrozenModel):
     checks: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
     pending_questions: tuple[str, ...] = ()
+
+
+class CharacterProgressSummary(FrozenModel):
+    """O3.3：执行期间注入角色的压缩进度摘要（设计 §3.2/§9）。
+
+    只含中性描述：当前步骤简述、已完成步骤数、状态；不含原始命令、
+    文件路径与工具输出原文。
+    """
+
+    current_step: str = "任务准备中"
+    completed_steps: int = Field(default=0, ge=0)
+    total_steps: int | None = Field(default=None, ge=0)
+    status: Literal["running"] = "running"
 
 
 class CharacterResultSummary(FrozenModel):

@@ -10,6 +10,7 @@ import httpx
 
 from pair_harness.config.pairs import load_pair_config, load_prompt
 from pair_harness.core.contracts import (
+    CharacterProgressSummary,
     CharacterResultSummary,
     CharacterTurn,
     DelegationDraft,
@@ -111,11 +112,11 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             if role is None:
                 continue
             messages.append({"role": role, "content": message.text})
-        if request.progress_summary:
+        if request.progress_summary is not None:
             messages.append(
                 {
                     "role": "system",
-                    "content": f"[系统信息：任务进度]\n{request.progress_summary}",
+                    "content": _progress_summary_text(request.progress_summary),
                 }
             )
         if request.result_summary is not None:
@@ -272,6 +273,17 @@ def _first_markdown_section(prompt: str) -> str:
             continue
         content.append(line)
     return "\n".join(content).strip()
+
+
+def _progress_summary_text(summary: CharacterProgressSummary) -> str:
+    """O3.3：进度摘要约定格式（压缩中性描述，不含命令/路径/输出原文）。"""
+    lines = ["[系统信息：任务进度]", "状态：执行中"]
+    if summary.total_steps is not None:
+        lines.append(f"已完成：{summary.completed_steps}/{summary.total_steps}")
+    else:
+        lines.append(f"已完成步骤：{summary.completed_steps}")
+    lines.append(f"当前：{summary.current_step}")
+    return "\n".join(lines)
 
 
 def _result_summary_text(result: CharacterResultSummary) -> str:
