@@ -60,9 +60,12 @@ class ScriptedCodingEngine(CodingEngine):
         *,
         fail_tool: bool = False,
         tool_payload: dict | None = None,
+        patch_path: str = "hello.txt",
     ) -> None:
         self.fail_tool = fail_tool
         self.tool_payload = tool_payload or {}
+        # 计划 A2：演示脚本包含 file.patch 事件，回执的变更文件列表据此形成
+        self.patch_path = patch_path
         self.opened_sessions: list[tuple[ProjectRef, EngineSessionRef | None]] = []
         self.requests: list[TaskRequest] = []
         self.cancelled: list[tuple[EngineSessionRef, str]] = []
@@ -129,6 +132,12 @@ class ScriptedCodingEngine(CodingEngine):
         )
         yield EngineEvent(
             sequence=5,
+            type=EngineEventType.FILE_PATCH,
+            payload={"path": self.patch_path, "patch": "演示补丁，不写磁盘"},
+            **common,
+        )
+        yield EngineEvent(
+            sequence=6,
             type=EngineEventType.ASSISTANT_FINAL,
             payload={"text": "演示流程已完成；未执行真实文件工具。"},
             **common,
@@ -137,7 +146,7 @@ class ScriptedCodingEngine(CodingEngine):
             EngineEventType.TURN_FAILED if self.fail_tool else EngineEventType.TURN_COMPLETED
         )
         yield EngineEvent(
-            sequence=6,
+            sequence=7,
             type=terminal_type,
             payload={"summary": "本地演示结束"},
             **common,
