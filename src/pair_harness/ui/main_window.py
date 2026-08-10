@@ -33,8 +33,8 @@ from .tool_card import ToolCard
 class MainWindow(QMainWindow):
     input_submitted = pyqtSignal(str, str)
     cancel_requested = pyqtSignal()
-    # 审批区按钮裁决（ApprovalDecision 的枚举值字符串）
-    approval_decided = pyqtSignal(str)
+    # O1.7：审批区按钮裁决携带 approval_id（ApprovalDecision 的枚举值字符串）
+    approval_decided = pyqtSignal(str, str)
     # 输入区审批模式下拉框切换（ApprovalMode 的枚举值字符串）
     approval_mode_changed = pyqtSignal(str)
 
@@ -160,9 +160,14 @@ class MainWindow(QMainWindow):
         self._approval_mode = ApprovalMode(mode)
         self.input_bar.set_approval_mode(mode)
 
-    def show_approval_request(self, summary: str, reason: str) -> None:
-        """请求批准模式下，把一次待审批操作交给审批区展示。"""
-        self.approval_bar.enqueue_request("", summary, reason)
+    def show_approval_request(
+        self, approval_id: str, summary: str, reason: str
+    ) -> None:
+        """请求批准模式下，把一次待审批操作交给审批区展示。
+
+        O1.7：approval_id 贯通到队列项，裁决信号按 id 返回。
+        """
+        self.approval_bar.enqueue_request(approval_id, summary, reason)
 
     def _sync_approval_mode(self, mode: str) -> None:
         self._approval_mode = ApprovalMode(mode)

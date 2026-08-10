@@ -43,7 +43,14 @@ class ConversationOutcome:
     receipt: ExecutionReceipt | None = None
 
 
-ApprovalCallback = Callable[[PendingOperation], Awaitable[ApprovalDecision]]
+ApprovalCallback = Callable[
+    [PendingOperation, str, str], Awaitable[ApprovalDecision]
+]
+"""审批回调签名：操作、approval_id、真实理由（风险标签或“需要用户审批”）。
+
+O1.7：approval_id 由编排器生成并贯通到 UI 队列，裁决按 id 对应，
+不再依赖 FIFO 顺序巧合。
+"""
 
 
 class ConversationOrchestrator:
@@ -312,7 +319,14 @@ class ConversationOrchestrator:
                     except ApprovalRequired as req:
                         events.append(req.event)
                         sequence += 1
-                        decision = await self._request_approval(req.op)
+                        # O1.7：把真实理由与 approval_id 传给回调，UI 不再用
+                        # 命令文本冒充理由，也不再用 FIFO 顺序猜测对应关系
+                        reason = str(
+                            req.event.payload.get("reason", "") or "需要用户审批"
+                        )
+                        decision = await self._request_approval(
+                            req.op, req.approval_id, reason
+                        )
                         op = approval.resolve(req.approval_id, decision)
                         resolved_event = self._approval_resolved_event(
                             req.event, decision, "user", op
@@ -467,10 +481,12 @@ class ConversationOrchestrator:
         if op.command is not None and op.tool_kind == "shell":
             sandbox.enforce_cwd(None)
 
-    async def _request_approval(self, op: PendingOperation) -> ApprovalDecision:
+    async def _request_approval(
+        self, op: PendingOperation, approval_id: str, reason: str
+    ) -> ApprovalDecision:
         if self.approval_callback is None:
             return ApprovalDecision.DENY
-        return await self.approval_callback(op)
+        return await self.approval_callback(op, approval_id, reason)
 
     @staticmethod
     def _deny_tool_event(

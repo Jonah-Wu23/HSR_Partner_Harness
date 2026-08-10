@@ -14,7 +14,8 @@ class ApprovalBar(QFrame):
     - 多个审批请求排队，逐条显示，不同时展开。
     """
 
-    decided = pyqtSignal(str)
+    # O1.7：裁决信号携带 approval_id 与决策，UI 按 id 对应 future
+    decided = pyqtSignal(str, str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -24,6 +25,7 @@ class ApprovalBar(QFrame):
             "border-radius:8px;color:#E5E7EB;}"
         )
         self._queue: list[tuple[str, str, str]] = []
+        self._current_id: str = ""
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
@@ -70,8 +72,8 @@ class ApprovalBar(QFrame):
             self.show_request(*self._queue[0])
 
     def show_request(self, approval_id: str, summary: str, reason: str) -> None:
-        """请求批准模式：显示操作摘要与三个按钮。"""
-        del approval_id
+        """请求批准模式：显示操作摘要与三个按钮，记录当前审批 id。"""
+        self._current_id = approval_id
         self.summary_label.setText(f"{summary}（{reason}）" if reason else summary)
         self.allow_button.show()
         self.allow_for_conversation_button.show()
@@ -93,6 +95,6 @@ class ApprovalBar(QFrame):
         self.hide()
         if self._queue:
             self._queue.pop(0)
-        self.decided.emit(decision)
+        self.decided.emit(self._current_id, decision)
         if self._queue:
             self.show_request(*self._queue[0])

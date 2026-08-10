@@ -57,21 +57,23 @@ def main(argv: list[str] | None = None) -> int:
     project_record = store.get_project("demo-project")
     window.set_approval_mode(project_record.approval_mode)
 
-    # 审批裁决桥：orchestrator 在请求批准模式下挂起等待 UI 决策
-    approval_futures: list[asyncio.Future] = []
+    # 审批裁决桥：orchestrator 在请求批准模式下挂起等待 UI 决策。
+    # O1.7：按 approval_id 对应 future，不再依赖 FIFO 顺序巧合。
+    approval_futures: dict[str, asyncio.Future] = {}
 
-    async def approval_callback(op: PendingOperation) -> ApprovalDecision:
+    async def approval_callback(
+        op: PendingOperation, approval_id: str, reason: str
+    ) -> ApprovalDecision:
         future = asyncio.get_running_loop().create_future()
-        approval_futures.append(future)
-        window.show_approval_request(op.summary, op.command or "")
+        approval_futures[approval_id] = future
+        # O1.7：展示真实理由（风险标签或“需要用户审批”），不再用命令文本冒充
+        window.show_approval_request(approval_id, op.summary, reason)
         return await future
 
-    @asyncSlot(str)
-    def decide(decision: str) -> None:
-        if not approval_futures:
-            return
-        future = approval_futures.pop(0)
-        if not future.done():
+    @asyncSlot(str, str)
+    def decide(approval_id: str, decision: str) -> None:
+        future = approval_futures.pop(approval_id, None)
+        if future is not None and not future.done():
             future.set_result(ApprovalDecision(decision))
 
     window.approval_decided.connect(decide)
@@ -104,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
 
     def on_quit() -> None:
         # 窗口关闭时否决仍未裁决的审批，避免悬挂
-        for future in approval_futures:
+        for future in approval_futures.values():
             if not future.done():
                 future.set_result(ApprovalDecision.DENY)
         store.close()

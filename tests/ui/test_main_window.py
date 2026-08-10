@@ -126,3 +126,40 @@ def test_library_toggle_shows_and_hides_library(qtbot) -> None:
     window.library_button.click()
     assert not window.project_library.isVisible()
 
+
+def test_approval_request_shows_real_reason_and_emits_id(qtbot) -> None:
+    """O1.7：审批区展示真实理由，裁决信号按 approval_id 贯通。"""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    decisions = []
+    window.approval_decided.connect(lambda approval_id, decision: decisions.append((approval_id, decision)))
+    window.show()
+
+    window.show_approval_request("approval-7", "写入环境变量", "需要用户审批")
+
+    assert window.approval_bar.isVisible()
+    assert "写入环境变量" in window.approval_bar.summary_label.text()
+    assert "需要用户审批" in window.approval_bar.summary_label.text()
+    window.approval_bar.allow_button.click()
+    assert decisions == [("approval-7", "allow")]
+
+
+def test_two_approval_requests_resolve_by_id(qtbot) -> None:
+    """O1.7：两个连续审批请求按各自 id 裁决，不依赖 FIFO 巧合。"""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    decisions = []
+    window.approval_decided.connect(lambda approval_id, decision: decisions.append((approval_id, decision)))
+    window.show()
+
+    window.show_approval_request("approval-a", "操作一", "需要用户审批")
+    window.show_approval_request("approval-b", "操作二", "需要用户审批")
+    assert window.approval_bar.pending_count == 2
+    assert "操作一" in window.approval_bar.summary_label.text()
+
+    window.approval_bar.deny_button.click()
+    assert decisions == [("approval-a", "deny")]
+    assert "操作二" in window.approval_bar.summary_label.text()
+    window.approval_bar.allow_button.click()
+    assert decisions == [("approval-a", "deny"), ("approval-b", "allow")]
+
