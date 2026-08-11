@@ -408,6 +408,7 @@
 .chat-groups {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0 var(--space-2) var(--space-2);
   min-height: 0;
 }
@@ -637,6 +638,7 @@
 .message-scroll {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: var(--space-4);
   min-height: 0;
 }

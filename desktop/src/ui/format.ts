@@ -1,5 +1,12 @@
 /** 相对时间与聊天分组的小工具，纯展示用途。 */
 
+const dayFormatter = new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" });
+const fullFormatter = new Intl.DateTimeFormat("zh-CN", {
+  year: "numeric",
+  month: "numeric",
+  day: "numeric",
+});
+
 export function relativeTime(iso: string | null, now: Date = new Date()): string {
   if (!iso) return "";
   const time = new Date(iso);
@@ -20,9 +27,9 @@ export function relativeTime(iso: string | null, now: Date = new Date()): string
     return "昨天";
   }
   if (time.getFullYear() === now.getFullYear()) {
-    return `${time.getMonth() + 1}月${time.getDate()}日`;
+    return dayFormatter.format(time);
   }
-  return `${time.getFullYear()}/${time.getMonth() + 1}/${time.getDate()}`;
+  return fullFormatter.format(time);
 }
 
 export function isSameDay(a: Date, b: Date): boolean {

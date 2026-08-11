@@ -184,7 +184,7 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
         <SearchIcon />
         <input
           type="search"
-          placeholder="搜索聊天"
+          placeholder="搜索聊天…"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           aria-label="搜索聊天"

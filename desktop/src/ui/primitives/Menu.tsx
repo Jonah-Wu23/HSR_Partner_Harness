@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { cloneElement, isValidElement, useEffect, useRef, useState } from "react";
 import { CheckIcon } from "../../assets/icons/icons";
 
 export interface MenuItem {
@@ -62,9 +62,21 @@ export function Menu({ trigger, items, onSelect, ariaLabel, align = "right", sel
     }
   };
 
+  const rendered = trigger({ open });
+  const enhanced = isValidElement(rendered)
+    ? cloneElement(rendered as React.ReactElement<Record<string, unknown>>, {
+        onClick: (event: React.MouseEvent) => {
+          (rendered.props as { onClick?: (e: React.MouseEvent) => void }).onClick?.(event);
+          setOpen((value) => !value);
+        },
+        "aria-haspopup": "menu",
+        "aria-expanded": open,
+      })
+    : rendered;
+
   return (
     <div ref={rootRef} className="menu-root" onKeyDown={onKeyDown}>
-      <span onClick={() => setOpen((value) => !value)}>{trigger({ open })}</span>
+      {enhanced}
       {open ? (
         <div
           role="menu"

@@ -70,7 +70,7 @@ describe("MessageList 流式与身份展示", () => {
       makeMessage({
         message_id: "m-mech",
         source: "assistant",
-        kind: "assistant.speech",
+        kind: "assistant.natural_language",
         text: "助手说",
       }),
       makeMessage({ message_id: "m-user", source: "user", kind: "user.text", text: "用户说" }),
