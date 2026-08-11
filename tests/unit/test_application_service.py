@@ -89,13 +89,14 @@ async def test_chat_submit_emits_messages_and_direct_task_tool_updates(tmp_path:
 async def test_project_and_conversation_commands_return_restorable_snapshot(
     tmp_path: Path,
 ) -> None:
+    database = tmp_path / "data" / "pair_harness.db"
     service = build_demo_service(
-        database=tmp_path / "data" / "pair_harness.db",
+        database=database,
         project_root=tmp_path,
     )
+    project_root = tmp_path / "another-project"
+    project_root.mkdir()
     try:
-        project_root = tmp_path / "another-project"
-        project_root.mkdir()
         snapshot = await service.handle_command(
             command("p-1", "project.create", root_path=str(project_root), name="另一个项目")
         )
@@ -104,10 +105,17 @@ async def test_project_and_conversation_commands_return_restorable_snapshot(
         await service.handle_command(
             command("r-1", "conversation.rename", conversation_id=conversation_id, title="已改名")
         )
-        snapshot = await service.handle_command(command("b-1", "app.bootstrap"))
-        assert snapshot["current_conversation"]["title"] == "已改名"
     finally:
         await service.shutdown()
+
+    restored = build_demo_service(database=database, project_root=tmp_path)
+    try:
+        snapshot = await restored.handle_command(command("b-1", "app.bootstrap"))
+        assert snapshot["current_project"]["name"] == "另一个项目"
+        assert snapshot["current_conversation_id"] == conversation_id
+        assert snapshot["current_conversation"]["title"] == "已改名"
+    finally:
+        await restored.shutdown()
 
 
 @pytest.mark.asyncio
