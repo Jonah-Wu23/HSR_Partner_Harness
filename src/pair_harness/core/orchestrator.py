@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePath
+from typing import Literal, cast
 
 from .approval import ApprovalManager, ApprovalRequired, GateOutcome
 from .context import recent_roleplay_context
@@ -67,6 +68,11 @@ ApprovalCallback = Callable[
 O1.7：approval_id 由编排器生成并贯通到 UI 队列，裁决按 id 对应，
 不再依赖 FIFO 顺序巧合。
 """
+
+# O4.3：状态字面量类型别名——ToolRun.status 与 ExecutionReceipt.status
+# 的枚举值在事件循环里以 str 流动，出口处 cast 收敛，消除 type: ignore
+ToolRunStatus = Literal["running", "succeeded", "failed", "denied"]
+ReceiptStatus = Literal["completed", "failed", "cancelled"]
 
 
 class ConversationOrchestrator:
@@ -654,9 +660,12 @@ class ConversationOrchestrator:
                 elif event.type == EngineEventType.FILE_PATCH:
                     path = event.payload.get("path")
                     if path:
-                        changed_files.append(str(path))
+                        # O4.3：同一文件多次 patch 只记一次（保持首次出现顺序）
+                        text = str(path)
+                        if text not in changed_files:
+                            changed_files.append(text)
                 elif event.type == EngineEventType.TOOL_FINISHED:
-                    status = str(event.payload.get("status", "succeeded"))
+                    status = cast(ToolRunStatus, str(event.payload.get("status", "succeeded")))
                     if status == "failed":
                         failed = True
                         if event.payload.get("error"):
@@ -673,7 +682,7 @@ class ConversationOrchestrator:
                             task_id=task.task_id,
                             engine_turn_id=engine_turn_id,
                             sequence=event.sequence,
-                            status=status,  # type: ignore[arg-type]
+                            status=status,
                             title=str(event.payload.get("title", "工具")),
                             summary=str(event.payload.get("summary", "")),
                             details=str(event.payload.get("details", "")),
@@ -698,7 +707,8 @@ class ConversationOrchestrator:
             )
             if TaskStatus(target_status) != lifecycle.status:
                 lifecycle.transition(TaskStatus(target_status))
-            status = target_status
+            # O4.3：出口处收敛为回执状态字面量类型
+            status = cast(ReceiptStatus, target_status)
             if status == "cancelled":
                 # O2.3：中断的演示流程没有收尾文案，回执如实标注已取消
                 summary = assistant_text or "任务已取消"
@@ -709,7 +719,7 @@ class ConversationOrchestrator:
             receipt = ExecutionReceipt(
                 task_id=task.task_id,
                 engine_turn_id=engine_turn_id,
-                status=status,  # type: ignore[arg-type]
+                status=status,
                 summary=summary,
                 changed_files=tuple(changed_files),
                 checks=tuple(checks),

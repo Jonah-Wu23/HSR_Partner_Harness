@@ -55,8 +55,11 @@ CREATE TABLE IF NOT EXISTS engine_sessions (
     conversation_id TEXT PRIMARY KEY REFERENCES conversations(conversation_id) ON DELETE CASCADE,
     engine_type TEXT NOT NULL,
     session_ref TEXT NOT NULL,
-    last_turn_id TEXT,
-    resume_status TEXT NOT NULL DEFAULT 'ready',
     updated_at TEXT NOT NULL
 );
+-- O4.3：新库的完整表结构由本文件保证（IF NOT EXISTS 只影响新库）。
+-- 旧库（user_version=0）的补列/删列迁移在 sqlite_store.SCHEMA_VERSION
+-- 中逐级执行；新库创建后由 sqlite_store 直接标记当前版本。
+-- 注意：此处不得写 PRAGMA user_version（executescript 每次打开都会执行，
+-- 会跳过旧库迁移）。
 

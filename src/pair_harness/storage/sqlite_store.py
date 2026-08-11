@@ -21,16 +21,44 @@ def _dt(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
+# O4.3：数据库结构版本。新库由 schema.sql 一次建全，直接标记为该版本；
+# 旧库（user_version=0）按 MIGRATIONS 逐级升级。每次结构变更 +1，
+# 并在 MIGRATIONS 里补对应迁移步骤。
+SCHEMA_VERSION = 2
+
+# 索引 i 对应“从版本 i 升到 i+1”的迁移步骤（每级一条或多条 SQL）。
+MIGRATIONS: tuple[tuple[str, ...], ...] = (
+    # 版本 1：计划 A6 为 projects 表补审批模式列（旧代码手写 ALTER 的迁移）
+    (
+        "ALTER TABLE projects ADD COLUMN approval_mode "
+        "TEXT NOT NULL DEFAULT 'request_approval'",
+    ),
+    # 版本 2：移除 engine_sessions 从未写入、从未读取的死列
+    # （last_turn_id 无接线；resume_status 恒为 'ready'，删除后新库不再建）
+    (
+        "ALTER TABLE engine_sessions DROP COLUMN last_turn_id",
+        "ALTER TABLE engine_sessions DROP COLUMN resume_status",
+    ),
+)
+
+
 class SQLiteStore(StateStore):
     def __init__(self, database: Path) -> None:
         database.parent.mkdir(parents=True, exist_ok=True)
+        # O4.3：区分新库与旧库——新库 schema.sql 已建完整表结构，
+        # 直接标记当前版本；旧库（有内容的文件）按 user_version 迁移
+        fresh = not database.exists() or database.stat().st_size == 0
         self.database = database
         self.connection = sqlite3.connect(database)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
         schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
         self.connection.executescript(schema)
-        self._migrate()
+        if fresh:
+            self.connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            self.connection.commit()
+        else:
+            self._migrate()
 
     def close(self) -> None:
         self.connection.close()
@@ -42,23 +70,18 @@ class SQLiteStore(StateStore):
         self.close()
 
     def _migrate(self) -> None:
-        """旧库轻量迁移：为 projects 表补 approval_mode 列。
+        """旧库版本化迁移：按 ``PRAGMA user_version`` 逐级升级。
 
-        schema.sql 使用 CREATE TABLE IF NOT EXISTS，已存在的数据库文件
-        不会自动获得新列，这里显式补列保证旧数据目录可继续打开。
+        schema.sql 用 CREATE TABLE IF NOT EXISTS，已存在的旧库不会自动
+        补列/删列，依赖这里的迁移步骤。每完成一级立即写入对应
+        user_version，中途失败不会重复执行已完成步骤。
         """
-        columns = {
-            row["name"]
-            for row in self.connection.execute(
-                "PRAGMA table_info(projects)"
-            ).fetchall()
-        }
-        if "approval_mode" not in columns:
-            self.connection.execute(
-                "ALTER TABLE projects ADD COLUMN approval_mode "
-                "TEXT NOT NULL DEFAULT 'request_approval'"
-            )
-            self.connection.commit()
+        version = int(self.connection.execute("PRAGMA user_version").fetchone()[0])
+        for target in range(version + 1, SCHEMA_VERSION + 1):
+            for statement in MIGRATIONS[target - 1]:
+                self.connection.execute(statement)
+            self.connection.execute(f"PRAGMA user_version = {target}")
+        self.connection.commit()
 
     def create_project(
         self,
@@ -236,7 +259,6 @@ class SQLiteStore(StateStore):
             ON CONFLICT(conversation_id) DO UPDATE SET
                 engine_type=excluded.engine_type,
                 session_ref=excluded.session_ref,
-                resume_status='ready',
                 updated_at=excluded.updated_at
             """,
             (
