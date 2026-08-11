@@ -41,11 +41,16 @@ fn python_command(root: &PathBuf) -> PathBuf {
 
 fn packaged_sidecar(app: &tauri::AppHandle) -> Option<PathBuf> {
     let resource_root = app.path().resource_dir().ok()?;
-    let candidate = resource_root
-        .join("sidecar")
-        .join("pair-harness-sidecar")
-        .join("pair-harness-sidecar.exe");
-    candidate.is_file().then_some(candidate)
+    for root in [resource_root.clone(), resource_root.join("resources")] {
+        let candidate = root
+            .join("sidecar")
+            .join("pair-harness-sidecar")
+            .join("pair-harness-sidecar.exe");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn spawn_backend(app: &tauri::AppHandle) -> Result<BackendState, String> {
