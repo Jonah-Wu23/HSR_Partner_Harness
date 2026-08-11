@@ -6,6 +6,7 @@ from pair_harness.adapters.demo import ScriptedCodingEngine, ScriptedDialogueMod
 from pair_harness.core.contracts import (
     ApprovalMode,
     CharacterTurn,
+    EngineSessionRef,
     MessageSource,
     ProjectRef,
     TaskRequestDraft,
@@ -122,4 +123,32 @@ async def test_restored_orchestrator_backfills_history_and_session_ref(
     assert stored_ref is not None
     assert stored_ref == snapshot["engine_session"]
     reopened.close()
+
+
+def test_restore_drops_session_from_a_different_engine(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "data.db")
+    store.create_project(name="Repo", root_path=str(tmp_path), project_id="p")
+    store.create_conversation(
+        project_id="p",
+        pair_id="phainon_ancient_machine",
+        title="Demo",
+        conversation_id="c",
+    )
+    store.save_engine_session(
+        "c",
+        EngineSessionRef(engine_type="codex-app-server", opaque_ref="private"),
+    )
+    orchestrator = ConversationOrchestrator(
+        pair_id="phainon_ancient_machine",
+        project=ProjectRef(project_id="p", name="Repo", root_path=str(tmp_path)),
+        dialogue_model=ScriptedDialogueModel(),
+        coding_engine=ScriptedCodingEngine(),
+        store=store,
+        approval_mode=ApprovalMode.FULL_AUTO,
+    )
+
+    orchestrator.restore_conversation(store.load_conversation("c"))
+
+    assert "c" not in orchestrator._sessions
+    store.close()
 

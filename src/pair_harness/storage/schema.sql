@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS projects (
     root_path TEXT NOT NULL,
     -- 计划 A6：输入区审批模式下拉框的选择，取值为 ApprovalMode 的三个枚举值
     approval_mode TEXT NOT NULL DEFAULT 'request_approval',
+    reasoning_effort TEXT NOT NULL DEFAULT 'low',
     archived INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     last_opened_at TEXT NOT NULL
@@ -62,4 +63,3 @@ CREATE TABLE IF NOT EXISTS engine_sessions (
 -- 中逐级执行；新库创建后由 sqlite_store 直接标记当前版本。
 -- 注意：此处不得写 PRAGMA user_version（executescript 每次打开都会执行，
 -- 会跳过旧库迁移）。
-

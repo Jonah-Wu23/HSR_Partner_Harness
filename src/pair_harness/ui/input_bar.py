@@ -17,12 +17,19 @@ class InputBar(QWidget):
     push_to_talk_pressed = pyqtSignal()
     push_to_talk_released = pyqtSignal()
     approval_mode_changed = pyqtSignal(str)
+    reasoning_effort_changed = pyqtSignal(str)
 
     # 审批模式下拉框的三项，取值为 ApprovalMode 枚举值
     APPROVAL_MODES = (
         ("request_approval", "请求批准"),
         ("review", "帮我审核"),
         ("full_auto", "完全允许运行"),
+    )
+    REASONING_EFFORTS = (
+        ("auto", "思考：自动"),
+        ("low", "思考：低"),
+        ("high", "思考：高"),
+        ("max", "思考：最大"),
     )
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -34,6 +41,11 @@ class InputBar(QWidget):
         self.approval_mode_combo.setObjectName("approvalModeCombo")
         for value, label in self.APPROVAL_MODES:
             self.approval_mode_combo.addItem(label, value)
+        self.reasoning_effort_combo = QComboBox()
+        self.reasoning_effort_combo.setObjectName("reasoningEffortCombo")
+        for value, label in self.REASONING_EFFORTS:
+            self.reasoning_effort_combo.addItem(label, value)
+        self.reasoning_effort_combo.setCurrentIndex(1)
         self.target_label = QLabel("发送给：")
         self.target_combo = QComboBox()
         self.target_combo.setObjectName("targetCombo")
@@ -51,6 +63,7 @@ class InputBar(QWidget):
         self.send_button.setObjectName("sendButton")
         # 计划 A5：审批模式下拉框位于输入区左下角
         controls.addWidget(self.approval_mode_combo)
+        controls.addWidget(self.reasoning_effort_combo)
         controls.addWidget(self.target_label)
         controls.addWidget(self.target_combo)
         controls.addWidget(self.vad_button)
@@ -60,6 +73,9 @@ class InputBar(QWidget):
         root.addLayout(controls)
         self.target_combo.currentIndexChanged.connect(self._sync_target)
         self.approval_mode_combo.currentIndexChanged.connect(self._sync_approval_mode)
+        self.reasoning_effort_combo.currentIndexChanged.connect(
+            self._sync_reasoning_effort
+        )
         self.send_button.clicked.connect(self._submit)
         self.text_input.returnPressed.connect(self._submit)
         self.ptt_button.pressed.connect(self.push_to_talk_pressed)
@@ -73,6 +89,10 @@ class InputBar(QWidget):
     def approval_mode(self) -> str:
         return str(self.approval_mode_combo.currentData())
 
+    @property
+    def reasoning_effort(self) -> str:
+        return str(self.reasoning_effort_combo.currentData())
+
     def set_approval_mode(self, mode: str) -> None:
         """恢复项目保存的审批模式，不触发切换信号。"""
         index = self.approval_mode_combo.findData(mode)
@@ -84,6 +104,18 @@ class InputBar(QWidget):
 
     def _sync_approval_mode(self) -> None:
         self.approval_mode_changed.emit(self.approval_mode)
+
+    def set_reasoning_effort(self, effort: str) -> None:
+        """恢复项目保存的思考档位，不触发切换信号。"""
+        index = self.reasoning_effort_combo.findData(effort)
+        if index < 0:
+            raise ValueError(effort)
+        self.reasoning_effort_combo.blockSignals(True)
+        self.reasoning_effort_combo.setCurrentIndex(index)
+        self.reasoning_effort_combo.blockSignals(False)
+
+    def _sync_reasoning_effort(self) -> None:
+        self.reasoning_effort_changed.emit(self.reasoning_effort)
 
     def set_collaboration_mode(self, enabled: bool) -> None:
         self.target_label.setVisible(enabled)
@@ -112,4 +144,3 @@ class InputBar(QWidget):
             return
         self.text_input.clear()
         self.submitted.emit(self.target, text)
-

@@ -21,6 +21,7 @@ from .transport import JsonlProcessTransport, TransportClosed
 
 class CodexAppServerEngine(CodingEngine):
     engine_type = "codex-app-server"
+    native_preexecution_approval = True
 
     def __init__(self, transport: JsonlProcessTransport) -> None:
         self.transport = transport
@@ -52,6 +53,7 @@ class CodexAppServerEngine(CodingEngine):
         approval_policy: str | None = None,
         sandbox: str | None = None,
         approvals_reviewer: str | None = None,
+        developer_instructions: str | None = None,
     ) -> EngineSessionRef:
         """打开（或恢复）app-server 线程。
 
@@ -59,8 +61,8 @@ class CodexAppServerEngine(CodingEngine):
         thread/start 的 approvalPolicy / sandbox / approvalsReviewer 字段
         （字段名经 codex app-server generate-json-schema 0.147.0 确认）。
         仅新开线程时发送；恢复线程（thread/resume）沿用线程既有设置。
-        B1 联调时由编排器按审批模式（request_approval → "on-request" 等）
-        与沙箱配置（MVP → "workspace-write"）传入真实参数。
+        B1 联调时由编排器按审批模式（request_approval → "untrusted" 等）
+        与沙箱配置传入真实参数。
         """
         await self.transport.start()
         if not self._initialized:
@@ -71,7 +73,10 @@ class CodexAppServerEngine(CodingEngine):
             self._initialized = True
         if stored_ref is not None:
             thread_id = self._decode_ref(stored_ref)
-            result = await self.transport.request("thread/resume", {"threadId": thread_id})
+            resume_params: dict[str, object] = {"threadId": thread_id}
+            if developer_instructions:
+                resume_params["developerInstructions"] = developer_instructions
+            result = await self.transport.request("thread/resume", resume_params)
             resumed = result.get("thread") or {}
             return self._encode_ref(str(resumed.get("id") or thread_id))
         params: dict[str, object] = {"cwd": project.root_path}
@@ -81,6 +86,8 @@ class CodexAppServerEngine(CodingEngine):
             params["sandbox"] = sandbox
         if approvals_reviewer is not None:
             params["approvalsReviewer"] = approvals_reviewer
+        if developer_instructions:
+            params["developerInstructions"] = developer_instructions
         result = await self.transport.request("thread/start", params)
         thread = result.get("thread") or {}
         thread_id = thread.get("id")
@@ -92,11 +99,15 @@ class CodexAppServerEngine(CodingEngine):
         self, session_ref: EngineSessionRef, request: TaskRequest
     ) -> AsyncIterator[EngineEvent]:
         thread_id = self._decode_ref(session_ref)
+        task_text = request.instructions
+        if request.constraints:
+            constraints = "\n".join(f"- {item}" for item in request.constraints)
+            task_text = f"{task_text}\n\n本次任务约束：\n{constraints}"
         result = await self.transport.request(
             "turn/start",
             {
                 "threadId": thread_id,
-                "input": [{"type": "text", "text": request.instructions}],
+                "input": [{"type": "text", "text": task_text}],
             },
         )
         turn = result.get("turn") or {}
@@ -173,4 +184,3 @@ class CodexAppServerEngine(CodingEngine):
             ApprovalDecision.DENY: "decline",
         }[decision]
         await self.transport.respond(int(approval_id), {"decision": native})
-

@@ -46,6 +46,10 @@ _COMMAND_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 _HAS_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_EMBEDDED_PATH_RE = re.compile(
+    r"(?:[A-Za-z]:[\\/][^\u4e00-\u9fff，。！？；]+)"
+    r"|(?:/(?:[^\u4e00-\u9fff，。！？；\n]+/)+[^\u4e00-\u9fff，。！？；\n]+)"
+)
 
 
 def extract_speech_segments(markdown: str) -> list[str]:
@@ -67,6 +71,12 @@ def extract_speech_segments(markdown: str) -> list[str]:
         line = raw_line.strip()
         # 空行与命令/路径行都作为段落分隔：前者来自原文，后者被剔除
         if not line or (not _HAS_CJK_RE.search(line) and _COMMAND_LINE_RE.match(line)):
+            if current:
+                paragraphs.append(" ".join(current))
+                current = []
+            continue
+        line = _EMBEDDED_PATH_RE.sub("", line).strip()
+        if not line:
             if current:
                 paragraphs.append(" ".join(current))
                 current = []

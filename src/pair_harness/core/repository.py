@@ -12,6 +12,7 @@ class Project:
     root_path: str
     # 计划 A6：审批模式按项目保存，默认“请求批准”
     approval_mode: str = "request_approval"
+    reasoning_effort: str = "low"
     archived: bool = False
     created_at: datetime | None = None
     last_opened_at: datetime | None = None
@@ -39,4 +40,3 @@ class ConversationSnapshot:
     messages: tuple
     tool_runs: tuple
     engine_session: object | None
-

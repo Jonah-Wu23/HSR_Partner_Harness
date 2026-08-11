@@ -55,6 +55,8 @@ class ScriptedDialogueModel(DialogueModel):
 class ScriptedCodingEngine(CodingEngine):
     """Emits tool-shaped events without touching the filesystem."""
 
+    engine_type = "scripted"
+
     def __init__(
         self,
         *,
@@ -85,14 +87,16 @@ class ScriptedCodingEngine(CodingEngine):
         approval_policy: str | None = None,
         sandbox: str | None = None,
         approvals_reviewer: str | None = None,
+        developer_instructions: str | None = None,
     ) -> EngineSessionRef:
-        self.opened_policies.append(
-            {
-                "approvalPolicy": approval_policy,
-                "sandbox": sandbox,
-                "approvalsReviewer": approvals_reviewer,
-            }
-        )
+        policy = {
+            "approvalPolicy": approval_policy,
+            "sandbox": sandbox,
+            "approvalsReviewer": approvals_reviewer,
+        }
+        if developer_instructions:
+            policy["developerInstructions"] = developer_instructions
+        self.opened_policies.append(policy)
         self.opened_sessions.append((project, stored_ref))
         return stored_ref or EngineSessionRef(
             engine_type="scripted",

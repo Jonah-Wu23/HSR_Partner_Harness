@@ -42,10 +42,15 @@ async def test_offline_engine_opens_session_and_streams_mapped_events() -> None:
     server = FakeCodexAppServer(connection)
     project = ProjectRef(project_id="p", name="p", root_path="C:\\project")
 
-    open_task = asyncio.create_task(engine.open_session(project))
+    open_task = asyncio.create_task(
+        engine.open_session(project, developer_instructions="保持古代机械口吻")
+    )
     request = await server.serve_request({"thread": {"id": "thread-1"}})
     assert request["method"] == "thread/start"
-    assert request["params"] == {"cwd": "C:\\project"}
+    assert request["params"] == {
+        "cwd": "C:\\project",
+        "developerInstructions": "保持古代机械口吻",
+    }
     session_ref = await open_task
     assert "thread-1" not in session_ref.opaque_ref
 
@@ -53,6 +58,7 @@ async def test_offline_engine_opens_session_and_streams_mapped_events() -> None:
         conversation_id="conversation-1",
         origin_message_id="message-1",
         instructions="run tests",
+        constraints=("only edit tests", "do not rename files"),
     )
 
     async def collect_events():
@@ -62,6 +68,10 @@ async def test_offline_engine_opens_session_and_streams_mapped_events() -> None:
     request = await server.serve_request({"turn": {"id": "turn-1"}})
     assert request["method"] == "turn/start"
     assert request["params"]["threadId"] == "thread-1"
+    assert request["params"]["input"][0]["text"] == (
+        "run tests\n\n本次任务约束：\n"
+        "- only edit tests\n- do not rename files"
+    )
     await server.notify("turn/started", {"turn": {"id": "turn-1"}})
     await server.notify(
         "item/completed",

@@ -89,6 +89,7 @@ class ConversationOrchestrator:
         risk_rules: RiskRules | None = None,
         reviewer: Reviewer | None = None,
         approval_callback: ApprovalCallback | None = None,
+        assistant_instructions: str = "",
     ) -> None:
         self.pair_id = pair_id
         self.project = project
@@ -100,6 +101,7 @@ class ConversationOrchestrator:
         self.risk_rules = risk_rules or default_risk_rules()
         self.reviewer = reviewer
         self.approval_callback = approval_callback
+        self.assistant_instructions = assistant_instructions
         self._history: dict[str, list[Message]] = {}
         self._sessions: dict[str, EngineSessionRef] = {}
         self._approval_managers: dict[str, ApprovalManager] = {}
@@ -122,11 +124,40 @@ class ConversationOrchestrator:
         # B2.6：消息监听器列表（VoiceRuntime 挂 TTS 用），在消息持久化后逐个调用
         self._message_listeners: list[Callable[[Message], None]] = []
 
-    def set_approval_mode(self, mode: ApprovalMode) -> None:
+    def set_approval_mode(
+        self, mode: ApprovalMode, *, conversation_id: str | None = None
+    ) -> None:
         """切换项目级审批模式（计划 A5：输入区下拉框切换）。"""
         self.approval_mode = mode
-        for manager in self._approval_managers.values():
-            manager.mode = mode
+        if conversation_id is None:
+            for manager in self._approval_managers.values():
+                manager.mode = mode
+        elif conversation_id in self._approval_managers:
+            self._approval_managers[conversation_id].mode = mode
+
+    def select_context(
+        self,
+        *,
+        project: ProjectRef,
+        pair_id: str,
+        conversation_id: str,
+        approval_mode: ApprovalMode,
+        assistant_instructions: str,
+    ) -> None:
+        """切换当前项目与聊天，保留其他聊天已恢复的历史和会话引用。"""
+        self.project = project
+        self.pair_id = pair_id
+        self.assistant_instructions = assistant_instructions
+        self.set_approval_mode(approval_mode, conversation_id=conversation_id)
+
+    def report_system_status(self, conversation_id: str, text: str) -> Message:
+        """把运行时错误作为可见且可恢复的系统消息写入当前聊天。"""
+        return self._message(
+            conversation_id=conversation_id,
+            source=MessageSource.SYSTEM,
+            kind=MessageKind.SYSTEM_STATUS,
+            text=text,
+        )
 
     def add_message_listener(self, callback: Callable[[Message], None]) -> None:
         """注册消息监听器：消息持久化完成后同步调用（供 VoiceRuntime 挂 TTS）。
@@ -140,7 +171,7 @@ class ConversationOrchestrator:
     def _engine_policy(self) -> dict[str, str | None]:
         """B1：应用层审批模式 → app-server thread/start 策略映射（设计 §14.6）。
 
-        - 请求批准 / 帮我审核：``on-request`` + ``read-only`` 沙箱。真实联调
+        - 请求批准 / 帮我审核：``untrusted`` + ``read-only`` 沙箱。真实联调
           确认 workspace-write 下工作区写操作不发起 requestApproval（B1 联调
           记录），改用 read-only 让一切写操作执行前挂起，由 ApprovalManager
           裁决后经 resolve_approval 回复——三种审批模式真实差异化拦截；
@@ -152,7 +183,7 @@ class ConversationOrchestrator:
         approval_policy = (
             "never"
             if self.approval_mode == ApprovalMode.FULL_AUTO
-            else "on-request"
+            else "untrusted"
         )
         sandbox = (
             "workspace-write"
@@ -177,8 +208,13 @@ class ConversationOrchestrator:
         conversation_id = snapshot["conversation"].conversation_id
         self._history[conversation_id] = list(snapshot.get("messages", ()))
         session_ref = snapshot.get("engine_session")
-        if session_ref is not None:
+        if (
+            session_ref is not None
+            and session_ref.engine_type == self.coding_engine.engine_type
+        ):
             self._sessions[conversation_id] = session_ref
+        else:
+            self._sessions.pop(conversation_id, None)
 
     def close_conversation(self, conversation_id: str) -> None:
         """O4.2：聊天结束/切换钩子——清理该会话的审批缓存。
@@ -235,6 +271,14 @@ class ConversationOrchestrator:
         if self.on_message is not None:
             self.on_message(message)
         return message
+
+    def _recent_user_messages(self, conversation_id: str) -> list[Message]:
+        """返回当前聊天中用户最后发送的三条消息。"""
+        return [
+            message
+            for message in self._history.get(conversation_id, [])
+            if message.source == MessageSource.USER
+        ][-3:]
 
     async def handle_character_input(
         self, *, conversation_id: str, text: str
@@ -341,6 +385,14 @@ class ConversationOrchestrator:
                 text=text,
             )
         if self.state.active is not None:
+            if conversation_id != self.state.active.conversation_id:
+                notice = self._message(
+                    conversation_id=conversation_id,
+                    source=MessageSource.SYSTEM,
+                    kind=MessageKind.SYSTEM_STATUS,
+                    text="另一聊天的助手任务仍在运行，当前指令没有转交。",
+                )
+                return ConversationOutcome(messages=(user, notice))
             # O2.4：设计 §3.2——运行中用户直接发给助手的新指令拥有最高优先级，
             # 归一为 TaskAmendment 走 amend_turn，来源标记 user 与角色建议区分
             try:
@@ -490,6 +542,7 @@ class ConversationOrchestrator:
                 approval_policy=policy["approvalPolicy"],
                 sandbox=policy["sandbox"],
                 approvals_reviewer=policy["approvalsReviewer"],
+                developer_instructions=self.assistant_instructions or None,
             )
             self._sessions[task.conversation_id] = session
             if self.store is not None:
@@ -528,7 +581,7 @@ class ConversationOrchestrator:
                     payload.setdefault(
                         "actor",
                         "reviewer"
-                        if self.approval_mode == ApprovalMode.REVIEW
+                        if approval.mode == ApprovalMode.REVIEW
                         else "user",
                     )
                     event = event.model_copy(update={"payload": payload})
@@ -566,8 +619,7 @@ class ConversationOrchestrator:
                         task_id=task.task_id,
                         engine_turn_id=engine_turn_id,
                         tool_call_id=event.tool_call_id,
-                        # 计划 A3：审查智能体需要近期上下文（最近 3 条）
-                        context=self._history.get(task.conversation_id, [])[-3:],
+                        context=self._recent_user_messages(task.conversation_id),
                         request_decision=self._request_approval,
                     )
                     for gate_event in outcome.events:
@@ -619,6 +671,13 @@ class ConversationOrchestrator:
                         )
                         break
 
+                    # Codex 的 item/started 已表示操作开始。真实适配器只接受
+                    # app-server 在执行前发出的 requestApproval，避免在这里
+                    # 展示已经无法阻止执行的审批卡片。演示适配器继续走本地
+                    # 门控，用于离线验证三种审批模式。
+                    if self.coding_engine.native_preexecution_approval:
+                        continue
+
                     # O3.1：该工具操作已由原生审批请求裁决并回复
                     # （adjudicated），兜底 gate 不再重复执行；
                     # 演示引擎等不产生原生请求的路径仍走完整门控。
@@ -634,8 +693,9 @@ class ConversationOrchestrator:
                                 engine_turn_id=engine_turn_id,
                                 sequence=sequence,
                                 tool_call_id=event.tool_call_id,
-                                # 计划 A3：审查智能体需要近期上下文（最近 3 条）
-                                context=self._history.get(task.conversation_id, [])[-3:],
+                                context=self._recent_user_messages(
+                                    task.conversation_id
+                                ),
                             )
                             for gate_event in outcome.events:
                                 gate_event = gate_event.model_copy(

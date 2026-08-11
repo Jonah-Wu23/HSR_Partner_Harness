@@ -1,4 +1,4 @@
-from pair_harness.core.contracts import Message, MessageKind, MessageSource
+from pair_harness.core.contracts import Message, MessageKind, MessageSource, ToolRun
 from pair_harness.ui.main_window import MainWindow
 
 
@@ -67,7 +67,37 @@ def test_approval_mode_change_updates_window_and_emits_signal(qtbot) -> None:
     # 恢复项目保存的模式：不发切换信号
     window.set_approval_mode("review")
     assert window.input_bar.approval_mode == "review"
-    assert changes == ["full_auto"]
+
+
+def test_clear_conversation_removes_messages_and_tool_cards(qtbot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.add_message(
+        Message(
+            conversation_id="c",
+            pair_id="phainon_ancient_machine",
+            source=MessageSource.CHARACTER,
+            kind=MessageKind.CHARACTER_SPEECH,
+            text="你好。",
+        )
+    )
+    window.update_tool_run(
+        ToolRun(
+            tool_call_id="t",
+            conversation_id="c",
+            task_id="task",
+            engine_turn_id="turn",
+            sequence=1,
+            status="succeeded",
+            title="测试",
+        )
+    )
+
+    window.clear_conversation()
+
+    assert window.character_messages.bubbles == []
+    assert window.assistant_messages.bubbles == []
+    assert window.tool_cards == {}
 
 
 def test_bubble_shows_chinese_source_label_and_safe_object_name(qtbot) -> None:

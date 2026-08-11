@@ -35,10 +35,14 @@ def test_unix_executable_path_removed() -> None:
     assert extract_speech_segments(text) == ["请查看这个文件：", "内容如上。"]
 
 
-def test_cjk_line_with_embedded_path_kept() -> None:
-    # 含中文的整行不判定为命令行（路径作为句子一部分时保留）
+def test_cjk_line_with_embedded_path_removes_only_path() -> None:
     text = "路径 /home/user/run.sh 不存在。"
-    assert extract_speech_segments(text) == ["路径 /home/user/run.sh 不存在。"]
+    assert extract_speech_segments(text) == ["路径 不存在。"]
+
+
+def test_cjk_line_with_spaced_windows_path_never_reads_path_fragments() -> None:
+    text = "文件 C:\\AI\\HSR Partner Harness\\src\\main.py 已更新。"
+    assert extract_speech_segments(text) == ["文件 已更新。"]
 
 
 def test_paragraph_split_on_blank_lines() -> None:

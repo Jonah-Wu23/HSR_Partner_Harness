@@ -293,6 +293,8 @@ class VoiceRuntime:
         assistant.natural_language 按 ``extract_speech_segments`` 分段落入队。
         voice_id 按来源选 pair 配置的 character/assistant 音色。
         """
+        if message.conversation_id != self._conversation_id:
+            return
         if not is_tts_eligible(message.source, message.kind):
             return
         if message.source == MessageSource.CHARACTER:
@@ -310,6 +312,12 @@ class VoiceRuntime:
                     text=text, voice_id=voice_id, message_id=message.message_id
                 )
             )
+
+    def set_context(self, conversation_id: str, pair_config: PairConfig) -> None:
+        """切换语音所属聊天与搭档，并停止旧聊天的待播语音。"""
+        self.stop_speaking()
+        self._conversation_id = conversation_id
+        self._pair_config = pair_config
 
     def stop_speaking(self) -> None:
         """停止播放并清空待播队列（同步入口，供 UI 信号直接调用）。"""

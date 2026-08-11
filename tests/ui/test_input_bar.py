@@ -60,3 +60,23 @@ def test_set_approval_mode_restores_selection_without_signal(qtbot) -> None:
     with pytest.raises(ValueError):
         bar.set_approval_mode("unknown")
 
+
+def test_reasoning_effort_combo_changes_and_restores_without_signal(qtbot) -> None:
+    bar = InputBar()
+    qtbot.addWidget(bar)
+    assert bar.reasoning_effort == "low"
+    assert [
+        bar.reasoning_effort_combo.itemData(i)
+        for i in range(bar.reasoning_effort_combo.count())
+    ] == ["auto", "low", "high", "max"]
+
+    changes = []
+    bar.reasoning_effort_changed.connect(changes.append)
+    bar.reasoning_effort_combo.setCurrentIndex(2)
+    assert changes == ["high"]
+    bar.set_reasoning_effort("max")
+    assert bar.reasoning_effort == "max"
+    assert changes == ["high"]
+
+    with pytest.raises(ValueError):
+        bar.set_reasoning_effort("unknown")

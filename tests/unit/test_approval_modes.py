@@ -92,6 +92,52 @@ async def test_request_approval_callback_allows_tool(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_native_engine_never_synthesizes_approval_after_tool_started(
+    tmp_path,
+) -> None:
+    class NativeApprovalEngine(RecordingCodingEngine):
+        native_preexecution_approval = True
+
+    dialogue = FixedDialogueModel(
+        CharacterTurn(
+            speech="交给古代机械。",
+            delegation=TaskRequestDraft(instructions="列出文件"),
+        ),
+        CharacterTurn(speech="完成了。"),
+    )
+    engine = NativeApprovalEngine(
+        tool_payload={"tool_kind": "shell", "command": "ls"}
+    )
+    approval_calls = 0
+
+    async def should_not_be_called(*args):
+        nonlocal approval_calls
+        approval_calls += 1
+        return ApprovalDecision.ALLOW
+
+    orchestrator = ConversationOrchestrator(
+        pair_id="phainon_ancient_machine",
+        project=ProjectRef(project_id="p", name="p", root_path=str(tmp_path)),
+        dialogue_model=dialogue,
+        coding_engine=engine,
+        approval_mode=ApprovalMode.REQUEST_APPROVAL,
+        approval_callback=should_not_be_called,
+    )
+
+    outcome = await orchestrator.handle_character_input(
+        conversation_id="c", text="列出文件"
+    )
+
+    assert outcome.receipt is not None
+    assert outcome.receipt.status == "completed"
+    assert approval_calls == 0
+    assert not any(
+        event.type == EngineEventType.APPROVAL_REQUESTED
+        for event in outcome.engine_events
+    )
+
+
+@pytest.mark.asyncio
 async def test_allow_for_conversation_caches_same_signature(tmp_path) -> None:
     dialogue = FixedDialogueModel(
         CharacterTurn(speech="交给古代机械。", delegation=TaskRequestDraft(instructions="执行")),
@@ -328,10 +374,11 @@ async def test_review_mode_high_risk_calls_reviewer(tmp_path) -> None:
     assert outcome.receipt is not None
     assert outcome.receipt.status == "failed"
     assert len(reviewer.requests) == 1
-    # 计划 A3：审查智能体必须收到近期上下文，而不是空列表
+    # 审查智能体只读取当前聊天里用户最后发送的三条消息
     _, context = reviewer.requests[0]
-    assert context, "审查智能体应收到近期上下文"
-    assert any(message.source == "user" for message in context)
+    assert context, "审查智能体应收到最近的用户消息"
+    assert len(context) <= 3
+    assert all(message.source == "user" for message in context)
     resolved = [e for e in outcome.engine_events if e.type == "approval.resolved"]
     assert len(resolved) == 1
     assert resolved[0].payload["actor"] == "reviewer"
@@ -345,7 +392,7 @@ async def test_review_mode_high_risk_calls_reviewer(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_engine_policy_on_request_mode_maps_to_on_request(tmp_path) -> None:
+async def test_engine_policy_on_request_mode_maps_to_untrusted(tmp_path) -> None:
     dialogue = FixedDialogueModel(
         CharacterTurn(speech="交给古代机械。", delegation=TaskRequestDraft(instructions="执行")),
         CharacterTurn(speech="完成了。"),
@@ -368,7 +415,7 @@ async def test_engine_policy_on_request_mode_maps_to_on_request(tmp_path) -> Non
     assert outcome.receipt is not None
     policy = engine.opened_policies[-1]
     assert policy == {
-        "approvalPolicy": "on-request",
+        "approvalPolicy": "untrusted",
         "sandbox": "read-only",
         "approvalsReviewer": "user",
     }
@@ -397,7 +444,7 @@ async def test_engine_policy_full_auto_maps_to_never(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_engine_policy_review_maps_to_on_request(tmp_path) -> None:
+async def test_engine_policy_review_maps_to_untrusted(tmp_path) -> None:
     dialogue = FixedDialogueModel(
         CharacterTurn(speech="交给古代机械。", delegation=TaskRequestDraft(instructions="执行")),
         CharacterTurn(speech="完成了。"),
@@ -414,7 +461,7 @@ async def test_engine_policy_review_maps_to_on_request(tmp_path) -> None:
 
     await orchestrator.handle_character_input(conversation_id="c", text="执行")
 
-    assert engine.opened_policies[-1]["approvalPolicy"] == "on-request"
+    assert engine.opened_policies[-1]["approvalPolicy"] == "untrusted"
     assert engine.opened_policies[-1]["sandbox"] == "read-only"
     assert engine.opened_policies[-1]["approvalsReviewer"] == "user"
 

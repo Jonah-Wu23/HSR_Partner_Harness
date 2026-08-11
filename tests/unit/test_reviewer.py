@@ -8,6 +8,9 @@ from pair_harness.core.contracts import (
     CharacterTurn,
     DialogueEvent,
     DialogueRequest,
+    Message,
+    MessageKind,
+    MessageSource,
     PendingOperation,
     ReviewerVerdict,
 )
@@ -105,6 +108,26 @@ async def test_dialogue_reviewer_parses_full_delta_stream() -> None:
 
 
 @pytest.mark.asyncio
+async def test_dialogue_reviewer_parses_role_protocol_wrapper() -> None:
+    verdict = {"allow": True, "reason": "", "suggestion": ""}
+    wrapped = json.dumps({"speech": json.dumps(verdict), "delegation": None})
+
+    class WrappedModel(DialogueModel):
+        async def stream_reply(
+            self, request: DialogueRequest
+        ) -> AsyncIterator[DialogueEvent]:
+            yield DialogueEvent(type="speech.delta", delta=wrapped)
+
+    reviewer = DialogueModelReviewer(WrappedModel())
+    result = await reviewer.review(
+        PendingOperation(tool_kind="shell", command="pytest", summary="运行测试"),
+        [],
+    )
+
+    assert result.allow is True
+
+
+@pytest.mark.asyncio
 async def test_dialogue_reviewer_fails_closed_on_invalid_json() -> None:
     """O1.1：非法 JSON 输出保持 fail-closed 否决并给出固定理由。"""
     model = DeltaAndFinalModel("这不是 JSON")
@@ -151,3 +174,52 @@ async def test_dialogue_reviewer_fails_closed_on_fallback_speech() -> None:
     verdict = await reviewer.review(op, [])
     assert verdict.allow is False
     assert verdict.reason == "审查智能体返回格式错误"
+
+
+@pytest.mark.asyncio
+async def test_dialogue_reviewer_uses_only_latest_three_user_messages() -> None:
+    captured: list[DialogueRequest] = []
+
+    class CapturingModel(DialogueModel):
+        async def stream_reply(
+            self, request: DialogueRequest
+        ) -> AsyncIterator[DialogueEvent]:
+            captured.append(request)
+            raw = '{"allow": true, "reason": "", "suggestion": ""}'
+            yield DialogueEvent(type="speech.delta", delta=raw)
+            yield DialogueEvent(
+                type="character.final", turn=CharacterTurn(speech=raw)
+            )
+
+    context: list[Message] = []
+    for i in range(5):
+        context.append(
+            Message(
+                conversation_id="c",
+                pair_id="phainon_ancient_machine",
+                source=MessageSource.USER,
+                kind=MessageKind.USER_TEXT,
+                text=f"用户消息{i}",
+            )
+        )
+        context.append(
+            Message(
+                conversation_id="c",
+                pair_id="phainon_ancient_machine",
+                source=MessageSource.CHARACTER,
+                kind=MessageKind.CHARACTER_SPEECH,
+                text=f"角色消息{i}",
+            )
+        )
+    reviewer = DialogueModelReviewer(CapturingModel())
+    verdict = await reviewer.review(
+        PendingOperation(tool_kind="shell", command="pytest", summary="运行测试"),
+        context,
+    )
+
+    assert verdict.allow is True
+    prompt = captured[0].user_message.text
+    assert "用户消息0" not in prompt and "用户消息1" not in prompt
+    assert all(f"用户消息{i}" in prompt for i in range(2, 5))
+    assert "角色消息" not in prompt
+    assert "是否直接要求或明确批准" in prompt

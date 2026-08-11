@@ -11,6 +11,7 @@ from pair_harness.adapters.demo import ScriptedCodingEngine, ScriptedDialogueMod
 from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDialogueModel
 from pair_harness.adapters.reviewer import DialogueModelReviewer
 from pair_harness.app_paths import AppPaths
+from pair_harness.config.pairs import load_pair_config, load_prompt
 from pair_harness.config.providers import load_reasoning_preset
 from pair_harness.core.contracts import ApprovalDecision, ApprovalMode, MessageSource, ProjectRef
 from pair_harness.core.orchestrator import ConversationOrchestrator
@@ -130,13 +131,33 @@ async def run_real(
         raise SystemExit(f"--real 缺少环境变量: {', '.join(missing)}（.env 或进程环境）")
     assert settings.dialogue_base_url and settings.dialogue_api_key and settings.dialogue_model
 
+    paths = AppPaths(Path(data_dir)).ensure() if data_dir else AppPaths.default().ensure()
+    store = SQLiteStore(paths.database)
+    project_record = store.find_project_by_root_path(str(project_path))
+    if project_record is None:
+        project_record = store.create_project(
+            name=project_path.name,
+            root_path=str(project_path),
+            approval_mode=approval_mode.value,
+        )
+    else:
+        store.update_project_approval_mode(project_record.project_id, approval_mode.value)
+        project_record = store.get_project(project_record.project_id)
+    stored_conversation_id = f"{project_record.project_id}:{conversation_id}"
+    pair_config = load_pair_config(pair_id)
+    assistant_instructions = load_prompt(pair_config.assistant.prompt)
+
     preset = load_reasoning_preset(settings.dialogue_base_url, settings.dialogue_model)
     dialogue = OpenAICompatibleDialogueModel(
         base_url=settings.dialogue_base_url,
         api_key=settings.dialogue_api_key,
         model=settings.dialogue_model,
         thinking=preset.default_thinking,
-        reasoning_effort="max",
+        reasoning_effort=(
+            None
+            if project_record.reasoning_effort == "auto"
+            else project_record.reasoning_effort
+        ),
         temperature=1.0,
     )
     transport = JsonlProcessTransport(settings.codex_bin)
@@ -148,18 +169,13 @@ async def run_real(
         return ApprovalDecision.ALLOW if approve else ApprovalDecision.DENY
 
     project = ProjectRef(
-        project_id=f"real-{project_path.name}",
-        name=project_path.name,
-        root_path=str(project_path),
+        project_id=project_record.project_id,
+        name=project_record.name,
+        root_path=project_record.root_path,
     )
-    paths = AppPaths(Path(data_dir)).ensure() if data_dir else AppPaths.default().ensure()
-    store = SQLiteStore(paths.database)
     try:
-        store.create_project(
-            project_id=project.project_id, name=project.name, root_path=project.root_path
-        )
         store.create_conversation(
-            conversation_id=conversation_id,
+            conversation_id=stored_conversation_id,
             project_id=project.project_id,
             pair_id=pair_id,
             title="CLI 真实联调",
@@ -173,14 +189,18 @@ async def run_real(
             approval_mode=approval_mode,
             reviewer=reviewer,
             approval_callback=approval_callback,
+            assistant_instructions=assistant_instructions,
         )
-        snapshot = store.load_conversation(conversation_id)
+        snapshot = store.load_conversation(stored_conversation_id)
         if snapshot["messages"]:
             orchestrator.restore_conversation(snapshot)
-            print(f"[会话] 恢复旧聊天 {conversation_id}（{len(snapshot['messages'])} 条消息）")
+            print(
+                f"[会话] 恢复旧聊天 {conversation_id}"
+                f"（{len(snapshot['messages'])} 条消息）"
+            )
 
         outcome = await orchestrator.handle_character_input(
-            conversation_id=conversation_id, text=text
+            conversation_id=stored_conversation_id, text=text
         )
         for message in outcome.messages:
             if message.source in (MessageSource.USER, MessageSource.CHARACTER, MessageSource.ASSISTANT):

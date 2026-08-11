@@ -38,6 +38,7 @@ class MainWindow(QMainWindow):
     approval_decided = pyqtSignal(str, str)
     # 输入区审批模式下拉框切换（ApprovalMode 的枚举值字符串）
     approval_mode_changed = pyqtSignal(str)
+    reasoning_effort_changed = pyqtSignal(str)
     # B2.6：语音控制经窗口单向桥接到 VoiceRuntime（设计 §5.5）
     push_to_talk_pressed = pyqtSignal()
     push_to_talk_released = pyqtSignal()
@@ -119,6 +120,9 @@ class MainWindow(QMainWindow):
         self.mode_combo.currentIndexChanged.connect(self._apply_mode)
         self.input_bar.submitted.connect(self.input_submitted)
         self.input_bar.approval_mode_changed.connect(self._sync_approval_mode)
+        self.input_bar.reasoning_effort_changed.connect(
+            self.reasoning_effort_changed
+        )
         self.approval_bar.decided.connect(self.approval_decided)
         self.library_button.clicked.connect(self._toggle_library)
         self.cancel_button.clicked.connect(self.cancel_requested)
@@ -169,6 +173,18 @@ class MainWindow(QMainWindow):
         """恢复项目保存的审批模式（打开项目时调用）。"""
         self._approval_mode = ApprovalMode(mode)
         self.input_bar.set_approval_mode(mode)
+
+    def set_reasoning_effort(self, effort: str) -> None:
+        self.input_bar.set_reasoning_effort(effort)
+
+    def clear_conversation(self) -> None:
+        """切换聊天前清空当前消息和工具卡片。"""
+        self.character_messages.clear_messages()
+        self.assistant_messages.clear_messages()
+        for card in self.tool_cards.values():
+            self.tool_layout.removeWidget(card)
+            card.deleteLater()
+        self.tool_cards.clear()
 
     def show_approval_request(
         self, approval_id: str, summary: str, reason: str
@@ -263,4 +279,3 @@ class MainWindow(QMainWindow):
                 details=str(payload.get("details", "")),
             )
         self.update_tool_run(run)
-

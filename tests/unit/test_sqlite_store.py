@@ -193,10 +193,42 @@ def test_approval_mode_is_persisted_per_project(tmp_path: Path) -> None:
         assert project.approval_mode == "request_approval"
         store.update_project_approval_mode("p", "full_auto")
         assert store.get_project("p").approval_mode == "full_auto"
+        # 重复注册项目只刷新路径与打开时间，不覆盖用户设置
+        store.create_project(name="Repo", root_path=str(tmp_path), project_id="p")
+        assert store.get_project("p").approval_mode == "full_auto"
 
     # 重建 store（模拟关闭重开），审批模式必须恢复
     with SQLiteStore(database) as reopened:
         assert reopened.get_project("p").approval_mode == "full_auto"
+
+
+def test_reasoning_effort_is_persisted_per_project(tmp_path: Path) -> None:
+    database = tmp_path / "data" / "pair_harness.db"
+    with SQLiteStore(database) as store:
+        project = store.create_project(
+            name="Repo", root_path=str(tmp_path), project_id="p"
+        )
+        assert project.reasoning_effort == "low"
+        store.update_project_reasoning_effort("p", "high")
+        store.create_project(name="Repo", root_path=str(tmp_path), project_id="p")
+        assert store.get_project("p").reasoning_effort == "high"
+
+    with SQLiteStore(database) as reopened:
+        assert reopened.get_project("p").reasoning_effort == "high"
+
+
+def test_project_can_be_reopened_by_normalized_root_path(tmp_path: Path) -> None:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    with SQLiteStore(tmp_path / "db.sqlite") as store:
+        store.create_project(
+            name="Repo", root_path=str(project_root), project_id="stable-project"
+        )
+
+        reopened = store.find_project_by_root_path(str(project_root / "."))
+
+        assert reopened is not None
+        assert reopened.project_id == "stable-project"
 
 
 def test_new_conversation_does_not_inherit_history_or_session(tmp_path: Path) -> None:
@@ -263,6 +295,7 @@ def test_fresh_database_marks_schema_version(tmp_path: Path) -> None:
         assert "last_turn_id" not in _table_columns(store.connection, "engine_sessions")
         assert "resume_status" not in _table_columns(store.connection, "engine_sessions")
         assert "approval_mode" in _table_columns(store.connection, "projects")
+        assert "reasoning_effort" in _table_columns(store.connection, "projects")
 
 
 def test_old_database_is_migrated_on_open(tmp_path: Path) -> None:
@@ -300,6 +333,7 @@ def test_old_database_is_migrated_on_open(tmp_path: Path) -> None:
         assert store.connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         # 迁移 1：projects 补 approval_mode（默认 request_approval）
         assert store.get_project("p").approval_mode == "request_approval"
+        assert store.get_project("p").reasoning_effort == "low"
         # 迁移 2：engine_sessions 死列已删除
         assert "last_turn_id" not in _table_columns(store.connection, "engine_sessions")
         assert "resume_status" not in _table_columns(store.connection, "engine_sessions")

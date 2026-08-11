@@ -50,7 +50,10 @@ class DialogueModelReviewer:
     async def review(
         self, op: PendingOperation, context: list[Message]
     ) -> ReviewerVerdict:
-        prompt = self._build_prompt(op, context[-3:])
+        recent_user_messages = [
+            message for message in context if message.source == MessageSource.USER
+        ][-3:]
+        prompt = self._build_prompt(op, recent_user_messages)
         synthetic = Message(
             conversation_id="reviewer",
             pair_id="reviewer",
@@ -106,7 +109,7 @@ class DialogueModelReviewer:
             text = fenced.group(1).strip()
         try:
             obj = json.loads(text)
-            return obj if isinstance(obj, dict) else None
+            return DialogueModelReviewer._coerce_verdict(obj)
         except (ValueError, TypeError):
             pass
         start = text.find("{")
@@ -115,18 +118,37 @@ class DialogueModelReviewer:
             return None
         try:
             obj = json.loads(text[start : end + 1])
-            return obj if isinstance(obj, dict) else None
+            return DialogueModelReviewer._coerce_verdict(obj)
         except (ValueError, TypeError):
             return None
+
+    @staticmethod
+    def _coerce_verdict(obj: object) -> dict | None:
+        """兼容裸裁决 JSON 与角色协议的 ``speech`` 包装。"""
+        if not isinstance(obj, dict):
+            return None
+        if "allow" in obj:
+            return obj
+        wrapped = obj.get("speech")
+        if not isinstance(wrapped, str):
+            return None
+        try:
+            verdict = json.loads(wrapped)
+        except (ValueError, TypeError):
+            return None
+        return verdict if isinstance(verdict, dict) and "allow" in verdict else None
 
     def _build_prompt(self, op: PendingOperation, context: list[Message]) -> str:
         lines = [
             "你是一名安全审查智能体，只允许输出 JSON。",
-            "输入包含一条待审批操作和最近对话上下文。",
+            "输入包含一条待审批操作和用户最近发送的最多 3 条消息。",
             "请判断该操作是否允许执行。",
+            "先检查这些用户消息里是否直接要求或明确批准了当前这项操作。",
+            "用户的明确要求或批准是裁决依据，但不代表可以忽略操作本身的风险。",
+            "涉及凭据外传、明显越界或重大不可逆损害时，仍应否决并说明原因。",
             "",
-            "输出格式（仅 JSON，无其他文字）：",
-            '{"allow": true|false, "reason": "否决时必填的简短理由", "suggestion": "否决时必填的调整建议"}',
+            "输出格式（仅一个 JSON 对象，无其他文字）：",
+            '{"speech": "{\\"allow\\": true|false, \\"reason\\": \\"否决时必填的简短理由\\", \\"suggestion\\": \\"否决时必填的调整建议\\"}", "delegation": null}',
             "",
             f"待审批操作摘要：{op.summary}",
             f"操作类型：{op.tool_kind}",
@@ -137,7 +159,7 @@ class DialogueModelReviewer:
             lines.append(f"涉及路径：{', '.join(op.paths)}")
         if context:
             lines.append("")
-            lines.append("最近上下文：")
+            lines.append("最近用户消息：")
             for message in context:
                 lines.append(f"- {message.source}: {message.text}")
         return "\n".join(lines)

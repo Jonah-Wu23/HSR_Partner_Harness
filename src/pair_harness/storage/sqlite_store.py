@@ -25,7 +25,7 @@ def _dt(value: str) -> datetime:
 # O4.3：数据库结构版本。新库由 schema.sql 一次建全，直接标记为该版本；
 # 旧库（user_version=0）按 MIGRATIONS 逐级升级。每次结构变更 +1，
 # 并在 MIGRATIONS 里补对应迁移步骤。
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # 索引 i 对应“从版本 i 升到 i+1”的迁移步骤（每级一条或多条 SQL）。
 MIGRATIONS: tuple[tuple[str, ...], ...] = (
@@ -39,6 +39,11 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
     (
         "ALTER TABLE engine_sessions DROP COLUMN last_turn_id",
         "ALTER TABLE engine_sessions DROP COLUMN resume_status",
+    ),
+    # 版本 3：保存项目的角色对话思考档位
+    (
+        "ALTER TABLE projects ADD COLUMN reasoning_effort "
+        "TEXT NOT NULL DEFAULT 'low'",
     ),
 )
 
@@ -105,21 +110,22 @@ class SQLiteStore(StateStore):
         root_path: str,
         project_id: str | None = None,
         approval_mode: str = "request_approval",
+        reasoning_effort: str = "low",
     ) -> Project:
         project_id = project_id or str(uuid4())
         now = _now()
         self.connection.execute(
             """
             INSERT INTO projects(
-                project_id, name, root_path, approval_mode, archived, created_at, last_opened_at
-            ) VALUES (?, ?, ?, ?, 0, ?, ?)
+                project_id, name, root_path, approval_mode, reasoning_effort,
+                archived, created_at, last_opened_at
+            ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
             ON CONFLICT(project_id) DO UPDATE SET
                 name=excluded.name,
                 root_path=excluded.root_path,
-                approval_mode=excluded.approval_mode,
                 last_opened_at=excluded.last_opened_at
             """,
-            (project_id, name, root_path, approval_mode, now, now),
+            (project_id, name, root_path, approval_mode, reasoning_effort, now, now),
         )
         self.connection.commit()
         return self.get_project(project_id)
@@ -129,6 +135,15 @@ class SQLiteStore(StateStore):
         self.connection.execute(
             "UPDATE projects SET approval_mode = ? WHERE project_id = ?",
             (approval_mode, project_id),
+        )
+        self.connection.commit()
+
+    def update_project_reasoning_effort(
+        self, project_id: str, reasoning_effort: str
+    ) -> None:
+        self.connection.execute(
+            "UPDATE projects SET reasoning_effort = ? WHERE project_id = ?",
+            (reasoning_effort, project_id),
         )
         self.connection.commit()
 
@@ -143,6 +158,7 @@ class SQLiteStore(StateStore):
             name=row["name"],
             root_path=row["root_path"],
             approval_mode=row["approval_mode"],
+            reasoning_effort=row["reasoning_effort"],
             archived=bool(row["archived"]),
             created_at=_dt(row["created_at"]),
             last_opened_at=_dt(row["last_opened_at"]),
@@ -154,6 +170,18 @@ class SQLiteStore(StateStore):
             f"SELECT project_id FROM projects {where} ORDER BY last_opened_at DESC"
         ).fetchall()
         return [self.get_project(row["project_id"]) for row in rows]
+
+    def find_project_by_root_path(self, root_path: str) -> Project | None:
+        """按规范化目录查找项目，避免同一目录重复创建项目记录。"""
+        wanted = str(Path(root_path).resolve())
+        for project in self.list_projects():
+            try:
+                current = str(Path(project.root_path).resolve())
+            except OSError:
+                current = project.root_path
+            if current.casefold() == wanted.casefold():
+                return project
+        return None
 
     def create_conversation(
         self,
@@ -172,10 +200,6 @@ class SQLiteStore(StateStore):
                 conversation_id, project_id, pair_id, title, last_mode, archived, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
             ON CONFLICT(conversation_id) DO UPDATE SET
-                project_id=excluded.project_id,
-                pair_id=excluded.pair_id,
-                title=excluded.title,
-                last_mode=excluded.last_mode,
                 updated_at=excluded.updated_at
             """,
             (conversation_id, project_id, pair_id, title, last_mode, now, now),
@@ -365,4 +389,3 @@ class SQLiteStore(StateStore):
             "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
             (_now(), conversation_id),
         )
-

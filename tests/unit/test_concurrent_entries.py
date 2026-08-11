@@ -148,3 +148,31 @@ async def test_chat_rounds_and_amendment_during_execution() -> None:
     assert outcome.receipt is not None
     assert outcome.receipt.status == "completed"
     assert orchestrator._history["c"][-1].source == MessageSource.CHARACTER
+
+
+@pytest.mark.asyncio
+async def test_direct_input_from_other_conversation_does_not_amend_active_task() -> None:
+    engine = PausingEngine(started=asyncio.Event(), release=asyncio.Event())
+    orchestrator = _make_orchestrator(
+        engine,
+        CharacterTurn(
+            speech="任务开始了。",
+            delegation=TaskRequestDraft(instructions="跑测试"),
+        ),
+        CharacterTurn(speech="做完了。"),
+    )
+    running = asyncio.create_task(
+        orchestrator.handle_character_input(conversation_id="chat-a", text="开始")
+    )
+    try:
+        await asyncio.wait_for(engine._started.wait(), timeout=5)
+        outcome = await orchestrator.handle_direct_input(
+            conversation_id="chat-b", text="改成只跑单测"
+        )
+        assert engine.amendments == []
+        assert len(outcome.messages) == 2
+        assert outcome.messages[-1].source == MessageSource.SYSTEM
+        assert "另一聊天" in outcome.messages[-1].text
+    finally:
+        engine._release.set()
+        await running

@@ -39,6 +39,8 @@ class DialogueModel(ABC):
 
 
 class CodingEngine(ABC):
+    native_preexecution_approval: bool = False
+
     @abstractmethod
     async def open_session(
         self,
@@ -48,6 +50,7 @@ class CodingEngine(ABC):
         approval_policy: str | None = None,
         sandbox: str | None = None,
         approvals_reviewer: str | None = None,
+        developer_instructions: str | None = None,
     ) -> EngineSessionRef:
         """打开（或恢复）引擎会话。
 
@@ -133,4 +136,3 @@ class VoiceActivityDetector(ABC):
     async def detect(self, pcm_stream: AsyncIterable[bytes]) -> AsyncIterator[VadEvent]:
         if False:
             yield
-

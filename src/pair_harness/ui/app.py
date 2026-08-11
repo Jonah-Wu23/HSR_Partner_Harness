@@ -5,9 +5,10 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 from PyQt5.QtCore import QTimer
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QFileDialog
 from qasync import QEventLoop, asyncSlot
 
 from pair_harness.adapters.codex.engine import CodexAppServerEngine
@@ -17,7 +18,7 @@ from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDia
 from pair_harness.adapters.reviewer import DialogueModelReviewer
 from pair_harness.app_paths import AppPaths
 from pair_harness.cli import load_dotenv
-from pair_harness.config.pairs import PairConfig, load_pair_config
+from pair_harness.config.pairs import PairConfig, load_pair_config, load_prompt
 from pair_harness.config.providers import load_reasoning_preset
 from pair_harness.core.contracts import (
     ApprovalDecision,
@@ -45,8 +46,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="真实语音链路：DashScope ASR/TTS + 本地 VAD（--real 隐含开启）",
     )
     parser.add_argument("--pair", default="phainon_ancient_machine")
+    parser.add_argument("--project", type=Path, default=Path("."))
     parser.add_argument("--data-dir", type=Path)
     return parser
+
+
+def _get_or_create_project(
+    store: SQLiteStore, root_path: Path, *, reasoning_effort: str = "low"
+):
+    root_path = root_path.resolve()
+    existing = store.find_project_by_root_path(str(root_path))
+    if existing is not None:
+        return existing
+    return store.create_project(
+        project_id=str(uuid4()),
+        name=root_path.name or str(root_path),
+        root_path=str(root_path),
+        reasoning_effort=reasoning_effort,
+    )
+
+
+def _get_or_create_conversation(
+    store: SQLiteStore, *, project_id: str, pair_id: str
+):
+    for conversation in store.list_conversations(project_id):
+        if conversation.pair_id == pair_id:
+            return conversation
+    return store.create_conversation(
+        project_id=project_id,
+        pair_id=pair_id,
+        title="白厄与古代机械",
+    )
 
 
 def wire_real_voice(
@@ -148,10 +178,13 @@ def main(argv: list[str] | None = None) -> int:
     window = MainWindow(theme=pair_config.theme)
     paths = AppPaths(args.data_dir) if args.data_dir else AppPaths.default()
     store = SQLiteStore(paths.ensure().database)
+    project_record = _get_or_create_project(store, args.project)
+    conversation_record = _get_or_create_conversation(
+        store, project_id=project_record.project_id, pair_id=args.pair
+    )
+    assistant_instructions = load_prompt(pair_config.assistant.prompt)
 
     if args.real:
-        project_id = f"real-{args.pair}"
-        conversation_id = "real-conversation"
         missing = [
             name
             for name, value in (
@@ -170,30 +203,24 @@ def main(argv: list[str] | None = None) -> int:
             api_key=settings.dialogue_api_key,
             model=settings.dialogue_model,
             thinking=preset.default_thinking,
-            reasoning_effort="max",
+            reasoning_effort=(
+                None
+                if project_record.reasoning_effort == "auto"
+                else project_record.reasoning_effort
+            ),
             temperature=1.0,
         )
         coding_engine = CodexAppServerEngine(JsonlProcessTransport(settings.codex_bin))
     else:
-        project_id = "demo-project"
-        conversation_id = "demo-conversation"
         dialogue_model = ScriptedDialogueModel()
         coding_engine = ScriptedCodingEngine()
 
-    store.create_project(
-        project_id=project_id,
-        name=pair_config.character.name,
-        root_path=str(Path.cwd()),
-    )
-    store.create_conversation(
-        conversation_id=conversation_id,
-        project_id=project_id,
-        pair_id=args.pair,
-        title="白厄与古代机械",
-    )
-    # 打开项目时恢复上次选择的审批模式（计划 A6）
-    project_record = store.get_project(project_id)
+    current = {
+        "project": project_record,
+        "conversation_id": conversation_record.conversation_id,
+    }
     window.set_approval_mode(project_record.approval_mode)
+    window.set_reasoning_effort(project_record.reasoning_effort)
 
     # 审批裁决桥：orchestrator 在请求批准模式下挂起等待 UI 决策。
     # O1.7：按 approval_id 对应 future，不再依赖 FIFO 顺序巧合。
@@ -218,7 +245,11 @@ def main(argv: list[str] | None = None) -> int:
 
     orchestrator = ConversationOrchestrator(
         pair_id=args.pair,
-        project=ProjectRef(project_id=project_id, name=pair_config.character.name, root_path=str(Path.cwd())),
+        project=ProjectRef(
+            project_id=project_record.project_id,
+            name=project_record.name,
+            root_path=project_record.root_path,
+        ),
         dialogue_model=dialogue_model,
         coding_engine=coding_engine,
         store=store,
@@ -226,26 +257,120 @@ def main(argv: list[str] | None = None) -> int:
         approval_callback=approval_callback,
         # B1：帮我审核模式下审查智能体复用真实对话模型
         reviewer=DialogueModelReviewer(dialogue_model) if args.real else None,
+        assistant_instructions=assistant_instructions,
     )
 
     @asyncSlot(str)
     def approval_mode_selected(mode: str) -> None:
         # 计划 A5：切换后立即写入项目设置，并同步编排器
+        project_id = current["project"].project_id
         store.update_project_approval_mode(project_id, mode)
-        orchestrator.set_approval_mode(ApprovalMode(mode))
+        current["project"] = store.get_project(project_id)
+        orchestrator.set_approval_mode(
+            ApprovalMode(mode), conversation_id=current["conversation_id"]
+        )
 
     window.approval_mode_changed.connect(approval_mode_selected)
 
-    # 挂载项目与聊天库（计划 A6 第 4 步）
-    window.set_project_library(ProjectLibrary(store))
-    snapshot = store.load_conversation(conversation_id)
-    # O2.2：恢复旧聊天时回填编排器的消息历史与会话引用，
-    # 角色不失忆，Codex 可 thread/resume 而非重新 thread/start
-    orchestrator.restore_conversation(snapshot)
-    for message in snapshot["messages"]:
-        window.add_message(message)
-    for tool_run in snapshot["tool_runs"]:
-        window.update_tool_run(tool_run)
+    @asyncSlot(str)
+    def reasoning_effort_selected(effort: str) -> None:
+        project_id = current["project"].project_id
+        store.update_project_reasoning_effort(project_id, effort)
+        current["project"] = store.get_project(project_id)
+        if isinstance(dialogue_model, OpenAICompatibleDialogueModel):
+            dialogue_model.reasoning_effort = None if effort == "auto" else effort
+
+    window.reasoning_effort_changed.connect(reasoning_effort_selected)
+
+    bridge = OrchestratorBridge()
+    bridge.message_ready.connect(window.add_message)
+    bridge.tool_run_ready.connect(window.update_tool_run)
+    bridge.engine_event_ready.connect(window.apply_engine_event)
+    bridge.busy_changed.connect(window.set_busy)
+
+    def emit_current_message(message) -> None:
+        if message.conversation_id == current["conversation_id"]:
+            bridge.message_ready.emit(message)
+
+    def emit_current_event(event) -> None:
+        if event.conversation_id == current["conversation_id"]:
+            bridge.engine_event_ready.emit(event)
+
+    orchestrator.on_message = emit_current_message
+    orchestrator.on_engine_event = emit_current_event
+    orchestrator.on_execution_started = lambda: bridge.busy_changed.emit(True)
+    orchestrator.on_execution_finished = lambda: bridge.busy_changed.emit(False)
+
+    voice_runtime: VoiceRuntime | None = None
+    project_library = ProjectLibrary(store)
+    window.set_project_library(project_library)
+
+    def switch_conversation(conversation_id: str) -> None:
+        conversation = store.get_conversation(conversation_id)
+        if conversation.project_id is None:
+            return
+        project = store.get_project(conversation.project_id)
+        selected_pair = load_pair_config(conversation.pair_id)
+        selected_assistant_prompt = load_prompt(selected_pair.assistant.prompt)
+        old_conversation_id = current["conversation_id"]
+        if old_conversation_id != conversation_id:
+            orchestrator.close_conversation(old_conversation_id)
+        current["project"] = project
+        current["conversation_id"] = conversation_id
+        orchestrator.select_context(
+            project=ProjectRef(
+                project_id=project.project_id,
+                name=project.name,
+                root_path=project.root_path,
+            ),
+            pair_id=conversation.pair_id,
+            conversation_id=conversation_id,
+            approval_mode=ApprovalMode(project.approval_mode),
+            assistant_instructions=selected_assistant_prompt,
+        )
+        if isinstance(dialogue_model, OpenAICompatibleDialogueModel):
+            dialogue_model.reasoning_effort = (
+                None if project.reasoning_effort == "auto" else project.reasoning_effort
+            )
+        window.clear_conversation()
+        window.set_approval_mode(project.approval_mode)
+        window.set_reasoning_effort(project.reasoning_effort)
+        window.set_mode(conversation.last_mode)
+        snapshot = store.load_conversation(conversation_id)
+        orchestrator.restore_conversation(snapshot)
+        for message in snapshot["messages"]:
+            window.add_message(message)
+        for tool_run in snapshot["tool_runs"]:
+            window.update_tool_run(tool_run)
+        if voice_runtime is not None:
+            voice_runtime.set_context(conversation_id, selected_pair)
+
+    def create_project() -> None:
+        selected = QFileDialog.getExistingDirectory(window, "选择项目文件夹")
+        if not selected:
+            return
+        project = _get_or_create_project(store, Path(selected))
+        conversation = _get_or_create_conversation(
+            store, project_id=project.project_id, pair_id=args.pair
+        )
+        project_library.refresh()
+        switch_conversation(conversation.conversation_id)
+
+    def create_conversation(project_id: str) -> None:
+        project = store.get_project(project_id)
+        count = len(store.list_conversations(project_id)) + 1
+        conversation = store.create_conversation(
+            project_id=project.project_id,
+            pair_id=args.pair,
+            title=f"新聊天 {count}",
+        )
+        project_library.refresh()
+        switch_conversation(conversation.conversation_id)
+
+    project_library.conversation_selected.connect(switch_conversation)
+    project_library.project_create_requested.connect(create_project)
+    project_library.conversation_create_requested.connect(create_conversation)
+    switch_conversation(conversation_record.conversation_id)
 
     def on_quit() -> None:
         # 窗口关闭时否决仍未裁决的审批，避免悬挂
@@ -259,26 +384,20 @@ def main(argv: list[str] | None = None) -> int:
     async def submit(target: str, text: str) -> None:
         # O2.1：消息、工具事件与审批展示已由流式回调实时到达界面，
         # ConversationOutcome 仅保留为最终汇总，不再事后回放。
-        if target == "assistant":
-            await orchestrator.handle_direct_input(
-                conversation_id=conversation_id, text=text
+        conversation_id = current["conversation_id"]
+        try:
+            if target == "assistant":
+                await orchestrator.handle_direct_input(
+                    conversation_id=conversation_id, text=text
+                )
+            else:
+                await orchestrator.handle_character_input(
+                    conversation_id=conversation_id, text=text
+                )
+        except Exception as exc:
+            orchestrator.report_system_status(
+                conversation_id, f"请求失败：{exc}"
             )
-        else:
-            await orchestrator.handle_character_input(
-                conversation_id=conversation_id, text=text
-            )
-
-    # O2.1：流式事件通道——orchestrator 产生消息/事件即推送，UI 增量渲染
-    bridge = OrchestratorBridge()
-    bridge.message_ready.connect(window.add_message)
-    bridge.tool_run_ready.connect(window.update_tool_run)
-    bridge.engine_event_ready.connect(window.apply_engine_event)
-    bridge.busy_changed.connect(window.set_busy)
-    orchestrator.on_message = bridge.message_ready.emit
-    orchestrator.on_engine_event = bridge.engine_event_ready.emit
-    # busy 开始/复位由 orchestrator 执行生命周期回调驱动（O1.4 + O2.1 桥接）
-    orchestrator.on_execution_started = lambda: bridge.busy_changed.emit(True)
-    orchestrator.on_execution_finished = lambda: bridge.busy_changed.emit(False)
 
     window.input_submitted.connect(submit)
 
@@ -286,11 +405,15 @@ def main(argv: list[str] | None = None) -> int:
     async def cancel_task() -> None:
         # O2.3：取消按钮接通编排器取消入口；无活动任务时 cancel_active_task
         # 返回 False，由 set_busy 的按钮禁用兜底。
-        await orchestrator.cancel_active_task()
+        try:
+            await orchestrator.cancel_active_task()
+        except Exception as exc:
+            orchestrator.report_system_status(
+                current["conversation_id"], f"取消失败：{exc}"
+            )
 
     window.cancel_requested.connect(cancel_task)
 
-    voice_runtime: VoiceRuntime | None = None
     if real_voice:
         assert settings is not None
         voice_runtime = wire_real_voice(
@@ -298,7 +421,7 @@ def main(argv: list[str] | None = None) -> int:
             window=window,
             orchestrator=orchestrator,
             pair_config=pair_config,
-            conversation_id=conversation_id,
+            conversation_id=current["conversation_id"],
         )
     window.show()
     if os.getenv("QT_QPA_PLATFORM") == "offscreen":
