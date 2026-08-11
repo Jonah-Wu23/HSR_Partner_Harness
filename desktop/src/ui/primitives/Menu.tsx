@@ -16,10 +16,11 @@ interface MenuProps {
   ariaLabel: string;
   align?: "left" | "right";
   selectedId?: string;
+  dropUp?: boolean;
 }
 
 /** 轻量上下文菜单：click-outside / Esc 关闭，方向键导航，Enter 激活。 */
-export function Menu({ trigger, items, onSelect, ariaLabel, align = "right", selectedId }: MenuProps) {
+export function Menu({ trigger, items, onSelect, ariaLabel, align = "right", selectedId, dropUp = false }: MenuProps) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -68,7 +69,7 @@ export function Menu({ trigger, items, onSelect, ariaLabel, align = "right", sel
         <div
           role="menu"
           aria-label={ariaLabel}
-          className={`menu-popup${align === "left" ? " menu-popup-left" : ""}`}
+          className={`menu-popup${align === "left" ? " menu-popup-left" : ""}${dropUp ? " menu-popup-up" : ""}`}
         >
           {items.map((item, index) => (
             <button

@@ -128,6 +128,7 @@ export function Composer({ composer, voice, mode, actions }: ComposerProps) {
         <Menu
           ariaLabel="审批模式"
           align="left"
+          dropUp
           selectedId={composer.approvalMode}
           trigger={() => (
             <button type="button" className="select-chip" aria-label="审批模式">
@@ -144,6 +145,7 @@ export function Composer({ composer, voice, mode, actions }: ComposerProps) {
         <Menu
           ariaLabel="推理档位"
           align="left"
+          dropUp
           selectedId={composer.reasoningEffort}
           trigger={() => (
             <button type="button" className="select-chip" aria-label="推理档位">

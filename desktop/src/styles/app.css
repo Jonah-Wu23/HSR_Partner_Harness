@@ -1001,6 +1001,20 @@
 }
 .menu-popup-left { left: 0; right: auto; transform-origin: top left; }
 
+/* 向上展开（输入区等窗口底部场景） */
+.menu-popup-up {
+  top: auto;
+  bottom: calc(100% + 4px);
+  transform-origin: bottom right;
+  animation-name: ph-menu-in-up;
+}
+.menu-popup-left.menu-popup-up { transform-origin: bottom left; }
+
+@keyframes ph-menu-in-up {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
 @keyframes ph-menu-in {
   from { opacity: 0; transform: translateY(-4px) scale(0.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
@@ -1032,11 +1046,11 @@
 
 @media (min-width: 1680px) {
   .app-shell {
-    --text-t2-size: 18px; --text-t2-line: 27px;
-    --text-b1-size: 16px; --text-b1-line: 24px;
-    --text-b2-size: 15px; --text-b2-line: 22px;
+    --text-t2-size: 19px; --text-t2-line: 28px;
+    --text-b1-size: 17px; --text-b1-line: 25px;
+    --text-b2-size: 16px; --text-b2-line: 23px;
     --text-c1-size: 13px; --text-c1-line: 19px;
-    --text-title-size: 17px; --text-title-line: 26px;
+    --text-title-size: 18px; --text-title-line: 27px;
   }
   .app-topbar { height: 52px; padding: 0 var(--space-6); }
   .chat-column, .chat-column-inner { width: 256px; }
