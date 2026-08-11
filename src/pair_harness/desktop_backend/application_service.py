@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Any, Mapping, cast
 from uuid import uuid4
@@ -813,7 +814,13 @@ def build_configured_service(
 ) -> DesktopApplicationService:
     """按 Sidecar 启动配置创建 demo 或真实模型服务。"""
     if not demo:
-        load_dotenv(Path(__file__).resolve().parents[3] / ".env")
+        configured_env = os.getenv("PAIR_HARNESS_ENV_FILE")
+        env_path = (
+            Path(configured_env)
+            if configured_env
+            else Path(__file__).resolve().parents[3] / ".env"
+        )
+        load_dotenv(env_path)
     db = database or AppPaths.default().ensure().database
     return _build_service(
         database=db,

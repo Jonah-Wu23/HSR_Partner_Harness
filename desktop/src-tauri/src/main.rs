@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -53,19 +53,47 @@ fn packaged_sidecar(app: &tauri::AppHandle) -> Option<PathBuf> {
     None
 }
 
+fn env_flag(name: &str) -> Option<bool> {
+    match std::env::var(name).ok()?.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn use_real_backend(root: &Path) -> bool {
+    if let Some(value) = env_flag("PAIR_HARNESS_REAL") {
+        return value;
+    }
+    if env_flag("PAIR_HARNESS_DEMO") == Some(true) {
+        return false;
+    }
+    root.join(".env").is_file()
+}
+
 fn spawn_backend(app: &tauri::AppHandle) -> Result<BackendState, String> {
     let packaged = packaged_sidecar(app);
     let root = std::env::var_os("PAIR_HARNESS_ROOT")
         .map(PathBuf::from)
-        .or_else(|| packaged.as_ref().and_then(|path| path.parent().map(PathBuf::from)))
+        .or_else(|| {
+            packaged
+                .as_ref()
+                .and_then(|path| path.parent().map(PathBuf::from))
+        })
         .unwrap_or_else(repository_root);
     let program = packaged.clone().unwrap_or_else(|| python_command(&root));
+    let real = use_real_backend(&root);
     let mut command = Command::new(program);
     command.current_dir(&root);
+    let mode = if real { "--real" } else { "--demo" };
     if packaged.is_some() {
-        command.args(["--demo", "--project"]);
+        command.args([mode, "--project"]);
     } else {
-        command.args(["-m", "pair_harness.desktop_backend", "--demo", "--project"]);
+        command.args(["-m", "pair_harness.desktop_backend", mode, "--project"]);
+    }
+    let env_file = root.join(".env");
+    if env_file.is_file() {
+        command.env("PAIR_HARNESS_ENV_FILE", env_file);
     }
     command
         .arg(&root)
