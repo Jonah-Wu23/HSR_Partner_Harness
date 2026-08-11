@@ -12,6 +12,7 @@ from qasync import QEventLoop, asyncSlot
 
 from pair_harness.adapters.demo import ScriptedCodingEngine, ScriptedDialogueModel
 from pair_harness.app_paths import AppPaths
+from pair_harness.config.pairs import load_pair_config
 from pair_harness.core.contracts import (
     ApprovalDecision,
     ApprovalMode,
@@ -40,7 +41,9 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication.instance() or QApplication([sys.argv[0]])
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
-    window = MainWindow()
+    # O4.5：气泡颜色读取搭档主题（B3 前置）；配置缺失时抛 PairConfigError
+    pair_config = load_pair_config("phainon_ancient_machine")
+    window = MainWindow(theme=pair_config.theme)
     paths = AppPaths(args.data_dir) if args.data_dir else AppPaths.default()
     store = SQLiteStore(paths.ensure().database)
     store.create_project(

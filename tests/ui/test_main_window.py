@@ -104,10 +104,9 @@ def test_bubble_shows_chinese_source_label_and_safe_object_name(qtbot) -> None:
             text="x",
         )
         window.add_message(msg)
+        # O4.5：工具消息不再产生专属路由（工具走 ToolCard），TOOL 按历史兼容落入角色面板
         target = (
-            window.assistant_messages
-            if source in (MessageSource.ASSISTANT, MessageSource.TOOL)
-            else window.character_messages
+            window.assistant_messages if source is MessageSource.ASSISTANT else window.character_messages
         )
         assert target.bubbles[-1].source_label.text() == label
 

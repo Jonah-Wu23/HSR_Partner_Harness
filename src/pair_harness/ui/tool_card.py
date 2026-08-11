@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QFrame, QLabel, QToolButton, QVBoxLayout, QWidget
 
 from pair_harness.core.contracts import ToolRun
@@ -22,8 +23,9 @@ class ToolCard(QFrame):
         layout = QVBoxLayout(self)
         self.toggle = QToolButton(text=tool_run.title, checkable=True, checked=False)
         self.toggle.setObjectName("toolToggle")
-        self.toggle.setToolButtonStyle(2)
-        self.toggle.setArrowType(1)
+        # O4.5：魔法数字换 Qt 枚举（2=ToolButtonTextBesideIcon，1/2=UpArrow/DownArrow）
+        self.toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.toggle.setArrowType(Qt.UpArrow)
         self.status_label = QLabel(tool_run.status)
         self.status_label.setObjectName("toolStatus")
         self.summary_label = QLabel(tool_run.summary)
@@ -31,6 +33,10 @@ class ToolCard(QFrame):
         self.details_label = QLabel(tool_run.details)
         self.details_label.setObjectName("toolDetails")
         self.details_label.setWordWrap(True)
+        # O4.5：QLabel 默认 AutoText 会把内容当富文本解析，统一按纯文本显示
+        self.status_label.setTextFormat(Qt.PlainText)
+        self.summary_label.setTextFormat(Qt.PlainText)
+        self.details_label.setTextFormat(Qt.PlainText)
         self.details_label.setVisible(False)
         self.toggle.toggled.connect(self._toggle_details)
         layout.addWidget(self.toggle)
@@ -43,7 +49,7 @@ class ToolCard(QFrame):
         return self.toggle.isChecked()
 
     def _toggle_details(self, expanded: bool) -> None:
-        self.toggle.setArrowType(2 if expanded else 1)
+        self.toggle.setArrowType(Qt.DownArrow if expanded else Qt.UpArrow)
         self.details_label.setVisible(expanded)
 
     def update_run(self, tool_run: ToolRun) -> None:

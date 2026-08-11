@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from pair_harness.config.pairs import PairTheme
 from pair_harness.core.contracts import (
     ApprovalMode,
     EngineEvent,
@@ -38,11 +39,12 @@ class MainWindow(QMainWindow):
     # 输入区审批模式下拉框切换（ApprovalMode 的枚举值字符串）
     approval_mode_changed = pyqtSignal(str)
 
-    def __init__(self) -> None:
+    def __init__(self, theme: PairTheme | None = None) -> None:
         super().__init__()
         self.setWindowTitle("Pair Harness — 白厄与神秘的古代机械")
         self.resize(1180, 760)
         self.setStyleSheet("QMainWindow{background:#111318;color:#E5E7EB;}")
+        self._theme = theme
         self.tool_cards: dict[str, ToolCard] = {}
         self._approval_mode = ApprovalMode.REQUEST_APPROVAL
         self._library: QWidget | None = None
@@ -85,10 +87,10 @@ class MainWindow(QMainWindow):
         self.splitter = QSplitter()
         self.splitter.setObjectName("conversationSplitter")
         self.character_panel = self._panel("白厄", "characterPanel")
-        self.character_messages = MessageList()
+        self.character_messages = MessageList(theme=self._theme)
         self.character_panel.layout().addWidget(self.character_messages)
         self.assistant_panel = self._panel("神秘的古代机械", "assistantPanel")
-        self.assistant_messages = MessageList()
+        self.assistant_messages = MessageList(theme=self._theme)
         self.tool_area = QWidget()
         self.tool_area.setObjectName("toolArea")
         self.tool_layout = QVBoxLayout(self.tool_area)
@@ -178,7 +180,10 @@ class MainWindow(QMainWindow):
             self.project_library.setVisible(not self.project_library.isVisible())
 
     def add_message(self, message: Message) -> None:
-        if message.source in (MessageSource.ASSISTANT, MessageSource.TOOL):
+        # O4.5：工具消息不再产生（O4.1 起工具走 ToolCard 渲染），
+        # TOOL 来源不再有专属路由分支，一律按角色面板展示（历史兼容）。
+        # 注意：use_enum_values 下 message.source 是字符串，须用 == 比较
+        if message.source == MessageSource.ASSISTANT:
             self.assistant_messages.add_message(message)
         else:
             self.character_messages.add_message(message)
