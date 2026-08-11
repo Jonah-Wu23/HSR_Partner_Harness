@@ -41,7 +41,10 @@ fn python_command(root: &PathBuf) -> PathBuf {
 
 fn packaged_sidecar(app: &tauri::AppHandle) -> Option<PathBuf> {
     let resource_root = app.path().resource_dir().ok()?;
-    let candidate = resource_root.join("sidecar").join("pair-harness-sidecar.exe");
+    let candidate = resource_root
+        .join("sidecar")
+        .join("pair-harness-sidecar")
+        .join("pair-harness-sidecar.exe");
     candidate.is_file().then_some(candidate)
 }
 
