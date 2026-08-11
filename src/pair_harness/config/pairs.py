@@ -67,3 +67,48 @@ def load_prompt(relative_path: str, root: Path | None = None) -> str:
     base = root or repository_root()
     return (base / relative_path).read_text(encoding="utf-8")
 
+
+# 占位音色（尚未 enroll/design 时的 demo 值），adopt 时视为未启用
+PLACEHOLDER_VOICE_PREFIX = "demo-"
+
+
+def adopt_voice_id(path: Path, role: str, voice_id: str, *, force: bool = False) -> str:
+    """把 ``voice_id`` 写回 pair YAML 的 character/assistant 块，只改那一行。
+
+    保留文件其余内容与换行符原样（不经过 yaml 重新序列化）。
+    默认拒绝覆盖已启用的真实 voice_id；``force=True`` 时允许重建。
+    返回被替换的旧行文本。
+    """
+    if role not in ("character", "assistant"):
+        raise PairConfigError(f"role 必须是 character 或 assistant，得到: {role!r}")
+    voice_id = str(voice_id or "").strip()
+    if not voice_id:
+        raise PairConfigError("voice_id 不能为空")
+
+    # newline="" 关闭换行转换：Windows 下默认会把 \r\n 转成 \n，导致无法保留原换行
+    with path.open("r", encoding="utf-8", newline="") as fh:
+        lines = fh.read().splitlines(keepends=True)
+    section_marker = f"{role}:"
+    in_section = False
+    old_line = ""
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == section_marker:
+            in_section = True
+            continue
+        if in_section and stripped and not line[0].isspace():
+            break  # 离开该块（下一个顶层键）
+        if in_section and "voice_id:" in stripped:
+            old_line = line
+            current = stripped.split(":", 1)[1].strip()
+            if current and not current.startswith(PLACEHOLDER_VOICE_PREFIX) and not force:
+                raise PairConfigError(
+                    f"{role}.voice_id 已是真实音色 {current!r}，如需覆盖请加 --force"
+                )
+            indent = line[: len(line) - len(line.lstrip())]
+            newline = "\r\n" if line.endswith("\r\n") else "\n"
+            lines[index] = f"{indent}voice_id: {voice_id}{newline}"
+            path.write_text("".join(lines), encoding="utf-8", newline="")
+            return old_line
+    raise PairConfigError(f"pair YAML 中未找到 {role}.voice_id 行: {path}")
+

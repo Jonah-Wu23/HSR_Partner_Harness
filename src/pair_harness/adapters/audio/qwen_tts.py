@@ -116,10 +116,12 @@ class QwenSpeechSynthesizer(SpeechSynthesizer):
             synthesizer.streaming_call(text)
             while not done.is_set() and not closed.is_set():
                 done.wait(0.1)
-            if closed.is_set():
-                synthesizer.streaming_cancel()
-            else:
+            # 优先以服务端完成状态为准：done 已置位说明合成已正常结束，
+            # 此时即使 asyncio 侧已置 closed（收尾竞态）也应走 complete 而非 cancel。
+            if done.is_set():
                 synthesizer.streaming_complete()
+            else:
+                synthesizer.streaming_cancel()
         except Exception as exc:  # noqa: BLE001 - 第三方 SDK 异常类型不稳定
             if not closed.is_set():
                 _put(_TtsBridgeEvent(kind="error", message=f"TTS 合成失败: {exc}"))
