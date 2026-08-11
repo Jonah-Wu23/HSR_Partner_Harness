@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { CheckIcon } from "../../assets/icons/icons";
 
 export interface MenuItem {
   id: string;
@@ -14,10 +15,11 @@ interface MenuProps {
   onSelect: (id: string) => void;
   ariaLabel: string;
   align?: "left" | "right";
+  selectedId?: string;
 }
 
 /** 轻量上下文菜单：click-outside / Esc 关闭，方向键导航，Enter 激活。 */
-export function Menu({ trigger, items, onSelect, ariaLabel, align = "right" }: MenuProps) {
+export function Menu({ trigger, items, onSelect, ariaLabel, align = "right", selectedId }: MenuProps) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -77,7 +79,7 @@ export function Menu({ trigger, items, onSelect, ariaLabel, align = "right" }: M
               type="button"
               role="menuitem"
               disabled={item.disabled}
-              className={`menu-item${item.danger ? " menu-item-danger" : ""}`}
+              className={`menu-item${item.danger ? " menu-item-danger" : ""}${item.id === selectedId ? " is-selected" : ""}`}
               onClick={() => {
                 setOpen(false);
                 onSelect(item.id);
@@ -85,6 +87,7 @@ export function Menu({ trigger, items, onSelect, ariaLabel, align = "right" }: M
             >
               {item.icon}
               <span>{item.label}</span>
+              {item.id === selectedId ? <CheckIcon className="menu-item-check" /> : null}
             </button>
           ))}
         </div>

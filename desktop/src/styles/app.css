@@ -357,8 +357,26 @@
   padding: 0 var(--space-3) var(--space-2);
   flex: none;
 }
-.new-chat-btn { width: 100%; }
-.new-chat-btn svg { width: 16px; height: 16px; }
+.new-chat-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: calc(100% - var(--space-3) * 2);
+  height: 32px;
+  margin: 0 var(--space-3) var(--space-3);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: var(--text-b2-size);
+  font-weight: 500;
+  text-align: left;
+  transition: background-color var(--dur-press) var(--ease-out);
+  flex: none;
+}
+.new-chat-btn:hover:not(:disabled) { background: var(--fill-hover); }
+.new-chat-btn:active:not(:disabled) { background: var(--fill-active); }
+.new-chat-btn:disabled { opacity: 0.45; }
+.new-chat-btn svg { width: 16px; height: 16px; flex: none; color: var(--text-secondary); }
 
 .chat-search {
   display: flex;
@@ -978,8 +996,15 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  animation: ph-menu-in var(--dur-fast) var(--ease-out);
+  transform-origin: top right;
 }
-.menu-popup-left { left: 0; right: auto; }
+.menu-popup-left { left: 0; right: auto; transform-origin: top left; }
+
+@keyframes ph-menu-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
 
 .menu-item {
   display: flex;
@@ -1000,6 +1025,28 @@
 .menu-item:disabled { opacity: 0.45; }
 .menu-item svg { width: 16px; height: 16px; flex-shrink: 0; }
 .menu-item-danger { color: var(--danger); }
+.menu-item.is-selected { color: var(--accent); font-weight: 500; }
+.menu-item-check { width: 14px !important; height: 14px !important; margin-left: auto; color: var(--accent); }
+
+/* ========== 大屏自适应：1680px 以上放大字阶与布局节奏 ========== */
+
+@media (min-width: 1680px) {
+  .app-shell {
+    --text-t2-size: 18px; --text-t2-line: 27px;
+    --text-b1-size: 16px; --text-b1-line: 24px;
+    --text-b2-size: 15px; --text-b2-line: 22px;
+    --text-c1-size: 13px; --text-c1-line: 19px;
+    --text-title-size: 17px; --text-title-line: 26px;
+  }
+  .app-topbar { height: 52px; padding: 0 var(--space-6); }
+  .chat-column, .chat-column-inner { width: 256px; }
+  .chat-column.is-collapsed { width: 0; }
+  .message-column { max-width: 880px; }
+  .pane-workbench { min-width: 360px; }
+  .msg-bubble { max-width: min(840px, 78%); }
+  .new-chat-btn { height: 34px; }
+  .composer-input { max-height: 200px; }
+}
 
 /* ========== 导航补充：行内重命名 / 收起态展开按钮 ========== */
 

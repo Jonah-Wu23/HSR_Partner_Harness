@@ -3,6 +3,7 @@ import type { HarnessActions } from "../../contracts/actions";
 import type { ApprovalMode, ReasoningEffort } from "../../contracts/protocol";
 import type { ComposerViewModel, VoiceViewModel } from "../../contracts/view-models";
 import {
+  CollapseIcon,
   RecordVoiceIcon,
   SendIcon,
   StopIcon,
@@ -127,9 +128,11 @@ export function Composer({ composer, voice, mode, actions }: ComposerProps) {
         <Menu
           ariaLabel="审批模式"
           align="left"
+          selectedId={composer.approvalMode}
           trigger={() => (
             <button type="button" className="select-chip" aria-label="审批模式">
               {APPROVAL_LABEL[composer.approvalMode]}
+              <CollapseIcon style={{ transform: "rotate(-90deg)" }} />
             </button>
           )}
           items={(Object.keys(APPROVAL_LABEL) as ApprovalMode[]).map((value) => ({
@@ -141,10 +144,12 @@ export function Composer({ composer, voice, mode, actions }: ComposerProps) {
         <Menu
           ariaLabel="推理档位"
           align="left"
+          selectedId={composer.reasoningEffort}
           trigger={() => (
             <button type="button" className="select-chip" aria-label="推理档位">
               {EFFORT_LABEL[(composer.reasoningEffort as ReasoningEffort) ?? "auto"] ??
                 `推理 · ${composer.reasoningEffort}`}
+              <CollapseIcon style={{ transform: "rotate(-90deg)" }} />
             </button>
           )}
           items={(Object.keys(EFFORT_LABEL) as ReasoningEffort[]).map((value) => ({
