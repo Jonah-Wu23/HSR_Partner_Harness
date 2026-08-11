@@ -1,0 +1,158 @@
+/* HSR Partner Harness 设计令牌
+   来源：docs/specs/2026-08-11-desktop-visual-v0-design.md §2
+   规则：组件只允许引用本文件的语义变量，不保存原始色值常量。
+   品牌色值（白厄蓝组 / 青铜金组 / accent）为锁定值，不得改动。 */
+
+:root {
+  /* 字体 */
+  --font-ui: "Microsoft YaHei UI", "Segoe UI", "PingFang SC", sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, "Courier New", monospace;
+
+  /* 字阶 */
+  --text-t2-size: 16px; --text-t2-line: 24px;
+  --text-b1-size: 15px; --text-b1-line: 22px;
+  --text-b2-size: 14px; --text-b2-line: 20px;
+  --text-c1-size: 12px; --text-c1-line: 18px;
+  --text-title-size: 15px; --text-title-line: 24px;
+
+  /* 圆角 */
+  --radius-xxs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 999px;
+
+  /* 间距 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* 动效 */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --dur-press: 120ms;
+  --dur-fast: 150ms;
+  --dur-menu: 200ms;
+  --dur-drawer: 250ms;
+
+  /* 层级 */
+  --z-toast: 1000;
+  --z-tooltip: 900;
+  --z-dialog-backdrop: 850;
+  --z-dialog: 860;
+  --z-modal-backdrop: 800;
+  --z-modal: 810;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-window: #0E1116;
+  --bg-rail: #0B0E12;
+  --bg-nav: #12161D;
+  --bg-panel: #161A21;
+  --bg-card: #1C212B;
+  --bg-input: #12161D;
+  --bg-elevated: #1E242F;
+  --fill-hover: rgba(255, 255, 255, 0.05);
+  --fill-active: rgba(255, 255, 255, 0.10);
+  --fill-selected: #1B2A45;
+  --separator: #2A303C;
+  --separator-strong: #3A4250;
+  --text-primary: #E6E9EF;
+  --text-secondary: #9AA3B2;
+  --text-muted: #6B7686;
+
+  --accent: #296CE1;
+  --accent-hover: #3D7CE8;
+  --accent-pressed: #1F5BC4;
+  --accent-soft: #1B2A45;
+
+  --pair-character: #8AA4D4;
+  --pair-character-deep: #3A548C;
+  --pair-character-text: #C7D4E3;
+  --pair-assistant: #B08D57;
+  --pair-assistant-deep: #332A20;
+  --pair-assistant-text: #F0E2C5;
+  --gold: #B08D57;
+
+  --success: #22C55E;
+  --warning: #CA8A04;
+  --danger: #DC2626;
+  --running: #296CE1;
+
+  /* 中性气泡（用户 / 工具 / 系统）与思考区：沿用 PyQt 已验证值 */
+  --bubble-user-bg: #343B4D;
+  --bubble-user-border: #4A5268;
+  --bubble-user-text: #E5E7EB;
+  --bubble-tool-bg: #17191D;
+  --bubble-tool-border: #373A40;
+  --bubble-tool-text: #D1D5DB;
+  --bubble-system-bg: #24262B;
+  --bubble-system-border: #373A40;
+  --bubble-system-text: #9CA3AF;
+  --reasoning-bg: #13161C;
+  --reasoning-border: #2A303C;
+  --reasoning-text: #B8BDC7;
+
+  --shadow-popup: 0 4px 16px rgba(0, 0, 0, 0.18);
+  --mask: rgba(0, 0, 0, 0.6);
+  --tooltip-bg: #2B2B2B;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg-window: #F4F6F9;
+  --bg-rail: #E9EDF3;
+  --bg-nav: #EFF2F7;
+  --bg-panel: #FFFFFF;
+  --bg-card: #FFFFFF;
+  --bg-input: #FFFFFF;
+  --bg-elevated: #FFFFFF;
+  --fill-hover: rgba(0, 0, 0, 0.04);
+  --fill-active: rgba(0, 0, 0, 0.07);
+  --fill-selected: #E3EDFC;
+  --separator: #DFE3EA;
+  --separator-strong: #C7CDD6;
+  --text-primary: #1B2431;
+  --text-secondary: #52606F;
+  --text-muted: #8492A2;
+
+  --accent: #296CE1;
+  --accent-hover: #3D7CE8;
+  --accent-pressed: #1F5BC4;
+  --accent-soft: #E3EDFC;
+
+  --pair-character: #8AA4D4;
+  --pair-character-deep: #E4EBF7;
+  --pair-character-text: #1E3A6E;
+  --pair-assistant: #C5A059;
+  --pair-assistant-deep: #F3EAD9;
+  --pair-assistant-text: #5C4526;
+  --gold: #8C6B3F;
+
+  --success: #15803D;
+  --warning: #A16207;
+  --danger: #B91C1C;
+  --running: #296CE1;
+
+  --bubble-user-bg: #E8EDF5;
+  --bubble-user-border: #C9D3E2;
+  --bubble-user-text: #1B2431;
+  --bubble-tool-bg: #EEF1F5;
+  --bubble-tool-border: #DFE3EA;
+  --bubble-tool-text: #52606F;
+  --bubble-system-bg: #EEF1F5;
+  --bubble-system-border: #DFE3EA;
+  --bubble-system-text: #52606F;
+  --reasoning-bg: #F0F2F6;
+  --reasoning-border: #DFE3EA;
+  --reasoning-text: #52606F;
+
+  --shadow-popup: 0 4px 16px rgba(0, 0, 0, 0.10);
+  --mask: rgba(0, 0, 0, 0.4);
+  --tooltip-bg: #2B2B2B;
+}
