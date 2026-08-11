@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -61,11 +61,17 @@ class Message(FrozenModel):
     message_id: str = Field(default_factory=new_id)
     conversation_id: str
     pair_id: str
-    turn_id: str | None = None
+    # O4.4：语义澄清——记录消息归属的引擎回合（engine turn）id；
+    # 与 MessageSource/MessageKind 一样只是展示与溯源元数据，
+    # 并非聊天轮次号（曾用名 turn_id 易与对话轮次混淆）。
+    engine_turn_id: str | None = None
     source: MessageSource
     kind: MessageKind
     text: str = ""
-    payload: dict[str, Any] = Field(default_factory=dict)
+    # O4.4：payload 声明为只读映射——frozen 模型只冻结字段本身，
+    # 内容仍是 dict；约定只读不修改，需要改写时先拷贝
+    # （orchestrator 以 model_copy(update=...) 或 dict() 拷贝后修改）。
+    payload: Mapping[str, Any] = Field(default_factory=dict)
     tts_eligible: bool = False
     created_at: datetime = Field(default_factory=utc_now)
 
@@ -160,7 +166,8 @@ class EngineEvent(FrozenModel):
     sequence: int = Field(ge=0)
     type: EngineEventType
     tool_call_id: str | None = None
-    payload: dict[str, Any] = Field(default_factory=dict)
+    # O4.4：payload 约定只读（Mapping），需要改写时先拷贝再 model_copy
+    payload: Mapping[str, Any] = Field(default_factory=dict)
 
 
 class ToolRun(FrozenModel):
@@ -236,7 +243,9 @@ class PendingOperation(FrozenModel):
 
     tool_kind: Literal["file_write", "file_delete", "shell", "patch"]
     command: str | None = None
-    paths: list[str] = Field(default_factory=list)
+    # O4.4：不可变元组（构造时传 list 会被 pydantic 自动收敛为 tuple），
+    # 与 frozen 模型语义一致，避免调用方事后就地修改
+    paths: tuple[str, ...] = ()
     patch_file_count: int | None = None
     summary: str = ""
 

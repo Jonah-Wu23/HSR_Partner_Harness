@@ -146,6 +146,44 @@ def test_legacy_tool_run_status_completed_reads_back_as_succeeded(tmp_path: Path
         assert snapshot["tool_runs"][0].title == "旧工具"
 
 
+def test_legacy_message_turn_id_reads_back_as_engine_turn_id(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "db.sqlite") as store:
+        store.create_project(name="Repo", root_path=str(tmp_path), project_id="p")
+        store.create_conversation(
+            project_id="p", pair_id="phainon_ancient_machine", conversation_id="c"
+        )
+        # O4.4 前 Message 字段名是 turn_id（extra="forbid" 下直接校验失败），
+        # 旧聊天重开必须由 _parse_message 重映射后恢复
+        legacy = {
+            "message_id": "msg-1",
+            "conversation_id": "c",
+            "pair_id": "phainon_ancient_machine",
+            "turn_id": "turn-3",
+            "source": "assistant",
+            "kind": "assistant.natural_language",
+            "text": "旧消息",
+        }
+        store.connection.execute(
+            "INSERT INTO messages(conversation_id, message_id, source, kind, created_at, message_json) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "c",
+                "msg-1",
+                "assistant",
+                "assistant.natural_language",
+                "2026-08-01T00:00:00+00:00",
+                json.dumps(legacy),
+            ),
+        )
+        store.connection.commit()
+
+        snapshot = store.load_conversation("c")
+        assert len(snapshot["messages"]) == 1
+        message = snapshot["messages"][0]
+        assert message.engine_turn_id == "turn-3"
+        assert message.text == "旧消息"
+
+
 def test_approval_mode_is_persisted_per_project(tmp_path: Path) -> None:
     database = tmp_path / "data" / "pair_harness.db"
     with SQLiteStore(database) as store:

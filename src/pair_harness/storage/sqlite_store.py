@@ -288,7 +288,7 @@ class SQLiteStore(StateStore):
         ).fetchone()
         return {
             "conversation": conversation,
-            "messages": tuple(Message.model_validate_json(row["message_json"]) for row in message_rows),
+            "messages": tuple(self._parse_message(row["message_json"]) for row in message_rows),
             "tool_runs": tuple(self._parse_tool_run(row["tool_json"]) for row in tool_rows),
             "engine_session": (
                 EngineSessionRef.model_validate_json(session_row["session_ref"])
@@ -296,6 +296,23 @@ class SQLiteStore(StateStore):
                 else None
             ),
         }
+
+    @staticmethod
+    def _parse_message(raw: str) -> Message:
+        """解析持久化的消息，兼容旧协议的字段名。
+
+        O4.4 把 Message.turn_id 更名为 engine_turn_id（extra="forbid"
+        使旧 JSON 直接校验失败），这里把旧字段名重映射为新字段名，
+        保证旧聊天重开时历史消息可以恢复。
+        """
+        try:
+            return Message.model_validate_json(raw)
+        except ValidationError:
+            data = json.loads(raw)
+            if "turn_id" in data:
+                data["engine_turn_id"] = data.pop("turn_id")
+                return Message.model_validate(data)
+            raise
 
     @staticmethod
     def _parse_tool_run(raw: str) -> ToolRun:

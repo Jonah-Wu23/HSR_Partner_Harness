@@ -173,13 +173,13 @@ class ConversationOrchestrator:
         source: MessageSource,
         kind: MessageKind,
         text: str,
-        turn_id: str | None = None,
+        engine_turn_id: str | None = None,
         payload: dict | None = None,
     ) -> Message:
         message = Message(
             conversation_id=conversation_id,
             pair_id=self.pair_id,
-            turn_id=turn_id,
+            engine_turn_id=engine_turn_id,
             source=source,
             kind=kind,
             text=text,
@@ -498,7 +498,7 @@ class ConversationOrchestrator:
                             source=MessageSource.SYSTEM,
                             kind=MessageKind.SYSTEM_STATUS,
                             text=f"沙箱拦截：{exc}",
-                            turn_id=engine_turn_id,
+                            engine_turn_id=engine_turn_id,
                         )
                         continue
                     outcome = await approval.adjudicate(
@@ -525,7 +525,7 @@ class ConversationOrchestrator:
                             source=MessageSource.SYSTEM,
                             kind=MessageKind.APPROVAL,
                             text=notice,
-                            turn_id=engine_turn_id,
+                            engine_turn_id=engine_turn_id,
                         )
                     # O3.1：统一经 resolve_approval 转发裁决；被否决时
                     # 不中断执行循环——引擎把拒绝反馈给模型后继续 turn，
@@ -557,7 +557,7 @@ class ConversationOrchestrator:
                             source=MessageSource.SYSTEM,
                             kind=MessageKind.SYSTEM_STATUS,
                             text=f"沙箱拦截：{exc}",
-                            turn_id=engine_turn_id,
+                            engine_turn_id=engine_turn_id,
                         )
                         break
 
@@ -594,7 +594,7 @@ class ConversationOrchestrator:
                                     source=MessageSource.SYSTEM,
                                     kind=MessageKind.APPROVAL,
                                     text=notice,
-                                    turn_id=engine_turn_id,
+                                    engine_turn_id=engine_turn_id,
                                 )
                             if outcome.decision == ApprovalDecision.DENY:
                                 denied_event = self._deny_tool_event(
@@ -634,7 +634,7 @@ class ConversationOrchestrator:
                                 source=MessageSource.SYSTEM,
                                 kind=MessageKind.APPROVAL,
                                 text=self._decision_text(decision),
-                                turn_id=engine_turn_id,
+                                engine_turn_id=engine_turn_id,
                             )
                             if decision == ApprovalDecision.DENY:
                                 denied_event = self._deny_tool_event(
@@ -734,7 +734,7 @@ class ConversationOrchestrator:
                     source=MessageSource.ASSISTANT,
                     kind=MessageKind.ASSISTANT_NATURAL_LANGUAGE,
                     text=assistant_text,
-                    turn_id=engine_turn_id,
+                    engine_turn_id=engine_turn_id,
                 )
 
             result_summary = CharacterResultSummary(
@@ -771,7 +771,7 @@ class ConversationOrchestrator:
                     source=MessageSource.CHARACTER,
                     kind=MessageKind.CHARACTER_SPEECH,
                     text=result_turn.speech,
-                    turn_id=engine_turn_id,
+                    engine_turn_id=engine_turn_id,
                 )
             # 本次执行的全部新消息：审批 system 卡片、助手说明与角色回应
             messages = self._history.get(task.conversation_id, [])[history_start:]
