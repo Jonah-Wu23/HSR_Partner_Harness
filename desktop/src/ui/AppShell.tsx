@@ -1,4 +1,3 @@
-import type { CSSProperties } from "react";
 import type { HarnessActions } from "../contracts/actions";
 import type { AppShellViewModel } from "../contracts/view-models";
 import { TopBar } from "./TopBar";
@@ -25,19 +24,14 @@ function StatePage({ title, detail }: { title: string; detail?: string | null })
   );
 }
 
-/** 视觉根组件：只消费 ViewModel 与 HarnessActions，不触碰 store / 协议。 */
+/**
+ * 视觉根组件：只消费 ViewModel 与 HarnessActions，不触碰 store / 协议。
+ * 搭档色走 tokens.css 的双主题令牌（白厄色值有测试锁定）；
+ * 不做 PairRecord.theme 内联注入——它会覆盖浅色主题的搭档色调整，
+ * 多搭档配色接入时在令牌层统一扩展。
+ */
 export function AppShell({ vm, actions }: AppShellProps) {
   const pair = vm.navigation?.currentPair ?? null;
-  const themeVars = pair
-    ? ({
-        "--pair-character": pair.theme.character_primary,
-        "--pair-character-deep": pair.theme.character_deep,
-        "--pair-character-text": pair.theme.character_text,
-        "--pair-assistant": pair.theme.assistant_primary,
-        "--pair-assistant-deep": pair.theme.assistant_shadow,
-        "--pair-assistant-text": pair.theme.assistant_bright,
-      } as CSSProperties)
-    : undefined;
 
   let body: React.ReactNode;
   if (vm.status === "booting") {
@@ -85,7 +79,7 @@ export function AppShell({ vm, actions }: AppShellProps) {
   }
 
   return (
-    <div className="app-shell" data-theme={vm.theme} data-testid="app-shell" style={themeVars}>
+    <div className="app-shell" data-theme={vm.theme} data-testid="app-shell">
       {body}
     </div>
   );
