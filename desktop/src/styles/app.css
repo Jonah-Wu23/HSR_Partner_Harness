@@ -989,9 +989,9 @@
   max-width: 240px;
   padding: var(--space-2);
   background: var(--bg-elevated);
-  border: 0.5px solid var(--separator);
+  border: 0.5px solid var(--separator-strong);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-popup);
+  box-shadow: var(--shadow-popup), 0 0 0 0.5px rgba(0, 0, 0, 0.12);
   z-index: var(--z-tooltip);
   display: flex;
   flex-direction: column;
