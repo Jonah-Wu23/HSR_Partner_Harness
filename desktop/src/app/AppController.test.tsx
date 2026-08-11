@@ -11,7 +11,7 @@ describe("AppController", () => {
     desktopStore.getState().setStatus("booting");
   });
 
-  it("boots from MockBackend and exposes a stable skeleton", async () => {
+  it("boots from MockBackend and renders the ViewModel-driven AppShell", async () => {
     const backend = new MockDesktopBackend("single-project");
     const controller = createActionController(backend);
     render(
@@ -21,8 +21,8 @@ describe("AppController", () => {
         loadBootstrap={controller.loadBootstrap}
       />,
     );
-    await waitFor(() => expect(screen.getByTestId("backend-status")).toHaveTextContent("ready"));
-    expect(screen.getByTestId("project-name")).toHaveTextContent("星穹项目");
-    expect(screen.getByTestId("message-count")).toHaveTextContent("2");
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "项目轨道" })).toBeInTheDocument());
+    expect(screen.getByText("星穹项目")).toBeInTheDocument();
+    expect(screen.getByTestId("composer")).toBeInTheDocument();
   });
 });
