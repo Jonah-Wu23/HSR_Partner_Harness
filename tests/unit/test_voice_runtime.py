@@ -404,9 +404,10 @@ def test_on_message_selects_voice_id_by_source_and_filters() -> None:
 
     requests = [ctx.queue.pop_next(), ctx.queue.pop_next()]
     assert ctx.queue.pop_next() is None
+    pair = load_pair_config(PAIR_ID)
     assert [(r.voice_id, r.text) for r in requests] == [
-        ("demo-phainon", "你好，白厄。"),
-        ("demo-ancient-machine", "好的。"),
+        (pair.character.voice_id, "你好，白厄。"),
+        (pair.assistant.voice_id, "好的。"),
     ]
 
 

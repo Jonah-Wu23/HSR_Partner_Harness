@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
@@ -24,6 +25,12 @@ from pair_harness.core.ports import SpeechSynthesizer
 TTS_SAMPLE_RATE = 24_000
 # 等待 complete 哨兵的超时（秒）；超过视为异常收尾
 _TAIL_TIMEOUT_S = 15.0
+# streaming_call 提交文本后的“取消窗口”（秒）：窗口内 aclose 置 closed
+# 可走 streaming_cancel；窗口过后立即发 finish request 等服务端 FINISHED
+_CANCEL_WINDOW_S = 0.1
+# streaming_complete 内部的等待上限（毫秒）：避免服务端异常时不回 FINISHED
+# 导致底层线程无限阻塞（asyncio 侧 _TAIL_TIMEOUT_S 会先超时）
+_COMPLETE_TIMEOUT_MS = 20_000
 
 
 class QwenTtsError(RuntimeError):
@@ -85,7 +92,14 @@ class QwenSpeechSynthesizer(SpeechSynthesizer):
         loop: asyncio.AbstractEventLoop,
         closed: threading.Event,
     ) -> None:
-        """executor 线程：提交文本 → 等 FINISHED → 收尾（或取消）。"""
+        """executor 线程：提交文本 → 发 finish request → 等 FINISHED → 收尾。
+
+        真实服务在收到 finish request（``streaming_complete``）前不会发
+        FINISHED 消息，因此不能在 ``streaming_call`` 后死等 on_complete
+        （会与服务端互相等待直到超时）。音频帧在合成过程中已随流式到达，
+        先留一个短的取消窗口让 aclose 有机会走 ``streaming_cancel``，
+        窗口过后立即 ``streaming_complete`` 等待服务端收尾。
+        """
         try:
             from dashscope.audio.tts_v2 import ResultCallback  # type: ignore
         except ImportError as exc:  # pragma: no cover - 由 _make_synthesizer 兜底
@@ -114,14 +128,19 @@ class QwenSpeechSynthesizer(SpeechSynthesizer):
         try:
             synthesizer = self._make_synthesizer(voice_id, _Callback())
             synthesizer.streaming_call(text)
-            while not done.is_set() and not closed.is_set():
-                done.wait(0.1)
-            # 优先以服务端完成状态为准：done 已置位说明合成已正常结束，
-            # 此时即使 asyncio 侧已置 closed（收尾竞态）也应走 complete 而非 cancel。
-            if done.is_set():
-                synthesizer.streaming_complete()
-            else:
+            # 取消窗口：提交后短暂等待，若 aclose 已置 closed 则走 cancel
+            deadline = time.monotonic() + _CANCEL_WINDOW_S
+            while (
+                not done.is_set()
+                and not closed.is_set()
+                and time.monotonic() < deadline
+            ):
+                done.wait(0.01)
+            if closed.is_set() and not done.is_set():
                 synthesizer.streaming_cancel()
+                return
+            # 发 finish request 并等待服务端 FINISHED；正常时音频帧已全部到达
+            synthesizer.streaming_complete(complete_timeout_millis=_COMPLETE_TIMEOUT_MS)
         except Exception as exc:  # noqa: BLE001 - 第三方 SDK 异常类型不稳定
             if not closed.is_set():
                 _put(_TtsBridgeEvent(kind="error", message=f"TTS 合成失败: {exc}"))

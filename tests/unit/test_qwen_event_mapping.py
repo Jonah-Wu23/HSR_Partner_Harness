@@ -244,7 +244,7 @@ class FakeTtsSynthesizer:
             self.callback.on_data(b"\x11" * 320)
             self.callback.on_complete()
 
-    def streaming_complete(self) -> None:
+    def streaming_complete(self, complete_timeout_millis=600000) -> None:
         self.completed = True
 
     def streaming_cancel(self) -> None:

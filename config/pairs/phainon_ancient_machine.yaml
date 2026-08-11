@@ -3,12 +3,12 @@ character:
   id: phainon
   name: 白厄
   prompt: config/prompts/characters/phainon.md
-  voice_id: demo-phainon
+  voice_id: qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32
 assistant:
   id: ancient_machine
   name: 神秘的古代机械
   prompt: config/prompts/assistants/ancient_machine.md
-  voice_id: demo-ancient-machine
+  voice_id: qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19
 theme:
   character_text: "#C7D4E3"
   character_primary: "#8AA4D4"
