@@ -76,7 +76,7 @@ class ApprovalBar(QFrame):
             f"color:{tokens['text_primary']};}}"
         )
         self.summary_label.setStyleSheet(
-            f"color:{tokens['text_primary']};font-size:13px;"
+            f"color:{tokens['text_primary']};font-size:{tokens['px_body']};"
         )
         # 裁决标签颜色依赖当前文本，切主题时同步重刷
         self._style_verdict(self.verdict_label.text())

@@ -28,7 +28,13 @@ from .approval_bar import ApprovalBar
 from .audio_controls import AudioControls
 from .input_bar import InputBar
 from .message_list import MessageList
-from .theme import apply_theme, load_theme_preference, tokens_for_mode
+from .theme import (
+    apply_theme,
+    load_theme_preference,
+    scale_for_width,
+    scaled_tokens,
+    tokens_for_mode,
+)
 from .tool_card import ToolCard
 
 
@@ -51,6 +57,8 @@ class MainWindow(QMainWindow):
         self.resize(1180, 760)
         self._theme = theme
         self._theme_mode = "dark"
+        # 界面缩放系数：按窗口宽度自适应（resizeEvent 驱动）
+        self._scale = 1.0
         self.tool_cards: dict[str, ToolCard] = {}
         self._approval_mode = ApprovalMode.REQUEST_APPROVAL
         self._library: QWidget | None = None
@@ -202,22 +210,35 @@ class MainWindow(QMainWindow):
             )
             # 面板有内联样式时全局 QWidget 颜色规则到不了子标签，标题色需显式给
             panel._title_label.setStyleSheet(
-                f"font-size:14px;font-weight:600;color:{tokens['text_primary']};"
+                f"font-size:{tokens['px_title']};font-weight:600;"
+                f"color:{tokens['text_primary']};"
             )
+        self.app_title.setStyleSheet(
+            f"font-size:{tokens['px_app']};font-weight:700;"
+            f"color:{tokens['text_primary']};"
+        )
         self.pair_subtitle.setStyleSheet(
-            f"font-size:12px;color:{tokens['text_secondary']};"
+            f"font-size:{tokens['px_sub']};color:{tokens['text_secondary']};"
         )
 
     def _apply_theme(self, mode: str) -> None:
         """应用主题并记录当前 mode：全局 QSS、子组件调色板、面板样式与按钮文案。"""
         self._theme_mode = mode
-        apply_theme(self, mode)
-        self.set_palette(tokens_for_mode(mode))
+        apply_theme(self, mode, self._scale)
+        self.set_palette(scaled_tokens(tokens_for_mode(mode), self._scale))
         # 文案显示将要切换到的目标模式
         self.theme_toggle.setText("浅色模式" if mode == "dark" else "深色模式")
 
     def _toggle_theme(self) -> None:
         self._apply_theme("light" if self._theme_mode == "dark" else "dark")
+
+    def resizeEvent(self, event) -> None:
+        """窗口尺寸变化时按比例缩放界面字号（0.05 步进，避免频繁重建）。"""
+        super().resizeEvent(event)
+        scale = scale_for_width(self.width())
+        if scale != self._scale and hasattr(self, "theme_toggle"):
+            self._scale = scale
+            self._apply_theme(self._theme_mode)
 
     @property
     def mode(self) -> str:

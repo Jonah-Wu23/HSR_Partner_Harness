@@ -134,24 +134,29 @@ class MessageBubble(QFrame):
         # 弱化标签用正文色的半透明形式，在彩色气泡底上也能读
         label_color = fade(text_color, 0.72)
         self.source_label.setStyleSheet(
-            "font-size:11px;font-weight:600;background:transparent;"
+            f"font-size:{tokens['px_meta']};font-weight:600;background:transparent;"
             f"color:{label_color};"
         )
-        self.text_label.setStyleSheet(f"background:transparent;color:{text_color};")
+        self.text_label.setStyleSheet(
+            f"background:transparent;color:{text_color};"
+            f"font-size:{tokens['px_body']};"
+        )
         if self.reasoning_label is not None:
             self.reasoning_label.setStyleSheet(
                 f"background:{tokens['reasoning_bg']};"
                 f"border:1px solid {tokens['reasoning_border']};"
                 f"border-radius:6px;padding:7px;color:{tokens['reasoning_text']};"
+                f"font-size:{tokens['px_meta']};"
             )
         if self.reasoning_toggle is not None:
             self.reasoning_toggle.setStyleSheet(
                 "QToolButton{background:transparent;border:0;padding:2px;"
-                f"font-size:11px;font-weight:600;text-align:left;color:{label_color};}}"
+                f"font-size:{tokens['px_meta']};font-weight:600;text-align:left;"
+                f"color:{label_color};}}"
             )
         if self.final_label is not None:
             self.final_label.setStyleSheet(
-                "font-size:11px;font-weight:600;background:transparent;"
+                f"font-size:{tokens['px_meta']};font-weight:600;background:transparent;"
                 f"color:{label_color};"
             )
 

@@ -11,6 +11,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from pair_harness.ui.theme import CHEVRON_DOWN_URL
+
 
 class InputBar(QWidget):
     submitted = pyqtSignal(str, str)
@@ -156,13 +158,18 @@ class InputBar(QWidget):
         combo_qss = (
             f"QComboBox{{background:{tokens['card_bg']};"
             f"border:1px solid {tokens['border']};"
-            f"border-radius:{tokens['radius_control']};padding:5px 10px;"
-            f"min-height:20px;color:{tokens['text_primary']};}}"
-            f"QComboBox:hover{{border-color:{tokens['border_strong']};}}"
+            f"border-radius:{tokens['radius_control']};padding:5px 12px;"
+            f"padding-right:30px;min-height:20px;"
+            f"color:{tokens['text_primary']};font-size:{tokens['px_body']};}}"
+            f"QComboBox:hover{{border-color:{tokens['border_strong']};"
+            f"background:{tokens['panel_bg']};}}"
             f"QComboBox:focus{{border-color:{tokens['accent']};}}"
-            "QComboBox::drop-down{border:0;width:22px;}"
+            "QComboBox::drop-down{border:0;width:26px;}"
+            f"QComboBox::down-arrow{{image:url(\"{CHEVRON_DOWN_URL}\");"
+            "width:10px;height:6px;}"
             f"QComboBox QAbstractItemView{{background:{tokens['panel_bg']};"
             f"border:1px solid {tokens['border_strong']};"
+            f"border-radius:{tokens['radius_control']};padding:4px;"
             f"selection-background-color:{tokens['accent_soft']};"
             f"selection-color:{tokens['text_primary']};outline:0;}}"
         )
@@ -172,6 +179,9 @@ class InputBar(QWidget):
             self.target_combo,
         ):
             combo.setStyleSheet(combo_qss)
+        # 输入框高度随缩放系数调整
+        scale = float(tokens.get("_scale", "1.0"))
+        self.text_input.setMinimumHeight(round(36 * scale))
         style = self.style()
         style.unpolish(self)
         style.polish(self)

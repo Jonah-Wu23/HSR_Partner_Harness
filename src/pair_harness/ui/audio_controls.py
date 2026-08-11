@@ -82,5 +82,5 @@ class AudioControls(QWidget):
             f"background:{color};border-radius:5px;"
         )
         self.vad_label.setStyleSheet(
-            f"color:{t['text_secondary']};font-size:12px;"
+            f"color:{t['text_secondary']};font-size:{t['px_sub']};"
         )

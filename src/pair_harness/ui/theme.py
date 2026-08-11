@@ -7,10 +7,17 @@ PairTheme 品牌色（tests/ui/test_theme_and_plain_text.py 锁定）。
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PyQt5.QtCore import QSettings
 
 from pair_harness.config.pairs import PairTheme
 from pair_harness.core.contracts import MessageSource
+
+# 下拉箭头图标（QSS image url，正斜杠路径；QtSvg 渲染）
+CHEVRON_DOWN_URL = (
+    Path(__file__).resolve().parents[3] / "assets" / "ui" / "chevron_down.svg"
+).as_posix()
 
 # ---------------------------------------------------------------------------
 # 令牌
@@ -18,6 +25,36 @@ from pair_harness.core.contracts import MessageSource
 
 FONT_FAMILY = '"Microsoft YaHei UI", "Segoe UI", "PingFang SC", sans-serif'
 FONT_MONO = '"Cascadia Mono", Consolas, "Courier New", monospace'
+
+# 字号基准（缩放系数 1.0 时的像素值）；scaled_tokens 按窗口宽度放大
+_BASE_FONT_SIZES = {
+    "px_body": 13,    # 正文、按钮、输入框
+    "px_meta": 11,    # 气泡来源标签、思考折叠等弱化信息
+    "px_title": 14,   # 面板标题
+    "px_sub": 12,     # 副标题、语音状态
+    "px_app": 15,     # 顶栏应用名
+}
+
+# 窗口宽度 → 缩放系数：1280 及以下为 1.0，1920 约 1.3，封顶 1.5
+SCALE_BASE_WIDTH = 1280
+SCALE_MAX = 1.5
+
+
+def scale_for_width(width: int) -> float:
+    """按窗口宽度计算界面缩放系数（只放大不缩小，0.05 步进防抖动）。"""
+    if width <= SCALE_BASE_WIDTH:
+        return 1.0
+    raw = min(SCALE_MAX, width / SCALE_BASE_WIDTH)
+    return round(raw * 20) / 20
+
+
+def scaled_tokens(tokens: dict[str, str], scale: float) -> dict[str, str]:
+    """返回按缩放系数调整字号后的令牌副本（原字典不被修改）。"""
+    scaled = dict(tokens)
+    scaled["_scale"] = str(scale)
+    for key, base in _BASE_FONT_SIZES.items():
+        scaled[key] = f"{round(base * scale)}px"
+    return scaled
 
 DARK_TOKENS: dict[str, str] = {
     "mode": "dark",
@@ -116,6 +153,14 @@ LIGHT_TOKENS: dict[str, str] = {
     "font_family": FONT_FAMILY,
     "font_mono": FONT_MONO,
 }
+
+# 两个字典注入未缩放的基准字号键（保持键集合一致；组件一律经 scaled_tokens 读取）
+for _key, _base in _BASE_FONT_SIZES.items():
+    DARK_TOKENS[_key] = f"{_base}px"
+    LIGHT_TOKENS[_key] = f"{_base}px"
+DARK_TOKENS["_scale"] = "1.0"
+LIGHT_TOKENS["_scale"] = "1.0"
+
 
 def tokens_for_mode(mode: str) -> dict[str, str]:
     return LIGHT_TOKENS if mode == "light" else DARK_TOKENS
@@ -232,7 +277,7 @@ QMainWindow, QDialog {{
 QWidget {{
     color: {t['text_primary']};
     font-family: {t['font_family']};
-    font-size: 13px;
+    font-size: {t['px_body']};
 }}
 QLabel {{
     background: transparent;
@@ -325,22 +370,31 @@ QComboBox {{
     background: {t['card_bg']};
     border: 1px solid {t['border']};
     border-radius: {t['radius_control']};
-    padding: 5px 10px;
+    padding: 5px 12px;
+    padding-right: 30px;
     min-height: 20px;
 }}
 QComboBox:hover {{
     border-color: {t['border_strong']};
+    background: {t['panel_bg']};
 }}
 QComboBox:focus {{
     border-color: {t['accent']};
 }}
 QComboBox::drop-down {{
     border: 0;
-    width: 22px;
+    width: 26px;
+}}
+QComboBox::down-arrow {{
+    image: url("{CHEVRON_DOWN_URL}");
+    width: 10px;
+    height: 6px;
 }}
 QComboBox QAbstractItemView {{
     background: {t['panel_bg']};
     border: 1px solid {t['border_strong']};
+    border-radius: {t['radius_control']};
+    padding: 4px;
     selection-background-color: {t['accent_soft']};
     selection-color: {t['text_primary']};
     outline: 0;
@@ -431,9 +485,12 @@ QToolTip {{
 """
 
 
-def apply_theme(window: object, mode: str) -> None:
-    """把主题应用到窗口：全局 QSS + 逐组件 set_palette 重刷。"""
-    tokens = tokens_for_mode(mode)
+def apply_theme(window: object, mode: str, scale: float = 1.0) -> None:
+    """把主题应用到窗口：全局 QSS + 逐组件 set_palette 重刷。
+
+    scale 为界面缩放系数（按窗口宽度计算），只放大字号令牌。
+    """
+    tokens = scaled_tokens(tokens_for_mode(mode), scale)
     setter = getattr(window, "setStyleSheet", None)
     if setter is not None:
         setter(build_app_stylesheet(tokens))

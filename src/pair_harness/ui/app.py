@@ -79,6 +79,17 @@ def _get_or_create_conversation(
     )
 
 
+async def _start_voice_runtime(runtime: VoiceRuntime) -> None:
+    """在 qasync 事件循环开始运行后启动采集与播放任务。"""
+    await runtime.start_listening()
+    runtime.start_playback()
+
+
+def _schedule_voice_runtime_start(runtime: VoiceRuntime) -> asyncio.Task[None]:
+    """允许桌面应用在事件循环运行前安排语音运行时启动。"""
+    return asyncio.ensure_future(_start_voice_runtime(runtime))
+
+
 def wire_real_voice(
     *,
     settings: Settings,
@@ -108,7 +119,7 @@ def wire_real_voice(
     if not settings.dashscope_api_key:
         raise SystemExit("--real-voice 缺少 DASHSCOPE_API_KEY（.env 或进程环境）")
     model_path = (
-        Path(__file__).resolve().parents[2] / "assets" / "models" / "silero_vad_v5.onnx"
+        Path(__file__).resolve().parents[3] / "assets" / "models" / "silero_vad_v5.onnx"
     )
     try:
         vad: SileroVoiceActivityDetector | None = SileroVoiceActivityDetector(model_path)
@@ -144,8 +155,7 @@ def wire_real_voice(
         on_error=lambda message: window.audio_controls.vad_label.setText(message),
     )
     orchestrator.add_message_listener(runtime.on_message)
-    asyncio.ensure_future(runtime.start_listening())
-    runtime.start_playback()
+    _schedule_voice_runtime_start(runtime)
 
     @asyncSlot()
     async def ptt_start() -> None:
@@ -168,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
     real_voice = args.real_voice or args.real  # B1 --real 隐含 --real-voice
     if args.real or real_voice:
         # B1：真实后端 —— .env 只在此处显式加载，密钥不进代码与配置
-        load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+        load_dotenv(Path(__file__).resolve().parents[3] / ".env")
     settings = Settings.from_environment() if (args.real or real_voice) else None
     app = QApplication.instance() or QApplication([sys.argv[0]])
     loop = QEventLoop(app)
