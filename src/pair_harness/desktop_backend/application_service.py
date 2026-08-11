@@ -145,6 +145,7 @@ class DesktopApplicationService:
         self.voice_runtime = voice_runtime
         self._shutdown = False
         self._tool_runs: dict[tuple[str, str], ToolRun] = {}
+        self._streaming_message_ids: dict[tuple[str, str], set[str]] = {}
         self._voice_state: dict[str, Any] = {
             "supported": voice_runtime is not None,
             "vad": "idle",
@@ -358,6 +359,11 @@ class DesktopApplicationService:
         text = self._required_string(params, "text")
         if target not in {"character", "assistant"}:
             raise ServiceError("target 必须是 character 或 assistant", code="invalid_target")
+        mode = params.get("mode")
+        if mode is not None:
+            if mode not in {"chat", "collaboration"}:
+                raise ServiceError("mode 必须是 chat 或 collaboration", code="invalid_mode")
+            self.store.update_conversation_mode(conversation_id, str(mode))
         if conversation_id != self.current_conversation_id:
             self._select_conversation_context(conversation_id, emit=False)
         if target == "assistant":
@@ -428,10 +434,14 @@ class DesktopApplicationService:
     def _on_engine_event(self, event: EngineEvent) -> None:
         event_type = event.type
         if event_type == EngineEventType.ASSISTANT_DELTA:
+            message_id = f"assistant:{event.conversation_id}:{event.task_id}"
+            self._streaming_message_ids.setdefault(
+                (event.conversation_id, event.task_id), set()
+            ).add(message_id)
             self.emitter.emit(
                 "message.delta",
                 {
-                    "message_id": f"assistant:{event.task_id}",
+                    "message_id": message_id,
                     "conversation_id": event.conversation_id,
                     "source": "assistant",
                     "kind": "assistant.natural_language",
@@ -440,10 +450,14 @@ class DesktopApplicationService:
                 },
             )
         elif event_type == EngineEventType.ASSISTANT_REASONING_DELTA:
+            message_id = f"assistant-reasoning:{event.conversation_id}:{event.task_id}"
+            self._streaming_message_ids.setdefault(
+                (event.conversation_id, event.task_id), set()
+            ).add(message_id)
             self.emitter.emit(
                 "message.delta",
                 {
-                    "message_id": f"assistant-reasoning:{event.task_id}",
+                    "message_id": message_id,
                     "conversation_id": event.conversation_id,
                     "source": "assistant",
                     "kind": "assistant.reasoning",
@@ -512,6 +526,15 @@ class DesktopApplicationService:
         )
 
     def _on_execution_finished(self) -> None:
+        for (conversation_id, _task_id), message_ids in tuple(
+            self._streaming_message_ids.items()
+        ):
+            for message_id in message_ids:
+                self.emitter.emit(
+                    "message.finalized",
+                    {"conversation_id": conversation_id, "message_id": message_id},
+                )
+        self._streaming_message_ids.clear()
         self.emitter.emit("task.busy_changed", {"busy": False, "active_task": None})
 
     # ------------------------------------------------------------------ 上下文工具

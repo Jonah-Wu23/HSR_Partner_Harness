@@ -250,17 +250,21 @@ class ConversationOrchestrator:
         text: str,
         engine_turn_id: str | None = None,
         payload: dict | None = None,
+        message_id: str | None = None,
     ) -> Message:
-        message = Message(
-            conversation_id=conversation_id,
-            pair_id=self.pair_id,
-            engine_turn_id=engine_turn_id,
-            source=source,
-            kind=kind,
-            text=text,
-            payload=payload or {},
-            tts_eligible=is_tts_eligible(source, kind),
-        )
+        message_values = {
+            "conversation_id": conversation_id,
+            "pair_id": self.pair_id,
+            "engine_turn_id": engine_turn_id,
+            "source": source,
+            "kind": kind,
+            "text": text,
+            "payload": payload or {},
+            "tts_eligible": is_tts_eligible(source, kind),
+        }
+        if message_id is not None:
+            message_values["message_id"] = message_id
+        message = Message(**message_values)
         self._history.setdefault(conversation_id, []).append(message)
         if self.store is not None:
             self.store.save_message(message)
@@ -863,6 +867,7 @@ class ConversationOrchestrator:
                     kind=MessageKind.ASSISTANT_NATURAL_LANGUAGE,
                     text=assistant_text,
                     engine_turn_id=engine_turn_id,
+                    message_id=f"assistant:{task.conversation_id}:{task.task_id}",
                     payload=(
                         {"reasoning": assistant_reasoning}
                         if assistant_reasoning

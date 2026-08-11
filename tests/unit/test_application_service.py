@@ -108,3 +108,57 @@ async def test_project_and_conversation_commands_return_restorable_snapshot(
         assert snapshot["current_conversation"]["title"] == "已改名"
     finally:
         await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_streaming_assistant_events_reconcile_to_one_persisted_message(
+    tmp_path: Path,
+) -> None:
+    events: list[dict] = []
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+        event_sink=events.append,
+    )
+    try:
+        await service.handle_command(
+            command(
+                "settings-1",
+                "project.update_settings",
+                approval_mode=ApprovalMode.FULL_AUTO.value,
+            )
+        )
+        conversation_id = service.current_conversation_id
+        await service.handle_command(
+            command(
+                "task-1",
+                "chat.submit",
+                conversation_id=conversation_id,
+                target="assistant",
+                mode="collaboration",
+                text="请检查这个项目",
+            )
+        )
+
+        delta_ids = {
+            event["payload"]["message_id"]
+            for event in events
+            if event["event"] == "message.delta"
+        }
+        finalized_ids = {
+            event["payload"]["message_id"]
+            for event in events
+            if event["event"] == "message.finalized"
+        }
+        assistant_messages = [
+            message
+            for message in service.bootstrap()["messages"]
+            if message["source"] == "assistant"
+        ]
+        assert delta_ids
+        assert delta_ids <= finalized_ids
+        assert len(assistant_messages) == 1
+        assert assistant_messages[0]["message_id"] in delta_ids
+        assert service.store.get_conversation(conversation_id).last_mode == "collaboration"
+    finally:
+        await service.shutdown()

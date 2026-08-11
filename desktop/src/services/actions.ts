@@ -72,6 +72,7 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       await request("chat.submit", {
         conversation_id: state.currentConversationId,
         target: actualTarget,
+        mode: state.mode,
         text,
       });
     },
