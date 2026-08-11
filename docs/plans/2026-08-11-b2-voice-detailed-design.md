@@ -444,6 +444,15 @@ def add_message_listener(self, callback: Callable[[Message], None]) -> None:
 | R5 | 专属端点的 WebSocket 路径推导是否正确 | B2.6 live 测试 | `PAIR_HARNESS_DASHSCOPE_WS_URL` 覆盖 |
 | R6 | 48 kHz 素材的重采样质量影响复刻效果 | B2.5 试听 | 保持 48 kHz 直接上传（文档要求 ≥16 kHz） |
 
+### 8.1 联调发现（2026-08-11 真实调用记录）
+
+- **R1 通过**：`voice-enrollment`/`create_voice` 接受 base64 data URI 音频（白厄拼接音频 23.7 s，48 kHz/16 bit/单声道）。
+- **R2 通过**：`qwen-audio-3.0-tts-flash` 支持 `voice-enrollment` + `create_voice` + `voice_prompt` 形态；`prefix` 经 `normalize_prefix` 去下划线并截断至 10 字符（`ancient_machine` → `ancientmac`）。
+- **R3 扩展发现（适配器缺陷，已修复）**：TTS 真实服务在收到 finish request（`streaming_complete`）前**不会发送 FINISHED 消息**。原 `_run_synthesis` 在 `streaming_call` 后死等 `on_complete`（done 循环），与服务端互相等待，约 15 s 后服务端超时才收尾 → asyncio 侧 `_TAIL_TIMEOUT_S` 报"合成收尾超时"。音频帧本身在合成过程中已随流式到达（不依赖 finish）。修复：`streaming_call` 后保留 0.1 s 取消窗口（让 `aclose` 可走 `streaming_cancel`），窗口过后立即 `streaming_complete(complete_timeout_millis=20_000)` 等待服务端 FINISHED；正常合成约 2~3 s 完成。单测 Fake 原先在 `streaming_call` 内直接回 `on_complete`，掩盖了此行为差异。
+- **R5 通过**：`resolved_ws_url`（`wss://{host}/api-ws/v1/inference`）对 ASR 与 TTS 均可用；ASR/TTS live 测试（`RUN_LIVE_QWEN=1 pytest -m live_qwen`）2 passed。
+- **R6 通过**：ASR 对 48 kHz→16 kHz 线性插值重采样素材识别出"回头见"；复刻直接上传 48 kHz 原始拼接音频。
+- 真实 voice_id：character=`qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32`（复刻），assistant=`qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19`（设计）；均已 `adopt` 写回 `config/pairs/phainon_ancient_machine.yaml`。
+
 ## 9. 验收清单
 
 ### 9.1 自动验收
