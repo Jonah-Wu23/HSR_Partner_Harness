@@ -46,26 +46,36 @@ export function AppShell({ vm, actions }: AppShellProps) {
     body = <StatePage title="后端连接已断开" detail="请确认本地服务仍在运行，然后重启应用" />;
   } else if (vm.status === "error") {
     body = <StatePage title="启动失败" detail={vm.error ?? "未知错误"} />;
-  } else if (!vm.navigation || !vm.workspace) {
+  } else if (!vm.navigation) {
     body = <StatePage title="暂无打开的项目" detail="等待项目数据" />;
   } else {
+    const workspace = vm.workspace;
     body = (
       <>
         <TopBar
-          mode={vm.workspace.mode}
+          mode={workspace?.mode ?? "chat"}
           pair={pair}
-          assistantBusy={vm.workspace.assistant.busy}
+          assistantBusy={workspace?.assistant.busy ?? false}
           actions={actions}
         />
         <div className="app-body">
           <Navigation navigation={vm.navigation} theme={vm.theme} actions={actions} />
           <main className="workspace">
-            <Workspace workspace={vm.workspace} pair={vm.navigation.currentPair} />
+            {workspace ? (
+              <Workspace workspace={workspace} pair={vm.navigation.currentPair} />
+            ) : (
+              <div className="workspace-split">
+                <div className="app-state-page">
+                  <h1>没有打开的聊天</h1>
+                  <p>在左侧新建或选择一个聊天开始</p>
+                </div>
+              </div>
+            )}
             <ApprovalBar approval={vm.approval} actions={actions} />
             <Composer
               composer={vm.composer}
               voice={vm.voice}
-              mode={vm.workspace.mode}
+              mode={workspace?.mode ?? "chat"}
               actions={actions}
             />
           </main>

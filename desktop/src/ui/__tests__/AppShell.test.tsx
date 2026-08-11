@@ -108,4 +108,13 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
     expect(screen.getByText("初始化中…")).toBeInTheDocument();
     expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
   });
+
+  it("empty：保留导航骨架，不降级为整页状态页", async () => {
+    await renderScenario("empty");
+
+    expect(screen.getByRole("navigation", { name: "项目轨道" })).toBeInTheDocument();
+    expect(screen.getByText("Pair Harness")).toBeInTheDocument();
+    expect(screen.getByText("还没有项目")).toBeInTheDocument();
+    expect(screen.queryByText("暂无打开的项目")).not.toBeInTheDocument();
+  });
 });
