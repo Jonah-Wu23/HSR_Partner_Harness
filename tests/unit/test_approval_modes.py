@@ -6,6 +6,8 @@ from pair_harness.core.contracts import (
     ApprovalDecision,
     ApprovalMode,
     CharacterTurn,
+    EngineEvent,
+    EngineEventType,
     PendingOperation,
     ProjectRef,
     ReviewerVerdict,
@@ -337,3 +339,196 @@ async def test_review_mode_high_risk_calls_reviewer(tmp_path) -> None:
     assert len(requested) == 1
     # 计划 A3：审查模式下的审批请求 actor 也记为 reviewer
     assert requested[0].payload["actor"] == "reviewer"
+
+
+# ---- B1：审批模式 → app-server 策略映射（设计 §14.6）----
+
+
+@pytest.mark.asyncio
+async def test_engine_policy_on_request_mode_maps_to_on_request(tmp_path) -> None:
+    dialogue = FixedDialogueModel(
+        CharacterTurn(speech="交给古代机械。", delegation=TaskRequestDraft(instructions="执行")),
+        CharacterTurn(speech="完成了。"),
+    )
+    engine = RecordingCodingEngine(tool_payload={"tool_kind": "shell", "command": "ls"})
+
+    async def allow(op, approval_id: str, reason: str) -> ApprovalDecision:
+        return ApprovalDecision.ALLOW
+
+    orchestrator = ConversationOrchestrator(
+        pair_id="phainon_ancient_machine",
+        project=ProjectRef(project_id="p", name="p", root_path=str(tmp_path)),
+        dialogue_model=dialogue,
+        coding_engine=engine,
+        approval_mode=ApprovalMode.REQUEST_APPROVAL,
+        approval_callback=allow,
+    )
+
+    outcome = await orchestrator.handle_character_input(conversation_id="c", text="执行")
+    assert outcome.receipt is not None
+    policy = engine.opened_policies[-1]
+    assert policy == {
+        "approvalPolicy": "on-request",
+        "sandbox": "read-only",
+        "approvalsReviewer": "user",
+    }
+
+
+@pytest.mark.asyncio
+async def test_engine_policy_full_auto_maps_to_never(tmp_path) -> None:
+    dialogue = FixedDialogueModel(
+        CharacterTurn(speech="交给古代机械。", delegation=TaskRequestDraft(instructions="执行")),
+        CharacterTurn(speech="完成了。"),
+    )
+    engine = RecordingCodingEngine(tool_payload={"tool_kind": "shell", "command": "ls"})
+    orchestrator = ConversationOrchestrator(
+        pair_id="phainon_ancient_machine",
+        project=ProjectRef(project_id="p", name="p", root_path=str(tmp_path)),
+        dialogue_model=dialogue,
+        coding_engine=engine,
+        approval_mode=ApprovalMode.FULL_AUTO,
+    )
+
+    await orchestrator.handle_character_input(conversation_id="c", text="执行")
+
+    assert engine.opened_policies[-1]["approvalPolicy"] == "never"
+    assert engine.opened_policies[-1]["sandbox"] == "workspace-write"
+    assert engine.opened_policies[-1]["approvalsReviewer"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_engine_policy_review_maps_to_on_request(tmp_path) -> None:
+    dialogue = FixedDialogueModel(
+        CharacterTurn(speech="交给古代机械。", delegation=TaskRequestDraft(instructions="执行")),
+        CharacterTurn(speech="完成了。"),
+    )
+    engine = RecordingCodingEngine(tool_payload={"tool_kind": "shell", "command": "ls"})
+    orchestrator = ConversationOrchestrator(
+        pair_id="phainon_ancient_machine",
+        project=ProjectRef(project_id="p", name="p", root_path=str(tmp_path)),
+        dialogue_model=dialogue,
+        coding_engine=engine,
+        approval_mode=ApprovalMode.REVIEW,
+        reviewer=ScriptedReviewer([ReviewerVerdict(allow=True)]),
+    )
+
+    await orchestrator.handle_character_input(conversation_id="c", text="执行")
+
+    assert engine.opened_policies[-1]["approvalPolicy"] == "on-request"
+    assert engine.opened_policies[-1]["sandbox"] == "read-only"
+    assert engine.opened_policies[-1]["approvalsReviewer"] == "user"
+
+
+# ---- B1 联调加固：信息不足的操作在 REVIEW 模式不得按低风险放行 ----
+
+
+@pytest.mark.asyncio
+async def test_review_adjudicate_insufficient_info_routes_to_reviewer() -> None:
+    """app-server 0.147.0 的 fileChange 审批请求不带路径（grantRoot/reason 均
+    为 None），映射出的操作既无 command 也无 paths。REVIEW 模式下这类操作
+    不得直接放行（删除会绕过审查），必须转审查智能体结合上下文裁决。"""
+    reviewer = ScriptedReviewer([ReviewerVerdict(allow=False, reason="无法确认", suggestion="补充路径")])
+    manager = ApprovalManager(
+        mode=ApprovalMode.REVIEW,
+        rules=default_risk_rules(),
+        reviewer=reviewer,
+    )
+    op = PendingOperation(
+        tool_kind="file_write",
+        summary="工具操作",
+    )
+    requested = EngineEvent(
+        conversation_id="c",
+        task_id="t",
+        engine_turn_id="e",
+        sequence=1,
+        type=EngineEventType.APPROVAL_REQUESTED,
+        tool_call_id="tc-1",
+        payload={"approval_id": "0"},
+    )
+    outcome = await manager.adjudicate(
+        op,
+        requested_event=requested,
+        conversation_id="c",
+        task_id="t",
+        engine_turn_id="e",
+        tool_call_id="tc-1",
+        context=[],
+    )
+    assert len(reviewer.requests) == 1
+    assert outcome.decision == ApprovalDecision.DENY
+    resolved = [e for e in outcome.events if e.type == "approval.resolved"]
+    assert resolved[0].payload["reason"] == "无法确认"
+
+
+@pytest.mark.asyncio
+async def test_review_adjudicate_insufficient_info_reviewer_may_allow() -> None:
+    """信息不足转审查后，审查智能体结合上下文可以放行（如常规创建）。"""
+    reviewer = ScriptedReviewer([ReviewerVerdict(allow=True)])
+    manager = ApprovalManager(
+        mode=ApprovalMode.REVIEW,
+        rules=default_risk_rules(),
+        reviewer=reviewer,
+    )
+    op = PendingOperation(tool_kind="file_write", summary="工具操作")
+    requested = EngineEvent(
+        conversation_id="c",
+        task_id="t",
+        engine_turn_id="e",
+        sequence=1,
+        type=EngineEventType.APPROVAL_REQUESTED,
+        tool_call_id="tc-1",
+        payload={"approval_id": "0"},
+    )
+    outcome = await manager.adjudicate(
+        op,
+        requested_event=requested,
+        conversation_id="c",
+        task_id="t",
+        engine_turn_id="e",
+        tool_call_id="tc-1",
+        context=[],
+    )
+    assert outcome.decision == ApprovalDecision.ALLOW
+
+
+@pytest.mark.asyncio
+async def test_review_gate_insufficient_info_routes_to_reviewer() -> None:
+    """gate 路径（无原生审批请求的引擎）同样对信息不足操作转审查。"""
+    reviewer = ScriptedReviewer([ReviewerVerdict(allow=False, reason="信息不足", suggestion="补路径")])
+    manager = ApprovalManager(
+        mode=ApprovalMode.REVIEW,
+        rules=default_risk_rules(),
+        reviewer=reviewer,
+    )
+    op = PendingOperation(tool_kind="file_write", summary="工具操作")
+    outcome = await manager.gate(
+        op,
+        conversation_id="c",
+        task_id="t",
+        engine_turn_id="e",
+        sequence=1,
+    )
+    assert len(reviewer.requests) == 1
+    assert outcome.decision == ApprovalDecision.DENY
+
+
+@pytest.mark.asyncio
+async def test_review_regular_file_write_with_path_still_low_risk() -> None:
+    """带路径的常规 file_write 仍是低风险直接放行，不打扰审查智能体。"""
+    reviewer = ScriptedReviewer([ReviewerVerdict(allow=False, reason="不应被调用", suggestion="")])
+    manager = ApprovalManager(
+        mode=ApprovalMode.REVIEW,
+        rules=default_risk_rules(),
+        reviewer=reviewer,
+    )
+    op = PendingOperation(tool_kind="file_write", paths=["proj/src/a.py"], summary="写入代码")
+    outcome = await manager.gate(
+        op,
+        conversation_id="c",
+        task_id="t",
+        engine_turn_id="e",
+        sequence=1,
+    )
+    assert len(reviewer.requests) == 0
+    assert outcome.decision == ApprovalDecision.ALLOW

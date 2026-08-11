@@ -36,10 +36,30 @@ class FakeCodexAppServer:
         self.requests: list[dict[str, Any]] = []
 
     async def serve_request(self, result: dict[str, Any]) -> dict[str, Any]:
-        request = await self.connection.receive_request()
-        self.requests.append(request)
-        await self.connection.send({"id": request["id"], "result": result})
-        return request
+        """应答下一个非 initialize 请求；initialize 握手透明应答不返回。
+
+        B1：引擎 open_session 现在先发 initialize 握手（真实 app-server
+        协议要求，否则报 "Not initialized"），测试无需为每个用例显式
+        处理握手，这里自动应答并继续等待真正的请求。
+        """
+        while True:
+            request = await self.connection.receive_request()
+            self.requests.append(request)
+            if request.get("method") == "initialize":
+                await self.connection.send(
+                    {
+                        "id": request["id"],
+                        "result": {
+                            "codexHome": "C:\\Users\\test\\.codex",
+                            "platformFamily": "windows",
+                            "platformOs": "windows",
+                            "userAgent": "pair-harness-test",
+                        },
+                    }
+                )
+                continue
+            await self.connection.send({"id": request["id"], "result": result})
+            return request
 
     async def notify(self, method: str, params: dict[str, Any]) -> None:
         await self.connection.send({"method": method, "params": params})

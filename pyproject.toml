@@ -28,5 +28,6 @@ where = ["src"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
+    "live: requires live credentials (DeepSeek dialogue + codex app-server)",
     "live_qwen: requires live DashScope credentials",
 ]

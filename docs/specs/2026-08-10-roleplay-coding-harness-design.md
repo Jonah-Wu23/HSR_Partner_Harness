@@ -616,7 +616,7 @@ MVP 不建设生产级遥测、复杂恢复系统或自定义权限治理。
 | 职责 | 承担方 | 说明 |
 |---|---|---|
 | 真正暂停执行 | app-server | thread/start 配置 `approvalPolicy`（如 `"on-request"`）后，工具操作执行前挂起并发起 `requestApproval` 请求 |
-| 执行边界 | app-server | thread/start 配置 `sandbox: "workspace-write"`（MVP 目录级约束的引擎侧实现） |
+| 执行边界 | app-server | thread/start 配置 `sandbox`（按审批模式映射：`read-only` 或 `workspace-write`，见 §14.6） |
 | 裁决中枢 | orchestrator `ApprovalManager` | 三种审批模式逻辑不变；裁决结果统一经 `CodingEngine.resolve_approval` 转发回引擎 |
 | 兜底校验 | orchestrator 沙箱 | app-server 策略未配置或演示引擎路径下仍执行目录级拦截；原生路径下在挂起时同步检查（越界直接否决） |
 | 交互卡片 | ApprovalManager 裁决流程 | 请求批准模式的按钮卡片由 approval_callback 驱动；审查模式的状态展示由合成事件驱动；**原生事件不再单独透传为交互卡片** |
@@ -637,7 +637,7 @@ MVP 不建设生产级遥测、复杂恢复系统或自定义权限治理。
 | 方法 | params 关键字段 | 语义 |
 |---|---|---|
 | `item/commandExecution/requestApproval` | `itemId`、`command`、`cwd`、`reason` | 命令执行前挂起 |
-| `item/fileChange/requestApproval` | `itemId`、`grantRoot`、`reason`、`threadId`、`turnId` | 文件写入/修改前挂起 |
+| `item/fileChange/requestApproval` | `itemId`、`startedAtMs`、`threadId`、`turnId`（`reason`/`grantRoot` 恒为 None） | 文件写入/修改前挂起；**B1 联调实测：params 永不含路径**（见 §14.9.1） |
 | `item/permissions/requestApproval` | `itemId`、`permissions`、`reason`、`threadId`、`turnId` | 权限扩展（网络等）前挂起 |
 
 **决策枚举**（`CommandExecutionApprovalDecision`）：`accept`、
@@ -681,9 +681,18 @@ MVP 不建设生产级遥测、复杂恢复系统或自定义权限治理。
 
 | 应用层审批模式 | approvalPolicy | sandbox | approvalsReviewer |
 |---|---|---|---|
-| 请求批准 | `"on-request"` | `"workspace-write"` | `"user"` |
-| 帮我审核 | `"on-request"` | `"workspace-write"` | `"user"`（应用层审查智能体裁决；原生 `auto_review` 作为备选评估项） |
+| 请求批准 | `"on-request"` | `"read-only"` | `"user"` |
+| 帮我审核 | `"on-request"` | `"read-only"` | `"user"`（应用层审查智能体裁决；原生 `auto_review` 作为备选评估项） |
 | 完全允许运行 | `"never"` | `"workspace-write"` | `"user"` |
+
+**B1 联调修订（2026-08-11）**：初版映射对所有模式使用 `"workspace-write"`，
+但真实联调（codex-cli 0.147.0）确认 workspace-write 下工作区内的文件
+创建/删除等操作**不发起** `requestApproval`（仅越界、权限扩展等才挂起），
+导致请求批准/帮我审核模式在真实引擎路径下没有实际拦截。修订为：需要
+挂起裁决的模式（请求批准/帮我审核）使用 `"read-only"` 沙箱——一切写
+操作执行前挂起并发起审批请求，应用层 `ApprovalManager` 裁决后经
+`resolve_approval` 回复，实现真实差异化拦截；完全允许运行保持
+`"workspace-write"` 直接执行。目录级兜底校验（§14.2）仍保留。
 
 `open_session` 已预留 `approval_policy`/`sandbox`/`approvals_reviewer` 参数
 （§5.1），编排器在 B1 联调时按上表传入；`None` 表示不设置。
@@ -714,3 +723,49 @@ MVP 不建设生产级遥测、复杂恢复系统或自定义权限治理。
 4. 评估原生 `acceptForSession` 与应用层会话缓存的取舍（§14.5）。
 5. 沙箱兜底在原生路径下的行为对齐（越界请求直接 decline）。
 
+
+### 14.9 B1 真实联调发现（2026-08-11，codex-cli 0.147.0 + DeepSeek）
+
+#### 14.9.1 fileChange 审批请求不含路径信息
+
+真实 app-server 发出的 `item/fileChange/requestApproval` params 只有
+`threadId`/`turnId`/`itemId`/`startedAtMs`/`reason(None)`/`grantRoot(None)`，
+**永远不带文件路径**（与初版 §14.3 表格不符，已修订）。后果链：
+
+- codec 映射后的操作无 `command` 无 `paths` → 沙箱兜底空转（无路径可校验）、
+  风险规则不命中 → REVIEW 模式按“低风险”直接放行 → 删除操作绕过审查
+  （真实发生：hello.txt 被删）。
+- 修复：`approval.py` 新增 `_has_enough_info(op)`（`bool(op.command or op.paths)`），
+  gate 与 adjudicate 的 REVIEW 分支对信息不足操作**不得放行**，一律转审查
+  智能体（reason=“信息不足：无法确认操作目标”）；`reviewer.md` 补充
+  “无路径时结合上下文判断意图”原则（如“删除 hello.txt”是用户明确要求）。
+- 删除操作在 read-only 沙箱下可能先走 fileChange（无信息）再走
+  commandExecution（有 command），两种形态都要防（§14.2 兜底 + 信息不足规则）。
+
+#### 14.9.2 审查裁决须解析原始 delta 流
+
+`character.final` 的 `speech` 是 `_parse_output` 二次加工产物：模型直接输出
+纯 JSON 裁决时会被降级成“……”（真实联调观察到 `final_speech='……'`）。
+`DialogueModelReviewer.review` 改为**优先拼接 `speech.delta` 原始流**解析
+（`_parse_verdict_json`：剥 markdown 代码围栏、容忍前后文字、取首 `{` 到
+末 `}` 子串），delta 解析失败再回退 final。
+
+#### 14.9.3 decline 后模型幻觉（§14.8 第 3 点验证结果，未修复）
+
+真实行为：`decline` 后引擎继续 turn，但对话模型**未感知拒绝**，仍声称
+“已删除/已创建”；receipt 显示 `completed` 错误=0。暂未修复，候选方案：
+编排器在 decline 裁决后注入 `TOOL_FINISHED(denied)` 事件或系统消息，让
+模型得知操作被拒并调整方案。
+
+#### 14.9.4 恢复会话后的委派行为
+
+真实模型恢复旧聊天后“记得”上次执行结果：对纯查看请求不再委派编程引擎
+（只闲聊，无 engine 事件，CLI 无 receipt 退出码 1）。这符合角色语义，但
+联调测试验证 thread/resume 时必须用**必须真实执行引擎操作**的请求（如
+“追加一行 world”），纯“查看”请求不可靠。
+
+#### 14.9.5 CLI --data-dir 修复
+
+`run_real` 原写法 `(data_dir or AppPaths.default()).ensure()` 在 `--data-dir`
+传裸 `Path` 时崩溃（WindowsPath 无 `ensure`）。修复：`data_dir` 存在时包一层
+`AppPaths(Path(data_dir)).ensure()`，否则用 `AppPaths.default().ensure()`。

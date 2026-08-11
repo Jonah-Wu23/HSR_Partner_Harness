@@ -111,8 +111,14 @@ class ApprovalManager:
 
         # REVIEW 模式
         reason = match_high_risk(op, self.rules)
-        if reason is None:
+        if reason is None and self._has_enough_info(op):
             return GateOutcome(decision=ApprovalDecision.ALLOW)
+        if reason is None:
+            # B1 联调：app-server 0.147.0 的 fileChange 审批请求不带路径
+            # （grantRoot/reason 均为 None），映射出的操作信息不足无法判定
+            # 风险。不得按低风险放行（删除会绕过审查），转审查智能体结合
+            # 近期上下文判断用户意图。
+            reason = "信息不足：无法确认操作目标"
 
         event = self._approval_requested_event(
             op=op,
@@ -155,6 +161,17 @@ class ApprovalManager:
             suggestion=verdict.suggestion,
         )
         return GateOutcome(decision=ApprovalDecision.DENY, events=(event, resolved))
+
+    @staticmethod
+    def _has_enough_info(op: PendingOperation) -> bool:
+        """操作是否携带足够判定风险的信息。
+
+        B1 联调：真实 app-server 的 fileChange 审批请求不携带路径
+        （grantRoot/reason 均为 None），映射出的操作既无 command 也无
+        paths——这类操作无法区分"创建文件"与"删除文件"，不得在
+        REVIEW 模式下按低风险放行。
+        """
+        return bool(op.command or op.paths)
 
     async def adjudicate(
         self,
@@ -216,8 +233,12 @@ class ApprovalManager:
 
         # REVIEW 模式
         risk_reason = match_high_risk(op, self.rules)
-        if risk_reason is None:
+        if risk_reason is None and self._has_enough_info(op):
             return GateOutcome(decision=ApprovalDecision.ALLOW)
+        if risk_reason is None:
+            # B1 联调：信息不足的操作（如 fileChange 审批请求无路径）不得
+            # 按低风险放行，转审查智能体结合近期上下文判断（见 gate）。
+            risk_reason = "信息不足：无法确认操作目标"
         if self.reviewer is None:
             resolved = self._approval_resolved_event(
                 requested_event,

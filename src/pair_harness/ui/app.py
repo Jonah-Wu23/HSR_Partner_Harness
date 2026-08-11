@@ -10,9 +10,15 @@ from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QApplication
 from qasync import QEventLoop, asyncSlot
 
+from pair_harness.adapters.codex.engine import CodexAppServerEngine
+from pair_harness.adapters.codex.transport import JsonlProcessTransport
 from pair_harness.adapters.demo import ScriptedCodingEngine, ScriptedDialogueModel
+from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDialogueModel
+from pair_harness.adapters.reviewer import DialogueModelReviewer
 from pair_harness.app_paths import AppPaths
+from pair_harness.cli import load_dotenv
 from pair_harness.config.pairs import load_pair_config
+from pair_harness.config.providers import load_reasoning_preset
 from pair_harness.core.contracts import (
     ApprovalDecision,
     ApprovalMode,
@@ -20,6 +26,7 @@ from pair_harness.core.contracts import (
     ProjectRef,
 )
 from pair_harness.core.orchestrator import ConversationOrchestrator
+from pair_harness.settings import Settings
 from pair_harness.storage.sqlite_store import SQLiteStore
 from pair_harness.ui.project_library import ProjectLibrary
 
@@ -30,35 +37,73 @@ from .qt_bridge import OrchestratorBridge
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Pair Harness desktop app")
     parser.add_argument("--demo", action="store_true")
+    parser.add_argument("--real", action="store_true", help="真实后端：DeepSeek 对话 + codex app-server")
+    parser.add_argument("--pair", default="phainon_ancient_machine")
     parser.add_argument("--data-dir", type=Path)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if not args.demo:
-        raise SystemExit("计划 A 仅支持 --demo；真实后端属于计划 B。")
+    if not (args.demo or args.real):
+        raise SystemExit("需要 --demo 或 --real")
+    if args.real:
+        # B1：真实后端 —— .env 只在此处显式加载，密钥不进代码与配置
+        load_dotenv(Path(__file__).resolve().parents[2] / ".env")
     app = QApplication.instance() or QApplication([sys.argv[0]])
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
     # O4.5：气泡颜色读取搭档主题（B3 前置）；配置缺失时抛 PairConfigError
-    pair_config = load_pair_config("phainon_ancient_machine")
+    pair_config = load_pair_config(args.pair)
     window = MainWindow(theme=pair_config.theme)
     paths = AppPaths(args.data_dir) if args.data_dir else AppPaths.default()
     store = SQLiteStore(paths.ensure().database)
+
+    if args.real:
+        project_id = f"real-{args.pair}"
+        conversation_id = "real-conversation"
+        settings = Settings.from_environment()
+        missing = [
+            name
+            for name, value in (
+                ("PAIR_HARNESS_DIALOGUE_BASE_URL", settings.dialogue_base_url),
+                ("PAIR_HARNESS_DIALOGUE_API_KEY", settings.dialogue_api_key),
+                ("PAIR_HARNESS_DIALOGUE_MODEL", settings.dialogue_model),
+            )
+            if not value
+        ]
+        if missing:
+            raise SystemExit(f"--real 缺少环境变量: {', '.join(missing)}（.env 或进程环境）")
+        assert settings.dialogue_base_url and settings.dialogue_api_key and settings.dialogue_model
+        preset = load_reasoning_preset(settings.dialogue_base_url, settings.dialogue_model)
+        dialogue_model = OpenAICompatibleDialogueModel(
+            base_url=settings.dialogue_base_url,
+            api_key=settings.dialogue_api_key,
+            model=settings.dialogue_model,
+            thinking=preset.default_thinking,
+            reasoning_effort="max",
+            temperature=1.0,
+        )
+        coding_engine = CodexAppServerEngine(JsonlProcessTransport(settings.codex_bin))
+    else:
+        project_id = "demo-project"
+        conversation_id = "demo-conversation"
+        dialogue_model = ScriptedDialogueModel()
+        coding_engine = ScriptedCodingEngine()
+
     store.create_project(
-        project_id="demo-project",
-        name="Demo",
+        project_id=project_id,
+        name=pair_config.character.name,
         root_path=str(Path.cwd()),
     )
     store.create_conversation(
-        conversation_id="demo-conversation",
-        project_id="demo-project",
-        pair_id="phainon_ancient_machine",
+        conversation_id=conversation_id,
+        project_id=project_id,
+        pair_id=args.pair,
         title="白厄与古代机械",
     )
     # 打开项目时恢复上次选择的审批模式（计划 A6）
-    project_record = store.get_project("demo-project")
+    project_record = store.get_project(project_id)
     window.set_approval_mode(project_record.approval_mode)
 
     # 审批裁决桥：orchestrator 在请求批准模式下挂起等待 UI 决策。
@@ -83,26 +128,28 @@ def main(argv: list[str] | None = None) -> int:
     window.approval_decided.connect(decide)
 
     orchestrator = ConversationOrchestrator(
-        pair_id="phainon_ancient_machine",
-        project=ProjectRef(project_id="demo-project", name="Demo", root_path=str(Path.cwd())),
-        dialogue_model=ScriptedDialogueModel(),
-        coding_engine=ScriptedCodingEngine(),
+        pair_id=args.pair,
+        project=ProjectRef(project_id=project_id, name=pair_config.character.name, root_path=str(Path.cwd())),
+        dialogue_model=dialogue_model,
+        coding_engine=coding_engine,
         store=store,
         approval_mode=ApprovalMode(project_record.approval_mode),
         approval_callback=approval_callback,
+        # B1：帮我审核模式下审查智能体复用真实对话模型
+        reviewer=DialogueModelReviewer(dialogue_model) if args.real else None,
     )
 
     @asyncSlot(str)
     def approval_mode_selected(mode: str) -> None:
         # 计划 A5：切换后立即写入项目设置，并同步编排器
-        store.update_project_approval_mode("demo-project", mode)
+        store.update_project_approval_mode(project_id, mode)
         orchestrator.set_approval_mode(ApprovalMode(mode))
 
     window.approval_mode_changed.connect(approval_mode_selected)
 
     # 挂载项目与聊天库（计划 A6 第 4 步）
     window.set_project_library(ProjectLibrary(store))
-    snapshot = store.load_conversation("demo-conversation")
+    snapshot = store.load_conversation(conversation_id)
     # O2.2：恢复旧聊天时回填编排器的消息历史与会话引用，
     # 角色不失忆，Codex 可 thread/resume 而非重新 thread/start
     orchestrator.restore_conversation(snapshot)
@@ -126,11 +173,11 @@ def main(argv: list[str] | None = None) -> int:
         # ConversationOutcome 仅保留为最终汇总，不再事后回放。
         if target == "assistant":
             await orchestrator.handle_direct_input(
-                conversation_id="demo-conversation", text=text
+                conversation_id=conversation_id, text=text
             )
         else:
             await orchestrator.handle_character_input(
-                conversation_id="demo-conversation", text=text
+                conversation_id=conversation_id, text=text
             )
 
     # O2.1：流式事件通道——orchestrator 产生消息/事件即推送，UI 增量渲染

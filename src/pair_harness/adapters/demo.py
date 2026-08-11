@@ -67,6 +67,9 @@ class ScriptedCodingEngine(CodingEngine):
         # 计划 A2：演示脚本包含 file.patch 事件，回执的变更文件列表据此形成
         self.patch_path = patch_path
         self.opened_sessions: list[tuple[ProjectRef, EngineSessionRef | None]] = []
+        # B1：记录 open_session 收到的策略映射，供测试断言（真实引擎联调
+        # 时按此写入 thread/start 的 approvalPolicy/sandbox/approvalsReviewer）
+        self.opened_policies: list[dict[str, str | None]] = []
         self.requests: list[TaskRequest] = []
         self.cancelled: list[tuple[EngineSessionRef, str]] = []
         self.amendments: list[tuple[EngineSessionRef, str, TaskAmendment]] = []
@@ -81,7 +84,13 @@ class ScriptedCodingEngine(CodingEngine):
         sandbox: str | None = None,
         approvals_reviewer: str | None = None,
     ) -> EngineSessionRef:
-        del approval_policy, sandbox, approvals_reviewer
+        self.opened_policies.append(
+            {
+                "approvalPolicy": approval_policy,
+                "sandbox": sandbox,
+                "approvalsReviewer": approvals_reviewer,
+            }
+        )
         self.opened_sessions.append((project, stored_ref))
         return stored_ref or EngineSessionRef(
             engine_type="scripted",

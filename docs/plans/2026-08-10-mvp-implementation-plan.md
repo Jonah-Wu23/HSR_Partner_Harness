@@ -972,9 +972,29 @@ Get-Content -LiteralPath .\.tmp\codex-smoke\hello.txt
 
 用户需要准备：
 
-- `DASHSCOPE_API_KEY`。
-- 服务地域和对应 WebSocket 地址。
+- `DASHSCOPE_API_KEY`。已有。
+
+- 服务地域和对应 WebSocket 地址：
+
+  API Host
+
+  llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com
+
+  OpenAI 兼容地址
+
+  https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+
+  DashScope
+
+  https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1
+
 - 白厄与神秘古代机械的参考语音，或已经创建的两个 `voice_id`。
+  白厄参考语音：E:\AI\HSR Partner Harness\assets\reference_voices\白厄 下。神秘古代机械使用声音设计进行。
+  参考文档：
+
+  "E:\AI\HSR Partner Harness\docs\referances\千问声音复刻文档.md"
+  "E:\AI\HSR Partner Harness\docs\referances\千问声音设计文档.md"
+  "E:\AI\HSR Partner Harness\docs\referances\千问语音识别文档.md"
 
 新增文件：
 

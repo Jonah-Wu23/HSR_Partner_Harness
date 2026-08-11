@@ -24,6 +24,10 @@ class CodexAppServerEngine(CodingEngine):
 
     def __init__(self, transport: JsonlProcessTransport) -> None:
         self.transport = transport
+        # B1 联调：app-server 协议要求连接后先发 initialize 握手，
+        # 否则 thread/start 返回 {"code": -32600, "message": "Not initialized"}。
+        # 每个引擎实例（每次连接）只需一次。
+        self._initialized = False
 
     @staticmethod
     def _encode_ref(thread_id: str) -> EngineSessionRef:
@@ -59,6 +63,12 @@ class CodexAppServerEngine(CodingEngine):
         与沙箱配置（MVP → "workspace-write"）传入真实参数。
         """
         await self.transport.start()
+        if not self._initialized:
+            await self.transport.request(
+                "initialize",
+                {"clientInfo": {"name": "pair-harness", "version": "0.1.0"}},
+            )
+            self._initialized = True
         if stored_ref is not None:
             thread_id = self._decode_ref(stored_ref)
             result = await self.transport.request("thread/resume", {"threadId": thread_id})

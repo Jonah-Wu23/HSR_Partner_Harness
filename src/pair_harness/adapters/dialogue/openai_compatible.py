@@ -9,6 +9,13 @@ from typing import Any
 import httpx
 
 from pair_harness.config.pairs import load_pair_config, load_prompt
+from pair_harness.config.providers import (
+    deepseek_request_extras,
+    detect_provider,
+    is_deepseek_host,
+    load_reasoning_preset,
+    normalize_effort,
+)
 from pair_harness.core.contracts import (
     CharacterProgressSummary,
     CharacterResultSummary,
@@ -54,6 +61,9 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         client: httpx.AsyncClient | None = None,
         timeout: httpx.Timeout | None = None,
         config_root: Path | None = None,
+        thinking: bool | None = None,
+        reasoning_effort: str | None = None,
+        temperature: float | None = None,
     ) -> None:
         self.base_url = base_url or os.getenv("PAIR_HARNESS_DIALOGUE_BASE_URL", "")
         self.api_key = api_key or os.getenv("PAIR_HARNESS_DIALOGUE_API_KEY", "")
@@ -63,6 +73,12 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         self._owns_client = client is None
         self._timeout = timeout or httpx.Timeout(30.0, connect=10.0)
         self._config_root = config_root
+        # B1：DeepSeek 推理请求形态（thinking 开关与 effort 档位）。
+        # None 表示采用供应商预设默认（DeepSeek 默认开启思考）。
+        self.thinking = thinking
+        self.reasoning_effort = reasoning_effort
+        # B1：采样温度；None 表示不写入请求体（服务端默认，DeepSeek 为 1）。
+        self.temperature = temperature
 
     # ---- client 生命周期（O3.2）----
 
@@ -194,11 +210,20 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         if not isinstance(value, dict):
             return None
         kind = value.get("type")
-        instructions = str(value.get("instructions") or "").strip()
+        # B1 联调发现：角色卡（config/prompts/characters/phainon.md）的输出
+        # 格式约定是 delegation.data.instructions（嵌套 data），而提示词尾部
+        # 的输出格式指令是 delegation.instructions。模型两种都可能产出，
+        # 解析器两种都接受：优先平铺字段，缺失时回退 data 子对象。
+        payload = value
+        if not str(payload.get("instructions") or "").strip():
+            nested = payload.get("data")
+            if isinstance(nested, dict):
+                payload = nested
+        instructions = str(payload.get("instructions") or "").strip()
         if not instructions:
             return None
         if kind == "task":
-            constraints = value.get("constraints") or ()
+            constraints = payload.get("constraints") or ()
             if not isinstance(constraints, (list, tuple)):
                 constraints = ()
             return TaskRequestDraft(
@@ -206,8 +231,8 @@ class OpenAICompatibleDialogueModel(DialogueModel):
                 constraints=tuple(str(c) for c in constraints),
             )
         if kind == "amendment":
-            target = value.get("target_task_id")
-            revision = value.get("revision")
+            target = payload.get("target_task_id")
+            revision = payload.get("revision")
             return TaskAmendmentDraft(
                 instructions=instructions,
                 target_task_id=str(target) if target else None,
@@ -217,6 +242,21 @@ class OpenAICompatibleDialogueModel(DialogueModel):
 
     # ---- 流式对话 ----
 
+    def _request_extras(self) -> dict[str, Any]:
+        """B1：按后端识别注入推理请求形态。
+
+        只对 DeepSeek 端点写入 thinking/reasoning_effort 字段；
+        其余 OpenAI 兼容端点保持标准请求体（Reasonix 文档——
+        "the endpoint silently ignores reasoning_effort" 的后端不做无谓注入）。
+        """
+        if not is_deepseek_host(self.base_url):
+            return {}
+        return deepseek_request_extras(
+            thinking=self.thinking,
+            effort=self.reasoning_effort,
+            model=self.model,
+        )
+
     async def stream_reply(self, request: DialogueRequest) -> AsyncIterator[DialogueEvent]:
         client = self._client_or_raise()
         payload = {
@@ -224,6 +264,9 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             "messages": self._build_messages(request),
             "stream": True,
         }
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
+        payload.update(self._request_extras())
         text_chunks: list[str] = []
         async with client.stream("POST", "/chat/completions", json=payload) as response:
             response.raise_for_status()

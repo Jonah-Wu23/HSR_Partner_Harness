@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,13 +76,27 @@ class SQLiteStore(StateStore):
         schema.sql 用 CREATE TABLE IF NOT EXISTS，已存在的旧库不会自动
         补列/删列，依赖这里的迁移步骤。每完成一级立即写入对应
         user_version，中途失败不会重复执行已完成步骤。
+
+        迁移语句带存在性守卫（B1 联调发现）：早期未版本化版本的库
+        user_version=0 但 projects 已含 approval_mode 列、engine_sessions
+        仍含死列，直接 ALTER 会报 duplicate/no such column，跳过即可。
         """
         version = int(self.connection.execute("PRAGMA user_version").fetchone()[0])
         for target in range(version + 1, SCHEMA_VERSION + 1):
             for statement in MIGRATIONS[target - 1]:
-                self.connection.execute(statement)
+                self._apply_migration(statement)
             self.connection.execute(f"PRAGMA user_version = {target}")
         self.connection.commit()
+
+    def _apply_migration(self, statement: str) -> None:
+        """执行单条迁移语句；ALTER TABLE ADD/DROP COLUMN 按现状跳过。"""
+        match = re.match(r"ALTER TABLE (\w+) (ADD|DROP) COLUMN (\w+)", statement)
+        if match:
+            table, action, column = match.groups()
+            names = [row["name"] for row in self.connection.execute(f"PRAGMA table_info({table})")]
+            if (action == "ADD" and column in names) or (action == "DROP" and column not in names):
+                return
+        self.connection.execute(statement)
 
     def create_project(
         self,

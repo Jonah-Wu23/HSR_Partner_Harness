@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 
 from pair_harness.core.contracts import (
@@ -62,26 +63,61 @@ class DialogueModelReviewer:
             conversation_id="reviewer",
             user_message=synthetic,
         )
-        import json
 
-        # 只取 character.final 的台词作为解析输入：
-        # 对话适配器是“增量 delta + 全量 final”形态，delta 片段与 final 全量
-        # 拼接必然重复导致 JSON 解析失败（O1.1）。
+        # 优先拼接 speech.delta 取模型原始输出：角色适配器的 character.final
+        # 是 _parse_output 的二次加工（整体 JSON 会被拆成 speech/delegation，
+        # 纯 JSON 输出会被降级成“……”），审查 JSON 会被吞掉；delta 流本身
+        # 就是模型输出的完整 content。delta 拼接解析失败（测试/演示模型只
+        # 发半截 delta）时回退 final 台词。
+        chunks: list[str] = []
         final_speech: str | None = None
         async for event in self._model.stream_reply(request):
-            if event.type == "character.final" and event.turn:
+            if event.type == "speech.delta":
+                chunks.append(event.delta)
+            elif event.type == "character.final" and event.turn:
                 final_speech = event.turn.speech
-        if final_speech is None:
-            return ReviewerVerdict(allow=False, reason="审查智能体没有返回内容", suggestion="请重试")
-        try:
-            data = json.loads(final_speech.strip())
-        except json.JSONDecodeError:
+        data = self._parse_verdict_json("".join(chunks))
+        if data is None and final_speech:
+            data = self._parse_verdict_json(final_speech)
+        if data is None:
             return ReviewerVerdict(allow=False, reason="审查智能体返回格式错误", suggestion="请重试")
         return ReviewerVerdict(
             allow=bool(data.get("allow", False)),
             reason=str(data.get("reason", "")),
             suggestion=str(data.get("suggestion", "")),
         )
+
+    @staticmethod
+    def _parse_verdict_json(speech: str) -> dict | None:
+        """从审查智能体台词中解析裁决 JSON。
+
+        B1 联调加固：真实模型输出不稳定——可能包 markdown 代码块、前后
+        带解释文字，或适配器降级台词（“……”）。逐级剥离后取首个
+        ``{`` 到末个 ``}`` 的子串解析，全部失败返回 None。
+        """
+        import re
+
+        text = speech.strip()
+        if not text or text == "……":
+            return None
+        # 剥离 markdown 代码块围栏
+        fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+        if fenced:
+            text = fenced.group(1).strip()
+        try:
+            obj = json.loads(text)
+            return obj if isinstance(obj, dict) else None
+        except (ValueError, TypeError):
+            pass
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end <= start:
+            return None
+        try:
+            obj = json.loads(text[start : end + 1])
+            return obj if isinstance(obj, dict) else None
+        except (ValueError, TypeError):
+            return None
 
     def _build_prompt(self, op: PendingOperation, context: list[Message]) -> str:
         lines = [

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from httpx import AsyncClient, Request, Response
 from httpx._transports.mock import MockTransport
@@ -53,3 +55,61 @@ async def test_openai_compatible_stream_yields_final_character_turn() -> None:
     assert deltas == ["你好", "，", "伙伴"]
     assert len(finals) == 1
     assert finals[0].turn.speech == "你好，伙伴"
+
+
+@pytest.mark.parametrize(
+    "raw, expected_instructions",
+    [
+        # 角色卡 phainon.md 约定：delegation.data.instructions（嵌套 data）
+        (
+            json.dumps(
+                {
+                    "speech": "这事我插不上手。",
+                    "delegation": {
+                        "type": "task",
+                        "data": {"instructions": "创建 hello.txt", "constraints": ["内容为 hello"]},
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            "创建 hello.txt",
+        ),
+        # 适配器输出格式指令：delegation.instructions（平铺）
+        (
+            json.dumps(
+                {
+                    "speech": "这事我插不上手。",
+                    "delegation": {"type": "task", "instructions": "创建 hello.txt"},
+                },
+                ensure_ascii=False,
+            ),
+            "创建 hello.txt",
+        ),
+        # amendment 的 data 嵌套形态
+        (
+            json.dumps(
+                {
+                    "speech": "等等，先停一下。",
+                    "delegation": {
+                        "type": "amendment",
+                        "data": {
+                            "instructions": "改成表格",
+                            "target_task_id": "task-001",
+                            "revision": 2,
+                        },
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            "改成表格",
+        ),
+    ],
+)
+def test_parse_delegation_accepts_flat_and_nested_data(
+    raw: str, expected_instructions: str
+) -> None:
+    """B1：两种 delegation 形态（角色卡嵌套 data 与适配器平铺）都能解析。"""
+    turn = OpenAICompatibleDialogueModel._parse_output(raw)
+    assert turn.speech == "这事我插不上手。" or turn.speech == "等等，先停一下。"
+    assert turn.delegation is not None
+    assert turn.delegation.instructions == expected_instructions

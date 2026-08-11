@@ -1,0 +1,19 @@
+pair_id: reviewer
+character:
+  id: reviewer
+  name: 审查智能体
+  prompt: config/prompts/characters/reviewer.md
+  voice_id: demo-reviewer
+assistant:
+  id: ancient_machine
+  name: 神秘的古代机械
+  prompt: config/prompts/assistants/ancient_machine.md
+  voice_id: demo-ancient-machine
+theme:
+  character_text: "#C7D4E3"
+  character_primary: "#8AA4D4"
+  character_deep: "#3A548C"
+  character_active: "#296CE1"
+  assistant_primary: "#B08D57"
+  assistant_bright: "#C5A059"
+  assistant_shadow: "#8C6B3F"

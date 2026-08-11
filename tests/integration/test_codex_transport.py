@@ -145,3 +145,40 @@ async def test_server_initiated_request_goes_to_notification_queue() -> None:
     assert reply == {"id": 100, "result": {"decision": "accept"}}
     await transport.close()
 
+
+
+@pytest.mark.asyncio
+async def test_open_session_sends_initialize_handshake_before_thread_start() -> None:
+    """B1：app-server 协议要求 initialize 握手先于 thread/start。
+
+    真实 app-server 未握手时返回 {"code": -32600, "message": "Not initialized"}；
+    握手只发一次，恢复线程时不再重复。
+    """
+    connection = QueueJsonLineConnection()
+
+    async def factory():
+        return connection
+
+    transport = JsonlProcessTransport("unused", connection_factory=factory)
+    engine = CodexAppServerEngine(transport)
+    server = FakeCodexAppServer(connection)
+    project = ProjectRef(project_id="p", name="p", root_path="C:\project")
+
+    open_task = asyncio.create_task(engine.open_session(project))
+    request = await server.serve_request({"thread": {"id": "thread-1"}})
+    assert request["method"] == "thread/start"
+    session_ref = await open_task
+
+    # 握手请求已被 fake server 透明应答并记录
+    handshakes = [r for r in server.requests if r["method"] == "initialize"]
+    assert len(handshakes) == 1
+    assert handshakes[0]["params"]["clientInfo"]["name"] == "pair-harness"
+
+    # 恢复线程：仅 thread/resume，不再重复握手
+    resume_task = asyncio.create_task(engine.open_session(project, stored_ref=session_ref))
+    resume_request = await server.serve_request({"thread": {"id": "thread-1"}})
+    assert resume_request["method"] == "thread/resume"
+    await resume_task
+    handshakes = [r for r in server.requests if r["method"] == "initialize"]
+    assert len(handshakes) == 1
+    await transport.close()

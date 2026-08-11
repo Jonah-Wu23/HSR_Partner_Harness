@@ -126,6 +126,34 @@ class ConversationOrchestrator:
         for manager in self._approval_managers.values():
             manager.mode = mode
 
+    def _engine_policy(self) -> dict[str, str | None]:
+        """B1：应用层审批模式 → app-server thread/start 策略映射（设计 §14.6）。
+
+        - 请求批准 / 帮我审核：``on-request`` + ``read-only`` 沙箱。真实联调
+          确认 workspace-write 下工作区写操作不发起 requestApproval（B1 联调
+          记录），改用 read-only 让一切写操作执行前挂起，由 ApprovalManager
+          裁决后经 resolve_approval 回复——三种审批模式真实差异化拦截；
+        - 完全允许运行：``never`` + ``workspace-write``（引擎不发起审批请求，
+          写操作直接执行，工具事件照常持久化）；
+        - ``approvalsReviewer`` 固定 ``"user"``——应用层审查智能体负责裁决，
+          不启用原生 auto_review（§14.6 备注，B1 联调可评估切换）。
+        """
+        approval_policy = (
+            "never"
+            if self.approval_mode == ApprovalMode.FULL_AUTO
+            else "on-request"
+        )
+        sandbox = (
+            "workspace-write"
+            if self.approval_mode == ApprovalMode.FULL_AUTO
+            else "read-only"
+        )
+        return {
+            "approvalPolicy": approval_policy,
+            "sandbox": sandbox,
+            "approvalsReviewer": "user",
+        }
+
     def restore_conversation(self, snapshot: dict) -> None:
         """O2.2：打开旧聊天时回填消息历史与会话引用。
 
@@ -432,7 +460,16 @@ class ConversationOrchestrator:
         progress = self._progress.setdefault(task.conversation_id, _TaskProgress())
         try:
             session = self._sessions.get(task.conversation_id)
-            session = await self.coding_engine.open_session(self.project, session)
+            # B1：按审批模式映射 app-server 策略（设计 §14.6）。
+            # 仅新开线程时生效；恢复线程沿用线程既有设置。
+            policy = self._engine_policy()
+            session = await self.coding_engine.open_session(
+                self.project,
+                session,
+                approval_policy=policy["approvalPolicy"],
+                sandbox=policy["sandbox"],
+                approvals_reviewer=policy["approvalsReviewer"],
+            )
             self._sessions[task.conversation_id] = session
             if self.store is not None:
                 self.store.save_engine_session(task.conversation_id, session)

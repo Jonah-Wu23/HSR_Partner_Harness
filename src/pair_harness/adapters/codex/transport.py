@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import shutil
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
@@ -25,13 +27,33 @@ class SubprocessJsonLineConnection:
     def __init__(self, process: asyncio.subprocess.Process) -> None:
         self.process = process
 
+    @staticmethod
+    def _resolve_executable(executable: str) -> str:
+        """把裸命令名解析为可启动的可执行文件路径。
+
+        B1 联调发现：npm 全局安装的 codex-cli 在 Windows 上是 ``codex.cmd``
+        批处理 shim，``create_subprocess_exec("codex", ...)`` 直接
+        FileNotFoundError；这里按 PATHEXT 解析出 .cmd/.bat 脚本路径。
+        """
+        if os.path.sep in executable or os.path.altsep and os.path.altsep in executable:
+            return executable
+        if executable.lower().endswith((".exe", ".cmd", ".bat", ".ps1")):
+            return executable
+        found = shutil.which(executable)
+        return found or executable
+
     @classmethod
     async def create(cls, executable: str) -> "SubprocessJsonLineConnection":
         # stderr 无人消费会打满管道缓冲并阻塞子进程（O1.3）。
         # MVP 阶段丢弃 stderr；B1 联调需要诊断输出时再改为独立任务消费并接入日志。
+        resolved = cls._resolve_executable(executable)
+        if resolved.lower().endswith((".cmd", ".bat")):
+            # 批处理 shim 必须经 cmd.exe 启动，直接 CreateProcess 会 WinError 193
+            args = [os.environ.get("COMSPEC", "cmd.exe"), "/c", resolved, "app-server"]
+        else:
+            args = [resolved, "app-server"]
         process = await asyncio.create_subprocess_exec(
-            executable,
-            "app-server",
+            *args,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
