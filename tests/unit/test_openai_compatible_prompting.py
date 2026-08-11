@@ -45,8 +45,9 @@ class _FakeChatHandler(BaseHTTPRequestHandler):
         if script.get("stream"):
             lines = []
             for chunk in script["chunks"]:
+                delta_payload = chunk if isinstance(chunk, dict) else {"content": chunk}
                 data = json.dumps(
-                    {"choices": [{"delta": {"content": chunk}}]}, ensure_ascii=False
+                    {"choices": [{"delta": delta_payload}]}, ensure_ascii=False
                 )
                 lines.append(f"data: {data}\n")
             lines.append("data: [DONE]\n")
@@ -87,13 +88,15 @@ def make_model(base_url: str) -> OpenAICompatibleDialogueModel:
     )
 
 
-def make_request(*, with_result: bool = False) -> DialogueRequest:
+def make_request(
+    *, text: str = "帮我把报告整理好", result_status: str | None = None
+) -> DialogueRequest:
     user = Message(
         conversation_id="c",
         pair_id=PAIR_ID,
         source=MessageSource.USER,
         kind=MessageKind.USER_TEXT,
-        text="帮我把报告整理好",
+        text=text,
     )
     previous_character = Message(
         conversation_id="c",
@@ -103,10 +106,10 @@ def make_request(*, with_result: bool = False) -> DialogueRequest:
         text="好，我陪着你弄。",
     )
     result = None
-    if with_result:
+    if result_status is not None:
         result = CharacterResultSummary(
             task_id="t-1",
-            status="completed",
+            status=result_status,
             summary="报告已生成",
             user_visible_changes=("report.md",),
         )
@@ -139,7 +142,7 @@ async def test_prompt_assembly_injects_role_card_partner_and_summaries(
     进度/结果摘要注入；最后一条是用户消息。"""
     _FakeChatHandler.scripts.append({"stream": True, "chunks": ["这就去办。"]})
     model = make_model(fake_chat_server)
-    request = make_request(with_result=True)
+    request = make_request(result_status="completed")
 
     turn = await run_turn(model, request)
     assert turn.speech == "这就去办。"
@@ -176,9 +179,69 @@ async def test_plain_chat_output_yields_no_delegation(fake_chat_server: str) -> 
     )
     model = make_model(fake_chat_server)
 
-    turn = await run_turn(model, make_request())
+    turn = await run_turn(model, make_request(text="今天有点累，陪我聊聊。"))
     assert turn.speech == "好啊，听你的。"
     assert turn.delegation is None
+
+
+@pytest.mark.asyncio
+async def test_explicit_local_task_has_deterministic_delegation_boundary(
+    fake_chat_server: str,
+) -> None:
+    """模型漏委派并声称自己执行时，连续三轮都收敛到结构化助手委派。"""
+    for _ in range(3):
+        _FakeChatHandler.scripts.append(
+            {
+                "stream": True,
+                "chunks": [
+                    '{"speech":"我来帮你处理。"}'
+                ],
+            }
+        )
+    model = make_model(fake_chat_server)
+    request = make_request(text="请帮我删除 notes.txt 文件")
+
+    turns = [await run_turn(model, request) for _ in range(3)]
+
+    for turn in turns:
+        assert isinstance(turn.delegation, TaskRequestDraft)
+        assert turn.delegation.instructions == "请帮我删除 notes.txt 文件"
+        assert "我来" not in turn.speech
+        assert "古代机械" in turn.speech
+
+
+@pytest.mark.asyncio
+async def test_failed_result_cannot_be_described_as_completed(fake_chat_server: str) -> None:
+    _FakeChatHandler.scripts.append(
+        {"stream": True, "chunks": ['{"speech":"我已经把文件删掉了。"}']}
+    )
+    model = make_model(fake_chat_server)
+
+    turn = await run_turn(model, make_request(result_status="failed"))
+
+    assert turn.delegation is None
+    assert "没做成" in turn.speech
+    assert "做完了" not in turn.speech
+
+
+@pytest.mark.asyncio
+async def test_returned_reasoning_is_kept_separate_from_speech(fake_chat_server: str) -> None:
+    _FakeChatHandler.scripts.append(
+        {
+            "stream": True,
+            "chunks": [
+                {"reasoning_content": "先判断这是普通聊天。"},
+                {"content": '{"speech":"坐下歇一会儿，我陪你。"}'},
+            ],
+        }
+    )
+    model = make_model(fake_chat_server)
+
+    turn = await run_turn(model, make_request(text="今天有点累，陪我聊聊。"))
+
+    assert turn.speech == "坐下歇一会儿，我陪你。"
+    assert turn.reasoning == "先判断这是普通聊天。"
+    assert "先判断" not in turn.speech
 
 
 @pytest.mark.asyncio
@@ -265,7 +328,8 @@ async def test_prose_with_json_tail_parses_and_prose_braces_kept(
     model = make_model(fake_chat_server)
 
     turn = await run_turn(model, make_request())
-    assert turn.speech == "看过了。"
+    assert turn.speech.startswith("看过了。")
+    assert "古代机械" in turn.speech
     assert isinstance(turn.delegation, TaskRequestDraft)
 
     _FakeChatHandler.scripts.append({"stream": True, "chunks": ["用 {shutil} 库。"]})

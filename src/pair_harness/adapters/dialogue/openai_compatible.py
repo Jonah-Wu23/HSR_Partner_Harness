@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -29,7 +30,7 @@ from pair_harness.core.contracts import (
 )
 from pair_harness.core.ports import DialogueModel
 
-# 结构化输出约定：模型可在台词后附 JSON（见 _OUTPUT_FORMAT_INSTRUCTION）。
+# 当前协议要求单一 JSON 对象；解析器仍兼容早期“台词 + JSON”输出。
 # 解析失败时降级为纯台词；原始 JSON 绝不进入台词（TTS 只朗读 speech）。
 _FALLBACK_SPEECH = "……"
 
@@ -142,6 +143,39 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         messages.append({"role": "user", "content": request.user_message.text})
         return messages
 
+    def _enforce_execution_boundary(
+        self, turn: CharacterTurn, request: DialogueRequest
+    ) -> CharacterTurn:
+        """把模型输出收敛到角色/助手职责边界。
+
+        JSON 模式和提示词负责主要行为；这里保留一条确定性边界：明确要求
+        操作本地文件、代码或命令时，若模型漏掉 delegation，仍以用户原始
+        指令形成结构化委派。角色只说“交给搭档”，不把工具操作说成自己做。
+        结果回应则以 ExecutionReceipt 派生的状态为准，禁止成功/失败倒置。
+        """
+        config = load_pair_config(request.pair_id, root=self._config_root)
+        assistant_name = config.assistant.name
+
+        if request.result_summary is not None:
+            speech = _truthful_result_speech(
+                turn.speech, request.result_summary.status, assistant_name
+            )
+            return turn.model_copy(update={"speech": speech, "delegation": None})
+
+        delegation = turn.delegation
+        if delegation is None and _is_explicit_local_task(request.user_message.text):
+            delegation = TaskRequestDraft(instructions=request.user_message.text.strip())
+
+        speech = turn.speech
+        if isinstance(delegation, TaskRequestDraft) and _claims_self_execution(speech):
+            speech = f"这事得交给{assistant_name}来处理。{assistant_name}，麻烦你了。"
+        elif delegation is not None and not speech.strip():
+            speech = f"这事交给{assistant_name}来处理。"
+        elif delegation is not None and not _mentions_assistant(speech, assistant_name):
+            speech = f"{speech.rstrip('。！？!?')}。{assistant_name}，麻烦你了。"
+
+        return turn.model_copy(update={"speech": speech, "delegation": delegation})
+
     # ---- 输出解析（O3.2）----
 
     @staticmethod
@@ -210,10 +244,8 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         if not isinstance(value, dict):
             return None
         kind = value.get("type")
-        # B1 联调发现：角色卡（config/prompts/characters/phainon.md）的输出
-        # 格式约定是 delegation.data.instructions（嵌套 data），而提示词尾部
-        # 的输出格式指令是 delegation.instructions。模型两种都可能产出，
-        # 解析器两种都接受：优先平铺字段，缺失时回退 data 子对象。
+        # 兼容旧角色卡和已有模型输出中的 delegation.data.instructions；
+        # 当前运行时协议使用 delegation.instructions 平铺字段。
         payload = value
         if not str(payload.get("instructions") or "").strip():
             nested = payload.get("data")
@@ -251,11 +283,15 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         """
         if not is_deepseek_host(self.base_url):
             return {}
-        return deepseek_request_extras(
+        extras = deepseek_request_extras(
             thinking=self.thinking,
             effort=self.reasoning_effort,
             model=self.model,
         )
+        # DeepSeek JSON Output：与 system 中唯一的 JSON 协议配合，避免
+        # “正文 + JSON 尾巴”在流式分块或随机采样下偶发解析失败。
+        extras["response_format"] = {"type": "json_object"}
+        return extras
 
     async def stream_reply(self, request: DialogueRequest) -> AsyncIterator[DialogueEvent]:
         client = self._client_or_raise()
@@ -268,6 +304,7 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             payload["temperature"] = self.temperature
         payload.update(self._request_extras())
         text_chunks: list[str] = []
+        reasoning_chunks: list[str] = []
         async with client.stream("POST", "/chat/completions", json=payload) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():
@@ -280,29 +317,103 @@ class OpenAICompatibleDialogueModel(DialogueModel):
                     chunk = json.loads(data)
                 except json.JSONDecodeError:
                     continue
-                delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                if delta:
-                    text_chunks.append(delta)
-                    yield DialogueEvent(type="speech.delta", delta=delta)
+                delta_payload = chunk.get("choices", [{}])[0].get("delta", {})
+                content_delta = delta_payload.get("content", "")
+                reasoning_delta = delta_payload.get("reasoning_content", "")
+                if reasoning_delta:
+                    reasoning_chunks.append(str(reasoning_delta))
+                if content_delta:
+                    text_chunks.append(str(content_delta))
+                    yield DialogueEvent(type="speech.delta", delta=str(content_delta))
+        turn = self._parse_output("".join(text_chunks)).model_copy(
+            update={"reasoning": "".join(reasoning_chunks).strip()}
+        )
         yield DialogueEvent(
-            type="character.final", turn=self._parse_output("".join(text_chunks))
+            type="character.final",
+            turn=self._enforce_execution_boundary(turn, request),
         )
 
 
-_OUTPUT_FORMAT_INSTRUCTION = """## 输出格式
+_OUTPUT_FORMAT_INSTRUCTION = """## 运行时输出协议（最高优先级）
 
-只输出角色台词本身，台词会进入语音朗读：写纯台词，不含舞台说明、括号、
-星号或心理描写。每轮几句话，说完就停。
+每轮只输出一个 JSON 对象，不得在 JSON 前后添加正文、解释或 Markdown
+代码块。speech 只放会进入语音朗读的角色台词，不含舞台说明、括号、星号
+或心理描写。每轮几句话，说完就停。
 
-若要把任务交给搭档，或要修改正在执行的任务，在台词之后另起一行附一个
-JSON 对象：
+纯聊天：
+
+{"speech": "角色台词"}
+
+需要本地文件、代码、命令或工具操作时，角色本人不能执行，也不能说“我来
+执行”“我已经完成”。必须通过 delegation 交给搭档：
 
 {"speech": "角色台词", "delegation": {"type": "task", "instructions": "任务内容", "constraints": ["约束"]}}
 
+修改正在执行的任务：
+
 {"speech": "角色台词", "delegation": {"type": "amendment", "instructions": "修改内容", "target_task_id": "任务id", "revision": 2}}
 
-delegation.type 为 "task" 表示新任务，"amendment" 表示修改当前任务；
-纯聊天不输出 JSON。"""
+收到任务结果系统消息时只依据给定状态回应，不带 delegation。未收到成功
+结果前，不得把任务描述成已执行或已完成。"""
+
+
+_ACTION_WORDS = (
+    "创建", "新建", "删除", "移除", "重命名", "移动", "复制", "修改",
+    "编辑", "写入", "追加", "保存", "运行", "执行", "安装", "构建", "编译",
+    "测试", "检查", "读取", "打开", "列出",
+)
+_LOCAL_OBJECT_WORDS = (
+    "文件", "文件夹", "目录", "路径", "代码", "项目", "仓库", "脚本", "命令",
+    "测试", "依赖",
+)
+_QUESTION_CUES = ("怎么", "如何", "为什么", "解释", "教程", "原理")
+_REQUEST_CUES = ("请", "帮我", "替我", "麻烦", "让", "把")
+_SELF_EXECUTION_RE = re.compile(
+    r"我(?:来|去|现在|这就|马上)?(?:帮你|替你)?"
+    r"(?:创建|新建|删除|移除|重命名|移动|复制|修改|编辑|写入|追加|保存|运行|执行|安装|构建|编译|测试|检查|读取|打开|处理)"
+)
+_FAILURE_CUES = ("没做成", "失败", "未执行", "没有完成", "已取消", "取消了")
+
+
+def _is_explicit_local_task(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+    if any(cue in normalized for cue in _QUESTION_CUES) and normalized.endswith(("?", "？")):
+        return False
+    has_action = any(word in normalized for word in _ACTION_WORDS)
+    has_object = any(word in normalized for word in _LOCAL_OBJECT_WORDS)
+    has_request = any(word in normalized for word in _REQUEST_CUES)
+    # 文件名或相对/绝对路径也属于明确本地对象。
+    has_path = bool(
+        re.search(r"(?:[a-z]:[\\/]|[.]{0,2}[\\/]|\b[\w.-]+\.(?:txt|md|py|json|ya?ml|toml|csv)\b)", normalized)
+    )
+    return has_action and has_request and (has_object or has_path)
+
+
+def _claims_self_execution(speech: str) -> bool:
+    return bool(_SELF_EXECUTION_RE.search(str(speech or "")))
+
+
+def _mentions_assistant(speech: str, assistant_name: str) -> bool:
+    aliases = {assistant_name, assistant_name.rsplit("的", 1)[-1]}
+    return any(alias and alias in speech for alias in aliases)
+
+
+def _truthful_result_speech(speech: str, status: str, assistant_name: str) -> str:
+    text = str(speech or "").strip()
+    says_failure = any(cue in text for cue in _FAILURE_CUES)
+    if status == "failed":
+        return f"这次没做成，{assistant_name}把原因记在执行记录里了。"
+    if status == "cancelled":
+        return f"任务已经取消，{assistant_name}没有继续执行。"
+    if status == "completed" and says_failure:
+        return f"做完了，{assistant_name}已经把结果整理好了。"
+    return text or (
+        f"做完了，{assistant_name}已经把结果整理好了。"
+        if status == "completed"
+        else f"{assistant_name}已经返回了任务状态。"
+    )
 
 
 def _first_markdown_section(prompt: str) -> str:

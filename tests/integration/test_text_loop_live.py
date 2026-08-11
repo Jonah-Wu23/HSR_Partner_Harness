@@ -18,6 +18,11 @@ from pathlib import Path
 
 import pytest
 
+from pair_harness.adapters.demo import ScriptedCodingEngine
+from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDialogueModel
+from pair_harness.core.contracts import ApprovalMode, MessageKind, ProjectRef
+from pair_harness.core.orchestrator import ConversationOrchestrator
+
 pytestmark = pytest.mark.live
 
 _REQUIRED_ENV = (
@@ -50,6 +55,8 @@ def smoke_project(tmp_path_factory) -> Path:
 
 
 def run_cli(project: Path, message: str, conversation: str, *extra: str) -> subprocess.CompletedProcess:
+    child_env = os.environ.copy()
+    child_env["PYTHONIOENCODING"] = "utf-8"
     cmd = [
         sys.executable,
         "-m",
@@ -77,6 +84,7 @@ def run_cli(project: Path, message: str, conversation: str, *extra: str) -> subp
         errors="replace",
         timeout=420,
         cwd=Path(__file__).resolve().parents[2],
+        env=child_env,
     )
 
 
@@ -115,3 +123,83 @@ def test_live_cli_creates_file_and_resumes_thread(
         conversation="live-smoke-fresh",
     )
     assert fresh.returncode == 0, fresh.stdout + fresh.stderr
+
+
+@pytest.mark.asyncio
+async def test_live_deepseek_roleplay_boundaries_are_stable(
+    live_env: dict[str, str], tmp_path: Path
+) -> None:
+    """固定三场景重复两轮：闲聊、委派、失败结果均遵守职责边界。"""
+    model = OpenAICompatibleDialogueModel(
+        base_url=live_env["PAIR_HARNESS_DIALOGUE_BASE_URL"],
+        api_key=live_env["PAIR_HARNESS_DIALOGUE_API_KEY"],
+        model=live_env["PAIR_HARNESS_DIALOGUE_MODEL"],
+        thinking=True,
+        reasoning_effort="max",
+        temperature=1.0,
+    )
+    try:
+        for iteration in range(2):
+            chat_engine = ScriptedCodingEngine()
+            chat = _live_orchestrator(model, chat_engine, tmp_path)
+            chat_outcome = await chat.handle_character_input(
+                conversation_id=f"chat-{iteration}",
+                text="今天有点累，陪我聊聊奥赫玛的日常。",
+            )
+            assert chat_outcome.receipt is None
+            assert chat_engine.requests == []
+
+            task_engine = ScriptedCodingEngine()
+            task = _live_orchestrator(model, task_engine, tmp_path)
+            task_outcome = await task.handle_character_input(
+                conversation_id=f"task-{iteration}",
+                text="请帮我创建 notes.txt 文件，内容写一行 hello。",
+            )
+            assert task_outcome.receipt is not None
+            assert task_outcome.receipt.status == "completed"
+            assert len(task_engine.requests) == 1
+
+            failed_engine = ScriptedCodingEngine(fail_tool=True)
+            failed = _live_orchestrator(model, failed_engine, tmp_path)
+            failed_outcome = await failed.handle_character_input(
+                conversation_id=f"failed-{iteration}",
+                text="请帮我删除 missing.txt 文件。",
+            )
+            assert failed_outcome.receipt is not None
+            assert failed_outcome.receipt.status == "failed"
+            last_character = [
+                message
+                for message in failed_outcome.messages
+                if message.kind == MessageKind.CHARACTER_SPEECH
+            ][-1]
+            assert "做完了" not in last_character.text
+            assert "已经完成" not in last_character.text
+
+            # DeepSeek thinking 已开启：至少一条角色消息应保存服务实际返回的字段。
+            all_messages = (
+                chat_outcome.messages
+                + task_outcome.messages
+                + failed_outcome.messages
+            )
+            assert any(
+                str(message.payload.get("reasoning", "")).strip()
+                for message in all_messages
+                if message.kind == MessageKind.CHARACTER_SPEECH
+            )
+    finally:
+        await model.aclose()
+
+
+def _live_orchestrator(
+    model: OpenAICompatibleDialogueModel,
+    engine: ScriptedCodingEngine,
+    project_root: Path,
+) -> ConversationOrchestrator:
+    return ConversationOrchestrator(
+        pair_id="phainon_ancient_machine",
+        project=ProjectRef(project_id="live-role", name="live-role", root_path=str(project_root)),
+        dialogue_model=model,
+        coding_engine=engine,
+        store=None,
+        approval_mode=ApprovalMode.FULL_AUTO,
+    )

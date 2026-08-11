@@ -61,11 +61,13 @@ class ScriptedCodingEngine(CodingEngine):
         fail_tool: bool = False,
         tool_payload: dict | None = None,
         patch_path: str = "hello.txt",
+        reasoning: str = "",
     ) -> None:
         self.fail_tool = fail_tool
         self.tool_payload = tool_payload or {}
         # 计划 A2：演示脚本包含 file.patch 事件，回执的变更文件列表据此形成
         self.patch_path = patch_path
+        self.reasoning = reasoning
         self.opened_sessions: list[tuple[ProjectRef, EngineSessionRef | None]] = []
         # B1：记录 open_session 收到的策略映射，供测试断言（真实引擎联调
         # 时按此写入 thread/start 的 approvalPolicy/sandbox/approvalsReviewer）
@@ -116,6 +118,13 @@ class ScriptedCodingEngine(CodingEngine):
             payload={"text": "正在进行本地演示。"},
             **common,
         )
+        if self.reasoning:
+            yield EngineEvent(
+                sequence=1,
+                type=EngineEventType.ASSISTANT_REASONING_DELTA,
+                payload={"text": self.reasoning, "channel": "summary"},
+                **common,
+            )
         started_payload = {"title": "演示文件操作", "details": request.instructions}
         started_payload.update(self.tool_payload)
         yield EngineEvent(
@@ -186,4 +195,3 @@ class ScriptedCodingEngine(CodingEngine):
         decision: ApprovalDecision,
     ) -> None:
         self.approvals.append((session_ref, approval_id, decision))
-

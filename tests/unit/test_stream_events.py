@@ -105,3 +105,42 @@ async def test_stream_order_tool_started_before_approval_events() -> None:
     assert stream.index("event:tool.started") < stream.index("event:approval.requested")
     assert stream.index("event:approval.requested") < stream.index("event:approval.resolved")
     assert stream.index("event:approval.resolved") < stream.index("event:tool.finished")
+
+
+@pytest.mark.asyncio
+async def test_returned_reasoning_is_attached_to_final_messages() -> None:
+    engine = ScriptedCodingEngine(reasoning="先检查再执行。")
+    orchestrator = ConversationOrchestrator(
+        pair_id="phainon_ancient_machine",
+        project=ProjectRef(project_id="p", name="p", root_path="C:\\project"),
+        dialogue_model=FixedDialogueModel(
+            CharacterTurn(
+                speech="古代机械，交给你了。",
+                delegation=TaskRequestDraft(instructions="跑一下测试"),
+                reasoning="需要交给搭档。",
+            ),
+            CharacterTurn(
+                speech="做完了，我们继续。",
+                reasoning="回执状态是 completed。",
+            ),
+        ),
+        coding_engine=engine,
+        store=None,
+        approval_mode=ApprovalMode.FULL_AUTO,
+    )
+
+    outcome = await orchestrator.handle_character_input(
+        conversation_id="c", text="跑一下测试"
+    )
+
+    character_messages = [
+        message for message in outcome.messages if message.kind == MessageKind.CHARACTER_SPEECH
+    ]
+    assistant_messages = [
+        message
+        for message in outcome.messages
+        if message.kind == MessageKind.ASSISTANT_NATURAL_LANGUAGE
+    ]
+    assert character_messages[0].payload["reasoning"] == "需要交给搭档。"
+    assert character_messages[-1].payload["reasoning"] == "回执状态是 completed。"
+    assert assistant_messages[0].payload["reasoning"] == "先检查再执行。"

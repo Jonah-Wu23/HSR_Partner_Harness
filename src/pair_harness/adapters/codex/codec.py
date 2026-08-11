@@ -61,6 +61,23 @@ class CodexCodec:
                 EngineEventType.ASSISTANT_DELTA,
                 payload={"text": params.get("delta", "")},
             )
+        if method in {
+            "item/reasoning/summaryTextDelta",
+            "item/reasoning/textDelta",
+        }:
+            return self._event(
+                binding,
+                EngineEventType.ASSISTANT_REASONING_DELTA,
+                tool_call_id=item_id,
+                payload={
+                    "text": params.get("delta", ""),
+                    "channel": (
+                        "summary"
+                        if method == "item/reasoning/summaryTextDelta"
+                        else "content"
+                    ),
+                },
+            )
         if method == "item/commandExecution/outputDelta":
             return self._event(
                 binding,
@@ -176,4 +193,3 @@ class CodexCodec:
                 payload={"error": turn.get("error") or params.get("error") or status},
             )
         return None
-

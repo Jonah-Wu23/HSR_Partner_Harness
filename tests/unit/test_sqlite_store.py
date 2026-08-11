@@ -91,6 +91,7 @@ def test_store_persists_core_records(tmp_path: Path) -> None:
         source=MessageSource.ASSISTANT,
         kind=MessageKind.ASSISTANT_NATURAL_LANGUAGE,
         text="完成",
+        payload={"reasoning": "先核对结果。"},
         tts_eligible=True,
     )
     tool_run = ToolRun(
@@ -316,4 +317,3 @@ def test_old_database_is_migrated_on_open(tmp_path: Path) -> None:
     with SQLiteStore(database) as reopened:
         assert reopened.connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert "resume_status" not in _table_columns(reopened.connection, "engine_sessions")
-

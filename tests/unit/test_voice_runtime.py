@@ -248,6 +248,21 @@ async def test_vad_full_flow_commits_character_input() -> None:
     assert ctx.states[-1] == "idle"  # stop_listening
 
 
+async def test_shutdown_closes_capture_and_playback_task() -> None:
+    runtime, ctx = make_runtime(vad=FakeVad({}))
+    await runtime.start_listening()
+    runtime.start_playback()
+
+    await runtime.shutdown()
+
+    assert ctx.capture.entered == 1
+    assert ctx.capture.exited == 1
+    assert runtime._capture_task is None
+    assert runtime._vad_task is None
+    assert runtime._playback_task is None
+    assert ctx.states[-1] == "idle"
+
+
 async def test_playback_pauses_vad_feeding_and_resumes() -> None:
     vad = FakeVad({})  # 不触发事件，纯验证喂帧通路
     hold = asyncio.Event()

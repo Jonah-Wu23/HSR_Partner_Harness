@@ -57,16 +57,18 @@ class SileroVoiceActivityDetector(VoiceActivityDetector):
 
     @staticmethod
     def _load_session(model_path: Path):
+        # 先检查文件，缺模型时不必加载 onnxruntime 原生库；这也避免无语音
+        # 环境的降级路径在进程退出时承受无意义的原生运行时收尾。
+        if not model_path.is_file():
+            raise VadUnavailableError(
+                f"VAD 模型文件缺失: {model_path}（应放置 silero_vad_v5.onnx）"
+            )
         try:
             import onnxruntime as ort  # type: ignore
         except ImportError as exc:  # pragma: no cover - 由环境决定
             raise VadUnavailableError(
                 "未安装 onnxruntime，无法启用本地 VAD"
             ) from exc
-        if not model_path.is_file():
-            raise VadUnavailableError(
-                f"VAD 模型文件缺失: {model_path}（应放置 silero_vad_v5.onnx）"
-            )
         try:
             return ort.InferenceSession(
                 str(model_path), providers=["CPUExecutionProvider"]

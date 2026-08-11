@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QFrame, QLabel, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import (
+    QFrame,
+    QLabel,
+    QScrollArea,
+    QSizePolicy,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from pair_harness.config.pairs import PairTheme
 from pair_harness.core.contracts import Message, MessageSource, enum_value
@@ -73,6 +81,44 @@ class MessageBubble(QFrame):
         self.source_label = QLabel(SOURCE_LABELS[message.source])
         self.source_label.setObjectName("sourceLabel")
         self.source_label.setStyleSheet("font-size:11px;font-weight:600;background:transparent;")
+        layout.addWidget(self.source_label)
+
+        self.reasoning_toggle: QToolButton | None = None
+        self.reasoning_label: QLabel | None = None
+        self.final_label: QLabel | None = None
+        reasoning = str(message.payload.get("reasoning", "") or "").strip()
+        if message.source in (MessageSource.CHARACTER, MessageSource.ASSISTANT) and reasoning:
+            self.reasoning_toggle = QToolButton()
+            self.reasoning_toggle.setObjectName("reasoningToggle")
+            self.reasoning_toggle.setText("模型思考")
+            self.reasoning_toggle.setCheckable(True)
+            self.reasoning_toggle.setArrowType(Qt.RightArrow)
+            self.reasoning_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            self.reasoning_toggle.setStyleSheet(
+                "QToolButton{background:transparent;border:0;padding:2px;"
+                "font-size:11px;font-weight:600;text-align:left;}"
+            )
+            self.reasoning_label = QLabel(reasoning)
+            self.reasoning_label.setObjectName("reasoningLabel")
+            self.reasoning_label.setWordWrap(True)
+            self.reasoning_label.setTextFormat(Qt.PlainText)
+            self.reasoning_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.reasoning_label.setStyleSheet(
+                "background:rgba(0,0,0,0.18);border:1px solid rgba(255,255,255,0.12);"
+                "border-radius:6px;padding:7px;color:#B8BDC7;"
+            )
+            self.reasoning_label.setVisible(False)
+            self.reasoning_toggle.toggled.connect(self._toggle_reasoning)
+            layout.addWidget(self.reasoning_toggle)
+            layout.addWidget(self.reasoning_label)
+
+            self.final_label = QLabel("最终回复")
+            self.final_label.setObjectName("finalReplyLabel")
+            self.final_label.setStyleSheet(
+                "font-size:11px;font-weight:600;background:transparent;"
+            )
+            layout.addWidget(self.final_label)
+
         self.text_label = QLabel(message.text)
         self.text_label.setObjectName("textLabel")
         self.text_label.setWordWrap(True)
@@ -81,8 +127,13 @@ class MessageBubble(QFrame):
         self.text_label.setTextFormat(Qt.PlainText)
         self.text_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.text_label.setStyleSheet("background:transparent;")
-        layout.addWidget(self.source_label)
         layout.addWidget(self.text_label)
+
+    def _toggle_reasoning(self, expanded: bool) -> None:
+        if self.reasoning_label is None or self.reasoning_toggle is None:
+            return
+        self.reasoning_label.setVisible(expanded)
+        self.reasoning_toggle.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
 
 
 class MessageList(QScrollArea):
@@ -109,4 +160,3 @@ class MessageList(QScrollArea):
             bubble = self.bubbles.pop()
             self.layout.removeWidget(bubble)
             bubble.deleteLater()
-

@@ -27,7 +27,7 @@ def theme() -> PairTheme:
     )
 
 
-def message(source: MessageSource, text: str) -> Message:
+def message(source: MessageSource, text: str, *, reasoning: str = "") -> Message:
     return Message(
         conversation_id="c",
         pair_id="phainon_ancient_machine",
@@ -36,6 +36,7 @@ def message(source: MessageSource, text: str) -> Message:
         if source is MessageSource.CHARACTER
         else MessageKind.ASSISTANT_NATURAL_LANGUAGE,
         text=text,
+        payload={"reasoning": reasoning} if reasoning else {},
     )
 
 
@@ -102,6 +103,46 @@ def test_message_list_propagates_theme(qtbot) -> None:
 
     assert "#3A548C" in window.character_messages.bubbles[-1].styleSheet()
     assert "#8C6B3F" in window.assistant_messages.bubbles[-1].styleSheet()
+
+
+def test_reasoning_is_per_message_collapsed_and_toggleable(qtbot) -> None:
+    """聊天角色、协作角色与助手均逐条折叠；无思考消息不显示控件。"""
+    window = MainWindow(theme=theme())
+    qtbot.addWidget(window)
+
+    window.set_mode("chat")
+    window.add_message(message(MessageSource.CHARACTER, "聊天正文", reasoning="聊天思考"))
+    chat_bubble = window.character_messages.bubbles[-1]
+    assert chat_bubble.reasoning_toggle is not None
+    assert chat_bubble.reasoning_label is not None
+    assert chat_bubble.final_label is not None
+    assert chat_bubble.reasoning_label.isHidden()
+    chat_bubble.reasoning_toggle.click()
+    assert not chat_bubble.reasoning_label.isHidden()
+    assert chat_bubble.reasoning_label.text() == "聊天思考"
+    chat_bubble.reasoning_toggle.click()
+    assert chat_bubble.reasoning_label.isHidden()
+
+    window.set_mode("collaboration")
+    window.add_message(message(MessageSource.CHARACTER, "协作角色正文", reasoning="角色思考"))
+    window.add_message(message(MessageSource.ASSISTANT, "助手正文", reasoning="助手思考"))
+    role_bubble = window.character_messages.bubbles[-1]
+    assistant_bubble = window.assistant_messages.bubbles[-1]
+    for bubble, expected in ((role_bubble, "角色思考"), (assistant_bubble, "助手思考")):
+        assert bubble.reasoning_toggle is not None
+        assert bubble.reasoning_label is not None
+        assert bubble.reasoning_label.isHidden()
+        bubble.reasoning_toggle.click()
+        assert not bubble.reasoning_label.isHidden()
+        assert bubble.reasoning_label.text() == expected
+        bubble.reasoning_toggle.click()
+        assert bubble.reasoning_label.isHidden()
+
+    plain = MessageBubble(message(MessageSource.CHARACTER, "没有思考"), theme=theme())
+    qtbot.addWidget(plain)
+    assert plain.reasoning_toggle is None
+    assert plain.reasoning_label is None
+    assert plain.final_label is None
 
 
 def test_tool_card_uses_qt_enum_values(qtbot) -> None:

@@ -54,6 +54,29 @@ def test_maps_assistant_and_tool_notifications() -> None:
     assert [started.sequence, finished.sequence, assistant.sequence] == [0, 0, 0]
 
 
+def test_maps_returned_reasoning_channels() -> None:
+    codec = CodexCodec()
+    summary = codec.map_notification(
+        {
+            "method": "item/reasoning/summaryTextDelta",
+            "params": {"turnId": "turn", "itemId": "r1", "delta": "检查文件。"},
+        },
+        binding(),
+    )
+    content = codec.map_notification(
+        {
+            "method": "item/reasoning/textDelta",
+            "params": {"turnId": "turn", "itemId": "r1", "delta": "读取并核对。"},
+        },
+        binding(),
+    )
+
+    assert summary.type == "assistant.reasoning.delta"
+    assert summary.payload == {"text": "检查文件。", "channel": "summary"}
+    assert content.type == "assistant.reasoning.delta"
+    assert content.payload == {"text": "读取并核对。", "channel": "content"}
+
+
 def test_maps_failed_turn_and_ignores_other_turn() -> None:
     codec = CodexCodec()
     assert (
@@ -137,4 +160,3 @@ def test_maps_file_change_request_approval_grant_root_to_paths() -> None:
     assert event.payload["approval_id"] == "7"
     assert event.payload["tool_kind"] == "file_write"
     assert event.payload["paths"] == ["C:\\project\\src"]
-

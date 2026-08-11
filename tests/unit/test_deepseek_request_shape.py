@@ -59,6 +59,7 @@ async def test_deepseek_request_carries_thinking_and_effort() -> None:
     body = bodies[0]
     assert body["model"] == "deepseek-v4-flash"
     assert body["thinking"] == {"type": "enabled"}
+    assert body["response_format"] == {"type": "json_object"}
     assert "reasoning_effort" not in body  # 未指定档位不写入
 
 
@@ -123,6 +124,7 @@ async def test_non_deepseek_host_keeps_standard_body() -> None:
     body = bodies[0]
     assert "thinking" not in body
     assert "reasoning_effort" not in body
+    assert "response_format" not in body
     assert body["stream"] is True
 
 

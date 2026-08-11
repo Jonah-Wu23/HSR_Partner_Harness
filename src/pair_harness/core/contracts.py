@@ -93,6 +93,9 @@ DelegationDraft = TaskRequestDraft | TaskAmendmentDraft
 class CharacterTurn(FrozenModel):
     speech: str
     delegation: DelegationDraft | None = None
+    # 供应商实际返回、允许展示的思考文本。正文与思考分开持久化和渲染；
+    # 不返回思考字段的供应商保持空字符串。
+    reasoning: str = ""
 
 
 class DialogueEvent(FrozenModel):
@@ -147,6 +150,7 @@ class TaskAmendment(FrozenModel):
 class EngineEventType(str, Enum):
     TURN_STARTED = "turn.started"
     ASSISTANT_DELTA = "assistant.delta"
+    ASSISTANT_REASONING_DELTA = "assistant.reasoning.delta"
     ASSISTANT_FINAL = "assistant.final"
     TOOL_STARTED = "tool.started"
     TOOL_PROGRESS = "tool.progress"
@@ -274,4 +278,3 @@ class VadEvent(FrozenModel):
 
 
 DialogueRequest.model_rebuild()
-

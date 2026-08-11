@@ -26,6 +26,7 @@ from pair_harness.core.contracts import (
     ProjectRef,
 )
 from pair_harness.core.orchestrator import ConversationOrchestrator
+from pair_harness.core.voice_runtime import VoiceRuntime
 from pair_harness.settings import Settings
 from pair_harness.storage.sqlite_store import SQLiteStore
 from pair_harness.ui.project_library import ProjectLibrary
@@ -55,7 +56,7 @@ def wire_real_voice(
     orchestrator: ConversationOrchestrator,
     pair_config: PairConfig,
     conversation_id: str,
-) -> None:
+) -> VoiceRuntime:
     """B2.6：``--real-voice`` 装配（设计 §5.5）。
 
     真实三件套（Silero VAD / Qwen 流式 ASR / Qwen 流式 TTS）替换 demo
@@ -73,7 +74,6 @@ def wire_real_voice(
     )
     from pair_harness.adapters.audio.sounddevice_io import AudioPlayer, MicrophoneCapture
     from pair_harness.core.audio import SpeechQueue
-    from pair_harness.core.voice_runtime import VoiceRuntime
 
     if not settings.dashscope_api_key:
         raise SystemExit("--real-voice 缺少 DASHSCOPE_API_KEY（.env 或进程环境）")
@@ -115,7 +115,7 @@ def wire_real_voice(
     )
     orchestrator.add_message_listener(runtime.on_message)
     asyncio.ensure_future(runtime.start_listening())
-    asyncio.ensure_future(runtime.run_playback_loop())
+    runtime.start_playback()
 
     @asyncSlot()
     async def ptt_start() -> None:
@@ -128,6 +128,7 @@ def wire_real_voice(
     window.push_to_talk_pressed.connect(ptt_start)
     window.push_to_talk_released.connect(ptt_stop)
     window.stop_speech_requested.connect(runtime.stop_speaking)
+    return runtime
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -251,7 +252,6 @@ def main(argv: list[str] | None = None) -> int:
         for future in approval_futures.values():
             if not future.done():
                 future.set_result(ApprovalDecision.DENY)
-        store.close()
 
     app.aboutToQuit.connect(on_quit)
 
@@ -290,9 +290,10 @@ def main(argv: list[str] | None = None) -> int:
 
     window.cancel_requested.connect(cancel_task)
 
+    voice_runtime: VoiceRuntime | None = None
     if real_voice:
         assert settings is not None
-        wire_real_voice(
+        voice_runtime = wire_real_voice(
             settings=settings,
             window=window,
             orchestrator=orchestrator,
@@ -303,5 +304,14 @@ def main(argv: list[str] | None = None) -> int:
     if os.getenv("QT_QPA_PLATFORM") == "offscreen":
         QTimer.singleShot(250, app.quit)
     with loop:
-        loop.run_forever()
+        try:
+            loop.run_forever()
+        finally:
+            if voice_runtime is not None:
+                loop.run_until_complete(voice_runtime.shutdown())
+            if isinstance(dialogue_model, OpenAICompatibleDialogueModel):
+                loop.run_until_complete(dialogue_model.aclose())
+            if isinstance(coding_engine, CodexAppServerEngine):
+                loop.run_until_complete(coding_engine.transport.close())
+            store.close()
     return 0

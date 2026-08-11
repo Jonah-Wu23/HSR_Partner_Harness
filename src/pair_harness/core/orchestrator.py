@@ -277,6 +277,11 @@ class ConversationOrchestrator:
                 source=MessageSource.CHARACTER,
                 kind=MessageKind.CHARACTER_SPEECH,
                 text=character_turn.speech,
+                payload=(
+                    {"reasoning": character_turn.reasoning}
+                    if character_turn.reasoning
+                    else None
+                ),
             )
             messages = [user, character]
 
@@ -448,6 +453,8 @@ class ConversationOrchestrator:
         self._active_lifecycle = lifecycle
         events: list[EngineEvent] = []
         assistant_text = ""
+        assistant_reasoning_summary = ""
+        assistant_reasoning_content = ""
         tool_runs: dict[str, ToolRun] = {}
         failed = False
         cancelled = False
@@ -708,6 +715,12 @@ class ConversationOrchestrator:
                     assistant_text = str(event.payload.get("text", ""))
                     # O3.3：助手进入收尾阶段
                     progress.current_step = "助手整理结果"
+                elif event.type == EngineEventType.ASSISTANT_REASONING_DELTA:
+                    text = str(event.payload.get("text", ""))
+                    if event.payload.get("channel") == "content":
+                        assistant_reasoning_content += text
+                    else:
+                        assistant_reasoning_summary += text
                 elif event.type == EngineEventType.FILE_PATCH:
                     path = event.payload.get("path")
                     if path:
@@ -780,12 +793,21 @@ class ConversationOrchestrator:
                 if self.store is not None:
                     self.store.save_tool_run(tool_run)
             if assistant_text:
+                assistant_reasoning = (
+                    assistant_reasoning_content.strip()
+                    or assistant_reasoning_summary.strip()
+                )
                 self._message(
                     conversation_id=task.conversation_id,
                     source=MessageSource.ASSISTANT,
                     kind=MessageKind.ASSISTANT_NATURAL_LANGUAGE,
                     text=assistant_text,
                     engine_turn_id=engine_turn_id,
+                    payload=(
+                        {"reasoning": assistant_reasoning}
+                        if assistant_reasoning
+                        else None
+                    ),
                 )
 
             result_summary = CharacterResultSummary(
@@ -823,6 +845,11 @@ class ConversationOrchestrator:
                     kind=MessageKind.CHARACTER_SPEECH,
                     text=result_turn.speech,
                     engine_turn_id=engine_turn_id,
+                    payload=(
+                        {"reasoning": result_turn.reasoning}
+                        if result_turn.reasoning
+                        else None
+                    ),
                 )
             # 本次执行的全部新消息：审批 system 卡片、助手说明与角色回应
             messages = self._history.get(task.conversation_id, [])[history_start:]

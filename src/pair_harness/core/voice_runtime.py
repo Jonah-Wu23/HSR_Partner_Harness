@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from collections.abc import AsyncIterator, Callable
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 from pair_harness.core.audio import SpeechQueue
@@ -83,6 +84,7 @@ class VoiceRuntime:
         self._capture_task: asyncio.Task | None = None
         self._vad_task: asyncio.Task | None = None
         self._vad_input: asyncio.Queue[bytes] | None = None
+        self._playback_task: asyncio.Task | None = None
 
         # ASR 会话字段（一个语音段 = 一个会话）
         self._asr_input: asyncio.Queue[bytes | object] | None = None
@@ -132,6 +134,23 @@ class VoiceRuntime:
             await self._capture.__aexit__(None, None, None)
             self._capture = None
         self._on_vad_state("idle")
+
+    def start_playback(self) -> None:
+        """启动唯一的播放消费任务；重复调用无效。"""
+        if self._playback_task is None or self._playback_task.done():
+            self._playback_task = asyncio.create_task(self.run_playback_loop())
+
+    async def shutdown(self) -> None:
+        """B2 UI 退出时关闭采集、识别与播放任务。"""
+        self.stop_speaking()
+        if self._asr_active:
+            await self._end_asr(commit=False, target=self._ptt_target)
+        await self.stop_listening()
+        if self._playback_task is not None and not self._playback_task.done():
+            self._playback_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._playback_task
+        self._playback_task = None
 
     # ------------------------------------------------------------ 上行：采集分发
 
