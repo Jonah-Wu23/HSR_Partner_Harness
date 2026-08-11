@@ -46,8 +46,11 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("帮我看看这个项目")).toBeInTheDocument();
     // 顶栏搭档与输入区
-    expect(screen.getAllByText("白厄").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("神秘的古代机械").length).toBeGreaterThan(0);
+    const topbarPair = document.querySelector(".topbar-pair");
+    expect(topbarPair?.textContent).toContain("白厄");
+    expect(topbarPair?.textContent).toContain("神秘的古代机械");
+    // 会话行搭档芯片折叠为双色点，名字在 tooltip
+    expect(screen.getAllByTitle("白厄 × 神秘的古代机械").length).toBeGreaterThan(0);
     expect(screen.getByTestId("composer")).toBeInTheDocument();
     // 聊天模式下没有工作台
     expect(screen.queryByLabelText("助手工作台")).not.toBeInTheDocument();

@@ -514,7 +514,22 @@
   font-size: var(--text-c1-size);
   color: var(--text-primary);
   flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
+.path-warning-banner .path-warning-text {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.path-warning-banner .path-warning-text svg {
+  width: 14px;
+  height: 14px;
+  color: var(--warning);
+  flex: none;
+}
+.path-warning-banner .btn { align-self: flex-start; }
 .path-warning-banner .path-warning-path {
   display: block;
   color: var(--text-muted);

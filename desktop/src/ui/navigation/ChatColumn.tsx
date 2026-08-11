@@ -127,12 +127,12 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
           </div>
         )}
         <div className="conv-meta">
-          <span className="pair-chip">
+          <span
+            className="pair-chip"
+            title={`${navigation.currentPair.character.name} × ${navigation.currentPair.assistant.name}`}
+          >
             <span className="pair-dot pair-dot-character" />
-            <span className="pair-chip-name">{navigation.currentPair.character.name}</span>
-            <span aria-hidden>×</span>
             <span className="pair-dot pair-dot-assistant" />
-            <span className="pair-chip-name">{navigation.currentPair.assistant.name}</span>
           </span>
           <span className="conv-time">{relativeTime(conversation.updated_at)}</span>
         </div>
@@ -203,8 +203,13 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
 
       {pathBroken ? (
         <div className="path-warning-banner" role="alert">
-          <WarningIcon />
-          <span>项目文件夹不可用，聊天只读</span>
+          <span className="path-warning-text">
+            <WarningIcon />
+            项目文件夹不可用，聊天只读
+          </span>
+          <span className="path-warning-path" title={currentProject.root_path}>
+            {currentProject.root_path}
+          </span>
           <button type="button" className="btn btn-outline" disabled title="待逻辑侧接入文件夹选择">
             重新选择文件夹
           </button>
