@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import types
 from collections.abc import Callable
 
 import dashscope
@@ -14,6 +16,8 @@ import pytest
 
 from pair_harness.adapters.audio import qwen_asr
 from pair_harness.adapters.audio.qwen_asr import QwenAsrError, QwenStreamingRecognizer
+from pair_harness.adapters.audio.qwen_tts import QwenSpeechSynthesizer, QwenTtsError
+from pair_harness.core.contracts import SpeechRequest
 
 
 class FakeResult:
@@ -206,3 +210,131 @@ async def test_defaults_do_not_mutate_globals(fake_sdk, monkeypatch: pytest.Monk
     await _events(recognizer, [b"\x00" * 256])
     assert dashscope.api_key == "keep-me"
     assert dashscope.base_websocket_api_url == "wss://keep"
+
+
+# ---------------------------------------------------------------------------
+# TTS：事件映射（dashscope.audio.tts_v2）
+# ---------------------------------------------------------------------------
+
+
+class FakeTtsSynthesizer:
+    """模拟 dashscope.audio.tts_v2.SpeechSynthesizer 的 streaming_call 模式。"""
+
+    instances: list["FakeTtsSynthesizer"] = []
+    auto_complete: bool = True  # streaming_call 时立即回调音频 + complete
+    error_on_call: str | None = None  # 非 None 时 streaming_call 触发 on_error
+
+    def __init__(self, model, voice, format, callback, **kwargs):
+        self.model = model
+        self.voice = voice
+        self.format = format
+        self.callback = callback
+        self.texts: list[str] = []
+        self.completed = False
+        self.cancelled = False
+        FakeTtsSynthesizer.instances.append(self)
+
+    def streaming_call(self, text: str) -> None:
+        self.texts.append(text)
+        if type(self).error_on_call is not None:
+            self.callback.on_error(types.SimpleNamespace(message=type(self).error_on_call))
+            return
+        if type(self).auto_complete:
+            self.callback.on_data(b"\x00" * 640)
+            self.callback.on_data(b"\x11" * 320)
+            self.callback.on_complete()
+
+    def streaming_complete(self) -> None:
+        self.completed = True
+
+    def streaming_cancel(self) -> None:
+        self.cancelled = True
+
+
+@pytest.fixture
+def fake_tts_sdk(monkeypatch: pytest.MonkeyPatch) -> type[FakeTtsSynthesizer]:
+    import dashscope.audio.tts_v2  # noqa: F401 - 确保模块已加载
+
+    FakeTtsSynthesizer.instances.clear()
+    FakeTtsSynthesizer.auto_complete = True
+    FakeTtsSynthesizer.error_on_call = None
+    monkeypatch.setattr(dashscope.audio.tts_v2, "SpeechSynthesizer", FakeTtsSynthesizer)
+    monkeypatch.setattr(
+        dashscope.audio.tts_v2,
+        "AudioFormat",
+        types.SimpleNamespace(PCM_24000HZ_MONO_16BIT="pcm_24000"),
+    )
+    monkeypatch.setattr(dashscope.audio.tts_v2, "ResultCallback", object)
+    return FakeTtsSynthesizer
+
+
+def _tts_request(text: str = "你好") -> SpeechRequest:
+    return SpeechRequest(text=text, voice_id="demo-voice", message_id="m1")
+
+
+async def test_tts_yields_chunks_then_final(fake_tts_sdk) -> None:
+    synthesizer = QwenSpeechSynthesizer()
+    chunks = [c async for c in synthesizer.synthesize(_tts_request())]
+    assert len(chunks) == 3
+    assert chunks[0].pcm == b"\x00" * 640
+    assert chunks[1].pcm == b"\x11" * 320
+    assert chunks[0].sample_rate == 24_000
+    assert chunks[0].channels == 1
+    assert chunks[0].final is False
+    assert chunks[2].final is True
+    assert chunks[2].pcm == b""
+
+
+async def test_tts_voice_model_format_passed(fake_tts_sdk) -> None:
+    synthesizer = QwenSpeechSynthesizer(model="qwen-tts-test")
+    chunks = [c async for c in synthesizer.synthesize(_tts_request())]
+    assert chunks  # 正常合成完成
+    fake = FakeTtsSynthesizer.instances[0]
+    assert fake.voice == "demo-voice"
+    assert fake.model == "qwen-tts-test"
+    assert fake.format == "pcm_24000"
+    assert fake.texts == ["你好"]
+    assert fake.completed is True
+    assert fake.cancelled is False
+
+
+async def test_tts_error_raises(fake_tts_sdk) -> None:
+    FakeTtsSynthesizer.error_on_call = "合成失败"
+    synthesizer = QwenSpeechSynthesizer()
+    with pytest.raises(QwenTtsError, match="合成失败"):
+        [c async for c in synthesizer.synthesize(_tts_request())]
+
+
+async def test_tts_empty_text_raises(fake_tts_sdk) -> None:
+    synthesizer = QwenSpeechSynthesizer()
+    with pytest.raises(QwenTtsError, match="文本为空"):
+        [c async for c in synthesizer.synthesize(_tts_request("   "))]
+
+
+async def test_tts_aclose_cancels_synthesis(fake_tts_sdk) -> None:
+    FakeTtsSynthesizer.auto_complete = False  # 服务端不回包，卡在等待
+    synthesizer = QwenSpeechSynthesizer()
+    agen = synthesizer.synthesize(_tts_request())
+    # 启动迭代（async generator 惰性），让底层线程进入 streaming_call
+    anext_task = asyncio.create_task(agen.__anext__())
+    for _ in range(200):
+        if FakeTtsSynthesizer.instances and FakeTtsSynthesizer.instances[0].texts:
+            break
+        await asyncio.sleep(0.01)
+    assert FakeTtsSynthesizer.instances[0].texts == ["你好"]
+    # 取消迭代：generator 的 finally 会置 closed 并等待底层线程取消
+    anext_task.cancel()
+    try:
+        await anext_task
+    except (asyncio.CancelledError, StopAsyncIteration):
+        pass
+    fake = FakeTtsSynthesizer.instances[0]
+    assert fake.cancelled is True
+    assert fake.completed is False
+
+
+async def test_tts_api_key_applied(fake_tts_sdk, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dashscope, "api_key", "original-key")
+    synthesizer = QwenSpeechSynthesizer(api_key="tts-key")
+    [c async for c in synthesizer.synthesize(_tts_request())]
+    assert dashscope.api_key == "tts-key"
