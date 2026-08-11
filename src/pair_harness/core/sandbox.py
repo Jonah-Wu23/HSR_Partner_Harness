@@ -8,7 +8,17 @@ class SandboxViolation(RuntimeError):
 
 
 class ProjectSandbox:
-    """目录级沙箱：限制文件与命令操作在项目根目录之内。"""
+    """目录级沙箱：限制文件与命令操作在项目根目录之内。
+
+    设计偏差说明（O4.6）：本类只是“路径约束”，不是执行沙箱——
+    - 对 shell 命令只能锁定工作目录（enforce_cwd），无法阻止命令
+      访问 cwd 之外的文件（如读取绝对路径、访问系统目录）；
+    - 真正的执行边界在引擎侧策略：Codex app-server 的 workspace-write
+      策略（设计 §6.3 修订），演示引擎路径下也只是兜底目录拦截；
+    - 容器隔离不进入 MVP（设计 §6.4 附录）。
+    不要依据本类判断“命令已被安全隔离”；后续扩展防护时应在引擎策略
+    层（而非此处）加强。
+    """
 
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
