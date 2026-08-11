@@ -38,6 +38,10 @@ class MainWindow(QMainWindow):
     approval_decided = pyqtSignal(str, str)
     # 输入区审批模式下拉框切换（ApprovalMode 的枚举值字符串）
     approval_mode_changed = pyqtSignal(str)
+    # B2.6：语音控制经窗口单向桥接到 VoiceRuntime（设计 §5.5）
+    push_to_talk_pressed = pyqtSignal()
+    push_to_talk_released = pyqtSignal()
+    stop_speech_requested = pyqtSignal()
 
     def __init__(self, theme: PairTheme | None = None) -> None:
         super().__init__()
@@ -118,6 +122,10 @@ class MainWindow(QMainWindow):
         self.approval_bar.decided.connect(self.approval_decided)
         self.library_button.clicked.connect(self._toggle_library)
         self.cancel_button.clicked.connect(self.cancel_requested)
+        # B2.6：语音控件信号单向桥（app.py 里接 VoiceRuntime）
+        self.input_bar.push_to_talk_pressed.connect(self.push_to_talk_pressed)
+        self.input_bar.push_to_talk_released.connect(self.push_to_talk_released)
+        self.audio_controls.stop_requested.connect(self.stop_speech_requested)
         self._apply_mode()
 
     def _panel(self, title: str, object_name: str) -> QFrame:

@@ -95,6 +95,17 @@ class InputBar(QWidget):
     def _sync_target(self) -> None:
         self.vad_button.setVisible(self.target == "character")
 
+    def set_asr_interim(self, text: str) -> None:
+        """ASR partial 回显（B2.6 设计 §5.5）：显示在输入框，空串清空。
+
+        不改动输入区既有行为：不触发提交，不清空用户已输入内容
+        （转写只在输入框空闲时顶替显示）。
+        """
+        if text:
+            self.text_input.setText(text)
+        else:
+            self.text_input.clear()
+
     def _submit(self) -> None:
         text = self.text_input.text().strip()
         if not text:

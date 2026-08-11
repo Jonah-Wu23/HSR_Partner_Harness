@@ -17,7 +17,7 @@ from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDia
 from pair_harness.adapters.reviewer import DialogueModelReviewer
 from pair_harness.app_paths import AppPaths
 from pair_harness.cli import load_dotenv
-from pair_harness.config.pairs import load_pair_config
+from pair_harness.config.pairs import PairConfig, load_pair_config
 from pair_harness.config.providers import load_reasoning_preset
 from pair_harness.core.contracts import (
     ApprovalDecision,
@@ -38,18 +38,107 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Pair Harness desktop app")
     parser.add_argument("--demo", action="store_true")
     parser.add_argument("--real", action="store_true", help="真实后端：DeepSeek 对话 + codex app-server")
+    parser.add_argument(
+        "--real-voice",
+        action="store_true",
+        help="真实语音链路：DashScope ASR/TTS + 本地 VAD（--real 隐含开启）",
+    )
     parser.add_argument("--pair", default="phainon_ancient_machine")
     parser.add_argument("--data-dir", type=Path)
     return parser
+
+
+def wire_real_voice(
+    *,
+    settings: Settings,
+    window: MainWindow,
+    orchestrator: ConversationOrchestrator,
+    pair_config: PairConfig,
+    conversation_id: str,
+) -> None:
+    """B2.6：``--real-voice`` 装配（设计 §5.5）。
+
+    真实三件套（Silero VAD / Qwen 流式 ASR / Qwen 流式 TTS）替换 demo
+    音频适配器，创建 VoiceRuntime 并接线：消息监听挂 TTS 下行、
+    VAD/PTT/停止信号桥接、回调驱动状态条与输入区回显。
+    本地 VAD 不可用（缺模型或 onnxruntime）时自动退回按键说话；
+    语音失败经 on_error 显示在状态条（静音，不阻塞会话）。
+    """
+    # 语音适配器依赖较重，保持惰性导入，不拖累无语音环境
+    from pair_harness.adapters.audio.qwen_asr import QwenStreamingRecognizer
+    from pair_harness.adapters.audio.qwen_tts import QwenSpeechSynthesizer
+    from pair_harness.adapters.audio.silero_vad import (
+        SileroVoiceActivityDetector,
+        VadUnavailableError,
+    )
+    from pair_harness.adapters.audio.sounddevice_io import AudioPlayer, MicrophoneCapture
+    from pair_harness.core.audio import SpeechQueue
+    from pair_harness.core.voice_runtime import VoiceRuntime
+
+    if not settings.dashscope_api_key:
+        raise SystemExit("--real-voice 缺少 DASHSCOPE_API_KEY（.env 或进程环境）")
+    model_path = (
+        Path(__file__).resolve().parents[2] / "assets" / "models" / "silero_vad_v5.onnx"
+    )
+    try:
+        vad: SileroVoiceActivityDetector | None = SileroVoiceActivityDetector(model_path)
+    except VadUnavailableError:
+        vad = None
+
+    def apply_vad_state(state: str) -> None:
+        # playing 同时启用停止按钮（AudioControls.set_playing），
+        # 其余状态只改状态条文案
+        window.audio_controls.set_vad_state(state)
+        window.audio_controls.set_playing(state == "playing")
+
+    runtime = VoiceRuntime(
+        orchestrator=orchestrator,
+        recognizer=QwenStreamingRecognizer(
+            api_key=settings.dashscope_api_key,
+            ws_url=settings.resolved_ws_url,
+            model=settings.qwen_asr_model,
+        ),
+        synthesizer=QwenSpeechSynthesizer(
+            api_key=settings.dashscope_api_key,
+            ws_url=settings.resolved_ws_url,
+            model=settings.qwen_tts_model,
+        ),
+        vad=vad,
+        capture_factory=lambda: MicrophoneCapture(block_size=640),
+        player=AudioPlayer(sample_rate=24_000),
+        queue=SpeechQueue(),
+        pair_config=pair_config,
+        conversation_id=conversation_id,
+        on_vad_state=apply_vad_state,
+        on_asr_partial=window.input_bar.set_asr_interim,
+        on_error=lambda message: window.audio_controls.vad_label.setText(message),
+    )
+    orchestrator.add_message_listener(runtime.on_message)
+    asyncio.ensure_future(runtime.start_listening())
+    asyncio.ensure_future(runtime.run_playback_loop())
+
+    @asyncSlot()
+    async def ptt_start() -> None:
+        await runtime.push_to_talk_start(target=window.input_bar.target)
+
+    @asyncSlot()
+    async def ptt_stop() -> None:
+        await runtime.push_to_talk_stop()
+
+    window.push_to_talk_pressed.connect(ptt_start)
+    window.push_to_talk_released.connect(ptt_stop)
+    window.stop_speech_requested.connect(runtime.stop_speaking)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if not (args.demo or args.real):
         raise SystemExit("需要 --demo 或 --real")
-    if args.real:
+    real_voice = args.real_voice or args.real  # B1 --real 隐含 --real-voice
+    if args.real or real_voice:
         # B1：真实后端 —— .env 只在此处显式加载，密钥不进代码与配置
         load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+    settings = Settings.from_environment() if (args.real or real_voice) else None
     app = QApplication.instance() or QApplication([sys.argv[0]])
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
@@ -62,19 +151,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.real:
         project_id = f"real-{args.pair}"
         conversation_id = "real-conversation"
-        settings = Settings.from_environment()
         missing = [
             name
             for name, value in (
-                ("PAIR_HARNESS_DIALOGUE_BASE_URL", settings.dialogue_base_url),
-                ("PAIR_HARNESS_DIALOGUE_API_KEY", settings.dialogue_api_key),
-                ("PAIR_HARNESS_DIALOGUE_MODEL", settings.dialogue_model),
+                ("PAIR_HARNESS_DIALOGUE_BASE_URL", settings.dialogue_base_url if settings else None),
+                ("PAIR_HARNESS_DIALOGUE_API_KEY", settings.dialogue_api_key if settings else None),
+                ("PAIR_HARNESS_DIALOGUE_MODEL", settings.dialogue_model if settings else None),
             )
             if not value
         ]
         if missing:
             raise SystemExit(f"--real 缺少环境变量: {', '.join(missing)}（.env 或进程环境）")
-        assert settings.dialogue_base_url and settings.dialogue_api_key and settings.dialogue_model
+        assert settings is not None and settings.dialogue_base_url and settings.dialogue_api_key and settings.dialogue_model
         preset = load_reasoning_preset(settings.dialogue_base_url, settings.dialogue_model)
         dialogue_model = OpenAICompatibleDialogueModel(
             base_url=settings.dialogue_base_url,
@@ -201,6 +289,16 @@ def main(argv: list[str] | None = None) -> int:
         await orchestrator.cancel_active_task()
 
     window.cancel_requested.connect(cancel_task)
+
+    if real_voice:
+        assert settings is not None
+        wire_real_voice(
+            settings=settings,
+            window=window,
+            orchestrator=orchestrator,
+            pair_config=pair_config,
+            conversation_id=conversation_id,
+        )
     window.show()
     if os.getenv("QT_QPA_PLATFORM") == "offscreen":
         QTimer.singleShot(250, app.quit)

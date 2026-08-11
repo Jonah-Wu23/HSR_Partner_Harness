@@ -110,12 +110,14 @@ class FakeRecognizer:
         *,
         blocks: int = 0,
         on_blocks: asyncio.Event | None = None,
+        partial_hold: asyncio.Event | None = None,
     ) -> None:
         self.partials = partials or []
         self.final = final
         self.received_audio: list[list[bytes]] = []
         self._blocks = blocks
         self._on_blocks = on_blocks
+        self._partial_hold = partial_hold
 
     async def stream_transcribe(self, audio_stream: AsyncIterator[bytes]) -> AsyncIterator[AsrEvent]:
         audio: list[bytes] = []
@@ -126,6 +128,8 @@ class FakeRecognizer:
         self.received_audio.append(audio)
         for text in self.partials:
             yield AsrEvent(type="partial", text=text)
+        if self._partial_hold is not None:
+            await self._partial_hold.wait()
         if self.final:
             yield AsrEvent(type="final", text=self.final)
 
