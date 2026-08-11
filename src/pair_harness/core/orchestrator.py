@@ -119,12 +119,23 @@ class ConversationOrchestrator:
         # 推送顺序约定（设计 §3.2）：角色接受委派的台词先于执行事件到达界面。
         self.on_message: Callable[[Message], None] | None = None
         self.on_engine_event: Callable[[EngineEvent], None] | None = None
+        # B2.6：消息监听器列表（VoiceRuntime 挂 TTS 用），在消息持久化后逐个调用
+        self._message_listeners: list[Callable[[Message], None]] = []
 
     def set_approval_mode(self, mode: ApprovalMode) -> None:
         """切换项目级审批模式（计划 A5：输入区下拉框切换）。"""
         self.approval_mode = mode
         for manager in self._approval_managers.values():
             manager.mode = mode
+
+    def add_message_listener(self, callback: Callable[[Message], None]) -> None:
+        """注册消息监听器：消息持久化完成后同步调用（供 VoiceRuntime 挂 TTS）。
+
+        与 ``on_message`` 单回调并存互不影响：UI 桥走 on_message，
+        语音运行时走监听器列表。
+        """
+        if callback not in self._message_listeners:
+            self._message_listeners.append(callback)
 
     def _engine_policy(self) -> dict[str, str | None]:
         """B1：应用层审批模式 → app-server thread/start 策略映射（设计 §14.6）。
@@ -217,6 +228,9 @@ class ConversationOrchestrator:
         self._history.setdefault(conversation_id, []).append(message)
         if self.store is not None:
             self.store.save_message(message)
+        # B2.6：消息持久化后逐个调用监听器（VoiceRuntime TTS 入口）
+        for listener in self._message_listeners:
+            listener(message)
         # O2.1：消息产生即推送，UI 增量渲染不等整轮任务结束
         if self.on_message is not None:
             self.on_message(message)
