@@ -351,3 +351,29 @@ def test_old_database_is_migrated_on_open(tmp_path: Path) -> None:
     with SQLiteStore(database) as reopened:
         assert reopened.connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert "resume_status" not in _table_columns(reopened.connection, "engine_sessions")
+
+
+def test_desktop_conversation_mode_and_archive_preserve_project(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "desktop.sqlite") as store:
+        project = store.create_project(project_id="p", name="Repo", root_path=str(tmp_path))
+        first = store.create_conversation(
+            conversation_id="c1",
+            project_id=project.project_id,
+            pair_id="phainon_ancient_machine",
+            title="聊天 1",
+        )
+        second = store.create_conversation(
+            conversation_id="c2",
+            project_id=project.project_id,
+            pair_id="phainon_ancient_machine",
+            title="聊天 2",
+        )
+        store.update_conversation_mode(first.conversation_id, "collaboration")
+        store.archive_conversation(first.conversation_id)
+
+        assert store.get_conversation(first.conversation_id).last_mode == "collaboration"
+        assert store.get_conversation(first.conversation_id).archived is True
+        assert [item.conversation_id for item in store.list_conversations(project.project_id)] == [
+            second.conversation_id
+        ]
+        assert store.get_project(project.project_id).archived is False

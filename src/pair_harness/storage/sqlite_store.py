@@ -377,6 +377,22 @@ class SQLiteStore(StateStore):
         )
         self.connection.commit()
 
+    def update_conversation_mode(self, conversation_id: str, mode: str) -> None:
+        """保存桌面端当前聊天模式，不改变历史消息语义。"""
+        self.connection.execute(
+            "UPDATE conversations SET last_mode = ?, updated_at = ? WHERE conversation_id = ?",
+            (mode, _now(), conversation_id),
+        )
+        self.connection.commit()
+
+    def archive_conversation(self, conversation_id: str) -> None:
+        """归档单个聊天；项目和其他聊天保持不变。"""
+        self.connection.execute(
+            "UPDATE conversations SET archived = 1, updated_at = ? WHERE conversation_id = ?",
+            (_now(), conversation_id),
+        )
+        self.connection.commit()
+
     def archive_project(self, project_id: str) -> None:
         self.connection.execute("UPDATE projects SET archived = 1 WHERE project_id = ?", (project_id,))
         self.connection.execute(
