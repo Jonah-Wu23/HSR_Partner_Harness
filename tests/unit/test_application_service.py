@@ -162,3 +162,58 @@ async def test_streaming_assistant_events_reconcile_to_one_persisted_message(
         assert service.store.get_conversation(conversation_id).last_mode == "collaboration"
     finally:
         await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_voice_commands_only_exchange_state_with_attached_runtime(tmp_path: Path) -> None:
+    events: list[dict] = []
+
+    class FakeVoiceRuntime:
+        on_message = lambda self, _message: None
+
+        def __init__(self) -> None:
+            self.listening = False
+            self.ptt = False
+            self.stopped = False
+
+        async def start_listening(self) -> None:
+            self.listening = True
+
+        async def stop_listening(self) -> None:
+            self.listening = False
+
+        def start_playback(self) -> None:
+            pass
+
+        async def push_to_talk_start(self, *, target: str) -> None:
+            del target
+            self.ptt = True
+
+        async def push_to_talk_stop(self) -> None:
+            self.ptt = False
+
+        def stop_speaking(self) -> None:
+            self.stopped = True
+
+        async def shutdown(self) -> None:
+            pass
+
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+        event_sink=events.append,
+    )
+    runtime = FakeVoiceRuntime()
+    service.attach_voice_runtime(runtime)  # type: ignore[arg-type]
+    try:
+        assert service.bootstrap()["voice"]["supported"] is True
+        await service.handle_command(command("vad-on", "voice.vad_set", enabled=True))
+        await service.handle_command(command("ptt-on", "voice.ptt_start", target="character"))
+        await service.handle_command(command("ptt-off", "voice.ptt_stop"))
+        await service.handle_command(command("tts-off", "voice.tts_stop"))
+        assert runtime.listening is True
+        assert runtime.ptt is False
+        assert runtime.stopped is True
+        assert "voice.state_changed" in [event["event"] for event in events]
+    finally:
+        await service.shutdown()

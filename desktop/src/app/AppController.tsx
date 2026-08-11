@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import type { HarnessActions } from "../contracts/actions";
 import type { DesktopBackend } from "../services/backend";
@@ -15,6 +15,7 @@ interface AppControllerProps {
 const EMPTY_MESSAGE_IDS: string[] = [];
 
 export function AppController({ backend, actions, loadBootstrap }: AppControllerProps) {
+  const recoveringRef = useRef(false);
   const status = useDesktopStore((state) => state.status);
   const theme = useDesktopStore((state) => state.theme);
   const currentProjectId = useDesktopStore((state) => state.currentProjectId);
@@ -27,14 +28,27 @@ export function AppController({ backend, actions, loadBootstrap }: AppController
   const error = useDesktopStore((state) => state.error);
 
   useEffect(() => {
-    const batcher = createEventBatcher((events) => desktopStore.getState().applyEvents(events));
+    const batcher = createEventBatcher((events) => {
+      desktopStore.getState().applyEvents(events);
+      if (desktopStore.getState().needsBootstrap && !recoveringRef.current) {
+        recoveringRef.current = true;
+        void loadBootstrap().finally(() => {
+          recoveringRef.current = false;
+        });
+      }
+    });
     const unsubscribe = backend.subscribe(batcher.push);
+    const stopPushToTalkOnBlur = () => {
+      void actions.stopPushToTalk();
+    };
+    window.addEventListener("blur", stopPushToTalkOnBlur);
     void loadBootstrap();
     return () => {
       unsubscribe();
       batcher.dispose();
+      window.removeEventListener("blur", stopPushToTalkOnBlur);
     };
-  }, [backend, loadBootstrap]);
+  }, [actions, backend, loadBootstrap]);
 
   const viewModel = presentAppShell(desktopStore.getState());
   const projectName = viewModel.navigation?.projects.find(

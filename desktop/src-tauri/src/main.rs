@@ -39,12 +39,27 @@ fn python_command(root: &PathBuf) -> PathBuf {
     PathBuf::from("python")
 }
 
+fn packaged_sidecar(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let resource_root = app.path().resource_dir().ok()?;
+    let candidate = resource_root.join("sidecar").join("pair-harness-sidecar.exe");
+    candidate.is_file().then_some(candidate)
+}
+
 fn spawn_backend(app: &tauri::AppHandle) -> Result<BackendState, String> {
-    let root = repository_root();
-    let mut command = Command::new(python_command(&root));
+    let packaged = packaged_sidecar(app);
+    let root = std::env::var_os("PAIR_HARNESS_ROOT")
+        .map(PathBuf::from)
+        .or_else(|| packaged.as_ref().and_then(|path| path.parent().map(PathBuf::from)))
+        .unwrap_or_else(repository_root);
+    let program = packaged.clone().unwrap_or_else(|| python_command(&root));
+    let mut command = Command::new(program);
+    command.current_dir(&root);
+    if packaged.is_some() {
+        command.args(["--demo", "--project"]);
+    } else {
+        command.args(["-m", "pair_harness.desktop_backend", "--demo", "--project"]);
+    }
     command
-        .current_dir(&root)
-        .args(["-m", "pair_harness.desktop_backend", "--demo", "--project"])
         .arg(&root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -90,6 +105,7 @@ fn spawn_backend(app: &tauri::AppHandle) -> Result<BackendState, String> {
                 let _ = reader_app.emit("sidecar://event", value);
             }
         }
+        fail_pending(&reader_pending, "Python Sidecar 已断开");
         let _ = reader_app.emit(
             "sidecar://event",
             json!({
@@ -106,6 +122,18 @@ fn spawn_backend(app: &tauri::AppHandle) -> Result<BackendState, String> {
         stdin: Mutex::new(Some(stdin)),
         pending,
     })
+}
+
+fn fail_pending(pending: &PendingMap, message: &str) {
+    let mut pending = pending.lock().unwrap();
+    for (_, sender) in pending.drain() {
+        let _ = sender.send(json!({
+            "kind": "response",
+            "id": null,
+            "ok": false,
+            "error": {"code": "backend_disconnected", "message": message}
+        }));
+    }
 }
 
 fn encode_request_line(request: &Value) -> Result<Vec<u8>, String> {
@@ -147,7 +175,17 @@ fn desktop_request(request: Value, state: State<'_, BackendState>) -> Result<Val
 }
 
 fn stop_backend(state: &BackendState) {
-    state.stdin.lock().unwrap().take();
+    if let Some(mut stdin) = state.stdin.lock().unwrap().take() {
+        if let Ok(line) = encode_request_line(&json!({
+            "kind": "request",
+            "id": "app-shutdown",
+            "method": "app.shutdown",
+            "params": {}
+        })) {
+            let _ = stdin.write_all(&line);
+            let _ = stdin.flush();
+        }
+    }
     if let Some(mut child) = state.child.lock().unwrap().take() {
         let _ = child.kill();
         let _ = child.wait();
@@ -174,10 +212,16 @@ pub fn run() {
         });
 }
 
+fn main() {
+    run();
+}
+
 #[cfg(test)]
 mod tests {
-    use super::encode_request_line;
+    use super::{encode_request_line, fail_pending, PendingMap};
     use serde_json::json;
+    use std::collections::HashMap;
+    use std::sync::{mpsc, Arc, Mutex};
 
     #[test]
     fn request_line_is_single_json_line() {
@@ -189,7 +233,26 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(line.last(), Some(&b'\n'));
-        assert_eq!(line[..line.len() - 1].iter().filter(|byte| **byte == b'\n').count(), 0);
-        assert_eq!(serde_json::from_slice::<serde_json::Value>(&line[..line.len() - 1]).unwrap()["id"], "r1");
+        assert_eq!(
+            line[..line.len() - 1]
+                .iter()
+                .filter(|byte| **byte == b'\n')
+                .count(),
+            0
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&line[..line.len() - 1]).unwrap()["id"],
+            "r1"
+        );
+    }
+
+    #[test]
+    fn disconnected_sidecar_releases_pending_request() {
+        let (sender, receiver) = mpsc::channel();
+        let pending: PendingMap = Arc::new(Mutex::new(HashMap::from([("r1".to_string(), sender)])));
+        fail_pending(&pending, "断开");
+        let value = receiver.recv().unwrap();
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "backend_disconnected");
     }
 }

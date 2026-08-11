@@ -58,7 +58,7 @@ export interface ComposerViewModel {
 
 export interface ApprovalViewModel {
   mode: ApprovalMode;
-  pending: PendingApproval[];
+  pending: Array<PendingApproval & { resolving: boolean }>;
   reviewText: string | null;
 }
 

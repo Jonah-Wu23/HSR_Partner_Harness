@@ -35,6 +35,7 @@ export interface DesktopState {
   activeTask: DesktopSnapshot["active_task"];
   busy: boolean;
   approvals: PendingApproval[];
+  approvalResolvingById: Record<string, boolean>;
   voice: VoiceState;
   lastSequence: number;
   needsBootstrap: boolean;
@@ -45,6 +46,7 @@ export interface DesktopState {
   setMode(mode: "chat" | "collaboration"): void;
   setComposerTarget(target: "character" | "assistant"): void;
   setComposerDraft(draft: string): void;
+  setApprovalResolving(approvalId: string, resolving: boolean): void;
 }
 
 const emptyVoice: VoiceState = {
@@ -57,7 +59,17 @@ const emptyVoice: VoiceState = {
   error: null,
 };
 
-function createInitialState(): Omit<DesktopState, "hydrate" | "applyEvents" | "setStatus" | "setTheme" | "setMode" | "setComposerTarget" | "setComposerDraft"> {
+function createInitialState(): Omit<
+  DesktopState,
+  | "hydrate"
+  | "applyEvents"
+  | "setStatus"
+  | "setTheme"
+  | "setMode"
+  | "setComposerTarget"
+  | "setComposerDraft"
+  | "setApprovalResolving"
+> {
   return {
     status: "booting",
     error: null,
@@ -77,6 +89,7 @@ function createInitialState(): Omit<DesktopState, "hydrate" | "applyEvents" | "s
     activeTask: null,
     busy: false,
     approvals: [],
+    approvalResolvingById: {},
     voice: emptyVoice,
     lastSequence: -1,
     needsBootstrap: false,
@@ -130,7 +143,8 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
     pair: snapshot.pair,
     activeTask: snapshot.active_task,
     busy: snapshot.busy,
-    approvals: snapshot.approvals,
+      approvals: snapshot.approvals,
+      approvalResolvingById: {},
     voice: snapshot.voice,
     mode: snapshot.current_conversation.last_mode === "collaboration" ? "collaboration" : "chat",
     lastSequence: snapshot.sequence,
@@ -216,11 +230,19 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
       break;
     }
     case "approval.requested":
-      next.approvals = [...next.approvals, event.payload as unknown as PendingApproval];
+      {
+        const approval = event.payload as unknown as PendingApproval;
+        next.approvals = [
+          ...next.approvals.filter((item) => item.approval_id !== approval.approval_id),
+          approval,
+        ];
+      }
       break;
     case "approval.resolved": {
       const approvalId = String(event.payload.approval_id ?? "");
       next.approvals = next.approvals.filter((item) => item.approval_id !== approvalId);
+      const { [approvalId]: _resolved, ...remaining } = next.approvalResolvingById;
+      next.approvalResolvingById = remaining;
       break;
     }
     case "task.busy_changed":
@@ -273,6 +295,20 @@ export const desktopStore = createStore<DesktopState>((set) => ({
   },
   setComposerDraft(draft) {
     set({ composerDraft: draft });
+  },
+  setApprovalResolving(approvalId, resolving) {
+    set((state) => {
+      if (resolving) {
+        return {
+          approvalResolvingById: {
+            ...state.approvalResolvingById,
+            [approvalId]: true,
+          },
+        };
+      }
+      const { [approvalId]: _resolved, ...remaining } = state.approvalResolvingById;
+      return { approvalResolvingById: remaining };
+    });
   },
 }));
 

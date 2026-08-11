@@ -168,7 +168,9 @@ class ConversationOrchestrator:
         if callback not in self._message_listeners:
             self._message_listeners.append(callback)
 
-    def _engine_policy(self) -> dict[str, str | None]:
+    def _engine_policy(
+        self, approval_mode: ApprovalMode | None = None
+    ) -> dict[str, str | None]:
         """B1：应用层审批模式 → app-server thread/start 策略映射（设计 §14.6）。
 
         - 请求批准 / 帮我审核：``untrusted`` + ``read-only`` 沙箱。真实联调
@@ -180,14 +182,15 @@ class ConversationOrchestrator:
         - ``approvalsReviewer`` 固定 ``"user"``——应用层审查智能体负责裁决，
           不启用原生 auto_review（§14.6 备注，B1 联调可评估切换）。
         """
+        mode = approval_mode or self.approval_mode
         approval_policy = (
             "never"
-            if self.approval_mode == ApprovalMode.FULL_AUTO
+            if mode == ApprovalMode.FULL_AUTO
             else "untrusted"
         )
         sandbox = (
             "workspace-write"
-            if self.approval_mode == ApprovalMode.FULL_AUTO
+            if mode == ApprovalMode.FULL_AUTO
             else "read-only"
         )
         return {
@@ -251,10 +254,11 @@ class ConversationOrchestrator:
         engine_turn_id: str | None = None,
         payload: dict | None = None,
         message_id: str | None = None,
+        pair_id: str | None = None,
     ) -> Message:
         message_values = {
             "conversation_id": conversation_id,
-            "pair_id": self.pair_id,
+            "pair_id": pair_id or self.pair_id,
             "engine_turn_id": engine_turn_id,
             "source": source,
             "kind": kind,
@@ -497,8 +501,12 @@ class ConversationOrchestrator:
         return True
 
     async def _execute(self, task: TaskRequest) -> ConversationOutcome:
+        task_project = self.project
+        task_pair_id = self.pair_id
+        task_approval_mode = self.approval_mode
+        task_assistant_instructions = self.assistant_instructions
         self.state.start(
-            project_id=self.project.project_id,
+            project_id=task_project.project_id,
             conversation_id=task.conversation_id,
             task_id=task.task_id,
         )
@@ -524,29 +532,30 @@ class ConversationOrchestrator:
         adjudicated_tool_ids: set[str] = set()
         # 本次执行产生的新消息（含沙箱与审批 system 卡片）从这里开始
         history_start = len(self._history.get(task.conversation_id, []))
-        sandbox = ProjectSandbox(Path(self.project.root_path))
+        sandbox = ProjectSandbox(Path(task_project.root_path))
         approval = self._approval_managers.setdefault(
             task.conversation_id,
             ApprovalManager(
-                mode=self.approval_mode,
+                mode=task_approval_mode,
                 rules=self.risk_rules,
                 reviewer=self.reviewer,
             ),
         )
+        approval.mode = task_approval_mode
         # O3.3：执行期间的活动任务进度（事件驱动更新，结束时清理）
         progress = self._progress.setdefault(task.conversation_id, _TaskProgress())
         try:
             session = self._sessions.get(task.conversation_id)
             # B1：按审批模式映射 app-server 策略（设计 §14.6）。
             # 仅新开线程时生效；恢复线程沿用线程既有设置。
-            policy = self._engine_policy()
+            policy = self._engine_policy(task_approval_mode)
             session = await self.coding_engine.open_session(
-                self.project,
+                task_project,
                 session,
                 approval_policy=policy["approvalPolicy"],
                 sandbox=policy["sandbox"],
                 approvals_reviewer=policy["approvalsReviewer"],
-                developer_instructions=self.assistant_instructions or None,
+                developer_instructions=task_assistant_instructions or None,
             )
             self._sessions[task.conversation_id] = session
             if self.store is not None:
@@ -614,6 +623,7 @@ class ConversationOrchestrator:
                             kind=MessageKind.SYSTEM_STATUS,
                             text=f"沙箱拦截：{exc}",
                             engine_turn_id=engine_turn_id,
+                            pair_id=task_pair_id,
                         )
                         continue
                     outcome = await approval.adjudicate(
@@ -640,6 +650,7 @@ class ConversationOrchestrator:
                             kind=MessageKind.APPROVAL,
                             text=notice,
                             engine_turn_id=engine_turn_id,
+                            pair_id=task_pair_id,
                         )
                     # O3.1：统一经 resolve_approval 转发裁决；被否决时
                     # 不中断执行循环——引擎把拒绝反馈给模型后继续 turn，
@@ -672,6 +683,7 @@ class ConversationOrchestrator:
                             kind=MessageKind.SYSTEM_STATUS,
                             text=f"沙箱拦截：{exc}",
                             engine_turn_id=engine_turn_id,
+                            pair_id=task_pair_id,
                         )
                         break
 
@@ -717,6 +729,7 @@ class ConversationOrchestrator:
                                     kind=MessageKind.APPROVAL,
                                     text=notice,
                                     engine_turn_id=engine_turn_id,
+                                    pair_id=task_pair_id,
                                 )
                             if outcome.decision == ApprovalDecision.DENY:
                                 denied_event = self._deny_tool_event(
@@ -757,6 +770,7 @@ class ConversationOrchestrator:
                                 kind=MessageKind.APPROVAL,
                                 text=self._decision_text(decision),
                                 engine_turn_id=engine_turn_id,
+                                pair_id=task_pair_id,
                             )
                             if decision == ApprovalDecision.DENY:
                                 denied_event = self._deny_tool_event(
@@ -868,6 +882,7 @@ class ConversationOrchestrator:
                     text=assistant_text,
                     engine_turn_id=engine_turn_id,
                     message_id=f"assistant:{task.conversation_id}:{task.task_id}",
+                    pair_id=task_pair_id,
                     payload=(
                         {"reasoning": assistant_reasoning}
                         if assistant_reasoning
@@ -885,13 +900,13 @@ class ConversationOrchestrator:
             )
             synthetic = Message(
                 conversation_id=task.conversation_id,
-                pair_id=self.pair_id,
+                pair_id=task_pair_id,
                 source=MessageSource.SYSTEM,
                 kind=MessageKind.SYSTEM_STATUS,
                 text="execution-result",
             )
             dialogue_request = DialogueRequest(
-                pair_id=self.pair_id,
+                pair_id=task_pair_id,
                 conversation_id=task.conversation_id,
                 user_message=synthetic,
                 recent_messages=recent_roleplay_context(
@@ -910,6 +925,7 @@ class ConversationOrchestrator:
                     kind=MessageKind.CHARACTER_SPEECH,
                     text=result_turn.speech,
                     engine_turn_id=engine_turn_id,
+                    pair_id=task_pair_id,
                     payload=(
                         {"reasoning": result_turn.reasoning}
                         if result_turn.reasoning

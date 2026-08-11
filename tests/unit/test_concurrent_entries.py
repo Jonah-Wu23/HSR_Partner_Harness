@@ -87,6 +87,42 @@ async def test_concurrent_chat_rounds_serialized_in_arrival_order() -> None:
 
 
 @pytest.mark.asyncio
+async def test_running_task_keeps_origin_project_and_pair_after_context_switch() -> None:
+    """M4：切换聊天时，执行中的任务继续使用发起聊天的上下文。"""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    engine = PausingEngine(started=started, release=release)
+    orchestrator = _make_orchestrator(
+        engine,
+        CharacterTurn(
+            speech="交给古代机械。",
+            delegation=TaskRequestDraft(instructions="检查项目"),
+        ),
+        CharacterTurn(speech="已经完成。", delegation=None),
+    )
+
+    task = asyncio.create_task(
+        orchestrator.handle_direct_input(conversation_id="origin", text="检查项目")
+    )
+    await started.wait()
+    orchestrator.select_context(
+        project=ProjectRef(project_id="other", name="other", root_path="C:\\other"),
+        pair_id="other_pair",
+        conversation_id="other-conversation",
+        approval_mode=ApprovalMode.FULL_AUTO,
+        assistant_instructions="other instructions",
+    )
+    release.set()
+    await task
+
+    assert engine.opened_sessions[0][0].project_id == "p"
+    assert orchestrator._history["origin"]
+    assert {message.pair_id for message in orchestrator._history["origin"]} == {
+        "phainon_ancient_machine"
+    }
+
+
+@pytest.mark.asyncio
 async def test_chat_rounds_and_amendment_during_execution() -> None:
     """O2.5：执行中并发聊天轮 + 直接输入——历史确定、修改路由生效。
 

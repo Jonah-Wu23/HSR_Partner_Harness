@@ -80,7 +80,15 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       await request("task.cancel");
     },
     async resolveApproval(approvalId, decision) {
-      await request("approval.resolve", { approval_id: approvalId, decision });
+      const state = desktopStore.getState();
+      if (state.approvalResolvingById[approvalId]) return;
+      state.setApprovalResolving(approvalId, true);
+      try {
+        await request("approval.resolve", { approval_id: approvalId, decision });
+      } catch (error) {
+        desktopStore.getState().setApprovalResolving(approvalId, false);
+        throw error;
+      }
     },
     async setApprovalMode(mode: ApprovalMode) {
       const projectId = desktopStore.getState().currentProjectId;

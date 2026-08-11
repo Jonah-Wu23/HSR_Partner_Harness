@@ -5,7 +5,9 @@ import type {
   DesktopResponse,
   DesktopSnapshot,
   Message,
+  PendingApproval,
   ProjectRecord,
+  ToolRun,
 } from "../contracts/protocol";
 import type { DesktopBackend } from "./backend";
 import { RequestIdFactory } from "./backend";
@@ -299,7 +301,7 @@ export class MockDesktopBackend implements DesktopBackend {
         item.message_id === messageId ? { ...item, streaming: false } : item,
       );
     } else if (event.event === "tool_run.upserted") {
-      const toolRun = event.payload.tool_run;
+      const toolRun = event.payload.tool_run as ToolRun;
       snapshot.tool_runs = [
         ...snapshot.tool_runs.filter((item) => item.tool_call_id !== toolRun.tool_call_id),
         toolRun,
@@ -308,7 +310,10 @@ export class MockDesktopBackend implements DesktopBackend {
       snapshot.busy = Boolean(event.payload.busy);
       snapshot.active_task = (event.payload.active_task as DesktopSnapshot["active_task"]) ?? null;
     } else if (event.event === "approval.requested") {
-      snapshot.approvals = [...snapshot.approvals, event.payload as DesktopSnapshot["approvals"][number]];
+      snapshot.approvals = [
+        ...snapshot.approvals,
+        event.payload as unknown as PendingApproval,
+      ];
     } else if (event.event === "approval.resolved") {
       const approvalId = String(event.payload.approval_id ?? "");
       snapshot.approvals = snapshot.approvals.filter((item) => item.approval_id !== approvalId);
