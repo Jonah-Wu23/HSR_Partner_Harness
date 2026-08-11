@@ -4,6 +4,7 @@ export type MessageKind =
   | "user.text"
   | "character.speech"
   | "assistant.natural_language"
+  | "assistant.reasoning"
   | "tool.record"
   | "system.status"
   | "system.approval"

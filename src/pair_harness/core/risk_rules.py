@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path, PurePath
@@ -46,6 +47,9 @@ def load_risk_rules(path: Path) -> RiskRules:
 
 
 def _default_rules_path() -> Path:
+    if getattr(sys, "frozen", False):
+        root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+        return root / "config" / "risk_rules.yaml"
     return Path(__file__).resolve().parents[3] / "config" / "risk_rules.yaml"
 
 

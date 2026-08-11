@@ -10,15 +10,19 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev"
+    "tauri:dev": "tauri dev",
+    "build:sidecar": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-sidecar.ps1",
+    "tauri:build": "npm run build:sidecar && tauri build"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.14.9",
     "@tauri-apps/api": "^2.8.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "zustand": "^5.0.8"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.8.4",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.3.0",
     "@types/react": "^19.1.10",
@@ -27,7 +31,6 @@
     "jsdom": "^26.1.0",
     "typescript": "^5.9.2",
     "vite": "^7.1.2",
-    "vitest": "^3.2.4",
-    "@tauri-apps/cli": "^2.8.4"
+    "vitest": "^3.2.4"
   }
 }

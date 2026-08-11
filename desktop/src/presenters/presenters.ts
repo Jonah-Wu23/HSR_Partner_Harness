@@ -80,7 +80,10 @@ export function presentAppShell(state: DesktopState): AppShellViewModel {
     },
     approval: {
       mode: approvalMode,
-      pending: state.approvals,
+      pending: state.approvals.map((approval) => ({
+        ...approval,
+        resolving: Boolean(state.approvalResolvingById[approval.approval_id]),
+      })),
       reviewText: null,
     },
     voice: {

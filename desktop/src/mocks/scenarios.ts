@@ -52,7 +52,7 @@ const pair: PairRecord = {
   },
 };
 
-function project(
+export function project(
   id: string,
   name: string,
   rootPath: string,
@@ -73,7 +73,7 @@ function project(
   };
 }
 
-function conversation(
+export function conversation(
   id: string,
   projectId: string,
   title: string,
@@ -90,7 +90,7 @@ function conversation(
   };
 }
 
-function message(
+export function message(
   id: string,
   conversationId: string,
   source: Message["source"],

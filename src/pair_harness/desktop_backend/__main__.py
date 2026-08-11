@@ -7,9 +7,17 @@ import os
 import sys
 from pathlib import Path
 
-from .application_service import ServiceError, build_configured_service
-from .events import EventEmitter
-from .router import JsonlWriter, run_stdin
+if __package__:
+    from .application_service import ServiceError, build_configured_service
+    from .router import JsonlWriter, run_stdin
+else:
+    # PyInstaller 以脚本入口运行时没有 package 上下文，改用绝对导入。
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from pair_harness.desktop_backend.application_service import (
+        ServiceError,
+        build_configured_service,
+    )
+    from pair_harness.desktop_backend.router import JsonlWriter, run_stdin
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,6 +75,7 @@ async def _run(args: argparse.Namespace) -> int:
         "backend.ready",
         {"pid": os.getpid(), "demo": not args.real},
     )
+    await service.start_voice()
     try:
         await run_stdin(service, stdin=sys.stdin, stdout=sys.stdout)
     finally:

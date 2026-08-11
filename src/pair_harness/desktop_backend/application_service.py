@@ -31,6 +31,7 @@ from pair_harness.storage.sqlite_store import SQLiteStore
 
 from .commands import DesktopCommand
 from .events import EventEmitter, EventSink, to_jsonable
+from .voice_factory import build_real_voice_runtime
 
 
 class ServiceError(RuntimeError):
@@ -145,6 +146,7 @@ class DesktopApplicationService:
         self.voice_runtime = voice_runtime
         self._shutdown = False
         self._tool_runs: dict[tuple[str, str], ToolRun] = {}
+        self._streaming_message_ids: dict[tuple[str, str], set[str]] = {}
         self._voice_state: dict[str, Any] = {
             "supported": voice_runtime is not None,
             "vad": "idle",
@@ -212,6 +214,38 @@ class DesktopApplicationService:
             "pair": self._pair_payload(self.pair_config),
             "sequence": self.emitter.next_sequence,
         }
+
+    def approval_conversation_id(self) -> str:
+        """审批始终归属活动任务的原聊天，切换界面聊天不会改写它。"""
+        active = self.orchestrator.state.active
+        return active.conversation_id if active is not None else self.current_conversation_id
+
+    def attach_voice_runtime(self, runtime: VoiceRuntime) -> None:
+        self.voice_runtime = runtime
+        self._voice_state["supported"] = True
+        self.orchestrator.add_message_listener(runtime.on_message)
+
+    async def start_voice(self) -> None:
+        if self.voice_runtime is None:
+            return
+        try:
+            await self.voice_runtime.start_listening()
+            self.voice_runtime.start_playback()
+        except Exception as exc:  # noqa: BLE001 - 语音不可用不阻塞文本主线
+            self._on_voice_error(f"语音启动失败：{exc}")
+
+    def _on_voice_state(self, state: str) -> None:
+        self._voice_state["vad"] = state
+        self._voice_state["tts"] = "playing" if state == "playing" else "idle"
+        self.emitter.emit("voice.state_changed", {"voice": dict(self._voice_state)})
+
+    def _on_asr_partial(self, text: str) -> None:
+        self._voice_state["asr_partial"] = text
+        self.emitter.emit("voice.asr_partial", {"text": text})
+
+    def _on_voice_error(self, message: str) -> None:
+        self._voice_state["error"] = message
+        self.emitter.emit("voice.state_changed", {"voice": dict(self._voice_state)})
 
     # ------------------------------------------------------------------ 命令路由
 
@@ -358,6 +392,11 @@ class DesktopApplicationService:
         text = self._required_string(params, "text")
         if target not in {"character", "assistant"}:
             raise ServiceError("target 必须是 character 或 assistant", code="invalid_target")
+        mode = params.get("mode")
+        if mode is not None:
+            if mode not in {"chat", "collaboration"}:
+                raise ServiceError("mode 必须是 chat 或 collaboration", code="invalid_mode")
+            self.store.update_conversation_mode(conversation_id, str(mode))
         if conversation_id != self.current_conversation_id:
             self._select_conversation_context(conversation_id, emit=False)
         if target == "assistant":
@@ -389,6 +428,11 @@ class DesktopApplicationService:
         self._voice_state["vad_enabled"] = enabled
         if self.voice_runtime is None:
             self._voice_state["error"] = "语音运行时未启用"
+        elif enabled:
+            await self.voice_runtime.start_listening()
+            self.voice_runtime.start_playback()
+        else:
+            await self.voice_runtime.stop_listening()
         self.emitter.emit("voice.state_changed", {"voice": self._voice_state})
         return {"voice": dict(self._voice_state)}
 
@@ -428,10 +472,14 @@ class DesktopApplicationService:
     def _on_engine_event(self, event: EngineEvent) -> None:
         event_type = event.type
         if event_type == EngineEventType.ASSISTANT_DELTA:
+            message_id = f"assistant:{event.conversation_id}:{event.task_id}"
+            self._streaming_message_ids.setdefault(
+                (event.conversation_id, event.task_id), set()
+            ).add(message_id)
             self.emitter.emit(
                 "message.delta",
                 {
-                    "message_id": f"assistant:{event.task_id}",
+                    "message_id": message_id,
                     "conversation_id": event.conversation_id,
                     "source": "assistant",
                     "kind": "assistant.natural_language",
@@ -440,10 +488,14 @@ class DesktopApplicationService:
                 },
             )
         elif event_type == EngineEventType.ASSISTANT_REASONING_DELTA:
+            message_id = f"assistant-reasoning:{event.conversation_id}:{event.task_id}"
+            self._streaming_message_ids.setdefault(
+                (event.conversation_id, event.task_id), set()
+            ).add(message_id)
             self.emitter.emit(
                 "message.delta",
                 {
-                    "message_id": f"assistant-reasoning:{event.task_id}",
+                    "message_id": message_id,
                     "conversation_id": event.conversation_id,
                     "source": "assistant",
                     "kind": "assistant.reasoning",
@@ -512,6 +564,15 @@ class DesktopApplicationService:
         )
 
     def _on_execution_finished(self) -> None:
+        for (conversation_id, _task_id), message_ids in tuple(
+            self._streaming_message_ids.items()
+        ):
+            for message_id in message_ids:
+                self.emitter.emit(
+                    "message.finalized",
+                    {"conversation_id": conversation_id, "message_id": message_id},
+                )
+        self._streaming_message_ids.clear()
         self.emitter.emit("task.busy_changed", {"busy": False, "active_task": None})
 
     # ------------------------------------------------------------------ 上下文工具
@@ -642,7 +703,8 @@ def _build_service(
         store, project_id=project.project_id, pair_id=pair_id
     )
     emitter = EventEmitter(event_sink)
-    broker = ApprovalBroker(emitter, lambda: service.current_conversation_id)
+    broker = ApprovalBroker(emitter, lambda: service.approval_conversation_id())
+    settings: Settings | None = None
 
     if demo:
         dialogue_model: Any = ScriptedDialogueModel()
@@ -704,6 +766,20 @@ def _build_service(
         current_project_id=project.project_id,
         current_conversation_id=conversation.conversation_id,
     )
+    if not demo and settings is not None and settings.dashscope_api_key:
+        try:
+            runtime = build_real_voice_runtime(
+                settings=settings,
+                orchestrator=orchestrator,
+                pair_config=pair_config,
+                conversation_id=conversation.conversation_id,
+                on_vad_state=service._on_voice_state,
+                on_asr_partial=service._on_asr_partial,
+                on_error=service._on_voice_error,
+            )
+            service.attach_voice_runtime(runtime)
+        except Exception as exc:  # noqa: BLE001 - 文本功能不因语音依赖失败而退出
+            service._on_voice_error(f"语音运行时未启用：{exc}")
     return service
 
 

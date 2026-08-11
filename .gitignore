@@ -10,6 +10,10 @@ dist/
 desktop/node_modules/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
+desktop/src-tauri/resources/
+desktop/.pyinstaller-work/
+desktop/.pyinstaller-spec/
+desktop/.pyinstaller-config/
 .tmp/
 *.egg-info/
 # 开发工具与参考仓库（不入库）
