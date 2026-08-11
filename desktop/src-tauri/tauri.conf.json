@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "HSR Partner Harness",
+  "version": "0.1.0",
+  "identifier": "com.jonahwu.hsr-partner-harness",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://127.0.0.1:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "HSR Partner Harness",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": []
+  }
+}
