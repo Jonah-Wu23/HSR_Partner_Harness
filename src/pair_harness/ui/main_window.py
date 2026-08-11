@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QComboBox,
     QFrame,
@@ -28,6 +28,7 @@ from .approval_bar import ApprovalBar
 from .audio_controls import AudioControls
 from .input_bar import InputBar
 from .message_list import MessageList
+from .theme import apply_theme, load_theme_preference, tokens_for_mode
 from .tool_card import ToolCard
 
 
@@ -48,8 +49,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Pair Harness — 白厄与神秘的古代机械")
         self.resize(1180, 760)
-        self.setStyleSheet("QMainWindow{background:#111318;color:#E5E7EB;}")
         self._theme = theme
+        self._theme_mode = "dark"
         self.tool_cards: dict[str, ToolCard] = {}
         self._approval_mode = ApprovalMode.REQUEST_APPROVAL
         self._library: QWidget | None = None
@@ -58,19 +59,37 @@ class MainWindow(QMainWindow):
         root = QVBoxLayout(central)
         root.setContentsMargins(12, 12, 12, 12)
         header = QHBoxLayout()
+        # 顶栏左侧：应用标题 + 当前搭档名副标题
+        title_box = QVBoxLayout()
+        title_box.setSpacing(0)
+        self.app_title = QLabel("Pair Harness")
+        self.app_title.setObjectName("appTitle")
+        self.app_title.setStyleSheet("font-size:15px;font-weight:700;")
+        self.pair_subtitle = QLabel("白厄与神秘的古代机械")
+        self.pair_subtitle.setObjectName("pairSubtitle")
+        title_box.addWidget(self.app_title)
+        title_box.addWidget(self.pair_subtitle)
+        header.addLayout(title_box)
+        header.addSpacing(16)
         self.library_button = QPushButton("项目与聊天")
         self.library_button.setObjectName("libraryButton")
+        self.library_button.setProperty("kind", "ghost")
         self.mode_combo = QComboBox()
         self.mode_combo.setObjectName("modeCombo")
         self.mode_combo.addItem("聊天模式", "chat")
         self.mode_combo.addItem("协作模式", "collaboration")
         self.cancel_button = QPushButton("取消当前任务")
         self.cancel_button.setObjectName("cancelButton")
+        self.cancel_button.setProperty("kind", "danger")
         self.cancel_button.setEnabled(False)
+        # 主题切换按钮：文案显示将要切换到的目标模式，初始文案由 _apply_theme 设置
+        self.theme_toggle = QPushButton()
+        self.theme_toggle.setObjectName("themeToggle")
+        self.theme_toggle.setProperty("kind", "ghost")
         header.addWidget(self.library_button)
-        header.addWidget(QLabel("模式："))
         header.addWidget(self.mode_combo)
         header.addStretch(1)
+        header.addWidget(self.theme_toggle)
         header.addWidget(self.cancel_button)
         root.addLayout(header)
 
@@ -86,7 +105,7 @@ class MainWindow(QMainWindow):
         self.pair_rail.setObjectName("pairRail")
         self.pair_rail.addItem("白厄\n古代机械")
         self.pair_rail.setCurrentRow(0)
-        self.pair_rail.setMaximumWidth(120)
+        self.pair_rail.setMaximumWidth(132)
         body.addWidget(self.pair_rail)
 
         self.splitter = QSplitter()
@@ -130,19 +149,75 @@ class MainWindow(QMainWindow):
         self.input_bar.push_to_talk_pressed.connect(self.push_to_talk_pressed)
         self.input_bar.push_to_talk_released.connect(self.push_to_talk_released)
         self.audio_controls.stop_requested.connect(self.stop_speech_requested)
+        self.theme_toggle.clicked.connect(self._toggle_theme)
         self._apply_mode()
+        # 构造末尾应用持久化主题：全局 QSS + 子组件调色板 + 面板样式
+        self._apply_theme(load_theme_preference())
 
     def _panel(self, title: str, object_name: str) -> QFrame:
         panel = QFrame()
         panel.setObjectName(object_name)
-        panel.setStyleSheet(
-            f"QFrame#{object_name}{{background:#1B1E25;border:1px solid #30343D;border-radius:10px;}}"
-        )
         layout = QVBoxLayout(panel)
+        # 面板标题：身份色点 + 名称；色点颜色在 set_palette 里按搭档主题刷新
+        header_row = QHBoxLayout()
+        header_row.setSpacing(8)
+        header_row.setContentsMargins(4, 4, 4, 0)
+        dot = QLabel()
+        dot.setFixedSize(10, 10)
+        header_row.addWidget(dot, 0, Qt.AlignVCenter)
         title_label = QLabel(title)
-        title_label.setStyleSheet("font-size:16px;font-weight:700;padding:4px;")
-        layout.addWidget(title_label)
+        title_label.setStyleSheet("font-size:14px;font-weight:600;")
+        header_row.addWidget(title_label, 1)
+        layout.addLayout(header_row)
+        # 挂到面板对象上，set_palette 按 object_name 判断角色/助手配色
+        panel._identity_dot = dot
+        panel._title_label = title_label
         return panel
+
+    def set_palette(self, tokens: dict[str, str]) -> None:
+        """按主题令牌重刷两个面板样式、身份色点与副标题颜色（供主题切换调用）。"""
+        self._tokens = tokens
+        for card in self.tool_cards.values():
+            card.set_palette(tokens)
+        for panel, kind in (
+            (self.character_panel, "character"),
+            (self.assistant_panel, "assistant"),
+        ):
+            panel.setStyleSheet(
+                f"QFrame#{panel.objectName()}{{background:{tokens['panel_bg']};"
+                f"border:1px solid {tokens['border']};"
+                f"border-radius:{tokens['radius_panel']};}}"
+            )
+            # 色点取搭档主题主色；无 theme 时回退角色蓝 / 助手青铜金
+            fallback = "#8AA4D4" if kind == "character" else "#B08D57"
+            color = fallback
+            if self._theme is not None:
+                color = (
+                    self._theme.character_primary
+                    if kind == "character"
+                    else self._theme.assistant_primary
+                )
+            panel._identity_dot.setStyleSheet(
+                f"background:{color};border-radius:5px;"
+            )
+            # 面板有内联样式时全局 QWidget 颜色规则到不了子标签，标题色需显式给
+            panel._title_label.setStyleSheet(
+                f"font-size:14px;font-weight:600;color:{tokens['text_primary']};"
+            )
+        self.pair_subtitle.setStyleSheet(
+            f"font-size:12px;color:{tokens['text_secondary']};"
+        )
+
+    def _apply_theme(self, mode: str) -> None:
+        """应用主题并记录当前 mode：全局 QSS、子组件调色板、面板样式与按钮文案。"""
+        self._theme_mode = mode
+        apply_theme(self, mode)
+        self.set_palette(tokens_for_mode(mode))
+        # 文案显示将要切换到的目标模式
+        self.theme_toggle.setText("浅色模式" if mode == "dark" else "深色模式")
+
+    def _toggle_theme(self) -> None:
+        self._apply_theme("light" if self._theme_mode == "dark" else "dark")
 
     @property
     def mode(self) -> str:
@@ -216,6 +291,8 @@ class MainWindow(QMainWindow):
         card = self.tool_cards.get(tool_run.tool_call_id)
         if card is None:
             card = ToolCard(tool_run)
+            # 新建卡片立即套用当前主题令牌（默认是深色，浅色主题下需重刷）
+            card.set_palette(self._tokens)
             self.tool_cards[tool_run.tool_call_id] = card
             self.tool_layout.addWidget(card)
         else:

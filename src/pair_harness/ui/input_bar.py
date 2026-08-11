@@ -34,9 +34,11 @@ class InputBar(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        # 主题令牌（set_palette 注入），默认 None 表示尚未应用主题
+        self._tokens: dict[str, str] | None = None
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 6, 0, 0)
-        controls = QHBoxLayout()
+        root.setContentsMargins(0, 4, 0, 0)
+        root.setSpacing(6)
         self.approval_mode_combo = QComboBox()
         self.approval_mode_combo.setObjectName("approvalModeCombo")
         for value, label in self.APPROVAL_MODES:
@@ -54,22 +56,32 @@ class InputBar(QWidget):
         self.vad_button = QPushButton("VAD")
         self.vad_button.setObjectName("vadButton")
         self.vad_button.setCheckable(True)
+        self.vad_button.setProperty("kind", "ghost")
         self.ptt_button = QPushButton("按住说话")
         self.ptt_button.setObjectName("pttButton")
+        self.ptt_button.setProperty("kind", "ghost")
         self.text_input = QLineEdit()
         self.text_input.setObjectName("messageInput")
         self.text_input.setPlaceholderText("输入消息…")
+        self.text_input.setMinimumHeight(36)
         self.send_button = QPushButton("发送")
         self.send_button.setObjectName("sendButton")
-        # 计划 A5：审批模式下拉框位于输入区左下角
-        controls.addWidget(self.approval_mode_combo)
-        controls.addWidget(self.reasoning_effort_combo)
-        controls.addWidget(self.target_label)
-        controls.addWidget(self.target_combo)
+        self.send_button.setProperty("kind", "primary")
+        # 上行（设置行）：审批模式 / 思考档位 / 发送对象，其余留白
+        settings = QHBoxLayout()
+        settings.setSpacing(8)
+        settings.addWidget(self.approval_mode_combo)
+        settings.addWidget(self.reasoning_effort_combo)
+        settings.addWidget(self.target_label)
+        settings.addWidget(self.target_combo)
+        settings.addStretch(1)
+        # 下行（输入行）：语音按钮 + 输入框 + 发送
+        controls = QHBoxLayout()
         controls.addWidget(self.vad_button)
         controls.addWidget(self.ptt_button)
         controls.addWidget(self.text_input, 1)
         controls.addWidget(self.send_button)
+        root.addLayout(settings)
         root.addLayout(controls)
         self.target_combo.currentIndexChanged.connect(self._sync_target)
         self.approval_mode_combo.currentIndexChanged.connect(self._sync_approval_mode)
@@ -123,9 +135,49 @@ class InputBar(QWidget):
         if not enabled:
             self.target_combo.setCurrentIndex(0)
         self._sync_target()
+        # 隐藏期间错过主题切换的控件，重新可见后强制按当前 QSS 重刷
+        for widget in (self.target_label, self.target_combo, self.vad_button):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
 
     def _sync_target(self) -> None:
         self.vad_button.setVisible(self.target == "character")
+
+    def set_palette(self, tokens: dict[str, str]) -> None:
+        """注入主题令牌并强制重刷样式。
+
+        全局 QSS 切换后，kind 等动态属性变体需要 unpolish/polish 才会换色。
+        """
+        self._tokens = tokens
+        # 全局 QWidget 颜色规则到不了特定子标签，显式给令牌色
+        self.target_label.setStyleSheet(f"color:{tokens['text_secondary']};")
+        # Qt 怪癖：隐藏/可见切换过的 QComboBox 在运行时换主题会滞留旧调色板，
+        # unpolish/polish 清不掉；令牌级内联 QSS 能稳定重刷
+        combo_qss = (
+            f"QComboBox{{background:{tokens['card_bg']};"
+            f"border:1px solid {tokens['border']};"
+            f"border-radius:{tokens['radius_control']};padding:5px 10px;"
+            f"min-height:20px;color:{tokens['text_primary']};}}"
+            f"QComboBox:hover{{border-color:{tokens['border_strong']};}}"
+            f"QComboBox:focus{{border-color:{tokens['accent']};}}"
+            "QComboBox::drop-down{border:0;width:22px;}"
+            f"QComboBox QAbstractItemView{{background:{tokens['panel_bg']};"
+            f"border:1px solid {tokens['border_strong']};"
+            f"selection-background-color:{tokens['accent_soft']};"
+            f"selection-color:{tokens['text_primary']};outline:0;}}"
+        )
+        for combo in (
+            self.approval_mode_combo,
+            self.reasoning_effort_combo,
+            self.target_combo,
+        ):
+            combo.setStyleSheet(combo_qss)
+        style = self.style()
+        style.unpolish(self)
+        style.polish(self)
+        for child in self.findChildren(QWidget):
+            child.style().unpolish(child)
+            child.style().polish(child)
 
     def set_asr_interim(self, text: str) -> None:
         """ASR partial 回显（B2.6 设计 §5.5）：显示在输入框，空串清空。

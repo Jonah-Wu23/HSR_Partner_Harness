@@ -3,6 +3,7 @@ from __future__ import annotations
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QFrame,
+    QHBoxLayout,
     QLabel,
     QScrollArea,
     QSizePolicy,
@@ -13,6 +14,7 @@ from PyQt5.QtWidgets import (
 
 from pair_harness.config.pairs import PairTheme
 from pair_harness.core.contracts import Message, MessageSource, enum_value
+from pair_harness.ui.theme import DARK_TOKENS, bubble_style_for, fade
 
 # O4.5：角色/助手气泡颜色由 PairConfig.theme 驱动（B3 前置，设计 §4.5）——
 # 白厄蓝（character_deep/character_text/character_primary）、古代机械金
@@ -69,18 +71,14 @@ class MessageBubble(QFrame):
     ) -> None:
         super().__init__(parent)
         self.message = message
+        self._theme = theme
         # objectName 只使用枚举值（不含点号），保证 QSS ID 选择器可用（O1.2）
         self.setObjectName(f"message-{enum_value(message.source)}")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        self.setStyleSheet(
-            f"QFrame#{self.objectName()}{{{bubble_style(message.source, theme)}"
-            "border-radius:10px;padding:8px;}"
-        )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
         self.source_label = QLabel(SOURCE_LABELS[message.source])
         self.source_label.setObjectName("sourceLabel")
-        self.source_label.setStyleSheet("font-size:11px;font-weight:600;background:transparent;")
         layout.addWidget(self.source_label)
 
         self.reasoning_toggle: QToolButton | None = None
@@ -103,10 +101,6 @@ class MessageBubble(QFrame):
             self.reasoning_label.setWordWrap(True)
             self.reasoning_label.setTextFormat(Qt.PlainText)
             self.reasoning_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            self.reasoning_label.setStyleSheet(
-                "background:rgba(0,0,0,0.18);border:1px solid rgba(255,255,255,0.12);"
-                "border-radius:6px;padding:7px;color:#B8BDC7;"
-            )
             self.reasoning_label.setVisible(False)
             self.reasoning_toggle.toggled.connect(self._toggle_reasoning)
             layout.addWidget(self.reasoning_toggle)
@@ -114,9 +108,6 @@ class MessageBubble(QFrame):
 
             self.final_label = QLabel("最终回复")
             self.final_label.setObjectName("finalReplyLabel")
-            self.final_label.setStyleSheet(
-                "font-size:11px;font-weight:600;background:transparent;"
-            )
             layout.addWidget(self.final_label)
 
         self.text_label = QLabel(message.text)
@@ -126,8 +117,43 @@ class MessageBubble(QFrame):
         # 渲染错乱），统一按纯文本显示
         self.text_label.setTextFormat(Qt.PlainText)
         self.text_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.text_label.setStyleSheet("background:transparent;")
         layout.addWidget(self.text_label)
+
+        # 颜色一律由令牌驱动；默认深色（DARK_TOKENS 输出与历史默认一致）
+        self.set_palette(DARK_TOKENS)
+
+    def set_palette(self, tokens: dict[str, str]) -> None:
+        """按当前主题令牌重刷气泡与内部标签颜色。"""
+        style = bubble_style_for(self.message.source, self._theme, tokens)
+        self.setStyleSheet(
+            f"QFrame#{self.objectName()}{{{style}"
+            f"border-radius:{tokens['radius_bubble']};padding:8px;}}"
+        )
+        # 气泡正文颜色沿用气泡样式里的 color 值，保证深浅主题对比度
+        text_color = style.split("color:", 1)[1].split(";", 1)[0]
+        # 弱化标签用正文色的半透明形式，在彩色气泡底上也能读
+        label_color = fade(text_color, 0.72)
+        self.source_label.setStyleSheet(
+            "font-size:11px;font-weight:600;background:transparent;"
+            f"color:{label_color};"
+        )
+        self.text_label.setStyleSheet(f"background:transparent;color:{text_color};")
+        if self.reasoning_label is not None:
+            self.reasoning_label.setStyleSheet(
+                f"background:{tokens['reasoning_bg']};"
+                f"border:1px solid {tokens['reasoning_border']};"
+                f"border-radius:6px;padding:7px;color:{tokens['reasoning_text']};"
+            )
+        if self.reasoning_toggle is not None:
+            self.reasoning_toggle.setStyleSheet(
+                "QToolButton{background:transparent;border:0;padding:2px;"
+                f"font-size:11px;font-weight:600;text-align:left;color:{label_color};}}"
+            )
+        if self.final_label is not None:
+            self.final_label.setStyleSheet(
+                "font-size:11px;font-weight:600;background:transparent;"
+                f"color:{label_color};"
+            )
 
     def _toggle_reasoning(self, expanded: bool) -> None:
         if self.reasoning_label is None or self.reasoning_toggle is None:
@@ -140,23 +166,66 @@ class MessageList(QScrollArea):
     def __init__(self, theme: PairTheme | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._theme = theme
+        self._tokens = DARK_TOKENS
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.NoFrame)
         self.container = QWidget()
         self.layout = QVBoxLayout(self.container)
         self.layout.setAlignment(Qt.AlignTop)
-        self.layout.setSpacing(8)
+        self.layout.setSpacing(10)
+        self.layout.setContentsMargins(8, 8, 8, 8)
         self.setWidget(self.container)
         self.bubbles: list[MessageBubble] = []
+        # 与 bubbles 一一对应的行布局，用于分侧对齐与清理
+        self._rows: list[QHBoxLayout] = []
+        # 视口与容器底色随主题（否则深色主题下滚动区会露白底）
+        self.set_palette(DARK_TOKENS)
+
+    def set_palette(self, tokens: dict[str, str]) -> None:
+        """切换主题令牌并同步重刷所有现存气泡。"""
+        self._tokens = tokens
+        background = f"background:{tokens['panel_bg']};"
+        self.container.setStyleSheet(background)
+        self.viewport().setStyleSheet(background)
+        for bubble in self.bubbles:
+            bubble.set_palette(tokens)
 
     def add_message(self, message: Message) -> MessageBubble:
         bubble = MessageBubble(message, theme=self._theme)
+        bubble.set_palette(self._tokens)
+        bubble.setMaximumWidth(self._bubble_max_width())
         self.bubbles.append(bubble)
-        self.layout.addWidget(bubble)
+        # 用户气泡靠右，其余靠左：用行布局加弹簧实现
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        if message.source == MessageSource.USER:
+            row.addStretch(1)
+            row.addWidget(bubble)
+        else:
+            row.addWidget(bubble)
+            row.addStretch(1)
+        self.layout.addLayout(row)
+        self._rows.append(row)
         return bubble
 
     def clear_messages(self) -> None:
         while self.bubbles:
             bubble = self.bubbles.pop()
-            self.layout.removeWidget(bubble)
+            row = self._rows.pop()
+            self.layout.removeItem(row)
+            row.removeWidget(bubble)
             bubble.deleteLater()
+            row.deleteLater()
+
+    def resizeEvent(self, event) -> None:
+        """按视口宽度动态收紧气泡最大宽度（不超过 720px）。"""
+        super().resizeEvent(event)
+        limit = self._bubble_max_width()
+        for bubble in self.bubbles:
+            bubble.setMaximumWidth(limit)
+
+    def _bubble_max_width(self) -> int:
+        width = self.viewport().width()
+        if width <= 0:
+            return 720
+        return min(720, int(width * 0.78))
