@@ -147,6 +147,15 @@ class SQLiteStore(StateStore):
         )
         self.connection.commit()
 
+    def mark_project_opened(self, project_id: str) -> Project:
+        """记录最近打开项目，并返回更新后的项目对象。"""
+        self.connection.execute(
+            "UPDATE projects SET last_opened_at = ? WHERE project_id = ?",
+            (_now(), project_id),
+        )
+        self.connection.commit()
+        return self.get_project(project_id)
+
     def get_project(self, project_id: str) -> Project:
         row = self.connection.execute(
             "SELECT * FROM projects WHERE project_id = ?", (project_id,)

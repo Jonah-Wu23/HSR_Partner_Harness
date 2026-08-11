@@ -587,7 +587,7 @@ class DesktopApplicationService:
         conversation = self.store.get_conversation(conversation_id)
         if conversation.project_id is None:
             raise ServiceError("日常聊天尚未接入桌面迁移", code="daily_chat_unavailable")
-        project = self.store.get_project(conversation.project_id)
+        project = self.store.mark_project_opened(conversation.project_id)
         selected_pair = load_pair_config(conversation.pair_id)
         if conversation_id != self.current_conversation_id:
             self.orchestrator.close_conversation(self.current_conversation_id)
@@ -667,9 +667,12 @@ class DesktopApplicationService:
 
 def _get_or_create_project(store: SQLiteStore, root_path: Path):
     root_path = root_path.resolve()
+    recent = store.list_projects()
+    if recent:
+        return store.mark_project_opened(recent[0].project_id)
     existing = store.find_project_by_root_path(str(root_path))
     if existing is not None:
-        return existing
+        return store.mark_project_opened(existing.project_id)
     return store.create_project(
         project_id=str(uuid4()),
         name=root_path.name or str(root_path),
