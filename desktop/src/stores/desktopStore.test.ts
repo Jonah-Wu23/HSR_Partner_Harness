@@ -231,6 +231,45 @@ describe("desktopStore event projection", () => {
     expect(state.accounts.find((item) => item.is_last_login)?.account_id).toBe("alice-1");
   });
 
+  it("state.snapshot 保持事件序号，后续引导完成事件继续生效", () => {
+    const pending = createMockScenario("onboarding-pending").snapshot;
+    desktopStore.getState().hydrate({ ...pending, sequence: 0 });
+    const pendingAccount = pending.current_account!;
+    const completedAccount = { ...pendingAccount, onboarding_complete: true };
+
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "account.changed",
+        sequence: 1,
+        payload: { account: pendingAccount, accounts: pending.accounts },
+      },
+      {
+        kind: "event",
+        event: "state.snapshot",
+        sequence: 2,
+        payload: { ...pending, sequence: 2 },
+      },
+      {
+        kind: "event",
+        event: "account.changed",
+        sequence: 3,
+        payload: {
+          account: completedAccount,
+          accounts: pending.accounts.map((item) =>
+            item.account_id === completedAccount.account_id
+              ? { ...item, onboarding_complete: true }
+              : item,
+          ),
+        },
+      },
+    ]);
+
+    expect(desktopStore.getState().currentAccount?.onboarding_complete).toBe(true);
+    expect(desktopStore.getState().lastSequence).toBe(3);
+    expect(desktopStore.getState().needsBootstrap).toBe(false);
+  });
+
   it("locks approval actions until the resolved event arrives", () => {
     desktopStore.getState().applyEvents([
       {

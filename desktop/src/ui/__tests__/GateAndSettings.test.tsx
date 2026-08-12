@@ -71,6 +71,26 @@ describe("Onboarding", () => {
     fireEvent.click(screen.getByRole("button", { name: "开始使用" }));
     expect(onFinish).toHaveBeenCalled();
   });
+
+  it("角色模型连接成功后自动进入完成步骤", async () => {
+    const onSaveModelConfig = vi.fn().mockResolvedValue("连接正常（延迟 546 ms）");
+    render(
+      <Onboarding
+        characterName="白厄"
+        assistantName="机枢"
+        onCreateProject={vi.fn().mockResolvedValue(true)}
+        onSaveModelConfig={onSaveModelConfig}
+        onFinish={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "跳过" }));
+    fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "sk-test" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
+
+    expect(await screen.findByRole("heading", { name: "都准备好了" })).toBeInTheDocument();
+    expect(onSaveModelConfig).toHaveBeenCalledWith({ provider: "DeepSeek", apiKey: "sk-test" });
+  });
 });
 
 function renderSettings(overrides: Partial<Parameters<typeof SettingsCenter>[0]> = {}) {

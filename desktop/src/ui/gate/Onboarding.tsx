@@ -97,7 +97,10 @@ export function Onboarding({
                 setTesting(true);
                 setTestResult(null);
                 void onSaveModelConfig({ provider, apiKey })
-                  .then(setTestResult)
+                  .then((result) => {
+                    setTestResult(result);
+                    if (result.startsWith("连接正常")) setStep(2);
+                  })
                   .finally(() => setTesting(false));
               }}
             >

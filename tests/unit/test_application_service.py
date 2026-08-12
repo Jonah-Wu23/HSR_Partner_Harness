@@ -870,6 +870,12 @@ async def test_account_onboarding_complete_marks_flag_only_on_command(
         )
         # 注册后引导未完成（前端负责展示 Onboarding）
         assert result["account"]["onboarding_complete"] is False
+        switched_snapshots = [event for event in events if event["event"] == "state.snapshot"]
+        assert switched_snapshots
+        assert all(
+            event["payload"]["sequence"] == event["sequence"]
+            for event in switched_snapshots
+        )
         snapshot = await service.handle_command(command("b-1", "app.bootstrap"))
         assert snapshot["current_account"]["onboarding_complete"] is False
 
@@ -881,6 +887,7 @@ async def test_account_onboarding_complete_marks_flag_only_on_command(
         changed = [event for event in events if event["event"] == "account.changed"]
         assert changed
         assert changed[-1]["payload"]["account"]["onboarding_complete"] is True
+        assert changed[-1]["sequence"] == switched_snapshots[-1]["sequence"] + 1
         snapshot = await service.handle_command(command("b-2", "app.bootstrap"))
         assert snapshot["current_account"]["onboarding_complete"] is True
         # 默认账号不受影响（登录页不展示引导）

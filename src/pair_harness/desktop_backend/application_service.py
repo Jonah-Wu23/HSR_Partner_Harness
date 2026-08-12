@@ -1304,12 +1304,20 @@ class DesktopApplicationService:
         self._restore_current_conversation()
         # 4. 广播账号变更与整份快照
         self._emit_account_changed()
-        self.emitter.emit("state.snapshot", self.bootstrap())
+        self._emit_state_snapshot()
 
     # ------------------------------------------------------------------ 状态与事件
 
     def _on_message(self, message: Message) -> None:
         self.emitter.emit("message.created", {"message": message})
+
+    def _emit_state_snapshot(self) -> None:
+        """发出与事件自身序号一致的完整快照。"""
+        snapshot = self.bootstrap()
+        # EventEmitter 会把下一条事件分配为 next_sequence；快照作为该事件
+        # 的载荷时，内部序号必须与外层序号一致，前端才会继续接收后续事件。
+        snapshot["sequence"] = self.emitter.next_sequence
+        self.emitter.emit("state.snapshot", snapshot)
 
     def _on_message_status_changed(self, message: Message) -> None:
         """V0.2：消息状态推进（message.status_changed），前端按 id 对账。"""
@@ -1571,7 +1579,7 @@ class DesktopApplicationService:
                 "conversation.changed",
                 {"conversation": self._conversation_payload(conversation)},
             )
-            self.emitter.emit("state.snapshot", self.bootstrap())
+            self._emit_state_snapshot()
 
     def _find_or_create_conversation(self, project_id: str, *, pair_id: str):
         conversations = self.store.list_conversations(project_id)
