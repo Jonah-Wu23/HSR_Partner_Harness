@@ -28,7 +28,7 @@ jobs:
       - name: Install Python package and test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -e ".[dev,voice]"
 
       - name: Run Python tests
         run: python -m pytest -q
@@ -77,6 +77,13 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt
+
+      - name: Prepare Tauri resource globs
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path resources/sidecar, resources/codex | Out-Null
+          Set-Content -Path resources/sidecar/ci-placeholder.txt -Value "CI resource placeholder" -NoNewline
+          Set-Content -Path resources/codex/ci-placeholder.txt -Value "CI resource placeholder" -NoNewline
 
       - name: Check formatting
         run: cargo fmt --check
