@@ -14,9 +14,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ui = ["PyQt5>=5.15", "qasync>=0.28"]
 voice = ["numpy>=1.26", "sounddevice>=0.5", "onnxruntime>=1.18", "dashscope>=1.20"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-qt>=4.4", "PyQt5>=5.15"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pyinstaller>=6.0"]
 
 [project.scripts]
 pair-harness = "pair_harness.cli:main"

@@ -20,7 +20,7 @@ class Settings:
 
     # —— B2 新增：DashScope 语音配置 ——
     dashscope_api_key: str | None = None          # DASHSCOPE_API_KEY
-    dashscope_host: str = "llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com"
+    dashscope_host: str = "dashscope.aliyuncs.com"
     dashscope_ws_url: str | None = None           # 覆盖项；默认由 host 推导
     dashscope_http_url: str | None = None         # 覆盖项；默认由 host 推导
     qwen_asr_model: str = "qwen-audio-3.0-asr-flash-streaming"
@@ -46,7 +46,7 @@ class Settings:
             dashscope_api_key=os.getenv("DASHSCOPE_API_KEY"),
             dashscope_host=os.getenv(
                 "PAIR_HARNESS_DASHSCOPE_HOST",
-                "llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com",
+                "dashscope.aliyuncs.com",
             ),
             dashscope_ws_url=os.getenv("PAIR_HARNESS_DASHSCOPE_WS_URL"),
             dashscope_http_url=os.getenv("PAIR_HARNESS_DASHSCOPE_HTTP_URL"),

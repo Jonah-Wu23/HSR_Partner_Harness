@@ -18,7 +18,7 @@ def build_real_voice_runtime(
     on_asr_partial: Callable[[str], None],
     on_error: Callable[[str], None],
 ) -> VoiceRuntime:
-    """按现有 PyQt 语音装配创建无 UI 依赖的 Sidecar VoiceRuntime。"""
+    """创建供桌面 Sidecar 使用的 VoiceRuntime。"""
     if not settings.dashscope_api_key:
         raise RuntimeError("DASHSCOPE_API_KEY 未配置")
 

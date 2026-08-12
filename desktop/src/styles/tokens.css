@@ -1,7 +1,6 @@
 /* HSR Partner Harness 设计令牌
-   来源：docs/specs/2026-08-11-desktop-visual-v0-design.md §2
-   规则：组件只允许引用本文件的语义变量，不保存原始色值常量。
-   品牌色值（白厄蓝组 / 青铜金组 / accent）为锁定值，不得改动。 */
+   组件使用这里定义的语义变量。
+   白厄蓝组和青铜金组为品牌色。 */
 
 :root {
   /* 字体 */
@@ -84,7 +83,7 @@
   --danger: #DC2626;
   --running: #296CE1;
 
-  /* 中性气泡（用户 / 工具 / 系统）与思考区：沿用 PyQt 已验证值 */
+  /* 中性气泡与思考区 */
   --bubble-user-bg: #343B4D;
   --bubble-user-border: #4A5268;
   --bubble-user-text: #E5E7EB;

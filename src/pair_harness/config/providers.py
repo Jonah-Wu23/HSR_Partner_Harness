@@ -1,16 +1,12 @@
 """供应商预设与推理请求形态（B1）。
 
 按 Base URL 识别后端并应用对应请求形态。本模块的识别与档位语义参考
-DeepSeek-Reasonix（MIT License，Copyright (c) 2026 Reasonix Contributors，
-https://github.com/deepseek-ai/DeepSeek-Reasonix 的 internal/provider/openai/
-host.go 与 effort.go），按本项目范围小范围移植为 Python 实现：
-- 只识别 DeepSeek（api.deepseek.com / *.deepseek.com）与通用 OpenAI 兼容端点；
-- ``thinking.type`` 控制思考开关，``reasoning_effort`` 控制思考深度；
-- 兼容性输入归一化：Flash 的 medium/xhigh → high；Pro 的 low/medium → high、
-  xhigh → max；未知档位返回 None（不写入请求体，交给服务端默认）。
+DeepSeek 的主机识别和推理档位语义取自 DeepSeek-Reasonix。原代码采用
+MIT License，Copyright (c) 2026 Reasonix Contributors：
+https://github.com/esengine/DeepSeek-Reasonix/tree/main-v2/internal/provider/openai
 
-预设只保存公开信息（host 识别规则、档位），API Key 一律经环境变量注入，
-配置文件与日志永不持有密钥（B1 原则，与 MVP 计划 §5 B1.1 一致）。
+本文件于 2026 年改写为 Python，范围缩减为 DeepSeek 与通用 OpenAI 兼容
+端点。API Key 由环境变量传入。
 """
 
 from __future__ import annotations
