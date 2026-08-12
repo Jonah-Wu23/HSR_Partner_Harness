@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import os
 import re
 import sqlite3
 from datetime import datetime, timezone
@@ -25,7 +28,7 @@ def _dt(value: str) -> datetime:
 # O4.3：数据库结构版本。新库由 schema.sql 一次建全，直接标记为该版本；
 # 旧库（user_version=0）按 MIGRATIONS 逐级升级。每次结构变更 +1，
 # 并在 MIGRATIONS 里补对应迁移步骤。
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # 索引 i 对应“从版本 i 升到 i+1”的迁移步骤（每级一条或多条 SQL）。
 MIGRATIONS: tuple[tuple[str, ...], ...] = (
@@ -61,6 +64,44 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         "CREATE INDEX IF NOT EXISTS idx_conversation_inbox_dispatch "
         "ON conversation_inbox(conversation_id, status, position)",
     ),
+    # 版本 5：V0.2 M3 本地账号与账号级配置（方案 §M3）。
+    # 旧库：建表 → 创建默认账号 → 现有项目归入默认账号。
+    (
+        "ALTER TABLE projects ADD COLUMN account_id TEXT NOT NULL DEFAULT ''",
+        "CREATE TABLE IF NOT EXISTS accounts ("
+        "account_id TEXT PRIMARY KEY,"
+        "username TEXT NOT NULL UNIQUE,"
+        "display_name TEXT NOT NULL,"
+        "avatar TEXT NOT NULL DEFAULT '',"
+        "password_hash TEXT NOT NULL,"
+        "password_salt TEXT NOT NULL,"
+        "last_login_at TEXT,"
+        "onboarding_complete INTEGER NOT NULL DEFAULT 0,"
+        "theme TEXT NOT NULL DEFAULT 'dark',"
+        "created_at TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS account_preferences ("
+        "account_id TEXT PRIMARY KEY REFERENCES accounts(account_id) ON DELETE CASCADE,"
+        "theme TEXT NOT NULL DEFAULT 'dark',"
+        "vad_enabled INTEGER NOT NULL DEFAULT 0,"
+        "last_mode TEXT NOT NULL DEFAULT 'chat')",
+        "CREATE TABLE IF NOT EXISTS provider_configs ("
+        "account_id TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,"
+        "key TEXT NOT NULL,"
+        "value TEXT NOT NULL,"
+        "PRIMARY KEY (account_id, key))",
+        "CREATE TABLE IF NOT EXISTS secret_refs ("
+        "account_id TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,"
+        "key TEXT NOT NULL,"
+        "secret TEXT NOT NULL,"
+        "PRIMARY KEY (account_id, key))",
+        "INSERT OR IGNORE INTO accounts("
+        "account_id, username, display_name, password_hash, password_salt,"
+        "created_at) VALUES ("
+        "'default-local', 'default', '默认账号', "
+        "'', '', datetime('now'))",
+        "INSERT OR IGNORE INTO account_preferences(account_id) VALUES ('default-local')",
+        "UPDATE projects SET account_id = 'default-local' WHERE account_id = ''",
+    ),
 )
 
 
@@ -81,6 +122,18 @@ class SQLiteStore(StateStore):
             self.connection.commit()
         else:
             self._migrate()
+        # V0.2 M3：默认本地账号对旧库（迁移里归入）与新库都保证存在
+        self.connection.execute(
+            "INSERT OR IGNORE INTO accounts("
+            "account_id, username, display_name, password_hash, password_salt,"
+            "created_at) VALUES ("
+            "'default-local', 'default', '默认账号', '', '', datetime('now'))"
+        )
+        self.connection.execute(
+            "INSERT OR IGNORE INTO account_preferences(account_id) "
+            "VALUES ('default-local')"
+        )
+        self.connection.commit()
 
     def close(self) -> None:
         self.connection.close()
@@ -127,21 +180,31 @@ class SQLiteStore(StateStore):
         project_id: str | None = None,
         approval_mode: str = "request_approval",
         reasoning_effort: str = "low",
+        account_id: str = "default-local",
     ) -> Project:
         project_id = project_id or str(uuid4())
         now = _now()
         self.connection.execute(
             """
             INSERT INTO projects(
-                project_id, name, root_path, approval_mode, reasoning_effort,
-                archived, created_at, last_opened_at
-            ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+                project_id, account_id, name, root_path, approval_mode,
+                reasoning_effort, archived, created_at, last_opened_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
             ON CONFLICT(project_id) DO UPDATE SET
                 name=excluded.name,
                 root_path=excluded.root_path,
                 last_opened_at=excluded.last_opened_at
             """,
-            (project_id, name, root_path, approval_mode, reasoning_effort, now, now),
+            (
+                project_id,
+                account_id,
+                name,
+                root_path,
+                approval_mode,
+                reasoning_effort,
+                now,
+                now,
+            ),
         )
         self.connection.commit()
         return self.get_project(project_id)
@@ -194,6 +257,7 @@ class SQLiteStore(StateStore):
             raise KeyError(project_id)
         return Project(
             project_id=row["project_id"],
+            account_id=row["account_id"] or "",
             name=row["name"],
             root_path=row["root_path"],
             approval_mode=row["approval_mode"],
@@ -568,6 +632,223 @@ class SQLiteStore(StateStore):
             "created_at": row["created_at"],
             "source_message_id": row["source_message_id"],
         }
+
+    # ------------------------------------------------------------------ V0.2 M3 本地账号
+
+    @staticmethod
+    def _derive_password(password: str, salt_b64: str) -> str:
+        """PBKDF2-SHA256 派生（200k 迭代），与 salt 一起存库。"""
+        salt = base64.b64decode(salt_b64)
+        digest = hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), salt, 200_000
+        )
+        return base64.b64encode(digest).decode()
+
+    @staticmethod
+    def _new_salt() -> str:
+        return base64.b64encode(os.urandom(16)).decode()
+
+    def create_account(
+        self,
+        *,
+        username: str,
+        display_name: str,
+        password: str,
+        account_id: str | None = None,
+    ) -> dict:
+        """注册本地账号；密码只存派生结果。"""
+        account_id = account_id or str(uuid4())
+        salt = self._new_salt()
+        now = _now()
+        try:
+            self.connection.execute(
+                "INSERT INTO accounts("
+                "account_id, username, display_name, password_hash, password_salt,"
+                "created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    account_id,
+                    username,
+                    display_name,
+                    self._derive_password(password, salt),
+                    salt,
+                    now,
+                ),
+            )
+            self.connection.execute(
+                "INSERT OR IGNORE INTO account_preferences(account_id) VALUES (?)",
+                (account_id,),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("登录名已存在") from exc
+        self.connection.commit()
+        return self.get_account(account_id)
+
+    def get_account(self, account_id: str) -> dict:
+        row = self.connection.execute(
+            "SELECT * FROM accounts WHERE account_id = ?", (account_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown account: {account_id}")
+        return self._account_dict(row)
+
+    def get_account_by_username(self, username: str) -> dict | None:
+        row = self.connection.execute(
+            "SELECT * FROM accounts WHERE username = ?", (username,)
+        ).fetchone()
+        return self._account_dict(row) if row is not None else None
+
+    def list_accounts(self) -> list[dict]:
+        rows = self.connection.execute(
+            "SELECT * FROM accounts ORDER BY created_at"
+        ).fetchall()
+        return [self._account_dict(row) for row in rows]
+
+    def verify_password(self, account_id: str, password: str) -> bool:
+        row = self.connection.execute(
+            "SELECT password_hash, password_salt FROM accounts WHERE account_id = ?",
+            (account_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        # 未设置密码（迁移默认账号）→ 空密码可登录，首次引导时设置
+        if not row["password_hash"]:
+            return password == ""
+        return (
+            self._derive_password(password, row["password_salt"]) == row["password_hash"]
+        )
+
+    def update_last_login(self, account_id: str) -> dict:
+        self.connection.execute(
+            "UPDATE accounts SET last_login_at = ? WHERE account_id = ?",
+            (_now(), account_id),
+        )
+        self.connection.commit()
+        return self.get_account(account_id)
+
+    def update_account_profile(
+        self, account_id: str, *, display_name: str | None = None, avatar: str | None = None
+    ) -> dict:
+        row = self.connection.execute(
+            "SELECT * FROM accounts WHERE account_id = ?", (account_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown account: {account_id}")
+        self.connection.execute(
+            "UPDATE accounts SET display_name = ?, avatar = ? WHERE account_id = ?",
+            (
+                display_name if display_name is not None else row["display_name"],
+                avatar if avatar is not None else row["avatar"],
+                account_id,
+            ),
+        )
+        self.connection.commit()
+        return self.get_account(account_id)
+
+    def change_password(self, account_id: str, old_password: str, new_password: str) -> bool:
+        """改密：旧密码校验通过才更新。"""
+        if not self.verify_password(account_id, old_password):
+            return False
+        salt = self._new_salt()
+        self.connection.execute(
+            "UPDATE accounts SET password_hash = ?, password_salt = ? WHERE account_id = ?",
+            (self._derive_password(new_password, salt), salt, account_id),
+        )
+        self.connection.commit()
+        return True
+
+    def set_onboarding_complete(self, account_id: str, completed: bool = True) -> None:
+        self.connection.execute(
+            "UPDATE accounts SET onboarding_complete = ? WHERE account_id = ?",
+            (1 if completed else 0, account_id),
+        )
+        self.connection.commit()
+
+    @staticmethod
+    def _account_dict(row: sqlite3.Row) -> dict:
+        return {
+            "account_id": row["account_id"],
+            "username": row["username"],
+            "display_name": row["display_name"],
+            "avatar": row["avatar"],
+            "last_login_at": row["last_login_at"],
+            "onboarding_complete": bool(row["onboarding_complete"]),
+            "theme": row["theme"],
+        }
+
+    # ------------------------------------------------------------------ V0.2 M3 账号级配置
+
+    def get_config(self, account_id: str, key: str) -> str | None:
+        row = self.connection.execute(
+            "SELECT value FROM provider_configs WHERE account_id = ? AND key = ?",
+            (account_id, key),
+        ).fetchone()
+        return row["value"] if row is not None else None
+
+    def set_config(self, account_id: str, key: str, value: str) -> None:
+        self.connection.execute(
+            "INSERT INTO provider_configs(account_id, key, value) VALUES (?, ?, ?) "
+            "ON CONFLICT(account_id, key) DO UPDATE SET value = excluded.value",
+            (account_id, key, value),
+        )
+        self.connection.commit()
+
+    def set_configs(self, account_id: str, updates: dict[str, str]) -> None:
+        for key, value in updates.items():
+            self.set_config(account_id, key, value)
+
+    def get_secret(self, account_id: str, key: str) -> str | None:
+        row = self.connection.execute(
+            "SELECT secret FROM secret_refs WHERE account_id = ? AND key = ?",
+            (account_id, key),
+        ).fetchone()
+        return row["secret"] if row is not None else None
+
+    def set_secret(self, account_id: str, key: str, secret: str) -> None:
+        self.connection.execute(
+            "INSERT INTO secret_refs(account_id, key, secret) VALUES (?, ?, ?) "
+            "ON CONFLICT(account_id, key) DO UPDATE SET secret = excluded.secret",
+            (account_id, key, secret),
+        )
+        self.connection.commit()
+
+    def get_preference(self, account_id: str, key: str) -> str | None:
+        row = self.connection.execute(
+            f"SELECT {key} FROM account_preferences WHERE account_id = ?",
+            (account_id,),
+        ).fetchone()
+        return str(row[key]) if row is not None else None
+
+    def set_preference(self, account_id: str, key: str, value: str) -> None:
+        allowed = {"theme", "vad_enabled", "last_mode"}
+        if key not in allowed:
+            raise ValueError(f"unknown preference: {key}")
+        self.connection.execute(
+            f"UPDATE account_preferences SET {key} = ? WHERE account_id = ?",
+            (value, account_id),
+        )
+        self.connection.commit()
+
+    def list_projects_for_account(self, account_id: str) -> list[Project]:
+        rows = self.connection.execute(
+            "SELECT * FROM projects WHERE account_id = ? AND archived = 0 "
+            "ORDER BY last_opened_at DESC",
+            (account_id,),
+        ).fetchall()
+        return [self._project_from_row(row) for row in rows]
+
+    @staticmethod
+    def _project_from_row(row: sqlite3.Row) -> Project:
+        return Project(
+            project_id=row["project_id"],
+            account_id=row["account_id"] or "",
+            name=row["name"],
+            root_path=row["root_path"],
+            approval_mode=row["approval_mode"],
+            reasoning_effort=row["reasoning_effort"],
+            archived=bool(row["archived"]),
+            created_at=_dt(row["created_at"]),
+            last_opened_at=_dt(row["last_opened_at"]),
+        )
 
     def _touch_conversation(self, conversation_id: str) -> None:
         self.connection.execute(

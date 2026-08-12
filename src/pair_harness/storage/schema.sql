@@ -1,7 +1,50 @@
 PRAGMA foreign_keys = ON;
 
+-- V0.2 M3：本地账号（方案 §M3）。密码只存 PBKDF2 派生结果，
+-- 头像/显示名/引导状态/主题按账号隔离；密钥进 secret_refs（本地明文，
+-- 仅回显掩码，README 已注明单机取舍）。
+CREATE TABLE IF NOT EXISTS accounts (
+    account_id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    avatar TEXT NOT NULL DEFAULT '',
+    password_hash TEXT NOT NULL,
+    password_salt TEXT NOT NULL,
+    last_login_at TEXT,
+    onboarding_complete INTEGER NOT NULL DEFAULT 0,
+    theme TEXT NOT NULL DEFAULT 'dark',
+    created_at TEXT NOT NULL
+);
+
+-- V0.2 M3：账号级偏好（语音/VAD/模式等键值）。
+CREATE TABLE IF NOT EXISTS account_preferences (
+    account_id TEXT PRIMARY KEY REFERENCES accounts(account_id) ON DELETE CASCADE,
+    theme TEXT NOT NULL DEFAULT 'dark',
+    vad_enabled INTEGER NOT NULL DEFAULT 0,
+    last_mode TEXT NOT NULL DEFAULT 'chat'
+);
+
+-- V0.2 M3：账号级非密钥配置（服务商/模型/推理档位等键值）。
+CREATE TABLE IF NOT EXISTS provider_configs (
+    account_id TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (account_id, key)
+);
+
+-- V0.2 M3：账号级密钥（API Key 等）。单机明文存储的取舍见 README；
+-- 对外只回显掩码。
+CREATE TABLE IF NOT EXISTS secret_refs (
+    account_id TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    secret TEXT NOT NULL,
+    PRIMARY KEY (account_id, key)
+);
+
 CREATE TABLE IF NOT EXISTS projects (
     project_id TEXT PRIMARY KEY,
+    -- V0.2 M3：项目归属账号（旧库迁移归入默认账号）
+    account_id TEXT NOT NULL DEFAULT '',
     name TEXT NOT NULL,
     root_path TEXT NOT NULL,
     -- 计划 A6：输入区审批模式下拉框的选择，取值为 ApprovalMode 的三个枚举值

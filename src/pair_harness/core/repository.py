@@ -10,6 +10,8 @@ class Project:
     project_id: str
     name: str
     root_path: str
+    # V0.2 M3：项目归属账号（默认账号为 "default-local"）
+    account_id: str = ""
     # 计划 A6：审批模式按项目保存，默认“请求批准”
     approval_mode: str = "request_approval"
     reasoning_effort: str = "low"
