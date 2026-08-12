@@ -5,6 +5,7 @@
 [![Website](https://img.shields.io/badge/website-jonah--wu23.github.io-E8B25C)](https://jonah-wu23.github.io/HSR_Partner_Harness/)
 [![GitHub Pages](https://img.shields.io/github/deployments/Jonah-Wu23/HSR_Partner_Harness/github-pages?label=pages)](https://jonah-wu23.github.io/HSR_Partner_Harness/)
 [![Version](https://img.shields.io/badge/version-v0.2.0-E8B25C)](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases)
+[![CI](https://github.com/Jonah-Wu23/HSR_Partner_Harness/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Jonah-Wu23/HSR_Partner_Harness/actions/workflows/ci.yml)
 
 Project website: <https://jonah-wu23.github.io/HSR_Partner_Harness/>
 
@@ -13,6 +14,10 @@ HSR Partner Harness is a Windows desktop app where character chat and local AI c
 The current release is `v0.2.0`. The interface is built with Tauri 2 and React, and a Python sidecar manages session state and model calls.
 
 The product is a local Windows workspace for development and research prototypes, with character-driven interaction built into the workflow. It keeps planning and execution in one session. The current release focuses on local Windows workflows, with model requests sent to the provider configured by you.
+
+## Quality gates
+
+GitHub Actions runs Python tests, frontend tests and builds, plus Rust formatting and tests on a Windows runner. Pull requests trigger dependency review, while CodeQL checks the Python and TypeScript code.
 
 ## Product focus
 

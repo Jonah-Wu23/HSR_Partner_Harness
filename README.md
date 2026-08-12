@@ -8,6 +8,7 @@
 
 <p align="center">
   <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases"><img src="https://img.shields.io/badge/version-v0.2.0-E8B25C" alt="Version 0.2.0" /></a>
+  <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/actions/workflows/ci.yml"><img src="https://github.com/Jonah-Wu23/HSR_Partner_Harness/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" /></a>
   <img src="https://img.shields.io/badge/platform-Windows%20x64-2F5D50" alt="Windows x64" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-5B6C8F" alt="Apache License 2.0" /></a>
   <a href="https://jonah-wu23.github.io/HSR_Partner_Harness/"><img src="https://img.shields.io/badge/product%20site-jonah--wu23.github.io-E8B25C" alt="Product site" /></a>
@@ -35,6 +36,10 @@ HSR Partner Harness 面向本地项目工作流，适合以下场景：
 | 角色型产品创作者 | 用角色对话承接需求，再把明确任务交给可执行的编程助手。 |
 
 当前版本聚焦本地 Windows 工作流，模型请求按你的配置发往相应服务商。
+
+## 项目质量门
+
+GitHub Actions 在 Windows runner 执行 Python 测试、前端测试与构建、Rust 格式检查和测试。PR 会触发依赖审查，CodeQL 负责 Python 与 TypeScript 检查。
 
 ## 核心特色
 
