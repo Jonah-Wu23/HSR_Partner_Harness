@@ -6,6 +6,8 @@ Source: https://github.com/esengine/DeepSeek-Reasonix
 
 `src/pair_harness/config/providers.py` contains a Python adaptation of provider host detection and reasoning-effort behavior from DeepSeek-Reasonix.
 
+`src/pair_harness/adapters/acp/engine.py` implements an Agent Client Protocol (ACP) v1 client that launches the bundled DeepSeek-Reasonix `reasonix acp` binary as the DeepSeek coding engine boundary (V0.2 M3).
+
 MIT License
 
 Copyright (c) 2026 Reasonix Contributors
