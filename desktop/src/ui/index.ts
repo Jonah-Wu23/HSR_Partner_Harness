@@ -1,1 +1,10 @@
 export { AppShell } from "./AppShell";
+export { ConnectionPill } from "./status/ConnectionPill";
+export { ToastStack } from "./status/ToastStack";
+export { TechDetailsDrawer } from "./status/TechDetailsDrawer";
+export { QueueStrip } from "./status/QueueStrip";
+export { DelegationCard } from "./workspace/DelegationCard";
+export { AccountGate } from "./gate/AccountGate";
+export { Onboarding } from "./gate/Onboarding";
+export { SettingsCenter } from "./settings/SettingsCenter";
+export type { SettingsPage } from "./settings/SettingsCenter";

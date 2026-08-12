@@ -82,6 +82,9 @@
   --warning: #CA8A04;
   --danger: #DC2626;
   --running: #296CE1;
+  /* 排队：紫灰，与失败/运行在色觉上分开 */
+  --queued: #8B83A6;
+  --queued-soft: #232030;
 
   /* 中性气泡与思考区 */
   --bubble-user-bg: #343B4D;
@@ -137,6 +140,9 @@
   --warning: #A16207;
   --danger: #B91C1C;
   --running: #296CE1;
+  /* 排队：紫灰，浅色主题下降饱和一档 */
+  --queued: #6E6590;
+  --queued-soft: #EAE7F2;
 
   --bubble-user-bg: #E8EDF5;
   --bubble-user-border: #C9D3E2;

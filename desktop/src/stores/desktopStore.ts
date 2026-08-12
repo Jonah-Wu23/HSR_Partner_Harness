@@ -36,6 +36,8 @@ export interface DesktopState {
   busy: boolean;
   approvals: PendingApproval[];
   approvalResolvingById: Record<string, boolean>;
+  reviewActive: boolean;
+  reviewText: string | null;
   voice: VoiceState;
   lastSequence: number;
   needsBootstrap: boolean;
@@ -47,6 +49,7 @@ export interface DesktopState {
   setComposerTarget(target: "character" | "assistant"): void;
   setComposerDraft(draft: string): void;
   setApprovalResolving(approvalId: string, resolving: boolean): void;
+  setReviewStatus(active: boolean, text?: string | null): void;
 }
 
 export type DesktopRenderState = Pick<
@@ -70,6 +73,8 @@ export type DesktopRenderState = Pick<
   | "busy"
   | "approvals"
   | "approvalResolvingById"
+  | "reviewActive"
+  | "reviewText"
   | "voice"
 >;
 
@@ -93,6 +98,7 @@ function createInitialState(): Omit<
   | "setComposerTarget"
   | "setComposerDraft"
   | "setApprovalResolving"
+  | "setReviewStatus"
 > {
   return {
     status: "booting",
@@ -114,6 +120,8 @@ function createInitialState(): Omit<
     busy: false,
     approvals: [],
     approvalResolvingById: {},
+    reviewActive: false,
+    reviewText: null,
     voice: emptyVoice,
     lastSequence: -1,
     needsBootstrap: false,
@@ -157,6 +165,17 @@ function indexSnapshot(snapshot: DesktopSnapshot) {
 }
 
 function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): DesktopState {
+  // V0.2 模式独立（问题 3）：设置类命令的快照不得回推覆盖本地模式。
+  // 只有首次水合（boot）或切换会话时才从后端 last_mode 采纳模式；
+  // 其余增量快照（如推理档位/审批方式修改）保持当前模式不变。
+  const conversationChanged =
+    state.lastSequence >= 0 && state.currentConversationId !== snapshot.current_conversation_id;
+  const mode =
+    state.lastSequence === -1 || conversationChanged
+      ? snapshot.current_conversation.last_mode === "collaboration"
+        ? "collaboration"
+        : "chat"
+      : state.mode;
   return {
     ...state,
     ...indexSnapshot(snapshot),
@@ -169,8 +188,10 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
     busy: snapshot.busy,
       approvals: snapshot.approvals,
       approvalResolvingById: {},
+    reviewActive: false,
+    reviewText: null,
     voice: snapshot.voice,
-    mode: snapshot.current_conversation.last_mode === "collaboration" ? "collaboration" : "chat",
+    mode,
     lastSequence: snapshot.sequence,
     needsBootstrap: false,
   };
@@ -198,6 +219,15 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
           ...next.messageIdsByConversation,
           [message.conversation_id]: [...ids, message.message_id],
         };
+      }
+      break;
+    }
+    case "message.status_changed": {
+      // V0.2 消息生命周期推进：按真实 id 对账（失败保留文字，可重试）
+      const message = event.payload.message as Message;
+      const current = next.messagesById[message.message_id];
+      if (current) {
+        next.messagesById = { ...next.messagesById, [message.message_id]: message };
       }
       break;
     }
@@ -273,6 +303,25 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
       next.busy = Boolean(event.payload.busy);
       next.activeTask = (event.payload.active_task as DesktopSnapshot["active_task"]) ?? null;
       break;
+    case "review.started":
+      // V0.2 问题 14：只有审查智能体真正被调用时才显示审查状态
+      next.reviewActive = true;
+      next.reviewText = null;
+      break;
+    case "review.completed": {
+      const payload = event.payload as { allow?: boolean; reason?: string };
+      next.reviewActive = false;
+      next.reviewText = payload.allow === false
+        ? `审查否决：${payload.reason ?? ""}`
+        : payload.allow === true
+          ? "审查通过"
+          : null;
+      break;
+    }
+    case "review.failed":
+      next.reviewActive = false;
+      next.reviewText = "审查失败：已按安全默认否决";
+      break;
     case "project.changed": {
       const project = event.payload.project as ProjectRecord;
       next.projectsById = { ...next.projectsById, [project.project_id]: project };
@@ -289,10 +338,19 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
     case "voice.state_changed":
       next.voice = { ...next.voice, ...(event.payload.voice as Partial<VoiceState>) };
       break;
-    case "error.reported":
-      next.status = "error";
-      next.error = String(event.payload.message ?? "桌面后端错误");
+    case "error.reported": {
+      // V0.2 错误分级（问题 9）：只有 fatal 才接管整屏；recoverable/info
+      // 保留已加载内容，由连接药丸/Toast 消费。
+      const payload = event.payload as { message?: string; severity?: string };
+      const severity = payload.severity ?? "fatal";
+      if (severity === "fatal") {
+        next.status = "error";
+        next.error = String(payload.message ?? "桌面后端错误");
+      } else {
+        next.error = String(payload.message ?? "");
+      }
       break;
+    }
   }
   return next;
 }
@@ -334,6 +392,9 @@ export const desktopStore = createStore<DesktopState>((set) => ({
       return { approvalResolvingById: remaining };
     });
   },
+  setReviewStatus(active, text = null) {
+    set({ reviewActive: active, reviewText: text });
+  },
 }));
 
 export function useDesktopStore<T>(selector: (state: DesktopState) => T): T {
@@ -365,5 +426,7 @@ export const selectDesktopRenderState = (state: DesktopState): DesktopRenderStat
   busy: state.busy,
   approvals: state.approvals,
   approvalResolvingById: state.approvalResolvingById,
+  reviewActive: state.reviewActive,
+  reviewText: state.reviewText,
   voice: state.voice,
 });

@@ -44,10 +44,12 @@ class ApprovalManager:
         mode: ApprovalMode,
         rules: RiskRules,
         reviewer: "Reviewer | None" = None,
+        on_review: "Callable[[str, dict], None] | None" = None,
     ) -> None:
         self.mode = mode
         self.rules = rules
         self.reviewer = reviewer
+        self.on_review = on_review
         self._session_allow: set[str] = set()
         self._pending: dict[str, PendingOperation] = {}
 
@@ -144,7 +146,7 @@ class ApprovalManager:
                 events=(event, resolved),
             )
         # 计划 A3：把操作连同近期上下文交给审查智能体
-        verdict = await self.reviewer.review(op, context or [])
+        verdict = await self._review_op(op, context or [])
         if verdict.allow:
             resolved = self._approval_resolved_event(
                 event=event,
@@ -161,6 +163,42 @@ class ApprovalManager:
             suggestion=verdict.suggestion,
         )
         return GateOutcome(decision=ApprovalDecision.DENY, events=(event, resolved))
+
+    async def _review_op(
+        self, op: PendingOperation, context: list[Message]
+    ) -> ReviewerVerdict:
+        """V0.2：调用审查智能体并发出 review.started/completed/failed。
+
+        审查提示只在真正调用审查智能体时出现；低风险直接放行、空闲状态
+        与普通回复不触发本方法（问题 14）。审查异常按安全默认（否决）
+        处理并发出 review.failed。
+        """
+        if self.on_review is not None:
+            self.on_review(
+                "review.started",
+                {
+                    "summary": op.summary,
+                    "tool_kind": op.tool_kind,
+                    "command": op.command,
+                    "paths": list(op.paths),
+                },
+            )
+        try:
+            verdict = await self.reviewer.review(op, context or [])
+        except Exception as exc:  # noqa: BLE001 - 审查异常降级为安全否决
+            if self.on_review is not None:
+                self.on_review("review.failed", {"reason": str(exc)})
+            return ReviewerVerdict(allow=False, reason="审查智能体异常", suggestion="请重试")
+        if self.on_review is not None:
+            self.on_review(
+                "review.completed",
+                {
+                    "allow": verdict.allow,
+                    "reason": verdict.reason,
+                    "suggestion": verdict.suggestion,
+                },
+            )
+        return verdict
 
     @staticmethod
     def _has_enough_info(op: PendingOperation) -> bool:
@@ -247,7 +285,7 @@ class ApprovalManager:
                 reason="未配置审查智能体",
             )
             return GateOutcome(decision=ApprovalDecision.DENY, events=(resolved,))
-        verdict = await self.reviewer.review(op, context or [])
+        verdict = await self._review_op(op, context or [])
         if verdict.allow:
             resolved = self._approval_resolved_event(
                 requested_event,

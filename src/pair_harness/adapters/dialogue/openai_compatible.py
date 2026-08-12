@@ -26,6 +26,7 @@ from pair_harness.core.contracts import (
     DialogueRequest,
     Message,
     MessageSource,
+    ProjectRuntimeContext,
     TaskAmendmentDraft,
     TaskRequestDraft,
 )
@@ -140,6 +141,13 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         if request.result_summary is not None:
             messages.append(
                 {"role": "system", "content": _result_summary_text(request.result_summary)}
+            )
+        if request.runtime_context is not None:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": _runtime_context_text(request.runtime_context),
+                }
             )
         messages.append({"role": "user", "content": request.user_message.text})
         return messages
@@ -512,6 +520,29 @@ def _progress_summary_text(summary: CharacterProgressSummary) -> str:
         lines.append(f"已完成步骤：{summary.completed_steps}")
     lines.append(f"当前：{summary.current_step}")
     return "\n".join(lines)
+
+
+def _runtime_context_text(ctx: ProjectRuntimeContext) -> str:
+    """V0.2：把项目运行上下文注入角色 system 提示词（不显示成聊天消息）。
+
+    聊天模式是能力边界：角色不能读取/操作项目、不能委派助手；
+    协作模式给出项目名称、绝对目录、时间与时区，引导形成委派。
+    """
+    if ctx.conversation_mode == "chat":
+        return (
+            "[系统信息：当前工作环境]\n"
+            "当前模式：聊天。你处于聊天模式，不能读取、查看或操作任何项目文件，"
+            "不能委派任务给助手，也不能假装自己操作过项目。用户询问项目内容时，"
+            "明确说明当前模式无法查看项目，并建议切换到协作模式。"
+        )
+    return (
+        "[系统信息：当前工作环境]\n"
+        f"当前模式：协作。你所在的项目：{ctx.project_name}，"
+        f"项目目录：{ctx.project_abs_dir}。"
+        f"本机系统时间：{ctx.local_time}（时区 {ctx.timezone}）。"
+        "你本人不能直接读取或修改文件；需要项目文件、命令或代码操作时，"
+        "通过 delegation 交给助手处理。"
+    )
 
 
 def _result_summary_text(result: CharacterResultSummary) -> str:

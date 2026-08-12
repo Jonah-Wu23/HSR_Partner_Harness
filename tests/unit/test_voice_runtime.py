@@ -426,6 +426,30 @@ def test_on_message_selects_voice_id_by_source_and_filters() -> None:
     ]
 
 
+def test_on_message_filters_ellipsis_and_punctuation_only_text() -> None:
+    """V0.2 问题 2：省略号/纯标点降级文本不创建可朗读请求。"""
+    runtime, ctx = make_runtime(vad=None)
+
+    def msg(text: str) -> Message:
+        return Message(
+            conversation_id="conv-1",
+            pair_id=PAIR_ID,
+            source=MessageSource.CHARACTER,
+            kind=MessageKind.CHARACTER_SPEECH,
+            text=text,
+        )
+
+    runtime.on_message(msg("……"))
+    runtime.on_message(msg("。。。"))
+    runtime.on_message(msg("---"))
+    runtime.on_message(msg(""))
+    assert ctx.queue.pop_next() is None
+
+    runtime.on_message(msg("系统就绪。"))
+    assert ctx.queue.pop_next() is not None
+    assert ctx.queue.pop_next() is None
+
+
 async def test_vad_unavailable_falls_back_to_ptt() -> None:
     blocks_in = asyncio.Event()
     runtime, ctx = make_runtime(

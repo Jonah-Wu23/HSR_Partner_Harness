@@ -1,20 +1,33 @@
 import type { HarnessActions } from "../contracts/actions";
 import type { PairRecord } from "../contracts/protocol";
+import type { ConnectionViewStatus } from "./status/types";
+import { ConnectionPill } from "./status/ConnectionPill";
 import { StopIcon } from "../assets/icons/icons";
 
 interface TopBarProps {
   mode: "chat" | "collaboration";
   pair: PairRecord | null;
   assistantBusy: boolean;
+  connectionStatus: ConnectionViewStatus;
+  onOpenTechDetails: () => void;
   actions: HarnessActions;
 }
 
-/** 顶栏：品牌与搭档、聊天/协作切换、任务取消。 */
-export function TopBar({ mode, pair, assistantBusy, actions }: TopBarProps) {
+/** 状态条：连接药丸、品牌与搭档、聊天/协作切换；取消按钮只在忙碌时出现。 */
+export function TopBar({
+  mode,
+  pair,
+  assistantBusy,
+  connectionStatus,
+  onOpenTechDetails,
+  actions,
+}: TopBarProps) {
   return (
     <header className="app-topbar">
+      <ConnectionPill status={connectionStatus} onOpenDetails={onOpenTechDetails} />
+
       <div className="topbar-brand">
-        <span className="topbar-title">Pair Harness</span>
+        <span className="topbar-title">HSR Partner Harness</span>
         {pair ? (
           <span className="topbar-pair">
             <span className="pair-dot pair-dot-character" />
@@ -51,16 +64,17 @@ export function TopBar({ mode, pair, assistantBusy, actions }: TopBarProps) {
 
       <div className="topbar-spacer" />
 
-      <button
-        type="button"
-        className="btn btn-danger-outline"
-        disabled={!assistantBusy}
-        onClick={() => void actions.cancelTask()}
-        title={assistantBusy ? "取消当前任务" : "当前没有运行中的任务"}
-      >
-        <StopIcon />
-        取消任务
-      </button>
+      {assistantBusy ? (
+        <button
+          type="button"
+          className="btn btn-danger-outline"
+          onClick={() => void actions.cancelTask()}
+          title="取消当前任务"
+        >
+          <StopIcon />
+          取消任务
+        </button>
+      ) : null}
     </header>
   );
 }

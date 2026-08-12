@@ -69,6 +69,45 @@ class MessageKind(str, Enum):
     COMMAND = "assistant.command"
 
 
+class MessageTarget(str, Enum):
+    """V0.2 消息空间归属：这条消息是发给角色还是助手。
+
+    用户消息在提交时标记目标；角色/助手消息按来源继承默认目标
+    （character→character，assistant/tool→assistant）。Presenter
+    不再只按 source 切栏，user+target=assistant 只进工作台。
+    """
+
+    CHARACTER = "character"
+    ASSISTANT = "assistant"
+
+
+class MessageOrigin(str, Enum):
+    """V0.2 消息来源语义：用户直发 / 角色委派产生 / 系统。
+
+    委派任务通过 ``Message.delegation_id`` 连接角色区与工作台两侧。
+    """
+
+    USER = "user"
+    CHARACTER_DELEGATION = "character_delegation"
+    SYSTEM = "system"
+
+
+class MessageStatus(str, Enum):
+    """V0.2 消息生命周期状态（发送中→…→完成/失败/取消）。
+
+    即时回显以真实消息为准：后端同步落库后返回真实 id 与初始状态，
+    前端按 id 对账推进状态，不长期保留另一套临时消息。
+    """
+
+    SENDING = "sending"
+    QUEUED = "queued"
+    RECEIVED = "received"
+    PROCESSING = "processing"
+    DONE = "done"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class TaskStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
@@ -95,6 +134,12 @@ class Message(FrozenModel):
     payload: Mapping[str, Any] = Field(default_factory=dict)
     tts_eligible: bool = False
     created_at: datetime = Field(default_factory=utc_now)
+    # V0.2：消息空间归属与生命周期状态。target/origin/delegation_id
+    # 由编排器在创建消息时填写；status 由提交/处理路径推进。
+    target: MessageTarget | None = None
+    origin: MessageOrigin = MessageOrigin.USER
+    delegation_id: str | None = None
+    status: MessageStatus = MessageStatus.DONE
 
     @field_validator("text", "payload", mode="before")
     @classmethod
@@ -125,14 +170,32 @@ class CharacterTurn(FrozenModel):
 
 
 class DialogueEvent(FrozenModel):
-    type: Literal["speech.delta", "character.final"]
+    """V0.2 对话流式事件。
+
+    - ``reasoning.started/delta/completed``：DeepSeek 思考通道增量；
+    - ``speech.started/delta/completed``：角色正文（干净 speech）增量，
+      ``speech.delta`` 不再携带原始 JSON 分片；
+    - ``character.final``：最终完整对象，覆盖并确认临时预览。
+    ``raw`` 只用于增量解析失败时把原始输出收进技术详情，绝不进入气泡。
+    """
+
+    type: Literal[
+        "reasoning.started",
+        "reasoning.delta",
+        "reasoning.completed",
+        "speech.started",
+        "speech.delta",
+        "speech.completed",
+        "character.final",
+    ]
     delta: str | None = None
     turn: CharacterTurn | None = None
+    raw: str | None = None
 
     @model_validator(mode="after")
     def validate_payload(self) -> "DialogueEvent":
-        if self.type == "speech.delta" and self.delta is None:
-            raise ValueError("speech.delta requires delta")
+        if self.type.endswith(".delta") and self.delta is None:
+            raise ValueError(f"{self.type} requires delta")
         if self.type == "character.final" and self.turn is None:
             raise ValueError("character.final requires turn")
         return self
@@ -145,12 +208,99 @@ class DialogueRequest(FrozenModel):
     recent_messages: tuple[Message, ...] = ()
     progress_summary: "CharacterProgressSummary | None" = None
     result_summary: "CharacterResultSummary | None" = None
+    # V0.2：项目运行上下文（名称/目录/时间/时区/模式），角色与助手
+    # 按此理解当前工作环境与能力边界；聊天模式下角色不能委派助手。
+    runtime_context: "ProjectRuntimeContext | None" = None
 
 
 class ProjectRef(FrozenModel):
     project_id: str
     name: str
     root_path: str
+
+
+class ProjectRuntimeContext(FrozenModel):
+    """V0.2 稳定注入角色/助手的项目运行上下文。
+
+    项目创建、选择、路径修复与账号切换时重建；以“当前工作环境”注入
+    系统上下文，不显示成普通聊天消息。``conversation_mode`` 是后端
+    按会话持久化的模式（chat/collaboration）。
+    """
+
+    project_name: str = ""
+    project_abs_dir: str = ""
+    local_time: str = ""
+    timezone: str = ""
+    conversation_mode: Literal["chat", "collaboration"] = "collaboration"
+
+
+class TurnStatus(str, Enum):
+    """V0.2 统一运行模型：一次提交/一次执行 = 一个 Turn。"""
+
+    QUEUED = "queued"
+    ACCEPTED = "accepted"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class Turn(FrozenModel):
+    """V0.2 会话轮次：Conversation → Turn → Message/Reasoning/Tool/Review item。
+
+    每个事件携带 account_id/project_id/conversation_id/turn_id/sequence，
+    前端按 id 与 sequence 消费事件、重连后重新水合。
+    """
+
+    turn_id: str = Field(default_factory=new_id)
+    account_id: str = ""
+    project_id: str
+    conversation_id: str
+    target: MessageTarget
+    source_message_id: str
+    status: TurnStatus = TurnStatus.ACCEPTED
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class QueueIntent(str, Enum):
+    """V0.2 排队语义：忙碌时默认 followup，明确选择「立即插入」才是 steer。"""
+
+    FOLLOWUP = "followup"
+    STEER = "steer"
+
+
+class QueueItem(FrozenModel):
+    """V0.2 持久化会话队列项（conversation_inbox）。
+
+    入队先持久化，再向前端确认；支持编辑、撤回、调序。
+    """
+
+    queue_item_id: str = Field(default_factory=new_id)
+    account_id: str = ""
+    conversation_id: str
+    target: MessageTarget
+    text: str
+    intent: QueueIntent = QueueIntent.FOLLOWUP
+    position: int = 0
+    status: Literal["queued", "processing", "withdrawn"] = "queued"
+    created_at: datetime = Field(default_factory=utc_now)
+    source_message_id: str | None = None
+
+
+class AccountRecord(FrozenModel):
+    """V0.2 本地账号快照（不含密码派生结果与密钥）。
+
+    账号是项目/聊天/配置/主题偏好/引导标记的隔离边界。
+    """
+
+    account_id: str
+    username: str
+    display_name: str
+    avatar: str = ""
+    last_login_at: str | None = None
+    onboarding_complete: bool = False
+    theme: Literal["dark", "light"] = "dark"
 
 
 class TaskRequest(FrozenModel):

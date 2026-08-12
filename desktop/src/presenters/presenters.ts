@@ -29,14 +29,23 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
     })),
   }));
 
+  // V0.2 消息空间归属（问题 7）：不再只按 source 切栏。
+  // user+target=assistant 与 assistant/tool 归工作台；
+  // user+target=character、character、system 归角色区。
   const characterMessages = currentConversation
     ? messagesFor(state, currentConversation.conversation_id).filter(
-        (message) => message.source !== "assistant" && message.source !== "tool",
+        (message) =>
+          (message.source === "user" && message.target !== "assistant") ||
+          message.source === "character" ||
+          message.source === "system",
       )
     : [];
   const assistantMessages = currentConversation
     ? messagesFor(state, currentConversation.conversation_id).filter(
-        (message) => message.source === "assistant" || message.source === "tool",
+        (message) =>
+          (message.source === "user" && message.target === "assistant") ||
+          message.source === "assistant" ||
+          message.source === "tool",
       )
     : [];
   const assistantTools = currentConversation ? toolsFor(state, currentConversation.conversation_id) : [];
@@ -84,7 +93,8 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
         ...approval,
         resolving: Boolean(state.approvalResolvingById[approval.approval_id]),
       })),
-      reviewText: null,
+      reviewActive: state.reviewActive,
+      reviewText: state.reviewText,
     },
     voice: {
       ...state.voice,

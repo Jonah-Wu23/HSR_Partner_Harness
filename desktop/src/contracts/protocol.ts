@@ -11,6 +11,17 @@ export type MessageKind =
   | "assistant.code"
   | "assistant.command";
 
+export type MessageTarget = "character" | "assistant";
+export type MessageOrigin = "user" | "character_delegation" | "system";
+export type MessageStatus =
+  | "sending"
+  | "queued"
+  | "received"
+  | "processing"
+  | "done"
+  | "failed"
+  | "cancelled";
+
 export interface Message {
   message_id: string;
   conversation_id: string;
@@ -23,6 +34,10 @@ export interface Message {
   tts_eligible: boolean;
   created_at: string;
   streaming?: boolean;
+  target?: MessageTarget;
+  origin?: MessageOrigin;
+  delegation_id?: string | null;
+  status?: MessageStatus;
 }
 
 export type ToolRunStatus = "running" | "succeeded" | "failed" | "denied";
@@ -41,6 +56,70 @@ export interface ToolRun {
 
 export type ApprovalMode = "request_approval" | "review" | "full_auto";
 export type ReasoningEffort = "auto" | "low" | "medium" | "high" | "max";
+export type ConversationMode = "chat" | "collaboration";
+
+export type TurnStatus =
+  | "queued"
+  | "accepted"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface Turn {
+  turn_id: string;
+  account_id: string;
+  project_id: string;
+  conversation_id: string;
+  target: MessageTarget;
+  source_message_id: string;
+  status: TurnStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export type QueueIntent = "followup" | "steer";
+
+export interface QueueItem {
+  queue_item_id: string;
+  account_id: string;
+  conversation_id: string;
+  target: MessageTarget;
+  text: string;
+  intent: QueueIntent;
+  position: number;
+  status: "queued" | "processing" | "withdrawn";
+  created_at: string;
+  source_message_id: string | null;
+}
+
+export interface ProjectRuntimeContext {
+  project_name: string;
+  project_abs_dir: string;
+  local_time: string;
+  timezone: string;
+  conversation_mode: ConversationMode;
+}
+
+export interface AccountRecord {
+  account_id: string;
+  username: string;
+  display_name: string;
+  avatar: string;
+  last_login_at: string | null;
+  onboarding_complete: boolean;
+  theme: "dark" | "light";
+}
+
+export type ErrorSeverity = "fatal" | "recoverable" | "info";
+export type ErrorSource =
+  | "voice.asr"
+  | "voice.tts"
+  | "dialogue.deepseek"
+  | "codex"
+  | "sidecar";
+
+export type ConnectionStatus = "connected" | "connecting" | "disconnected";
 
 export interface ProjectRecord {
   project_id: string;
@@ -138,6 +217,7 @@ export interface DesktopSnapshot {
 export type DesktopCommandMethod =
   | "app.bootstrap"
   | "app.shutdown"
+  | "app.reconnect"
   | "project.create"
   | "project.select"
   | "project.update_settings"
@@ -146,13 +226,34 @@ export type DesktopCommandMethod =
   | "conversation.select"
   | "conversation.rename"
   | "conversation.archive"
+  | "conversation.set_mode"
   | "chat.submit"
+  | "queue.edit"
+  | "queue.withdraw"
+  | "queue.prioritize"
   | "task.cancel"
   | "approval.resolve"
   | "voice.vad_set"
   | "voice.ptt_start"
   | "voice.ptt_stop"
-  | "voice.tts_stop";
+  | "voice.tts_stop"
+  | "voice.tts_play"
+  | "voice.tts_skip"
+  | "voice.preview"
+  | "account.list"
+  | "account.register"
+  | "account.login"
+  | "account.logout"
+  | "account.switch"
+  | "account.update_profile"
+  | "account.change_password"
+  | "config.get"
+  | "config.set"
+  | "config.test_connection"
+  | "codex.oauth_start"
+  | "codex.oauth_status"
+  | "codex.logout"
+  | "codex.api_login";
 
 export interface DesktopCommand {
   kind: "request";
@@ -173,16 +274,28 @@ export type DesktopEventName =
   | "backend.ready"
   | "state.snapshot"
   | "message.created"
+  | "message.status_changed"
   | "message.delta"
   | "message.finalized"
   | "tool_run.upserted"
   | "approval.requested"
   | "approval.resolved"
+  | "review.started"
+  | "review.completed"
+  | "review.failed"
+  | "turn.started"
+  | "turn.status_changed"
+  | "turn.completed"
+  | "queue.changed"
   | "task.busy_changed"
   | "conversation.changed"
   | "project.changed"
+  | "account.changed"
+  | "config.changed"
   | "voice.asr_partial"
   | "voice.state_changed"
+  | "connection.status"
+  | "connection.restored"
   | "error.reported";
 
 export interface DesktopEvent<T = Record<string, unknown>> {

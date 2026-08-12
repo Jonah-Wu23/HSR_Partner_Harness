@@ -154,6 +154,8 @@ class DesktopApplicationService:
         self._tool_runs: dict[tuple[str, str], ToolRun] = {}
         self._streaming_message_ids: dict[tuple[str, str], set[str]] = {}
         self._title_tasks: set[asyncio.Task[None]] = set()
+        # V0.2：后台回合任务集合（快速接受后立即返回，回合在后台推进）
+        self._turn_tasks: set[asyncio.Task[None]] = set()
         self._title_generation_started: set[str] = set()
         self._voice_state: dict[str, Any] = {
             "supported": voice_runtime is not None,
@@ -166,6 +168,9 @@ class DesktopApplicationService:
         }
 
         self.orchestrator.on_message = self._on_message
+        self.orchestrator.on_message_status_changed = self._on_message_status_changed
+        self.orchestrator.on_dialogue_event = self._on_dialogue_event
+        self.orchestrator.on_review_event = self._on_review_event
         self.orchestrator.on_engine_event = self._on_engine_event
         self.orchestrator.on_execution_started = self._on_execution_started
         self.orchestrator.on_execution_finished = self._on_execution_finished
@@ -182,6 +187,10 @@ class DesktopApplicationService:
             task.cancel()
         if self._title_tasks:
             await asyncio.gather(*tuple(self._title_tasks), return_exceptions=True)
+        for task in tuple(self._turn_tasks):
+            task.cancel()
+        if self._turn_tasks:
+            await asyncio.gather(*tuple(self._turn_tasks), return_exceptions=True)
         if self.voice_runtime is not None:
             await self.voice_runtime.shutdown()
         close_model = getattr(self.dialogue_model, "aclose", None)
@@ -295,13 +304,35 @@ class DesktopApplicationService:
             "conversation.select": self._conversation_select,
             "conversation.rename": self._conversation_rename,
             "conversation.archive": self._conversation_archive,
+            "conversation.set_mode": self._conversation_set_mode,
             "chat.submit": self._chat_submit,
+            "queue.edit": self._queue_edit,
+            "queue.withdraw": self._queue_withdraw,
+            "queue.prioritize": self._queue_prioritize,
             "task.cancel": self._task_cancel,
             "approval.resolve": self._approval_resolve,
             "voice.vad_set": self._voice_vad_set,
             "voice.ptt_start": self._voice_ptt_start,
             "voice.ptt_stop": self._voice_ptt_stop,
             "voice.tts_stop": self._voice_tts_stop,
+            "voice.tts_play": self._voice_tts_play,
+            "voice.tts_skip": self._voice_tts_skip,
+            "voice.preview": self._voice_preview,
+            "account.list": self._account_list,
+            "account.register": self._account_register,
+            "account.login": self._account_login,
+            "account.logout": self._account_logout,
+            "account.switch": self._account_switch,
+            "account.update_profile": self._account_update_profile,
+            "account.change_password": self._account_change_password,
+            "config.get": self._config_get,
+            "config.set": self._config_set,
+            "config.test_connection": self._config_test_connection,
+            "codex.oauth_start": self._codex_oauth_start,
+            "codex.oauth_status": self._codex_oauth_status,
+            "codex.logout": self._codex_logout,
+            "codex.api_login": self._codex_api_login,
+            "app.reconnect": self._app_reconnect,
         }
         handler = handlers[command.method]
         return await handler(command.params)
@@ -391,13 +422,16 @@ class DesktopApplicationService:
             if isinstance(self.dialogue_model, OpenAICompatibleDialogueModel):
                 self.dialogue_model.reasoning_effort = None if effort == "auto" else effort
         if root_changed and project_id == self.current_project_id:
-            self._select_conversation_context(self.current_conversation_id, emit=True)
-        else:
-            self.emitter.emit(
-                "project.changed",
-                {"project": self._project_payload(self.store.get_project(project_id))},
-            )
-        return self.bootstrap()
+            # 重建运行时上下文（项目目录变化）但不回推整份快照
+            self._select_conversation_context(self.current_conversation_id, emit=False)
+        self.emitter.emit(
+            "project.changed",
+            {"project": self._project_payload(self.store.get_project(project_id))},
+        )
+        # V0.2：设置类命令返回定向响应，不再用整份 bootstrap 覆盖未修改字段
+        return {
+            "project": self._project_payload(self.store.get_project(project_id)),
+        }
 
     async def _project_archive(self, params: Mapping[str, Any]) -> dict[str, Any]:
         project_id = str(params.get("project_id") or self.current_project_id)
@@ -471,6 +505,11 @@ class DesktopApplicationService:
         return self.bootstrap()
 
     async def _chat_submit(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """V0.2 快速接受（问题 1）：同步落库用户消息，立即返回真实 id。
+
+        回合处理移到后台任务（``_run_submit_turn``），前端按真实
+        ``message_id`` 即时回显并推进状态；处理失败后文字仍在可重试。
+        """
         conversation_id = str(params.get("conversation_id") or self.current_conversation_id)
         if not conversation_id:
             raise ServiceError("请先创建或选择项目", code="no_active_conversation")
@@ -486,24 +525,80 @@ class DesktopApplicationService:
         if mode is not None:
             if mode not in {"chat", "collaboration"}:
                 raise ServiceError("mode 必须是 chat 或 collaboration", code="invalid_mode")
-            self.store.update_conversation_mode(conversation_id, str(mode))
+            self._set_conversation_mode(conversation_id, str(mode))
         if conversation_id != self.current_conversation_id:
             self._select_conversation_context(conversation_id, emit=False)
-        if target == "assistant":
-            outcome = await self.orchestrator.handle_direct_input(
-                conversation_id=conversation_id, text=text
-            )
-        else:
-            outcome = await self.orchestrator.handle_character_input(
-                conversation_id=conversation_id, text=text
-            )
+
+        user_message = await self.orchestrator.submit_user_message(
+            conversation_id=conversation_id, text=text, target=target
+        )
+        task = asyncio.create_task(
+            self._run_submit_turn(conversation_id, user_message, target),
+            name=f"turn:{conversation_id}:{user_message.message_id}",
+        )
+        self._turn_tasks.add(task)
+        task.add_done_callback(self._turn_tasks.discard)
         if not had_user_messages:
             self._schedule_title_generation(conversation_id, target)
         return {
+            "message_id": user_message.message_id,
             "conversation_id": conversation_id,
-            "task_id": outcome.task.task_id if outcome.task is not None else None,
-            "status": outcome.receipt.status if outcome.receipt is not None else None,
+            "status": "received",
+            "target": target,
         }
+
+    async def _run_submit_turn(
+        self, conversation_id: str, user_message: Any, target: str
+    ) -> None:
+        """V0.2：后台推进快速接受后的回合；失败把用户消息标记 failed。"""
+        try:
+            if target == "assistant":
+                await self.orchestrator.process_direct_input(
+                    conversation_id=conversation_id, user_message=user_message
+                )
+            else:
+                await self.orchestrator.process_character_turn(
+                    conversation_id=conversation_id, user_message=user_message
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 回合失败转为可见消息状态
+            logger.exception("后台回合失败：%s", conversation_id)
+            self.orchestrator.mark_message_failed(
+                conversation_id, user_message.message_id, str(exc)
+            )
+            self.orchestrator.report_system_status(
+                conversation_id, f"本次回复失败：{exc}"
+            )
+
+    def _set_conversation_mode(
+        self, conversation_id: str, mode: str
+    ) -> None:
+        """V0.2：模式是后端按会话持久化的独立字段，与推理档位/审批方式/
+        发送对象互不覆盖。设置类命令不得回推覆盖它。"""
+        self.store.update_conversation_mode(conversation_id, mode)
+        self.orchestrator.set_conversation_mode(conversation_id, mode)  # type: ignore[arg-type]
+
+    async def _conversation_set_mode(
+        self, params: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """V0.2：独立模式命令——只改模式，返回定向响应，不回推整份快照。"""
+        conversation_id = str(params.get("conversation_id") or self.current_conversation_id)
+        if not conversation_id:
+            raise ServiceError("没有当前聊天", code="no_active_conversation")
+        mode = self._required_string(params, "mode")
+        if mode not in {"chat", "collaboration"}:
+            raise ServiceError("mode 必须是 chat 或 collaboration", code="invalid_mode")
+        self._set_conversation_mode(conversation_id, mode)
+        self.emitter.emit(
+            "conversation.changed",
+            {
+                "conversation": self._conversation_payload(
+                    self.store.get_conversation(conversation_id)
+                )
+            },
+        )
+        return {"conversation_id": conversation_id, "mode": mode}
 
     async def _task_cancel(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
@@ -556,10 +651,204 @@ class DesktopApplicationService:
         self.emitter.emit("voice.state_changed", {"voice": self._voice_state})
         return {"voice": dict(self._voice_state)}
 
+    # ------------------------------------------------------------------ M2/M3 占位
+    # 下列处理器在本阶段的后续里程碑实现；此处先注册保证路由可用，
+    # 未实现时返回明确的 ServiceError，不静默吞掉。
+
+    async def _app_reconnect(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("应用重连由桌面进程负责，Sidecar 侧无需重建", code="not_implemented")
+
+    async def _queue_edit(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("队列编辑将在流式队列阶段实现", code="not_implemented")
+
+    async def _queue_withdraw(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("队列撤回将在流式队列阶段实现", code="not_implemented")
+
+    async def _queue_prioritize(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("队列调序将在流式队列阶段实现", code="not_implemented")
+
+    async def _voice_tts_play(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("逐条朗读将在语音阶段实现", code="not_implemented")
+
+    async def _voice_tts_skip(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("跳过语音将在语音阶段实现", code="not_implemented")
+
+    async def _voice_preview(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("语音试听将在设置中心阶段实现", code="not_implemented")
+
+    async def _account_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("本地账号将在账号阶段实现", code="not_implemented")
+
+    async def _account_register(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("本地账号将在账号阶段实现", code="not_implemented")
+
+    async def _account_login(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("本地账号将在账号阶段实现", code="not_implemented")
+
+    async def _account_logout(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("本地账号将在账号阶段实现", code="not_implemented")
+
+    async def _account_switch(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("本地账号将在账号阶段实现", code="not_implemented")
+
+    async def _account_update_profile(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("本地账号将在账号阶段实现", code="not_implemented")
+
+    async def _account_change_password(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("本地账号将在账号阶段实现", code="not_implemented")
+
+    async def _config_get(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("配置中心将在设置阶段实现", code="not_implemented")
+
+    async def _config_set(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("配置中心将在设置阶段实现", code="not_implemented")
+
+    async def _config_test_connection(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("测试连接将在设置阶段实现", code="not_implemented")
+
+    async def _codex_oauth_start(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("Codex 登录将在账号阶段实现", code="not_implemented")
+
+    async def _codex_oauth_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("Codex 登录将在账号阶段实现", code="not_implemented")
+
+    async def _codex_logout(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("Codex 登录将在账号阶段实现", code="not_implemented")
+
+    async def _codex_api_login(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        raise ServiceError("Codex 登录将在账号阶段实现", code="not_implemented")
+
     # ------------------------------------------------------------------ 状态与事件
 
     def _on_message(self, message: Message) -> None:
         self.emitter.emit("message.created", {"message": message})
+
+    def _on_message_status_changed(self, message: Message) -> None:
+        """V0.2：消息状态推进（message.status_changed），前端按 id 对账。"""
+        self.emitter.emit(
+            "message.status_changed", {"message": message}
+        )
+
+    def _on_review_event(self, event: str, payload: dict) -> None:
+        """V0.2：审查智能体生命周期事件（只在真正调用时触发，问题 14）。
+
+        未实际调用审查智能体时不显示审查状态；低风险直接放行、空闲状态
+        与普通回复不产生任何 review.* 事件。
+        """
+        if event in {"review.started", "review.completed", "review.failed"}:
+            self.emitter.emit(event, {"conversation_id": self.current_conversation_id, **payload})
+
+    def _on_dialogue_event(
+        self, conversation_id: str, user_message: Any, event: Any
+    ) -> None:
+        """V0.2：把角色对话增量转发为 message.delta 的 reasoning/speech 通道。
+
+        结构化 JSON 增量只推送干净字段；原始 JSON 进入技术详情（raw），
+        绝不进入消息气泡。message_id 复用用户消息 id 前缀 + 通道，保证
+        与消息 timeline 关联。
+        """
+        event_type = event.type
+        if event_type == "reasoning.started":
+            self.emitter.emit(
+                "message.delta",
+                {
+                    "message_id": f"reasoning:{conversation_id}:{user_message.message_id}",
+                    "conversation_id": conversation_id,
+                    "source": "character",
+                    "kind": "character.speech",
+                    "channel": "reasoning",
+                    "delta": "",
+                    "started": True,
+                },
+            )
+            return
+        if event_type == "reasoning.delta":
+            self.emitter.emit(
+                "message.delta",
+                {
+                    "message_id": f"reasoning:{conversation_id}:{user_message.message_id}",
+                    "conversation_id": conversation_id,
+                    "source": "character",
+                    "kind": "character.speech",
+                    "channel": "reasoning",
+                    "delta": event.delta or "",
+                },
+            )
+            return
+        if event_type == "reasoning.completed":
+            self.emitter.emit(
+                "message.delta",
+                {
+                    "message_id": f"reasoning:{conversation_id}:{user_message.message_id}",
+                    "conversation_id": conversation_id,
+                    "source": "character",
+                    "kind": "character.speech",
+                    "channel": "reasoning",
+                    "delta": "",
+                    "completed": True,
+                },
+            )
+            return
+        if event_type == "speech.started":
+            self.emitter.emit(
+                "message.delta",
+                {
+                    "message_id": f"speech:{conversation_id}:{user_message.message_id}",
+                    "conversation_id": conversation_id,
+                    "source": "character",
+                    "kind": "character.speech",
+                    "delta": "",
+                    "started": True,
+                },
+            )
+            return
+        if event_type == "speech.delta":
+            self.emitter.emit(
+                "message.delta",
+                {
+                    "message_id": f"speech:{conversation_id}:{user_message.message_id}",
+                    "conversation_id": conversation_id,
+                    "source": "character",
+                    "kind": "character.speech",
+                    "delta": event.delta or "",
+                },
+            )
+            return
+        if event_type == "speech.completed":
+            self.emitter.emit(
+                "message.delta",
+                {
+                    "message_id": f"speech:{conversation_id}:{user_message.message_id}",
+                    "conversation_id": conversation_id,
+                    "source": "character",
+                    "kind": "character.speech",
+                    "delta": "",
+                    "completed": True,
+                    **({"raw": event.raw} if getattr(event, "raw", None) else {}),
+                },
+            )
+            return
 
     def _on_engine_event(self, event: EngineEvent) -> None:
         event_type = event.type
@@ -698,6 +987,7 @@ class DesktopApplicationService:
             conversation_id=conversation_id,
             approval_mode=ApprovalMode(project.approval_mode),
             assistant_instructions=load_prompt(selected_pair.assistant.prompt),
+            conversation_mode=conversation.last_mode,
         )
         if isinstance(self.dialogue_model, OpenAICompatibleDialogueModel):
             self.dialogue_model.reasoning_effort = (

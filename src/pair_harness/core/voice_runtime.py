@@ -33,7 +33,11 @@ from pair_harness.core.ports import (
     SpeechSynthesizer,
     VoiceActivityDetector,
 )
-from pair_harness.core.voice_policy import extract_speech_segments, is_tts_eligible
+from pair_harness.core.voice_policy import (
+    extract_speech_segments,
+    is_readable_text,
+    is_tts_eligible,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - 仅类型标注
     from pair_harness.adapters.audio.sounddevice_io import AudioPlayer, MicrophoneCapture
@@ -310,7 +314,9 @@ class VoiceRuntime:
             segments = extract_speech_segments(message.text)
         for segment in segments:
             text = segment.strip()
-            if not text:
+            # V0.2 问题 2：入队前再次检查有效自然语言——省略号/纯标点
+            # 降级文本不创建可朗读请求（DashScope 会报 input text is invalid）
+            if not is_readable_text(text):
                 continue
             self._queue.enqueue(
                 SpeechRequest(

@@ -43,6 +43,19 @@ async def test_chat_submit_emits_messages_and_direct_task_tool_updates(tmp_path:
     )
     try:
         conversation_id = service.current_conversation_id
+
+        async def wait_for(
+            predicate, *, message: str, timeout: float = 5.0
+        ) -> None:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + timeout
+            while loop.time() < deadline:
+                if predicate():
+                    return
+                await asyncio.sleep(0.01)
+            raise AssertionError(message)
+
+        # 快速接受：chat.submit 同步落库并立即返回真实 message_id
         result = await service.handle_command(
             command(
                 "chat-1",
@@ -52,11 +65,19 @@ async def test_chat_submit_emits_messages_and_direct_task_tool_updates(tmp_path:
                 text="今天有点累，陪我聊聊。",
             )
         )
-        assert result["task_id"] is None
-        assert [event["event"] for event in events] == [
-            "message.created",
-            "message.created",
-        ]
+        assert result["message_id"]
+        assert result["status"] == "received"
+        assert result["target"] == "character"
+        # 用户消息立即出现；后台回合随后补发角色消息
+        await wait_for(
+            lambda: events[0]["event"] == "message.created",
+            message="首条用户消息应立即出现",
+        )
+        assert events[0]["payload"]["message"]["source"] == "user"
+        await wait_for(
+            lambda: [e["event"] for e in events].count("message.created") == 2,
+            message="后台回合应补发角色消息",
+        )
 
         await service.handle_command(
             command(
@@ -75,7 +96,14 @@ async def test_chat_submit_emits_messages_and_direct_task_tool_updates(tmp_path:
                 text="请检查这个项目",
             )
         )
-        assert result["status"] == "completed"
+        assert result["message_id"]
+        assert result["status"] == "received"
+        # 等待后台任务执行结束（busy 转回 False）
+        await wait_for(
+            lambda: events and events[-1]["event"] == "task.busy_changed"
+            and events[-1]["payload"]["busy"] is False,
+            message="后台助手任务应执行到完成",
+        )
         event_names = [event["event"] for event in events]
         assert "task.busy_changed" in event_names
         assert "message.delta" in event_names
@@ -138,12 +166,12 @@ async def test_project_defaults_to_folder_name_and_manual_name_survives_path_rep
         project_id = snapshot["current_project_id"]
         assert snapshot["current_project"]["name"] == "folder-a"
 
-        snapshot = await service.handle_command(
+        result = await service.handle_command(
             command("rename-1", "project.update_settings", project_id=project_id, name="我的项目")
         )
-        assert snapshot["current_project"]["name"] == "我的项目"
+        assert result["project"]["name"] == "我的项目"
 
-        snapshot = await service.handle_command(
+        result = await service.handle_command(
             command(
                 "repair-1",
                 "project.update_settings",
@@ -151,8 +179,8 @@ async def test_project_defaults_to_folder_name_and_manual_name_survives_path_rep
                 root_path=str(second_root),
             )
         )
-        assert snapshot["current_project"]["root_path"] == str(second_root.resolve())
-        assert snapshot["current_project"]["name"] == "我的项目"
+        assert result["project"]["root_path"] == str(second_root.resolve())
+        assert result["project"]["name"] == "我的项目"
     finally:
         await service.shutdown()
 
@@ -273,6 +301,18 @@ async def test_streaming_assistant_events_reconcile_to_one_persisted_message(
                 text="请检查这个项目",
             )
         )
+        # 快速接受后回合在后台运行：等待任务执行到结束再断言事件
+        async def _wait_busy_idle() -> None:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 5.0
+            while loop.time() < deadline:
+                if events and events[-1]["event"] == "task.busy_changed" \
+                        and events[-1]["payload"]["busy"] is False:
+                    return
+                await asyncio.sleep(0.01)
+            raise AssertionError("后台任务未在超时前结束")
+
+        await _wait_busy_idle()
 
         delta_ids = {
             event["payload"]["message_id"]

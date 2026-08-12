@@ -14,6 +14,7 @@ SDK 回调线程把 ``on_data``（PCM 帧）/ ``on_complete`` / ``on_error``
 from __future__ import annotations
 
 import asyncio
+import re
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -23,6 +24,11 @@ from pair_harness.core.contracts import AudioChunk, SpeechRequest
 from pair_harness.core.ports import SpeechSynthesizer
 
 TTS_SAMPLE_RATE = 24_000
+# V0.2 问题 2：合成前兜底过滤的“不可读”字符（空白与标点）。
+# 文本中若存在一个不在该集合内的字符，则视为包含可朗读内容。
+_TTS_SKIP_CHAR = re.compile(
+    r"[\s，。！？；：、,.!?;:'\"“”‘’…—–~··`~@#$%^&*()\[\]{}<>《》【】（）—\-_|/\\+=]"
+)
 # 等待 complete 哨兵的超时（秒）；超过视为异常收尾
 _TAIL_TIMEOUT_S = 15.0
 # streaming_call 提交文本后的“取消窗口”（秒）：窗口内 aclose 置 closed
@@ -146,8 +152,12 @@ class QwenSpeechSynthesizer(SpeechSynthesizer):
                 _put(_TtsBridgeEvent(kind="error", message=f"TTS 合成失败: {exc}"))
 
     async def synthesize(self, request: SpeechRequest) -> AsyncIterator[AudioChunk]:
-        if not request.text.strip():
-            raise QwenTtsError("TTS 文本为空")
+        # V0.2 问题 2：空/纯标点文本一律不合成（DashScope 报 input text is
+        # invalid）。voice_runtime 入队前已过滤，这里作为适配器层兜底。
+        if not request.text.strip() or not any(
+            not _TTS_SKIP_CHAR.match(ch) for ch in request.text
+        ):
+            raise QwenTtsError("TTS 文本为空或只有标点")
 
         bridge: asyncio.Queue[_TtsBridgeEvent] = asyncio.Queue()
         loop = asyncio.get_running_loop()

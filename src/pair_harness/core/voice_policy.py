@@ -31,6 +31,25 @@ def is_tts_eligible(source: MessageSource, kind: MessageKind) -> bool:
     }
 
 
+# 仅空白与标点（含省略号、连接号、引号、括号）——不含可朗读的自然语言。
+_PUNCTUATION_ONLY_RE = re.compile(
+    r"^[\s，。！？；：、,.!?;:'\"“”‘’…—–~··`~@#$%^&*()\[\]{}<>《》【】（）—\-_|/\\+=]+$"
+)
+
+
+def is_readable_text(text: str) -> bool:
+    """是否包含可朗读的自然语言（去除空白与标点后仍有内容）。
+
+    V0.2 问题 2：角色结构化输出解析失败降级为 ``……`` 时不得进入 TTS；
+    只有标点的段落（如 ``……``、``---``）同样静音。DashScope 收到
+    空/纯标点文本会报 ``input text is invalid``。
+    """
+    stripped = str(text or "").strip()
+    if not stripped:
+        return False
+    return not bool(_PUNCTUATION_ONLY_RE.match(stripped))
+
+
 # 围栏代码块（``` ... ```，含语言标注）
 _FENCE_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
 # 行内代码（`...`）
@@ -84,4 +103,5 @@ def extract_speech_segments(markdown: str) -> list[str]:
         current.append(re.sub(r"\s+", " ", line))
     if current:
         paragraphs.append(" ".join(current))
-    return paragraphs
+    # V0.2 问题 2：只含标点的段落（如省略号降级）不进入可朗读集合
+    return [paragraph for paragraph in paragraphs if is_readable_text(paragraph)]

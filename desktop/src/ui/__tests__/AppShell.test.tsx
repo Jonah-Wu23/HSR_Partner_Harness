@@ -55,8 +55,13 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
     // 会话行搭档芯片折叠为双色点，名字在 tooltip
     expect(screen.getAllByTitle("白厄 × 神秘的古代机械").length).toBeGreaterThan(0);
     expect(screen.getByTestId("composer")).toBeInTheDocument();
-    // 聊天模式下没有工作台
-    expect(screen.queryByLabelText("助手工作台")).not.toBeInTheDocument();
+    // 聊天模式下工作台收起但保留在 DOM（aria-hidden），状态不丢失
+    const workbench = document.querySelector(".pane-workbench");
+    expect(workbench).not.toBeNull();
+    expect(workbench).toHaveAttribute("aria-hidden", "true");
+    expect(workbench?.className).toContain("is-closed");
+    // 聊天模式能力签可见
+    expect(screen.getByRole("note")).toHaveTextContent("纯聊天");
   });
 
   it("collaboration-running：双栏、工具卡片与取消任务", async () => {
@@ -119,7 +124,7 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
     await renderScenario("empty");
 
     expect(screen.getByRole("navigation", { name: "项目轨道" })).toBeInTheDocument();
-    expect(screen.getByText("Pair Harness")).toBeInTheDocument();
+    expect(screen.getByText("HSR Partner Harness")).toBeInTheDocument();
     expect(screen.getByText("还没有项目")).toBeInTheDocument();
     expect(screen.queryByText("暂无打开的项目")).not.toBeInTheDocument();
   });

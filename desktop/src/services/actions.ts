@@ -74,8 +74,19 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async archiveConversation(conversationId) {
       await request("conversation.archive", { conversation_id: conversationId });
     },
-    switchMode(mode) {
+    async switchMode(mode) {
+      // V0.2 模式独立（问题 3）：模式由后端按会话持久化，走独立命令。
+      // 先同步更新本地模式（工作台开合动画即时反馈），再异步持久化；
+      // 不依赖某次 settings 快照顺便覆盖，也不被推理档位/审批方式重置。
       desktopStore.getState().setMode(mode);
+      const conversationId = desktopStore.getState().currentConversationId;
+      if (conversationId) {
+        try {
+          await request("conversation.set_mode", { conversation_id: conversationId, mode });
+        } catch {
+          // 持久化失败不回滚 UI；下次快照按后端 last_mode 为准
+        }
+      }
     },
     switchTheme(theme) {
       if (typeof window !== "undefined") window.localStorage.setItem("pair-harness-theme", theme);

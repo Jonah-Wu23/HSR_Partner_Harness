@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import time as time_module
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path, PurePath
 from typing import Literal, cast
 
@@ -13,6 +15,7 @@ from .contracts import (
     ApprovalMode,
     CharacterProgressSummary,
     CharacterResultSummary,
+    DialogueEvent,
     DialogueRequest,
     EngineEvent,
     EngineEventType,
@@ -20,9 +23,13 @@ from .contracts import (
     ExecutionReceipt,
     Message,
     MessageKind,
+    MessageOrigin,
     MessageSource,
+    MessageStatus,
+    MessageTarget,
     PendingOperation,
     ProjectRef,
+    ProjectRuntimeContext,
     TaskAmendment,
     TaskAmendmentDraft,
     TaskRequest,
@@ -108,6 +115,10 @@ class ConversationOrchestrator:
         # O3.3：活动任务的执行进度（_execute 期间填充，结束时清理）
         self._progress: dict[str, _TaskProgress] = {}
         self._active_lifecycle: TaskLifecycle | None = None
+        # V0.2：按会话持久化的对话模式（chat/collaboration）。模式由
+        # 后端权威保存；设置类命令不得回推覆盖（与推理档位/审批方式/
+        # 发送对象互不覆盖的独立字段）。聊天模式是角色能力边界：不能委派。
+        self._conversation_modes: dict[str, Literal["chat", "collaboration"]] = {}
         # O2.5：每会话入口锁——聊天轮（用户消息+角色台词）在锁内整体落库，
         # 轮内顺序固定为用户→角色且不与其他轮交错；任务执行（_execute）
         # 刻意不在锁内，执行期间到达的聊天轮与执行产生的系统/助手消息按
@@ -121,6 +132,15 @@ class ConversationOrchestrator:
         # 推送顺序约定（设计 §3.2）：角色接受委派的台词先于执行事件到达界面。
         self.on_message: Callable[[Message], None] | None = None
         self.on_engine_event: Callable[[EngineEvent], None] | None = None
+        # V0.2：消息生命周期状态变更回调（message.status_changed）。
+        # 与 on_message 并存：on_message 管创建，本回调管状态推进。
+        self.on_message_status_changed: Callable[[Message], None] | None = None
+        # V0.2：对话增量事件通道（角色思考/正文 delta），由桌面桥转发为
+        # message.delta 的 reasoning/speech 通道。
+        self.on_dialogue_event: Callable[[str, Message, DialogueEvent], None] | None = None
+        # V0.2：审查智能体生命周期事件（review.started/completed/failed）。
+        # 只有真正调用审查智能体时才触发，UI 据此显示审查状态（问题 14）。
+        self.on_review_event: Callable[[str, dict], None] | None = None
         # B2.6：消息监听器列表（VoiceRuntime 挂 TTS 用），在消息持久化后逐个调用
         self._message_listeners: list[Callable[[Message], None]] = []
 
@@ -143,12 +163,76 @@ class ConversationOrchestrator:
         conversation_id: str,
         approval_mode: ApprovalMode,
         assistant_instructions: str,
+        conversation_mode: Literal["chat", "collaboration"] = "chat",
     ) -> None:
         """切换当前项目与聊天，保留其他聊天已恢复的历史和会话引用。"""
         self.project = project
         self.pair_id = pair_id
         self.assistant_instructions = assistant_instructions
         self.set_approval_mode(approval_mode, conversation_id=conversation_id)
+        self.set_conversation_mode(conversation_id, conversation_mode)
+
+    def set_conversation_mode(
+        self, conversation_id: str, mode: Literal["chat", "collaboration"]
+    ) -> None:
+        """V0.2：保存当前会话的对话模式（后端权威）。
+
+        模式是与推理档位/审批方式/发送对象互不覆盖的独立字段；
+        设置类命令不得回推覆盖它。聊天模式下角色不能形成委派。
+        """
+        self._conversation_modes[conversation_id] = mode
+
+    def conversation_mode(self, conversation_id: str) -> Literal["chat", "collaboration"]:
+        """当前会话的持久化模式。
+
+        桌面应用总是经 ``select_context`` 从 ``conversations.last_mode``
+        显式设置；未显式设置的独立使用（CLI/语音/单测）默认协作，
+        保持委派行为与历史一致。聊天模式的边界只在应用明确持久化时生效。
+        """
+        return self._conversation_modes.get(conversation_id, "collaboration")
+
+    def _build_runtime_context(self, conversation_id: str) -> ProjectRuntimeContext:
+        """V0.2：构造项目运行上下文（名称/目录/时间/时区/模式）。
+
+        项目创建、选择、路径修复与账号切换时重建；注入角色与助手系统
+        上下文，不显示成普通聊天消息。
+        """
+        mode = self.conversation_mode(conversation_id)
+        now = datetime.now().astimezone()
+        tz_abbr = time_module.tzname[0] if time_module.tzname else now.tzname() or ""
+        return ProjectRuntimeContext(
+            project_name=self.project.name,
+            project_abs_dir=self.project.root_path,
+            local_time=now.strftime("%Y-%m-%d %H:%M:%S"),
+            timezone=tz_abbr or str(now.utcoffset() or ""),
+            conversation_mode=mode,
+        )
+
+    def mark_message_failed(
+        self, conversation_id: str, message_id: str, reason: str
+    ) -> Message | None:
+        """V0.2：把一条已落库消息标记为失败（保留文字，可重试）。
+
+        即时回显原则：处理失败后文字仍在，前端可按真实 id 对账并重试。
+        同时更新内存历史与 SQLite，并推送 ``message.status_changed``。
+        """
+        history = self._history.get(conversation_id, [])
+        for index, message in enumerate(history):
+            if message.message_id != message_id:
+                continue
+            updated = message.model_copy(
+                update={
+                    "status": MessageStatus.FAILED,
+                    "payload": {**dict(message.payload), "error": reason},
+                }
+            )
+            history[index] = updated
+            if self.store is not None:
+                self.store.save_message(updated)
+            if self.on_message_status_changed is not None:
+                self.on_message_status_changed(updated)
+            return updated
+        return None
 
     def report_system_status(self, conversation_id: str, text: str) -> Message:
         """把运行时错误作为可见且可恢复的系统消息写入当前聊天。"""
@@ -255,6 +339,9 @@ class ConversationOrchestrator:
         payload: dict | None = None,
         message_id: str | None = None,
         pair_id: str | None = None,
+        target: MessageTarget | None = None,
+        origin: MessageOrigin | None = None,
+        delegation_id: str | None = None,
     ) -> Message:
         message_values = {
             "conversation_id": conversation_id,
@@ -265,6 +352,9 @@ class ConversationOrchestrator:
             "text": text,
             "payload": payload or {},
             "tts_eligible": is_tts_eligible(source, kind),
+            "target": target or self._default_target(source),
+            "origin": origin or self._default_origin(source),
+            "delegation_id": delegation_id,
         }
         if message_id is not None:
             message_values["message_id"] = message_id
@@ -288,19 +378,81 @@ class ConversationOrchestrator:
             if message.source == MessageSource.USER
         ][-3:]
 
+    @staticmethod
+    def _default_target(source: MessageSource) -> MessageTarget | None:
+        """按来源推导默认消息归属：角色→角色区，助手/工具→工作台。"""
+        if source == MessageSource.CHARACTER:
+            return MessageTarget.CHARACTER
+        if source in (MessageSource.ASSISTANT, MessageSource.TOOL):
+            return MessageTarget.ASSISTANT
+        return None
+
+    @staticmethod
+    def _default_origin(source: MessageSource) -> MessageOrigin:
+        if source == MessageSource.SYSTEM:
+            return MessageOrigin.SYSTEM
+        return MessageOrigin.USER
+
+    def _forward_dialogue_event(
+        self,
+        conversation_id: str,
+        user_message: Message,
+        event: DialogueEvent,
+    ) -> None:
+        """V0.2：把角色对话增量事件转发给桌面桥。
+
+        聊天模式也照常转发干净 delta（思考与正文流式显示与模式无关）；
+        委派字段等结构信息仍等 character.final 解析。
+        """
+        if self.on_dialogue_event is not None:
+            self.on_dialogue_event(conversation_id, user_message, event)
+
+    def _forward_review_event(self, event: str, payload: dict) -> None:
+        """V0.2：把 ApprovalManager 的审查生命周期事件转发给桌面桥。"""
+        if self.on_review_event is not None:
+            self.on_review_event(event, payload)
+
     async def handle_character_input(
         self, *, conversation_id: str, text: str
     ) -> ConversationOutcome:
-        # O2.5：聊天轮（用户消息+角色台词）在会话锁内整体落库，轮内顺序
-        # 固定为用户→角色，不与其他轮交错；委派处理（_execute/修改路由）
-        # 在锁外进行，执行期间到达的聊天轮可与运行中任务并发。
+        """完整角色回合入口（CLI/语音/测试使用）：快速接受 + 后台处理。"""
+        user = await self.submit_user_message(
+            conversation_id=conversation_id, text=text, target="character"
+        )
+        return await self.process_character_turn(
+            conversation_id=conversation_id, user_message=user
+        )
+
+    async def submit_user_message(
+        self, *, conversation_id: str, text: str, target: str
+    ) -> Message:
+        """V0.2 快速接受（问题 1）：同步落库用户消息并立即返回真实 id。
+
+        只负责保存与发出 ``message.created``；回合处理由调用方随后启动
+        （桌面桥在后台任务中运行，不再让 ``chat.submit`` 等待整轮完成）。
+        断线或重启后可从快照恢复，处理失败后文字仍在且可重试。
+        """
+        target_value = MessageTarget(target)
         async with self._conversation_lock(conversation_id):
-            user = self._message(
+            return self._message(
                 conversation_id=conversation_id,
                 source=MessageSource.USER,
                 kind=MessageKind.USER_TEXT,
                 text=text,
+                target=target_value,
+                origin=MessageOrigin.USER,
             )
+
+    async def process_character_turn(
+        self, *, conversation_id: str, user_message: Message
+    ) -> ConversationOutcome:
+        """V0.2：在后台运行角色回合（用户消息已落库）。
+
+        角色台词在会话锁内串行产生；委派处理（_execute/修改路由）在锁外
+        进行。聊天模式下角色输出的 delegation 一律不执行（问题 4），
+        后端做最终裁决并注入能力边界。
+        """
+        async with self._conversation_lock(conversation_id):
             # O3.3：执行期间（_execute 未结束）注入压缩进度摘要；
             # 任务结束后 _progress 已清理，聊天轮回到纯角色对话
             progress = self._progress.get(conversation_id)
@@ -314,12 +466,15 @@ class ConversationOrchestrator:
             request = DialogueRequest(
                 pair_id=self.pair_id,
                 conversation_id=conversation_id,
-                user_message=user,
+                user_message=user_message,
                 recent_messages=recent_roleplay_context(self._history[conversation_id][:-1]),
                 progress_summary=progress_summary,
+                runtime_context=self._build_runtime_context(conversation_id),
             )
             character_turn = None
             async for event in self.dialogue_model.stream_reply(request):
+                # V0.2：增量事件先转发（思考/正文 delta），UI 流式显示
+                self._forward_dialogue_event(conversation_id, user_message, event)
                 if event.type == "character.final":
                     character_turn = event.turn
             if character_turn is None:
@@ -335,17 +490,35 @@ class ConversationOrchestrator:
                     else None
                 ),
             )
-            messages = [user, character]
+            messages = [user_message, character]
+
+        # V0.2 能力边界（问题 4）：聊天模式一律不执行委派。后端最终裁决，
+        # 不依赖按钮禁用或角色提示词。
+        if self.conversation_mode(conversation_id) == "chat" and (
+            isinstance(character_turn.delegation, TaskRequestDraft)
+            or isinstance(character_turn.delegation, TaskAmendmentDraft)
+        ):
+            notice = self._message(
+                conversation_id=conversation_id,
+                source=MessageSource.SYSTEM,
+                kind=MessageKind.SYSTEM_STATUS,
+                text="当前是聊天模式，角色不能读取或操作项目。切换协作模式后再让它处理项目任务。",
+            )
+            return ConversationOutcome(messages=tuple((*messages, notice)))
 
         if isinstance(character_turn.delegation, TaskRequestDraft):
             task = TaskRequest(
                 conversation_id=conversation_id,
-                origin_message_id=user.message_id,
+                origin_message_id=user_message.message_id,
                 instructions=character_turn.delegation.instructions,
                 constraints=character_turn.delegation.constraints,
             )
             try:
-                execution = await self._execute(task)
+                execution = await self._execute(
+                    task,
+                    delegation_id=task.task_id,
+                    origin=MessageOrigin.CHARACTER_DELEGATION,
+                )
             except BusyTurnError as exc:
                 # O2.4：任务运行中角色再委派新任务——冲突转为用户可见的
                 # 系统提示，不再静默失败；用户直接指令不受影响（走修改路由）。
@@ -355,7 +528,7 @@ class ConversationOrchestrator:
                     kind=MessageKind.SYSTEM_STATUS,
                     text=f"任务仍在执行，本次委派暂未受理：{exc}",
                 )
-                return ConversationOutcome(messages=(user, character, notice))
+                return ConversationOutcome(messages=(user_message, character, notice))
             messages.extend(execution.messages)
             return ConversationOutcome(
                 messages=tuple(messages),
@@ -367,7 +540,7 @@ class ConversationOrchestrator:
 
         if isinstance(character_turn.delegation, TaskAmendmentDraft):
             try:
-                await self._apply_amendment(user.message_id, character_turn.delegation)
+                await self._apply_amendment(user_message.message_id, character_turn.delegation)
             except (RuntimeError, ValueError) as exc:
                 # O2.4：角色建议的修改无法路由（无活动任务、生命周期已终态等）
                 # 时同样转为可见系统提示，不静默
@@ -377,21 +550,33 @@ class ConversationOrchestrator:
                     kind=MessageKind.SYSTEM_STATUS,
                     text=f"修改未能应用：{exc}",
                 )
-                return ConversationOutcome(messages=(user, character, notice))
+                return ConversationOutcome(messages=(user_message, character, notice))
         return ConversationOutcome(messages=tuple(messages))
 
     async def handle_direct_input(
         self, *, conversation_id: str, text: str, constraints: tuple[str, ...] = ()
     ) -> ConversationOutcome:
-        # O2.5：直接输入的用户消息同样在会话锁内落库，避免拆散进行中的
-        # 聊天轮；后续任务执行/修改路由在锁外进行。
-        async with self._conversation_lock(conversation_id):
-            user = self._message(
-                conversation_id=conversation_id,
-                source=MessageSource.USER,
-                kind=MessageKind.USER_TEXT,
-                text=text,
-            )
+        """完整直发助手回合入口（CLI/语音/测试使用）：快速接受 + 后台处理。"""
+        user = await self.submit_user_message(
+            conversation_id=conversation_id, text=text, target="assistant"
+        )
+        return await self.process_direct_input(
+            conversation_id=conversation_id, user_message=user, constraints=constraints
+        )
+
+    async def process_direct_input(
+        self,
+        *,
+        conversation_id: str,
+        user_message: Message,
+        constraints: tuple[str, ...] = (),
+    ) -> ConversationOutcome:
+        """V0.2：后台处理直发助手的用户消息。
+
+        用户消息已由快速接受落库；这里按当前状态路由：无活动任务时新建
+        任务执行；活动任务在其他聊天时给出可见提示；活动任务在本聊天时
+        归一为 TaskAmendment（M2 起默认排队，只有明确「立即插入」才 steer）。
+        """
         if self.state.active is not None:
             if conversation_id != self.state.active.conversation_id:
                 notice = self._message(
@@ -400,15 +585,15 @@ class ConversationOrchestrator:
                     kind=MessageKind.SYSTEM_STATUS,
                     text="另一聊天的助手任务仍在运行，当前指令没有转交。",
                 )
-                return ConversationOutcome(messages=(user, notice))
+                return ConversationOutcome(messages=(user_message, notice))
             # O2.4：设计 §3.2——运行中用户直接发给助手的新指令拥有最高优先级，
             # 归一为 TaskAmendment 走 amend_turn，来源标记 user 与角色建议区分
             try:
                 amendment = TaskAmendment(
                     target_task_id=self.state.active.task_id,
-                    origin_message_id=user.message_id,
+                    origin_message_id=user_message.message_id,
                     revision=1,
-                    instructions=text,
+                    instructions=user_message.text,
                     origin="user",
                 )
                 await self._steer_turn(amendment)
@@ -421,18 +606,18 @@ class ConversationOrchestrator:
                     kind=MessageKind.SYSTEM_STATUS,
                     text=f"修改未能应用：{exc}",
                 )
-                return ConversationOutcome(messages=(user, notice))
+                return ConversationOutcome(messages=(user_message, notice))
             # 修改已交给运行中的任务，本次直接输入不再开启新任务
-            return ConversationOutcome(messages=(user,))
+            return ConversationOutcome(messages=(user_message,))
         task = TaskRequest(
             conversation_id=conversation_id,
-            origin_message_id=user.message_id,
-            instructions=text,
+            origin_message_id=user_message.message_id,
+            instructions=user_message.text,
             constraints=constraints,
         )
         execution = await self._execute(task)
         return ConversationOutcome(
-            messages=(user, *execution.messages),
+            messages=(user_message, *execution.messages),
             engine_events=execution.engine_events,
             tool_runs=execution.tool_runs,
             task=task,
@@ -500,11 +685,25 @@ class ConversationOrchestrator:
         await self.coding_engine.cancel_turn(session, active.engine_turn_id)
         return True
 
-    async def _execute(self, task: TaskRequest) -> ConversationOutcome:
+    async def _execute(
+        self,
+        task: TaskRequest,
+        *,
+        delegation_id: str | None = None,
+        origin: MessageOrigin | None = None,
+    ) -> ConversationOutcome:
+        """执行一次助手任务。
+
+        V0.2：``delegation_id``/``origin`` 标记任务消息归属——角色委派产生
+        的执行记录 origin=character_delegation 且带 delegation_id，直发
+        助手的执行记录保持 user 来源。Presenter 按此把两类记录都归入工作台，
+        委派卡通过 delegation_id 连接角色区与工作台。
+        """
         task_project = self.project
         task_pair_id = self.pair_id
         task_approval_mode = self.approval_mode
         task_assistant_instructions = self.assistant_instructions
+        task_delegation_id = delegation_id or task.task_id
         self.state.start(
             project_id=task_project.project_id,
             conversation_id=task.conversation_id,
@@ -539,9 +738,11 @@ class ConversationOrchestrator:
                 mode=task_approval_mode,
                 rules=self.risk_rules,
                 reviewer=self.reviewer,
+                on_review=self._forward_review_event,
             ),
         )
         approval.mode = task_approval_mode
+        approval.on_review = self._forward_review_event
         # O3.3：执行期间的活动任务进度（事件驱动更新，结束时清理）
         progress = self._progress.setdefault(task.conversation_id, _TaskProgress())
         try:
@@ -883,6 +1084,8 @@ class ConversationOrchestrator:
                     engine_turn_id=engine_turn_id,
                     message_id=f"assistant:{task.conversation_id}:{task.task_id}",
                     pair_id=task_pair_id,
+                    delegation_id=task_delegation_id,
+                    origin=origin or MessageOrigin.USER,
                     payload=(
                         {"reasoning": assistant_reasoning}
                         if assistant_reasoning
@@ -926,6 +1129,8 @@ class ConversationOrchestrator:
                     text=result_turn.speech,
                     engine_turn_id=engine_turn_id,
                     pair_id=task_pair_id,
+                    delegation_id=task_delegation_id,
+                    origin=origin or MessageOrigin.USER,
                     payload=(
                         {"reasoning": result_turn.reasoning}
                         if result_turn.reasoning

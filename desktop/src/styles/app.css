@@ -769,34 +769,6 @@
   animation: ph-pulse 1s ease-in-out infinite;
 }
 
-.msg-reasoning {
-  margin-bottom: var(--space-2);
-}
-.msg-reasoning-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-size: var(--text-c1-size);
-  font-weight: 600;
-  opacity: 0.72;
-}
-.msg-reasoning-toggle svg {
-  width: 12px;
-  height: 12px;
-  transition: transform var(--dur-fast) var(--ease-out);
-}
-.msg-reasoning-toggle.is-open svg { transform: rotate(90deg); }
-.msg-reasoning-body {
-  margin-top: var(--space-1);
-  padding: var(--space-2);
-  background: var(--reasoning-bg);
-  border: 1px solid var(--reasoning-border);
-  border-radius: var(--radius-sm);
-  color: var(--reasoning-text);
-  font-size: var(--text-c1-size);
-  white-space: pre-wrap;
-}
-
 /* ---- 工具卡片 ---- */
 
 .tool-card {
@@ -1180,3 +1152,231 @@
   font-size: var(--text-c1-size);
 }
 .scroll-latest-btn:hover { color: var(--text-primary); }
+
+/* ---- V0.2.0 空间重构：工作台开合、能力签、委派卡 ---- */
+
+.pane-workbench {
+  transition: width var(--dur-drawer) var(--ease-out);
+  overflow: hidden;
+}
+.pane-workbench.is-closed {
+  width: 0 !important;
+  min-width: 0;
+  border-left-color: transparent;
+  visibility: hidden;
+}
+/* 内层保持最小宽度，开合动画期间内容只做裁剪不重排 */
+.pane-workbench-inner {
+  min-width: 320px;
+  height: 100%;
+}
+
+.split-handle.is-hidden {
+  display: none;
+}
+
+.workbench-collapse {
+  margin-left: var(--space-1);
+}
+
+.capability-tag {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: var(--space-2) var(--space-4) 0;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
+  background: var(--fill-hover);
+  font-size: var(--text-c1-size);
+  color: var(--text-secondary);
+  flex: none;
+  user-select: none;
+}
+.capability-tag-hint {
+  color: var(--text-muted);
+}
+
+.workbench-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-8) var(--space-4);
+  color: var(--text-muted);
+  font-size: var(--text-b2-size);
+  text-align: center;
+}
+
+/* 委派卡：双色左边条（角色蓝→助手金渐变），标明任务来源 */
+.delegation-card {
+  position: relative;
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  padding: var(--space-3);
+  overflow: hidden;
+}
+.delegation-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: linear-gradient(180deg, var(--pair-character), var(--pair-assistant));
+}
+.delegation-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.delegation-card-origin {
+  font-size: var(--text-c1-size);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.delegation-card-status {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-c1-size);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.delegation-card-running .delegation-card-status { color: var(--running); }
+.delegation-card-completed .delegation-card-status { color: var(--success); }
+.delegation-card-failed .delegation-card-status { color: var(--danger); }
+.delegation-card-cancelled .delegation-card-status { color: var(--text-muted); }
+.delegation-card-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--separator-strong);
+  border-top-color: var(--running);
+  animation: ph-spin 0.9s linear infinite;
+}
+.delegation-card-summary {
+  margin-top: var(--space-1);
+  font-size: var(--text-b2-size);
+  color: var(--text-primary);
+  overflow-wrap: break-word;
+}
+.delegation-card-cancel {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  font-size: var(--text-c1-size);
+  color: var(--danger);
+}
+.delegation-card-cancel svg { width: 12px; height: 12px; }
+.delegation-card-cancel:hover { text-decoration: underline; }
+
+/* ---- V0.2.0 思考缎带与语音迷你播放条 ---- */
+
+.reasoning-ribbon {
+  margin-bottom: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  background: var(--reasoning-bg);
+  border: 1px solid var(--reasoning-border);
+  border-radius: var(--radius-sm);
+  color: var(--reasoning-text);
+  font-size: var(--text-c1-size);
+  /* 斜纹底：界面自身在说话 */
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0 6px,
+    rgba(128, 128, 128, 0.06) 6px 12px
+  );
+}
+.reasoning-ribbon-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  opacity: 0.8;
+}
+.reasoning-ribbon-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--pair-character);
+  animation: ph-pulse 1.2s ease-in-out infinite;
+}
+.reasoning-ribbon-body {
+  margin-top: 2px;
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+.reasoning-ribbon-toggle {
+  font-size: var(--text-c1-size);
+  font-weight: 600;
+  color: var(--reasoning-text);
+  opacity: 0.72;
+}
+.reasoning-ribbon-toggle:hover { opacity: 1; text-decoration: underline; }
+
+.voice-mini-player {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 var(--space-4) var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  border: 1px solid var(--separator);
+  box-shadow: var(--shadow-popup);
+  font-size: var(--text-c1-size);
+  color: var(--text-primary);
+  flex: none;
+  animation: toast-in var(--dur-menu) var(--ease-out);
+}
+.voice-mini-failed { border-color: var(--danger); }
+.voice-mini-error { color: var(--danger); }
+
+.voice-mini-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-mini-wave {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 12px;
+  flex: none;
+}
+.voice-mini-wave span {
+  width: 3px;
+  border-radius: 1px;
+  background: var(--running);
+  animation: voice-wave 0.9s ease-in-out infinite;
+}
+.voice-mini-wave span:nth-child(2) { animation-delay: 0.15s; }
+.voice-mini-wave span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes voice-wave {
+  0%, 100% { height: 4px; }
+  50% { height: 12px; }
+}
+
+.voice-mini-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+}
+.voice-mini-actions button {
+  font-size: var(--text-c1-size);
+  color: var(--accent);
+}
+.voice-mini-actions button:hover { color: var(--accent-hover); text-decoration: underline; }
+.voice-mini-actions button[aria-label="关闭播放条"] {
+  color: var(--text-muted);
+  font-size: 13px;
+}

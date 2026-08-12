@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pair_harness.core.voice_policy import extract_speech_segments
+from pair_harness.core.voice_policy import extract_speech_segments, is_readable_text
 
 
 def test_plain_paragraph_kept() -> None:
@@ -78,3 +78,21 @@ def test_cjk_sentence_with_command_words_not_deleted() -> None:
 def test_english_sentence_not_a_command() -> None:
     text = "The result looks good.\n\nPlease review it."
     assert extract_speech_segments(text) == ["The result looks good.", "Please review it."]
+
+
+def test_ellipsis_only_paragraph_filtered() -> None:
+    """V0.2 问题 2：省略号/纯标点降级文本不进入可朗读集合。"""
+    assert extract_speech_segments("……") == []
+    assert extract_speech_segments("。。。") == []
+    assert extract_speech_segments("---") == []
+    assert extract_speech_segments("第一段。\n\n……\n\n第二段。") == ["第一段。", "第二段。"]
+
+
+def test_is_readable_text() -> None:
+    """V0.2 问题 2：只有标点/空白视为不可读，其余保留。"""
+    assert is_readable_text("你好，我是白厄。") is True
+    assert is_readable_text("……") is False
+    assert is_readable_text("。。。") is False
+    assert is_readable_text("   ") is False
+    assert is_readable_text("") is False
+    assert is_readable_text("git status") is True

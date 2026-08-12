@@ -1,0 +1,259 @@
+/* 状态基座组件样式：连接药丸、技术详情抽屉、Toast、排队条。
+   全部引用 tokens.css 语义变量；状态附着在对象上，不上浮整屏。 */
+
+/* ========== 连接药丸 ========== */
+
+.connection-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--text-c1-size);
+  color: var(--text-secondary);
+  transition: background-color var(--dur-press) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.connection-pill:hover { background: var(--fill-hover); color: var(--text-primary); }
+
+.connection-pill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.connection-pill-connected .connection-pill-dot { background: var(--success); }
+.connection-pill-connected { color: var(--text-muted); }
+.connection-pill-connecting .connection-pill-dot {
+  background: var(--warning);
+  animation: ph-pulse 1.6s ease-in-out infinite;
+}
+.connection-pill-connecting { color: var(--warning); }
+.connection-pill-disconnected .connection-pill-dot { background: var(--danger); }
+.connection-pill-disconnected { color: var(--danger); }
+
+/* ========== 技术详情抽屉 ========== */
+
+.tech-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--mask);
+  z-index: var(--z-dialog-backdrop);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.tech-drawer {
+  width: 380px;
+  max-width: 90vw;
+  height: 100%;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--separator);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  animation: tech-drawer-in var(--dur-drawer) var(--ease-out);
+}
+
+@keyframes tech-drawer-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.tech-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.tech-drawer-head h2 {
+  font-size: var(--text-t2-size);
+  font-weight: 600;
+}
+
+.tech-drawer-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  font-size: var(--text-b2-size);
+}
+.tech-drawer-row dt {
+  color: var(--text-muted);
+  font-size: var(--text-c1-size);
+  margin-bottom: 2px;
+}
+.tech-drawer-row dd { color: var(--text-primary); overflow-wrap: break-word; }
+.tech-drawer-error {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--text-c1-size);
+  color: var(--danger);
+  background: var(--reasoning-bg);
+  border: 1px solid var(--reasoning-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  white-space: pre-wrap;
+}
+
+.tech-drawer-actions {
+  margin-top: auto;
+  display: flex;
+  gap: var(--space-2);
+}
+
+/* ========== Toast 队列 ========== */
+
+.toast-stack {
+  position: fixed;
+  top: var(--space-4);
+  right: var(--space-4);
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 360px;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  border: 1px solid var(--separator);
+  border-left-width: 3px;
+  box-shadow: var(--shadow-popup);
+  font-size: var(--text-b2-size);
+  color: var(--text-primary);
+  animation: toast-in var(--dur-menu) var(--ease-out);
+}
+
+@keyframes toast-in {
+  from { transform: translateY(-6px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.toast-error { border-left-color: var(--danger); }
+.toast-warning { border-left-color: var(--warning); }
+.toast-info { border-left-color: var(--running); }
+.toast-success { border-left-color: var(--success); }
+
+.toast-text { flex: 1; min-width: 0; overflow-wrap: break-word; }
+
+.toast-action {
+  flex: none;
+  font-size: var(--text-c1-size);
+  color: var(--accent);
+  text-decoration: underline;
+}
+.toast-action:hover { color: var(--accent-hover); }
+
+.toast-close {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  transition: background-color var(--dur-press) var(--ease-out),
+    color var(--dur-press) var(--ease-out);
+}
+.toast-close:hover { background: var(--fill-hover); color: var(--text-primary); }
+
+/* ========== 排队条 ========== */
+
+.queue-strip {
+  margin: 0 var(--space-4) var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--queued-soft);
+  border: 1px solid var(--queued);
+  border-radius: var(--radius-lg);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  animation: queue-strip-in var(--dur-menu) var(--ease-out);
+}
+
+@keyframes queue-strip-in {
+  from { transform: translateY(6px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.queue-strip-count {
+  font-size: var(--text-c1-size);
+  font-weight: 600;
+  color: var(--queued);
+  user-select: none;
+}
+
+.queue-strip-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.queue-capsule {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--bg-card);
+  font-size: var(--text-c1-size);
+  color: var(--text-primary);
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.queue-capsule-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.queue-capsule-target { font-weight: 600; }
+.queue-capsule-waiting { color: var(--text-muted); }
+
+.queue-capsule-actions {
+  display: none;
+  flex: none;
+  gap: var(--space-2);
+}
+.queue-capsule:hover .queue-capsule-actions,
+.queue-capsule:focus-within .queue-capsule-actions {
+  display: inline-flex;
+}
+.queue-capsule-actions button {
+  font-size: var(--text-c1-size);
+  color: var(--accent);
+}
+.queue-capsule-actions button:hover { color: var(--accent-hover); text-decoration: underline; }
+
+/* ========== 断线横幅（不接管整屏） ========== */
+
+.connection-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-2) var(--space-4) 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-b2-size);
+  color: var(--text-primary);
+  flex: none;
+}
+.connection-banner button {
+  flex: none;
+  font-size: var(--text-c1-size);
+  color: var(--accent);
+  text-decoration: underline;
+}
+.connection-banner button:hover { color: var(--accent-hover); }

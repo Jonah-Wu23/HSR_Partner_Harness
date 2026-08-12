@@ -21,6 +21,9 @@ export function ApprovalBar({ approval, actions }: ApprovalBarProps) {
   const pending = approval.pending.find((item) => !resolvedIds.has(item.approval_id));
 
   if (approval.mode === "review") {
+    // V0.2 问题 14：只有审查智能体真正被调用（reviewActive）或存在待审
+    // 操作时才显示审查状态；低风险直接放行、空闲与普通回复不显示。
+    if (!approval.reviewActive && !pending) return null;
     return (
       <div className="approval-bar" data-testid="approval-bar" aria-live="polite">
         <div className={`approval-review ${approval.reviewText ? "" : "approval-review-pending"}`}>

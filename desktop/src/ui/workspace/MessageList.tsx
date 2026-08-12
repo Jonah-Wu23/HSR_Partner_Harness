@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Message, PairRecord } from "../../contracts/protocol";
 import type { ConversationTimelineViewModel } from "../../contracts/view-models";
-import { CollapseIcon } from "../../assets/icons/icons";
+import { ReasoningRibbon } from "./ReasoningRibbon";
 
 interface MessageListProps {
   timeline: ConversationTimelineViewModel;
@@ -17,28 +17,14 @@ function sourceLabel(message: Message, pair: PairRecord): string | null {
   return null;
 }
 
-function ReasoningBlock({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="msg-reasoning">
-      <button
-        type="button"
-        className={`msg-reasoning-toggle${open ? " is-open" : ""}`}
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-      >
-        <CollapseIcon style={{ transform: "rotate(-90deg)" }} />
-        思考过程
-      </button>
-      {open ? <div className="msg-reasoning-body">{text}</div> : null}
-    </div>
-  );
-}
-
 function Bubble({ message, pair }: { message: Message; pair: PairRecord }) {
   const label = sourceLabel(message, pair);
   const reasoning =
     typeof message.payload?.reasoning === "string" ? (message.payload.reasoning as string) : null;
+  const reasoningSeconds =
+    typeof message.payload?.reasoning_seconds === "number"
+      ? (message.payload.reasoning_seconds as number)
+      : undefined;
   const rowClass =
     message.source === "user"
       ? "msg-row msg-row-user"
@@ -57,7 +43,9 @@ function Bubble({ message, pair }: { message: Message; pair: PairRecord }) {
   return (
     <div className={rowClass} data-message-source={message.source}>
       <div className={bubbleClass}>
-        {reasoning ? <ReasoningBlock text={reasoning} /> : null}
+        {reasoning ? (
+          <ReasoningRibbon text={reasoning} streaming={message.streaming ?? false} elapsedSeconds={reasoningSeconds} />
+        ) : null}
         {label ? <span className="msg-source">{label}</span> : null}
         {message.text}
         {message.streaming ? <span className="msg-streaming-caret" aria-hidden /> : null}

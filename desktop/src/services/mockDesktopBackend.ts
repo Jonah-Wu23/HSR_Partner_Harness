@@ -62,6 +62,8 @@ export class MockDesktopBackend implements DesktopBackend {
         return this.renameConversation(command.params) as T;
       case "conversation.archive":
         return this.archiveConversation(command.params) as T;
+      case "conversation.set_mode":
+        return this.setConversationMode(command.params) as T;
       case "chat.submit":
         return this.submitMessage(command.params) as T;
       case "task.cancel":
@@ -83,6 +85,9 @@ export class MockDesktopBackend implements DesktopBackend {
         return this.setVoiceState({ ptt: false, vad: "idle" }) as T;
       case "voice.tts_stop":
         return this.setVoiceState({ tts: "idle" }) as T;
+      default:
+        // 尚未实现的 V0.2 命令在 mock 中返回空对象（不阻断前端流程）
+        return {} as T;
     }
   }
 
@@ -149,7 +154,7 @@ export class MockDesktopBackend implements DesktopBackend {
     return this.snapshotResult<DesktopSnapshot>();
   }
 
-  private updateProjectSettings(params: Record<string, unknown>): DesktopSnapshot {
+  private updateProjectSettings(params: Record<string, unknown>): { project: ProjectRecord } {
     const projectId = String(params.project_id ?? this.scenario.snapshot.current_project_id);
     const projects = this.scenario.snapshot.projects.map((item) =>
       item.project_id === projectId
@@ -164,7 +169,32 @@ export class MockDesktopBackend implements DesktopBackend {
         : item,
     );
     this.scenario.snapshot.projects = projects;
-    return this.snapshotResult<DesktopSnapshot>();
+    const project = projects.find((item) => item.project_id === projectId)!;
+    this.emit("project.changed", { project });
+    return { project: this.clone(project) };
+  }
+
+  private setConversationMode(params: Record<string, unknown>): {
+    conversation_id: string;
+    mode: "chat" | "collaboration";
+  } {
+    const conversationId = String(
+      params.conversation_id ?? this.scenario.snapshot.current_conversation_id,
+    );
+    const mode = params.mode === "collaboration" ? "collaboration" : "chat";
+    this.scenario.snapshot.projects = this.scenario.snapshot.projects.map((item) => ({
+      ...item,
+      conversations: item.conversations.map((candidate) =>
+        candidate.conversation_id === conversationId
+          ? { ...candidate, last_mode: mode }
+          : candidate,
+      ),
+    }));
+    const conversation = this.scenario.snapshot.projects
+      .flatMap((item) => item.conversations)
+      .find((item) => item.conversation_id === conversationId);
+    if (conversation) this.emit("conversation.changed", { conversation });
+    return { conversation_id: conversationId, mode };
   }
 
   private createConversation(params: Record<string, unknown>): DesktopSnapshot {
@@ -251,9 +281,10 @@ export class MockDesktopBackend implements DesktopBackend {
   }
 
   private submitMessage(params: Record<string, unknown>): {
+    message_id: string;
     conversation_id: string;
-    task_id: string | null;
-    status: string | null;
+    status: string;
+    target: string;
   } {
     const conversationId = String(
       params.conversation_id ?? this.scenario.snapshot.current_conversation_id,
@@ -263,6 +294,19 @@ export class MockDesktopBackend implements DesktopBackend {
       (item) => item.conversation_id === conversationId && item.source === "user",
     );
     const text = String(params.text ?? "");
+    const userMessageId = `mock-user-${this.sequence + 1}`;
+    // 快速接受：用户消息立即落库并返回真实 id
+    const userMessage = message(
+      userMessageId,
+      conversationId,
+      "user",
+      "user.text",
+      text,
+    );
+    userMessage.target = target;
+    userMessage.origin = "user";
+    userMessage.status = "received";
+    this.emit("message.created", { message: userMessage });
     const events =
       this.scenario.name === "chat-streaming" && conversationId === "conv-1"
         ? this.scenario.submitEvents
@@ -283,7 +327,12 @@ export class MockDesktopBackend implements DesktopBackend {
         .find((item) => item.conversation_id === conversationId);
       if (conversation) this.emit("conversation.changed", { conversation });
     }
-    return { conversation_id: conversationId, task_id: null, status: null };
+    return {
+      message_id: userMessageId,
+      conversation_id: conversationId,
+      status: "received",
+      target,
+    };
   }
 
   private setVoiceState(changes: Record<string, unknown>): { voice: DesktopSnapshot["voice"] } {
@@ -342,6 +391,11 @@ export class MockDesktopBackend implements DesktopBackend {
       const messageId = String(event.payload.message_id ?? "");
       snapshot.messages = snapshot.messages.map((item) =>
         item.message_id === messageId ? { ...item, streaming: false } : item,
+      );
+    } else if (event.event === "message.status_changed") {
+      const message = event.payload.message as Message;
+      snapshot.messages = snapshot.messages.map((item) =>
+        item.message_id === message.message_id ? message : item,
       );
     } else if (event.event === "tool_run.upserted") {
       const toolRun = event.payload.tool_run as ToolRun;
@@ -422,21 +476,13 @@ function emptyConversation(): ConversationRecord {
 
 function createSubmitEvents(
   conversationId: string,
-  text: string,
+  _text: string,
   target: "character" | "assistant",
 ): DesktopEvent[] {
-  const userMessage = message(
-    `mock-user-${Date.now()}`,
-    conversationId,
-    "user",
-    "user.text",
-    text,
-  );
   const source = target === "assistant" ? "assistant" : "character";
   const kind = target === "assistant" ? "assistant.natural_language" : "character.speech";
   const messageId = `mock-${source}-${Date.now()}`;
   return [
-    { kind: "event", event: "message.created", sequence: 0, payload: { message: userMessage } },
     {
       kind: "event",
       event: "message.delta",

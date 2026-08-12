@@ -86,16 +86,16 @@ describe("MessageList 流式与身份展示", () => {
     expect(container.querySelector('[data-message-source="user"] .msg-source')?.textContent).toBe("你");
   });
 
-  it("思考过程默认折叠，点击后展开", () => {
+  it("思考缎带默认折叠为摘要，点击后展开", () => {
     const message = makeMessage({
       payload: { reasoning: "先分析项目结构，再决定修改范围。" },
     });
     const { container, getByRole } = render(
       <MessageList timeline={makeTimeline([message])} pair={pair} emptyText="空" />,
     );
-    expect(container.querySelector(".msg-reasoning-body")).toBeNull();
-    fireEvent.click(getByRole("button", { name: /思考过程/ }));
-    expect(container.querySelector(".msg-reasoning-body")?.textContent).toContain("先分析项目结构");
+    expect(container.querySelector(".reasoning-ribbon-body")).toBeNull();
+    fireEvent.click(getByRole("button", { name: /思考完成 · 展开/ }));
+    expect(container.querySelector(".reasoning-ribbon-body")?.textContent).toContain("先分析项目结构");
   });
 
   it("空时间线展示占位文案", () => {
