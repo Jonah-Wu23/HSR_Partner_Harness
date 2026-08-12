@@ -100,6 +100,137 @@ describe("desktopStore event projection", () => {
     expect(state.needsBootstrap).toBe(true);
   });
 
+  it("error.reported recoverable 入 Toast 队列（同 code+message 去重，最多 5 条）", () => {
+    const reported = (sequence: number, code: string, message: string) => ({
+      kind: "event" as const,
+      event: "error.reported" as const,
+      sequence,
+      payload: { code, message, severity: "recoverable", source: "sidecar" },
+    });
+    desktopStore.getState().applyEvents([
+      reported(1, "backend_disconnected", "Python Sidecar 已断开，正在重连…"),
+      reported(2, "backend_disconnected", "Python Sidecar 已断开，正在重连…"),
+      reported(3, "voice.tts", "语音合成失败：服务无响应"),
+      reported(4, "dialogue.deepseek", "请求超时"),
+    ]);
+    let state = desktopStore.getState();
+    // 同 code+message 去重；fatal 之外的错误保留 error 字段（既有语义）
+    expect(state.toasts).toHaveLength(3);
+    expect(state.toasts[0].kind).toBe("warning");
+    expect(state.error).toBe("请求超时");
+
+    // 超过 5 条只保留最新 5 条（最早的 Sidecar 断开被挤出）
+    desktopStore.getState().applyEvents([
+      reported(5, "a", "错误五"),
+      reported(6, "b", "错误六"),
+      reported(7, "c", "错误七"),
+    ]);
+    state = desktopStore.getState();
+    expect(state.toasts).toHaveLength(5);
+    expect(state.toasts.map((toast) => toast.text)).toEqual([
+      "语音合成失败：服务无响应",
+      "请求超时",
+      "错误五",
+      "错误六",
+      "错误七",
+    ]);
+
+    // dismissToast 移除指定 Toast
+    desktopStore.getState().dismissToast("c:错误七");
+    expect(desktopStore.getState().toasts.map((toast) => toast.text)).toEqual([
+      "语音合成失败：服务无响应",
+      "请求超时",
+      "错误五",
+      "错误六",
+    ]);
+  });
+
+  it("error.reported info 进 Toast，fatal 维持整屏接管", () => {
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "error.reported",
+        sequence: 1,
+        payload: { code: "voice.asr", message: "麦克风不可用", severity: "info" },
+      },
+    ]);
+    expect(desktopStore.getState().toasts).toHaveLength(1);
+    expect(desktopStore.getState().toasts[0].kind).toBe("info");
+
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "error.reported",
+        sequence: 2,
+        payload: { code: "sidecar", message: "后端崩溃", severity: "fatal" },
+      },
+    ]);
+    const state = desktopStore.getState();
+    expect(state.status).toBe("error");
+    expect(state.toasts).toHaveLength(1); // fatal 不进 Toast
+  });
+
+  it("error.reported 缺失 severity 按 fatal 处理", () => {
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "error.reported",
+        sequence: 1,
+        payload: { message: "未知错误" },
+      },
+    ]);
+    expect(desktopStore.getState().status).toBe("error");
+    expect(desktopStore.getState().toasts).toHaveLength(0);
+  });
+
+  it("account.changed 水合当前账号与账号列表", () => {
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "account.changed",
+        sequence: 1,
+        payload: {
+          account: {
+            account_id: "alice-1",
+            username: "alice",
+            display_name: "爱丽丝",
+            avatar: "",
+            last_login_at: null,
+            onboarding_complete: false,
+            theme: "dark",
+          },
+          accounts: [
+            {
+              account_id: "default-local",
+              username: "default",
+              display_name: "默认账号",
+              avatar: "",
+              last_login_at: null,
+              onboarding_complete: false,
+              theme: "dark",
+              is_last_login: false,
+            },
+            {
+              account_id: "alice-1",
+              username: "alice",
+              display_name: "爱丽丝",
+              avatar: "",
+              last_login_at: null,
+              onboarding_complete: false,
+              theme: "dark",
+              is_last_login: true,
+            },
+          ],
+        },
+      },
+    ]);
+    const state = desktopStore.getState();
+    expect(state.currentAccountId).toBe("alice-1");
+    expect(state.currentAccount?.username).toBe("alice");
+    expect(state.accounts).toHaveLength(2);
+    expect(state.accounts.find((item) => item.is_last_login)?.account_id).toBe("alice-1");
+  });
+
   it("locks approval actions until the resolved event arrives", () => {
     desktopStore.getState().applyEvents([
       {

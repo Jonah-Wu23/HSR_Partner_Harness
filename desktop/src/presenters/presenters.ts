@@ -1,6 +1,15 @@
-import type { AppShellViewModel, ConversationViewModel, ProjectViewModel } from "../contracts/view-models";
+import type {
+  AppShellViewModel,
+  ConversationViewModel,
+  ProjectViewModel,
+} from "../contracts/view-models";
 import type { Message, ToolRun } from "../contracts/protocol";
 import type { DesktopRenderState } from "../stores/desktopStore";
+import type { QueueItemView, ToastItem } from "../ui/status/types";
+import type { DelegationCardView } from "../ui/workspace/DelegationCard";
+import type { VoiceMiniPlayerView } from "../ui/composer/VoiceMiniPlayer";
+import type { AccountListItem } from "../ui/gate/types";
+import type { TestResult, VoicePageView } from "../ui/settings/types";
 
 function messagesFor(state: DesktopRenderState, conversationId: string): Message[] {
   return (state.messageIdsByConversation[conversationId] ?? [])
@@ -13,6 +22,148 @@ function toolsFor(state: DesktopRenderState, conversationId: string): ToolRun[] 
     .map((id) => state.toolRunsById[id])
     .filter((tool): tool is ToolRun => tool !== undefined);
 }
+
+/** V0.2 M4：队列项摘要——压缩空白后的单行文本，超 24 字截断加省略号。 */
+function truncateSingleLine(text: string, max = 24): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  return compact.length <= max ? compact : `${compact.slice(0, max)}…`;
+}
+
+/** V0.2 M4：排队条视图——当前会话未撤回的队列项按 position 升序。 */
+function presentQueueItems(state: DesktopRenderState): QueueItemView[] {
+  const items = state.queueItemsByConversation[state.currentConversationId] ?? [];
+  return items
+    .filter((item) => item.status !== "withdrawn")
+    .sort((a, b) => a.position - b.position)
+    .map((item) => ({
+      queueItemId: item.queue_item_id,
+      target: item.target,
+      summary: truncateSingleLine(item.text),
+      position: item.position + 1,
+      waitingFor: "等待当前回复结束",
+      intent: item.intent,
+    }));
+}
+
+/** V0.2 M4：委派卡——当前会话中角色发起的委派（origin=character_delegation
+    且 delegation_id 非空），取最新一条 user 消息；状态随 activeTask 推进。 */
+function presentDelegation(state: DesktopRenderState): DelegationCardView | null {
+  if (!state.pair) return null;
+  const ids = state.messageIdsByConversation[state.currentConversationId] ?? [];
+  let delegationMessage: Message | undefined;
+  for (const id of ids) {
+    const message = state.messagesById[id];
+    if (
+      message &&
+      message.source === "user" &&
+      message.origin === "character_delegation" &&
+      message.delegation_id
+    ) {
+      delegationMessage = message;
+    }
+  }
+  if (!delegationMessage) return null;
+  return {
+    delegationId: delegationMessage.delegation_id ?? "",
+    fromName: state.pair.character.name,
+    summary: delegationMessage.text,
+    status: state.activeTask ? "running" : "completed",
+  };
+}
+
+/** V0.2 M4：语音迷你播放条——tts 播放/合成/失败时映射；
+    后端 tts 状态没有 speaker 来源，用角色兜底；摘要无数据给空串。 */
+function presentVoiceMiniPlayer(state: DesktopRenderState): VoiceMiniPlayerView | null {
+  const pair = state.pair;
+  if (!pair || state.voice.tts === "idle") return null;
+  if (state.voice.tts === "failed") {
+    return {
+      status: "failed",
+      speaker: "character",
+      speakerName: pair.character.name,
+      summary: "",
+      queuedCount: state.voice.speech_queue_len,
+      errorText: state.voice.error ?? undefined,
+    };
+  }
+  return {
+    status: state.voice.tts === "synthesizing" ? "synthesizing" : "playing",
+    speaker: "character",
+    speakerName: pair.character.name,
+    summary: "",
+    queuedCount: state.voice.speech_queue_len,
+  };
+}
+
+/** V0.2 M4：账号门与引导——默认账号（未设密码）进账号门；
+    非默认账号且引导未完成进 Onboarding。 */
+function presentAccountGate(state: DesktopRenderState): AppShellViewModel["accountGate"] {
+  if (state.currentAccount?.username !== "default") return null;
+  const accounts: AccountListItem[] = state.accounts.map((account) => ({
+    accountId: account.account_id,
+    displayName: account.display_name,
+    avatarUrl: account.avatar || null,
+    isLastLogin: account.is_last_login,
+  }));
+  return { accounts, error: null, busy: state.status !== "ready" };
+}
+
+interface ConfigShape {
+  engine?: string;
+  dialogue?: Record<string, string>;
+  voice?: Record<string, string>;
+  codex?: Record<string, string | null>;
+}
+
+/** V0.2 M4：设置中心四页视图——configSnapshot 映射，无数据给默认空值。 */
+function presentSettings(state: DesktopRenderState): AppShellViewModel["settings"] {
+  const config = state.configSnapshot as ConfigShape | null;
+  const dialogue = config?.dialogue ?? {};
+  const voiceConfig = config?.voice ?? {};
+  const codex = config?.codex ?? {};
+  const reasoningEffort =
+    typeof dialogue.reasoning_effort === "string" ? dialogue.reasoning_effort : "auto";
+  const voice: VoicePageView = {
+    enabled: Boolean(voiceConfig.enabled === true || voiceConfig.enabled === "true"),
+    baseUrl: String(voiceConfig.base_url ?? ""),
+    apiKeyMasked: String(voiceConfig.api_key_masked ?? ""),
+    asrModel: String(voiceConfig.asr_model ?? ""),
+    ttsModel: String(voiceConfig.tts_model ?? ""),
+    characterVoice: String(voiceConfig.character_voice ?? ""),
+    assistantVoice: String(voiceConfig.assistant_voice ?? ""),
+    vadEnabled: Boolean(voiceConfig.vad_enabled === "true"),
+    vadStatus: "ready",
+  };
+  const idle: TestResult = { state: "idle" };
+  return {
+    account: {
+      displayName: state.currentAccount?.display_name ?? "",
+      avatarUrl: state.currentAccount?.avatar || null,
+    },
+    coding: {
+      engine: config?.engine === "deepseek" ? "deepseek" : "codex",
+      codex: {
+        status:
+          codex.status === "logged_in" || codex.status === "expired" || codex.status === "waiting"
+            ? (codex.status as CodingAssistantCodexStatus)
+            : "logged_out",
+        accountLabel: typeof codex.account_label === "string" ? codex.account_label : null,
+      },
+    },
+    model: {
+      provider: String(dialogue.provider ?? ""),
+      model: String(dialogue.model ?? ""),
+      baseUrl: String(dialogue.base_url ?? ""),
+      apiKeyMasked: String(dialogue.api_key_masked ?? ""),
+      reasoningEffort,
+    },
+    voice,
+    modelTest: idle,
+    voicePreview: idle,
+  };
+}
+
+type CodingAssistantCodexStatus = "logged_out" | "waiting" | "logged_in" | "expired";
 
 export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
   const currentProject = state.projectsById[state.currentProjectId];
@@ -77,6 +228,8 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
             busy: state.busy,
             activeTask: state.activeTask,
           },
+          // V0.2 M4：委派卡（角色区与工作台之间的视觉桥梁）
+          delegation: presentDelegation(state),
         }
       : null,
     composer: {
@@ -101,5 +254,15 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
       canPushToTalk: state.status === "ready",
     },
     error: state.error,
+    // V0.2 M4：视觉方案接口（队列 / Toast / 语音播放条 / 账号门 / 设置）
+    queueItems: presentQueueItems(state),
+    toasts: state.toasts as ToastItem[],
+    voiceMiniPlayer: presentVoiceMiniPlayer(state),
+    accountGate: presentAccountGate(state),
+    onboarding:
+      state.currentAccount !== null &&
+      state.currentAccount.username !== "default" &&
+      state.currentAccount.onboarding_complete === false,
+    settings: presentSettings(state),
   };
 }

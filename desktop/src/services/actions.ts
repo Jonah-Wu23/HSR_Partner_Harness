@@ -147,6 +147,9 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async stopSpeech() {
       await request("voice.tts_stop");
     },
+    async skipSpeech() {
+      await request("voice.tts_skip");
+    },
     async reconnect() {
       // Sidecar 断开时走 Rust 侧强制重启（sidecar_reconnect），成功后由
       // connection.status connected 事件驱动重新 bootstrap；失败则上报错误状态。
@@ -179,14 +182,23 @@ export function createActionController(backend: DesktopBackend): ActionControlle
         new_password: newPassword,
       });
     },
+    async completeOnboarding() {
+      await request("account.onboarding_complete");
+    },
     async getConfig() {
-      await request("config.get");
+      // V0.2 M4：config.get 结果存入 store（SettingsCenter 数据源）
+      const result = await request<Record<string, unknown>>("config.get");
+      desktopStore.getState().setConfigSnapshot(result);
     },
     async setConfig(updates) {
-      await request("config.set", { updates });
+      const result = await request<{ config?: Record<string, unknown> }>("config.set", { updates });
+      if (result?.config) desktopStore.getState().setConfigSnapshot(result.config);
     },
     async testConnection() {
-      await request("config.test_connection");
+      // V0.2 M4：返回人话结果（Onboarding 保存并测试 / 设置中心模型页）
+      const result = await request<{ ok?: boolean; message?: string }>("config.test_connection");
+      if (result?.ok === false) return result.message ?? "连接失败，请检查配置";
+      return result?.message ?? "连接正常";
     },
     async codexOauthStart() {
       await request("codex.oauth_start");
@@ -199,6 +211,10 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     },
     async voicePreview(text) {
       await request("voice.preview", { text });
+    },
+    dismissToast(id) {
+      // V0.2 M4：Toast 是本地 UI 状态，不经过后端
+      desktopStore.getState().dismissToast(id);
     },
   };
   return { actions, loadBootstrap };

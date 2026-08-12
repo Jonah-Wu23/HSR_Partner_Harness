@@ -19,6 +19,15 @@ import type {
 
 export type DesktopStatus = "booting" | "ready" | "disconnected" | "error";
 
+/** V0.2 M4：Toast 队列项——store 层用协议无关的最小结构，
+    与 ui/status/types.ts 的 ToastItem 形状一致，由 presenters 透传。 */
+export interface StoreToast {
+  id: string;
+  kind: "error" | "warning" | "info" | "success";
+  text: string;
+  hasDetails?: boolean;
+}
+
 export interface DesktopState {
   status: DesktopStatus;
   error: string | null;
@@ -48,6 +57,10 @@ export interface DesktopState {
   reviewActive: boolean;
   reviewText: string | null;
   voice: VoiceState;
+  /** V0.2 M4：Toast 队列（recoverable/info 错误入列，同 code+message 去重，最多 5 条）。 */
+  toasts: StoreToast[];
+  /** V0.2 M4：config.get 结果缓存（SettingsCenter 四个页的数据源）。 */
+  configSnapshot: Record<string, unknown> | null;
   lastSequence: number;
   needsBootstrap: boolean;
   hydrate(snapshot: DesktopSnapshot): void;
@@ -59,6 +72,8 @@ export interface DesktopState {
   setComposerDraft(draft: string): void;
   setApprovalResolving(approvalId: string, resolving: boolean): void;
   setReviewStatus(active: boolean, text?: string | null): void;
+  dismissToast(id: string): void;
+  setConfigSnapshot(snapshot: Record<string, unknown> | null): void;
 }
 
 export type DesktopRenderState = Pick<
@@ -91,6 +106,8 @@ export type DesktopRenderState = Pick<
   | "reviewActive"
   | "reviewText"
   | "voice"
+  | "toasts"
+  | "configSnapshot"
 >;
 
 const emptyVoice: VoiceState = {
@@ -101,6 +118,7 @@ const emptyVoice: VoiceState = {
   tts: "idle",
   asr_partial: "",
   error: null,
+  speech_queue_len: 0,
 };
 
 function createInitialState(): Omit<
@@ -144,6 +162,8 @@ function createInitialState(): Omit<
     reviewActive: false,
     reviewText: null,
     voice: emptyVoice,
+    toasts: [],
+    configSnapshot: null,
     lastSequence: -1,
     needsBootstrap: false,
   };
@@ -198,6 +218,12 @@ function indexSnapshot(snapshot: DesktopSnapshot) {
   };
 }
 
+function pushToast(toasts: StoreToast[], toast: StoreToast): StoreToast[] {
+  // V0.2 M4：同 code+message 去重（以 id 为准），最多保留 5 条
+  if (toasts.some((item) => item.id === toast.id)) return toasts;
+  return [...toasts, toast].slice(-5);
+}
+
 function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): DesktopState {
   // V0.2 模式独立（问题 3）：设置类命令的快照不得回推覆盖本地模式。
   // 只有首次水合（boot）或切换会话时才从后端 last_mode 采纳模式；
@@ -228,6 +254,10 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
     reviewActive: false,
     reviewText: null,
     voice: snapshot.voice,
+    // V0.2 M4：快照水合（重启/重连/切换账号）重置本地 UI 缓存——
+    // Toast 与配置快照不属于后端快照，旧值不得跨水合残留
+    toasts: [],
+    configSnapshot: null,
     mode,
     lastSequence: snapshot.sequence,
     needsBootstrap: false,
@@ -417,16 +447,33 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
       break;
     }
     case "error.reported": {
-      // V0.2 错误分级（问题 9）：只有 fatal 才接管整屏；recoverable/info
-      // 保留已加载内容，由连接药丸/Toast 消费。
-      const payload = event.payload as { message?: string; severity?: string };
+      // V0.2 错误分级（问题 9）：fatal 接管整屏；recoverable/info 保留已加载
+      // 内容，入 Toast 队列（同 code+message 去重，最多 5 条）。
+      const payload = event.payload as { message?: string; severity?: string; code?: string };
       const severity = payload.severity ?? "fatal";
       if (severity === "fatal") {
         next.status = "error";
         next.error = String(payload.message ?? "桌面后端错误");
       } else {
-        next.error = String(payload.message ?? "");
+        const text = String(payload.message ?? "");
+        next.error = text;
+        next.toasts = pushToast(next.toasts, {
+          id: `${payload.code ?? "error"}:${text}`,
+          kind: severity === "info" ? "info" : "warning",
+          text,
+          hasDetails: Boolean(payload.code),
+        });
       }
+      break;
+    }
+    case "account.changed": {
+      // V0.2 M4：账号变更事件水合当前账号与账号列表（登录/注册/切换）
+      const payload = event.payload as { account?: AccountRecord; accounts?: AccountListItem[] };
+      if (payload.account) {
+        next.currentAccountId = payload.account.account_id;
+        next.currentAccount = payload.account;
+      }
+      if (payload.accounts) next.accounts = payload.accounts;
       break;
     }
   }
@@ -473,6 +520,12 @@ export const desktopStore = createStore<DesktopState>((set) => ({
   setReviewStatus(active, text = null) {
     set({ reviewActive: active, reviewText: text });
   },
+  dismissToast(id) {
+    set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) }));
+  },
+  setConfigSnapshot(snapshot) {
+    set({ configSnapshot: snapshot });
+  },
 }));
 
 export function useDesktopStore<T>(selector: (state: DesktopState) => T): T {
@@ -513,4 +566,6 @@ export const selectDesktopRenderState = (state: DesktopState): DesktopRenderStat
   reviewActive: state.reviewActive,
   reviewText: state.reviewText,
   voice: state.voice,
+  toasts: state.toasts,
+  configSnapshot: state.configSnapshot,
 });

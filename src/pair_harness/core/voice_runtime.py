@@ -13,7 +13,9 @@ TTS 播放期间暂停向 VAD 喂帧（采集继续、帧丢弃），播放结�
 
 下行（V0.2 M2-4）：播放器持有长期输出流与有界缓冲，句间/块间不断流；
 ``skip_playing()`` 跳过当前句继续播队列下一句（队列空则停止）；tts 状态
-机经 ``on_tts_state`` 上报（idle/playing/skipping），vad 状态保持既有语义。
+机经 ``on_tts_state`` 上报（idle/synthesizing/playing/skipping/failed），
+vad 状态保持既有语义。V0.2 M4：合成开始置 synthesizing、首个 PCM 块写入
+播放器才置 playing；合成失败置 failed 并清空待播队列（停止消费，等待重播）。
 """
 
 from __future__ import annotations
@@ -108,6 +110,13 @@ class VoiceRuntime:
         self._started = False
         # V0.2 M2-4：跳过当前句的标记，由播放循环消费（见 skip_playing）
         self._skip = False
+        # V0.2 M4：当前句合成失败标记——失败后 tts 保持 failed，直到下次播放成功
+        self._tts_failed = False
+
+    @property
+    def speech_queue_len(self) -> int:
+        """待播队列条数（不含正在播放的当前条）；VoiceMiniPlayer 的 queuedCount。"""
+        return self._queue.pending
 
     # ------------------------------------------------------------ 生命周期
 
@@ -398,18 +407,26 @@ class VoiceRuntime:
                 continue
             self._queue.begin_playback()
             self._on_vad_state("playing")
-            self._on_tts_state("playing")
+            # V0.2 M4：tts 状态机补 synthesizing 过渡态——出队开始合成置
+            # synthesizing，首个 PCM 块写入播放器才置 playing（见 _play_request）
+            self._on_tts_state("synthesizing")
             try:
                 await self._play_request(request)
             except Exception as exc:  # noqa: BLE001 - TTS 失败降级为静音提示
+                self._tts_failed = True
+                self._on_tts_state("failed")
                 self._on_error(f"语音合成失败：{exc}")
+                # V0.2 M4：合成失败停止消费队列——清空待播项并保持 failed
+                # 状态（不回落 idle），等待用户重播或下一条新消息；避免连发失败
+                self._queue.stop()
             skipped = self._skip
             self._skip = False
             self._queue.end_playback()
             if skipped and self._queue.pending:
                 # 跳过当前句：不重开 VAD，直接消费下一句（连续播放）
                 continue
-            self._on_tts_state("idle")
+            if not self._tts_failed:
+                self._on_tts_state("idle")
             await self._restart_vad()
             # _restart_vad 已发出 "listening"；仅无 VAD/未启动时置 "idle"
             if self._vad is None or not self._started:
@@ -418,6 +435,7 @@ class VoiceRuntime:
     async def _play_request(self, request: SpeechRequest) -> None:
         """合成一条请求并把 PCM 写入播放器；stop/skip 由块循环检查。"""
         agen = self._synthesizer.synthesize(request)
+        wrote_first_block = False
         try:
             async for chunk in agen:
                 if chunk.final:
@@ -429,6 +447,11 @@ class VoiceRuntime:
                     # skip_playing：放弃当前句，改播队列下一句
                     break
                 if chunk.pcm:
+                    if not wrote_first_block:
+                        # V0.2 M4：首个 PCM 块写入播放器才算真正出声 → playing
+                        wrote_first_block = True
+                        self._tts_failed = False
+                        self._on_tts_state("playing")
                     await asyncio.to_thread(self._player.play_blocking, chunk.pcm)
         finally:
             await agen.aclose()

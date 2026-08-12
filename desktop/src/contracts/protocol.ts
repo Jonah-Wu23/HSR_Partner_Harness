@@ -196,6 +196,8 @@ export interface VoiceState {
   tts: string;
   asr_partial: string;
   error: string | null;
+  /** V0.2 M4：待播队列条数（不含正在播放的当前条），VoiceMiniPlayer 的 queuedCount。 */
+  speech_queue_len: number;
 }
 
 export interface AccountListItem extends AccountRecord {
@@ -256,6 +258,7 @@ export type DesktopCommandMethod =
   | "account.switch"
   | "account.update_profile"
   | "account.change_password"
+  | "account.onboarding_complete"
   | "config.get"
   | "config.set"
   | "config.test_connection"

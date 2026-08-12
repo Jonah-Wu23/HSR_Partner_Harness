@@ -91,6 +91,9 @@ export class MockDesktopBackend implements DesktopBackend {
         return this.setVoiceState({ ptt: false, vad: "idle" }) as T;
       case "voice.tts_stop":
         return this.setVoiceState({ tts: "idle" }) as T;
+      case "voice.tts_skip":
+        // V0.2 M4：mock 简化——跳下一条等价于停止播放（tts 回 idle）
+        return this.setVoiceState({ tts: "idle" }) as T;
       case "account.list":
         return this.accountList() as T;
       case "account.register":
@@ -99,6 +102,8 @@ export class MockDesktopBackend implements DesktopBackend {
         return this.accountLogin(command.params) as T;
       case "account.logout":
         return this.accountLogin({ account_id: "default-local", password: "" }) as T;
+      case "account.onboarding_complete":
+        return this.accountCompleteOnboarding() as T;
       case "account.update_profile":
         return this.updateAccountProfile(command.params) as T;
       case "account.change_password":
@@ -493,6 +498,21 @@ export class MockDesktopBackend implements DesktopBackend {
       accounts: this.scenario.snapshot.accounts,
     });
     return { account: next, accounts: this.clone(this.scenario.snapshot.accounts) };
+  }
+
+  private accountCompleteOnboarding(): { account: DesktopSnapshot["current_account"] } {
+    // V0.2 M4：首次引导完成——置 onboarding_complete 并广播 account.changed
+    const current = this.scenario.snapshot.current_account;
+    const next = { ...current, onboarding_complete: true };
+    this.scenario.snapshot.current_account = next;
+    this.scenario.snapshot.accounts = this.scenario.snapshot.accounts.map((item) =>
+      item.account_id === next.account_id ? { ...item, onboarding_complete: true } : item,
+    );
+    this.emit("account.changed", {
+      account: next,
+      accounts: this.scenario.snapshot.accounts,
+    });
+    return { account: next };
   }
 
   private updateAccountProfile(params: Record<string, unknown>): { account: DesktopSnapshot["current_account"] } {

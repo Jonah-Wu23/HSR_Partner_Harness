@@ -2,7 +2,7 @@ import type { HarnessActions } from "../contracts/actions";
 import type { PairRecord } from "../contracts/protocol";
 import type { ConnectionViewStatus } from "./status/types";
 import { ConnectionPill } from "./status/ConnectionPill";
-import { StopIcon } from "../assets/icons/icons";
+import { SettingIcon, StopIcon } from "../assets/icons/icons";
 
 interface TopBarProps {
   mode: "chat" | "collaboration";
@@ -10,6 +10,8 @@ interface TopBarProps {
   assistantBusy: boolean;
   connectionStatus: ConnectionViewStatus;
   onOpenTechDetails: () => void;
+  /** V0.2 M4：设置中心入口（右侧按钮）。 */
+  onOpenSettings: () => void;
   actions: HarnessActions;
 }
 
@@ -20,6 +22,7 @@ export function TopBar({
   assistantBusy,
   connectionStatus,
   onOpenTechDetails,
+  onOpenSettings,
   actions,
 }: TopBarProps) {
   return (
@@ -75,6 +78,17 @@ export function TopBar({
           取消任务
         </button>
       ) : null}
+
+      {/* V0.2 M4：设置中心入口（打开时拉取 config.get） */}
+      <button
+        type="button"
+        className="icon-btn"
+        onClick={onOpenSettings}
+        title="设置"
+        aria-label="设置"
+      >
+        <SettingIcon />
+      </button>
     </header>
   );
 }

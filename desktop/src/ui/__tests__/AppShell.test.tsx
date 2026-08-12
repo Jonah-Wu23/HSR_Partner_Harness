@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AppShell } from "../AppShell";
@@ -141,5 +141,108 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
     expect(screen.getByText("HSR Partner Harness")).toBeInTheDocument();
     expect(screen.getByText("还没有项目")).toBeInTheDocument();
     expect(screen.queryByText("暂无打开的项目")).not.toBeInTheDocument();
+  });
+});
+
+describe("AppShell V0.2 M4 接口接线", () => {
+  afterEach(() => {
+    cleanup();
+    desktopStore.getState().setStatus("booting");
+  });
+
+  it("gate-default：默认账号整屏账号门，登录后进入应用", async () => {
+    const backend = new MockDesktopBackend("gate-default");
+    const controller = createActionController(backend);
+    const unsubscribe = backend.subscribe((event) => desktopStore.getState().applyEvents([event]));
+    try {
+      await controller.loadBootstrap();
+      const present = () => presentAppShell(desktopStore.getState());
+      const { rerender } = render(<AppShell vm={present()} actions={controller.actions} />);
+
+      // 整屏账号门：默认选中上次登录账号，导航被替换
+      expect(screen.getByText("欢迎回来")).toBeInTheDocument();
+      expect(screen.getByRole("radio", { name: /默认账号/ })).toHaveAttribute(
+        "aria-checked",
+        "true",
+      );
+      expect(screen.getByRole("radio", { name: /演示账号/ })).toBeInTheDocument();
+      expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+
+      // 选择演示账号 → 输入密码 → 进入
+      fireEvent.click(screen.getByRole("radio", { name: /演示账号/ }));
+      fireEvent.change(screen.getByLabelText("密码"), { target: { value: "demo-pass" } });
+      fireEvent.click(screen.getByRole("button", { name: "进入" }));
+
+      // 登录成功后账号门消失，进入应用（账号数据来自 account.changed）
+      await waitFor(() =>
+        expect(desktopStore.getState().currentAccount?.username).toBe("demo"),
+      );
+      rerender(<AppShell vm={present()} actions={controller.actions} />);
+      expect(screen.queryByText("欢迎回来")).not.toBeInTheDocument();
+      expect(screen.getByRole("navigation", { name: "项目轨道" })).toBeInTheDocument();
+      expect(screen.getByTestId("composer")).toBeInTheDocument();
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("onboarding-pending：非默认账号且引导未完成 → 整屏首次引导", async () => {
+    await renderScenario("onboarding-pending");
+    // 步骤指示器与面板标题都会出现「创建第一个项目」
+    expect(screen.getByRole("heading", { name: "创建第一个项目" })).toBeInTheDocument();
+    expect(screen.getAllByText("创建第一个项目")).toHaveLength(2);
+    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+  });
+
+  it("error.reported recoverable：Toast 渲染并可关闭", async () => {
+    const { controller, rerender, present } = await renderScenario("single-project");
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "error.reported",
+        sequence: 1,
+        payload: {
+          code: "backend_disconnected",
+          message: "Python Sidecar 已断开，正在重连…",
+          severity: "recoverable",
+          source: "sidecar",
+        },
+      },
+    ]);
+    rerender(<AppShell vm={present()} actions={controller.actions} />);
+
+    const toast = screen.getByText("Python Sidecar 已断开，正在重连…");
+    expect(toast).toBeInTheDocument();
+    // Toast 有技术详情入口（打开技术详情抽屉）
+    expect(screen.getByRole("button", { name: "查看技术详情" })).toBeInTheDocument();
+
+    // 点击关闭后 Toast 消失
+    fireEvent.click(screen.getByRole("button", { name: "关闭通知" }));
+    rerender(<AppShell vm={present()} actions={controller.actions} />);
+    expect(screen.queryByText("Python Sidecar 已断开，正在重连…")).not.toBeInTheDocument();
+  });
+
+  it("设置入口打开设置中心并拉取 config.get 水合表单", async () => {
+    const { controller, rerender, present } = await renderScenario("single-project");
+
+    // 顶栏右侧设置按钮打开设置中心（打开时拉取 config.get）
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    await waitFor(() => {
+      // 每次轮询重新查询：config 到达后 key 重挂载会替换 dialog 实例
+      expect(screen.queryByRole("dialog", { name: "设置" })).toBeInTheDocument();
+    });
+
+    // 配置到达后模型页表单水合真实配置
+    await waitFor(() => expect(desktopStore.getState().configSnapshot).not.toBeNull());
+    rerender(<AppShell vm={present()} actions={controller.actions} />);
+    fireEvent.click(screen.getByRole("button", { name: "角色对话模型" }));
+    await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("deepseek-chat"));
+    expect(screen.getByText("当前已保存 sk-d…1234")).toBeInTheDocument();
+
+    // Esc 关闭设置中心
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "设置" })).not.toBeInTheDocument();
+    });
   });
 });

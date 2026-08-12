@@ -32,6 +32,8 @@ async def test_bootstrap_contains_projects_conversation_and_voice_shape(tmp_path
         assert snapshot["current_conversation"]["pair_id"] == "phainon_ancient_machine"
         assert snapshot["messages"] == []
         assert snapshot["voice"]["supported"] is False
+        # V0.2 M4：voice 快照携带待播队列长度（VoiceMiniPlayer 的 queuedCount）
+        assert snapshot["voice"]["speech_queue_len"] == 0
         assert snapshot["busy"] is False
     finally:
         await service.shutdown()
@@ -354,6 +356,8 @@ async def test_voice_commands_only_exchange_state_with_attached_runtime(tmp_path
 
     class FakeVoiceRuntime:
         on_message = lambda self, _message: None
+        # V0.2 M4：待播队列长度（VoiceMiniPlayer 的 queuedCount）
+        speech_queue_len = 0
 
         def __init__(self) -> None:
             self.listening = False
@@ -391,6 +395,8 @@ async def test_voice_commands_only_exchange_state_with_attached_runtime(tmp_path
     service.attach_voice_runtime(runtime)  # type: ignore[arg-type]
     try:
         assert service.bootstrap()["voice"]["supported"] is True
+        # V0.2 M4：voice 快照与事件都携带待播队列长度
+        assert service.bootstrap()["voice"]["speech_queue_len"] == 0
         await service.handle_command(command("vad-on", "voice.vad_set", enabled=True))
         await service.handle_command(command("ptt-on", "voice.ptt_start", target="character"))
         await service.handle_command(command("ptt-off", "voice.ptt_stop"))
@@ -398,7 +404,9 @@ async def test_voice_commands_only_exchange_state_with_attached_runtime(tmp_path
         assert runtime.listening is True
         assert runtime.ptt is False
         assert runtime.stopped is True
-        assert "voice.state_changed" in [event["event"] for event in events]
+        changed = [event for event in events if event["event"] == "voice.state_changed"]
+        assert changed
+        assert all(event["payload"]["voice"]["speech_queue_len"] == 0 for event in changed)
     finally:
         await service.shutdown()
 
@@ -415,6 +423,8 @@ async def test_voice_tts_play_skip_and_preview_commands(tmp_path: Path) -> None:
             self.replayed: list[Any] = []
             self.skips = 0
             self.preview_texts: list[str] = []
+            # V0.2 M4：待播队列长度（VoiceMiniPlayer 的 queuedCount）
+            self.speech_queue_len = 0
 
         def replay_message(self, message: Any) -> None:
             self.replayed.append(message)
@@ -425,6 +435,7 @@ async def test_voice_tts_play_skip_and_preview_commands(tmp_path: Path) -> None:
         def enqueue_text(self, text: str, *, voice_id: str | None = None) -> None:
             del voice_id
             self.preview_texts.append(text)
+            self.speech_queue_len += 1
 
         async def shutdown(self) -> None:
             pass
@@ -462,6 +473,10 @@ async def test_voice_tts_play_skip_and_preview_commands(tmp_path: Path) -> None:
         # preview：文本入队试听
         await service.handle_command(command("preview-1", "voice.preview", text="试听一下"))
         assert runtime.preview_texts == ["试听一下"]
+
+        # V0.2 M4：voice 快照的 speech_queue_len 反映待播队列长度
+        snapshot = await service.handle_command(command("b-1", "app.bootstrap"))
+        assert snapshot["voice"]["speech_queue_len"] == 1
 
         # 错误路径：消息不存在 / 试听文本不可读
         with pytest.raises(ServiceError):
@@ -823,6 +838,48 @@ async def test_account_switch_isolates_projects(tmp_path: Path) -> None:
         assert back["account"]["username"] == "default"
         snapshot = await service.handle_command(command("b-2", "app.bootstrap"))
         assert any(p["project_id"] == default_project_id for p in snapshot["projects"])
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_account_onboarding_complete_marks_flag_only_on_command(
+    tmp_path: Path,
+) -> None:
+    """V0.2 M4：注册/登录不自动完成引导；account.onboarding_complete 显式置位并广播。"""
+    events: list[dict] = []
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+        event_sink=events.append,
+    )
+    try:
+        result = await service.handle_command(
+            command(
+                "reg-1",
+                "account.register",
+                username="alice",
+                display_name="爱丽丝",
+                password="s3cret-pass",
+            )
+        )
+        # 注册后引导未完成（前端负责展示 Onboarding）
+        assert result["account"]["onboarding_complete"] is False
+        snapshot = await service.handle_command(command("b-1", "app.bootstrap"))
+        assert snapshot["current_account"]["onboarding_complete"] is False
+
+        # 显式命令置位并广播 account.changed
+        marked = await service.handle_command(
+            command("ob-1", "account.onboarding_complete")
+        )
+        assert marked["account"]["onboarding_complete"] is True
+        changed = [event for event in events if event["event"] == "account.changed"]
+        assert changed
+        assert changed[-1]["payload"]["account"]["onboarding_complete"] is True
+        snapshot = await service.handle_command(command("b-2", "app.bootstrap"))
+        assert snapshot["current_account"]["onboarding_complete"] is True
+        # 默认账号不受影响（登录页不展示引导）
+        assert any(a["onboarding_complete"] is False for a in snapshot["accounts"])
     finally:
         await service.shutdown()
 

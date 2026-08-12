@@ -10,6 +10,8 @@ import {
   VoiceWaveIcon,
 } from "../../assets/icons/icons";
 import { Menu } from "../primitives/Menu";
+import { VoiceMiniPlayer } from "./VoiceMiniPlayer";
+import type { VoiceMiniPlayerView } from "./VoiceMiniPlayer";
 
 const APPROVAL_LABEL: Record<ApprovalMode, string> = {
   request_approval: "请求批准",
@@ -30,10 +32,12 @@ interface ComposerProps {
   voice: VoiceViewModel;
   mode: "chat" | "collaboration";
   actions: HarnessActions;
+  /** V0.2 M4：语音迷你播放条视图；tts 播放/合成/失败时非空。 */
+  voiceMiniPlayer?: VoiceMiniPlayerView | null;
 }
 
 /** 输入区：目标切换、自动增高文本框、审批/推理档位、语音控制条。 */
-export function Composer({ composer, voice, mode, actions }: ComposerProps) {
+export function Composer({ composer, voice, mode, actions, voiceMiniPlayer }: ComposerProps) {
   const [target, setTarget] = useState<"character" | "assistant">(composer.target);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -74,6 +78,15 @@ export function Composer({ composer, voice, mode, actions }: ComposerProps) {
 
   return (
     <div className={`composer${composer.enabled ? "" : " is-disabled"}`} data-testid="composer">
+      {voiceMiniPlayer ? (
+        // V0.2 M4：语音迷你播放条——停止/关闭走 tts_stop，跳下一条走 tts_skip
+        <VoiceMiniPlayer
+          view={voiceMiniPlayer}
+          onStop={() => void actions.stopSpeech()}
+          onSkip={() => void actions.skipSpeech()}
+          onClose={() => void actions.stopSpeech()}
+        />
+      ) : null}
       <div className="composer-main">
         <div className="composer-input-wrap">
           <div className="segmented" role="tablist" aria-label="发送对象">

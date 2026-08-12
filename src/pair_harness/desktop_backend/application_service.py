@@ -187,6 +187,8 @@ class DesktopApplicationService:
             "tts": "idle",
             "asr_partial": "",
             "error": None,
+            # V0.2 M4：待播队列条数（VoiceMiniPlayer 的 queuedCount 数据源）
+            "speech_queue_len": 0,
         }
 
         self.orchestrator.on_message = self._on_message
@@ -346,7 +348,7 @@ class DesktopApplicationService:
             "active_task": to_jsonable(active),
             "busy": active is not None,
             "approvals": self.approval_broker.snapshot(),
-            "voice": dict(self._voice_state),
+            "voice": self._voice_snapshot(),
             "pair": self._pair_payload(self.pair_config),
             "sequence": self.emitter.next_sequence,
         }
@@ -360,7 +362,7 @@ class DesktopApplicationService:
         self.voice_runtime = runtime
         self._voice_state["supported"] = True
         self.orchestrator.add_message_listener(runtime.on_message)
-        self.emitter.emit("voice.state_changed", {"voice": dict(self._voice_state)})
+        self._emit_voice_changed()
 
     async def start_voice(self) -> None:
         if self.voice_runtime is None:
@@ -371,15 +373,27 @@ class DesktopApplicationService:
         except Exception as exc:  # noqa: BLE001 - 语音不可用不阻塞文本主线
             self._on_voice_error(f"语音启动失败：{exc}")
 
+    def _voice_snapshot(self) -> dict[str, Any]:
+        """voice 快照：先同步待播队列长度（VoiceMiniPlayer 的 queuedCount）。"""
+        if self.voice_runtime is not None:
+            self._voice_state["speech_queue_len"] = getattr(
+                self.voice_runtime, "speech_queue_len", 0
+            )
+        return dict(self._voice_state)
+
+    def _emit_voice_changed(self) -> None:
+        """广播 voice 快照（事件与命令响应共用）。"""
+        self.emitter.emit("voice.state_changed", {"voice": self._voice_snapshot()})
+
     def _on_voice_state(self, state: str) -> None:
         # vad 通道保持既有语义（playing=播放期间暂停监听）
         self._voice_state["vad"] = state
-        self.emitter.emit("voice.state_changed", {"voice": dict(self._voice_state)})
+        self._emit_voice_changed()
 
     def _on_tts_state(self, state: str) -> None:
-        # V0.2 M2-4：tts 状态机独立于 vad——idle/playing/skipping
+        # V0.2 M2-4：tts 状态机独立于 vad——idle/synthesizing/playing/skipping/failed
         self._voice_state["tts"] = state
-        self.emitter.emit("voice.state_changed", {"voice": dict(self._voice_state)})
+        self._emit_voice_changed()
 
     def _on_asr_partial(self, text: str) -> None:
         self._voice_state["asr_partial"] = text
@@ -387,7 +401,7 @@ class DesktopApplicationService:
 
     def _on_voice_error(self, message: str) -> None:
         self._voice_state["error"] = message
-        self.emitter.emit("voice.state_changed", {"voice": dict(self._voice_state)})
+        self._emit_voice_changed()
 
     # ------------------------------------------------------------------ 命令路由
 
@@ -426,6 +440,7 @@ class DesktopApplicationService:
             "account.switch": self._account_switch,
             "account.update_profile": self._account_update_profile,
             "account.change_password": self._account_change_password,
+            "account.onboarding_complete": self._account_onboarding_complete,
             "config.get": self._config_get,
             "config.set": self._config_set,
             "config.test_connection": self._config_test_connection,
@@ -849,8 +864,8 @@ class DesktopApplicationService:
             self.voice_runtime.start_playback()
         else:
             await self.voice_runtime.stop_listening()
-        self.emitter.emit("voice.state_changed", {"voice": self._voice_state})
-        return {"voice": dict(self._voice_state)}
+        self._emit_voice_changed()
+        return {"voice": self._voice_snapshot()}
 
     async def _voice_ptt_start(self, params: Mapping[str, Any]) -> dict[str, Any]:
         target = str(params.get("target", "character"))
@@ -858,8 +873,8 @@ class DesktopApplicationService:
             raise ServiceError("语音运行时未启用", code="voice_unavailable")
         await self.voice_runtime.push_to_talk_start(target=target)
         self._voice_state["ptt"] = True
-        self.emitter.emit("voice.state_changed", {"voice": self._voice_state})
-        return {"voice": dict(self._voice_state)}
+        self._emit_voice_changed()
+        return {"voice": self._voice_snapshot()}
 
     async def _voice_ptt_stop(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
@@ -867,8 +882,8 @@ class DesktopApplicationService:
             raise ServiceError("语音运行时未启用", code="voice_unavailable")
         await self.voice_runtime.push_to_talk_stop()
         self._voice_state["ptt"] = False
-        self.emitter.emit("voice.state_changed", {"voice": self._voice_state})
-        return {"voice": dict(self._voice_state)}
+        self._emit_voice_changed()
+        return {"voice": self._voice_snapshot()}
 
     async def _voice_tts_stop(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
@@ -877,8 +892,8 @@ class DesktopApplicationService:
         else:
             self.voice_runtime.stop_speaking()
             self._voice_state["tts"] = "idle"
-        self.emitter.emit("voice.state_changed", {"voice": self._voice_state})
-        return {"voice": dict(self._voice_state)}
+        self._emit_voice_changed()
+        return {"voice": self._voice_snapshot()}
 
     # ------------------------------------------------------------------ M3 占位
     # 下列处理器在设置/账号阶段实现；此处先注册保证路由可用，
@@ -935,14 +950,14 @@ class DesktopApplicationService:
         if message is None:
             raise ServiceError("消息不存在", code="message_not_found")
         self.voice_runtime.replay_message(message)
-        return {"voice": dict(self._voice_state)}
+        return {"voice": self._voice_snapshot()}
 
     async def _voice_tts_skip(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
         if self.voice_runtime is None:
             raise ServiceError("语音运行时未启用", code="voice_unavailable")
         self.voice_runtime.skip_playing()
-        return {"voice": dict(self._voice_state)}
+        return {"voice": self._voice_snapshot()}
 
     async def _voice_preview(self, params: Mapping[str, Any]) -> dict[str, Any]:
         """语音试听：按指定文本用当前 pair 的角色音色合成入队。"""
@@ -952,7 +967,7 @@ class DesktopApplicationService:
         if not is_readable_text(text):
             raise ServiceError("试听文本为空或只有标点", code="invalid_text")
         self.voice_runtime.enqueue_text(text)
-        return {"voice": dict(self._voice_state)}
+        return {"voice": self._voice_snapshot()}
 
     async def _account_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
@@ -1048,6 +1063,17 @@ class DesktopApplicationService:
         ):
             raise ServiceError("原密码错误", code="wrong_password")
         return {"changed": True}
+
+    async def _account_onboarding_complete(
+        self, params: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """V0.2 M4：首次引导完成标记——引导只在注册后由前端显式触发，
+        登录/注册命令本身不自动置位。"""
+        del params
+        account_id = self.current_account_id
+        self.store.set_onboarding_complete(account_id, True)
+        self._emit_account_changed()
+        return {"account": self._account_payload(account_id)}
 
     async def _config_get(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params

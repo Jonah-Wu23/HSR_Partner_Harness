@@ -3,6 +3,7 @@ import type { PairRecord } from "../../contracts/protocol";
 import type { WorkspaceViewModel } from "../../contracts/view-models";
 import { MessageList } from "./MessageList";
 import { ToolCard } from "./ToolCard";
+import { DelegationCard } from "./DelegationCard";
 import { CollapseIcon } from "../../assets/icons/icons";
 
 interface WorkspaceProps {
@@ -12,6 +13,8 @@ interface WorkspaceProps {
   onQuickTask?: (text: string) => void;
   /** 工作台头部收起按钮：等同切回聊天模式。 */
   onCloseWorkbench?: () => void;
+  /** V0.2 M4：委派卡取消回调（task.cancel）。 */
+  onCancelDelegation?: () => void;
 }
 
 /**
@@ -19,7 +22,13 @@ interface WorkspaceProps {
  * 角色区常驻、永不卸载；工作台是可开合侧栏——聊天模式 = 收起（宽度 0，
  * DOM 与滚动位置保留），协作模式 = 打开。模式切换只是面板开合动画。
  */
-export function Workspace({ workspace, pair, onQuickTask, onCloseWorkbench }: WorkspaceProps) {
+export function Workspace({
+  workspace,
+  pair,
+  onQuickTask,
+  onCloseWorkbench,
+  onCancelDelegation,
+}: WorkspaceProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [workbenchPct, setWorkbenchPct] = useState(45);
   const [dragging, setDragging] = useState(false);
@@ -81,6 +90,13 @@ export function Workspace({ workspace, pair, onQuickTask, onCloseWorkbench }: Wo
           pair={pair}
           emptyText={`和 ${pair.character.name} 聊聊吧`}
         />
+        {workspace.delegation ? (
+          // V0.2 M4：委派卡——角色区与工作台之间的视觉桥梁
+          <DelegationCard
+            delegation={workspace.delegation}
+            onCancel={onCancelDelegation ? () => onCancelDelegation() : undefined}
+          />
+        ) : null}
       </section>
 
       <div

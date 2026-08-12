@@ -508,14 +508,55 @@ async def test_vad_unavailable_falls_back_to_ptt() -> None:
 
 
 async def test_tts_state_follows_playback_lifecycle() -> None:
-    """M2-4：tts 状态机——播放开始 playing、结束回 idle。"""
+    """M2-4：tts 状态机——synthesizing → playing、结束回 idle。"""
     runtime, ctx = make_runtime(vad=None, synthesizer=FakeSynthesizer(chunks=1))
     playback = asyncio.create_task(runtime.run_playback_loop())
     try:
         ctx.queue.enqueue(SpeechRequest(text="你好", voice_id="demo", message_id="m1"))
         await wait_until(lambda: ctx.tts_states and ctx.tts_states[-1] == "playing")
         await wait_until(lambda: ctx.tts_states and ctx.tts_states[-1] == "idle")
-        assert ctx.tts_states == ["playing", "idle"]
+        # V0.2 M4：出队合成先置 synthesizing，首个 PCM 块写入播放器才置 playing
+        assert ctx.tts_states == ["synthesizing", "playing", "idle"]
+        assert ctx.queue.pending == 0
+    finally:
+        playback.cancel()
+        try:
+            await playback
+        except asyncio.CancelledError:
+            pass
+
+
+async def test_tts_failure_reports_failed_then_recovers() -> None:
+    """V0.2 M4：合成失败 → tts 置 failed、待播队列清空并保持失败态；
+    下一条新消息入队后 synthesizing → playing 恢复。"""
+    class FlakySynthesizer:
+        def __init__(self) -> None:
+            self.fail_next = True
+
+        async def synthesize(self, request: SpeechRequest) -> AsyncIterator[AudioChunk]:
+            if self.fail_next:
+                self.fail_next = False
+                raise RuntimeError("合成服务无响应")
+            yield AudioChunk(pcm=BLOCK, final=False)
+            yield AudioChunk(pcm=b"", final=True)
+
+    runtime, ctx = make_runtime(vad=None, synthesizer=FlakySynthesizer())
+    playback = asyncio.create_task(runtime.run_playback_loop())
+    try:
+        ctx.queue.enqueue(SpeechRequest(text="第一句", voice_id="demo", message_id="m1"))
+        # 失败：tts 置 failed、错误上报；待播队列被清空，不再自动消费下一句
+        await wait_until(lambda: ctx.tts_states and ctx.tts_states[-1] == "failed")
+        assert ctx.errors and "合成失败" in ctx.errors[0]
+        await asyncio.sleep(0.05)
+        assert ctx.tts_states[-1] == "failed"  # 失败态保持可观测（不回落 idle）
+        assert ctx.queue.pending == 0
+
+        # 新消息入队：synthesizing → playing → idle 恢复。
+        # playing 是瞬态（播放即结束），以终态 idle 为准、列表留痕断言。
+        ctx.queue.enqueue(SpeechRequest(text="第二句", voice_id="demo", message_id="m2"))
+        await wait_until(lambda: ctx.tts_states and ctx.tts_states[-1] == "idle")
+        assert ctx.tts_states[-3:] == ["synthesizing", "playing", "idle"]
+        assert not ctx.queue.playing
     finally:
         playback.cancel()
         try:

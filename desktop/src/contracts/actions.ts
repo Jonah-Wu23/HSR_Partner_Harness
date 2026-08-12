@@ -28,6 +28,8 @@ export interface HarnessActions {
   startPushToTalk(target?: "character" | "assistant"): Promise<void>;
   stopPushToTalk(): Promise<void>;
   stopSpeech(): Promise<void>;
+  /** 跳过当前朗读，播放下一条（voice.tts_skip）。 */
+  skipSpeech(): Promise<void>;
   /** 立即重连本地服务（Sidecar 断开时由 Rust 侧强制重启并重置退避）。 */
   reconnect(): Promise<void>;
   listAccounts(): Promise<void>;
@@ -36,9 +38,14 @@ export interface HarnessActions {
   logoutAccount(): Promise<void>;
   updateAccountProfile(displayName?: string, avatar?: string): Promise<void>;
   changePassword(oldPassword: string, newPassword: string): Promise<void>;
+  /** 首次引导完成：置 onboarding_complete 并广播 account.changed。 */
+  completeOnboarding(): Promise<void>;
   getConfig(): Promise<void>;
   setConfig(updates: Record<string, string>): Promise<void>;
-  testConnection(): Promise<void>;
+  /** 测试对话服务连接；返回人话结果（如「连接正常（延迟 12 ms）」「Key 无效…」）。 */
+  testConnection(): Promise<string>;
+  /** 本地 Toast 关闭（不经过后端）。 */
+  dismissToast(id: string): void;
   codexOauthStart(): Promise<void>;
   codexApiLogin(apiKey: string): Promise<void>;
   codexLogout(): Promise<void>;
