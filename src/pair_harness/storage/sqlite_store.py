@@ -147,6 +147,29 @@ class SQLiteStore(StateStore):
         )
         self.connection.commit()
 
+    def update_project_name(self, project_id: str, name: str) -> None:
+        self.connection.execute(
+            "UPDATE projects SET name = ?, last_opened_at = ? WHERE project_id = ?",
+            (name, _now(), project_id),
+        )
+        self.connection.commit()
+
+    def update_project_root_path(self, project_id: str, root_path: str) -> None:
+        self.connection.execute(
+            "UPDATE projects SET root_path = ?, last_opened_at = ? WHERE project_id = ?",
+            (root_path, _now(), project_id),
+        )
+        self.connection.commit()
+
+    def mark_project_opened(self, project_id: str) -> Project:
+        """记录最近打开项目，并返回更新后的项目对象。"""
+        self.connection.execute(
+            "UPDATE projects SET last_opened_at = ? WHERE project_id = ?",
+            (_now(), project_id),
+        )
+        self.connection.commit()
+        return self.get_project(project_id)
+
     def get_project(self, project_id: str) -> Project:
         row = self.connection.execute(
             "SELECT * FROM projects WHERE project_id = ?", (project_id,)
@@ -374,6 +397,22 @@ class SQLiteStore(StateStore):
         self.connection.execute(
             "UPDATE conversations SET title = ?, updated_at = ? WHERE conversation_id = ?",
             (title, _now(), conversation_id),
+        )
+        self.connection.commit()
+
+    def update_conversation_mode(self, conversation_id: str, mode: str) -> None:
+        """保存桌面端当前聊天模式，不改变历史消息语义。"""
+        self.connection.execute(
+            "UPDATE conversations SET last_mode = ?, updated_at = ? WHERE conversation_id = ?",
+            (mode, _now(), conversation_id),
+        )
+        self.connection.commit()
+
+    def archive_conversation(self, conversation_id: str) -> None:
+        """归档单个聊天；项目和其他聊天保持不变。"""
+        self.connection.execute(
+            "UPDATE conversations SET archived = 1, updated_at = ? WHERE conversation_id = ?",
+            (_now(), conversation_id),
         )
         self.connection.commit()
 

@@ -12,6 +12,7 @@ from pair_harness.core.contracts import (
     EngineEvent,
     EngineEventType,
     EngineSessionRef,
+    Message,
     ProjectRef,
     TaskAmendment,
     TaskRequest,
@@ -22,6 +23,19 @@ from pair_harness.core.ports import CodingEngine, DialogueModel
 
 class ScriptedDialogueModel(DialogueModel):
     """Predictable roleplay adapter used by Plan A demos and tests."""
+
+    def __init__(self) -> None:
+        self.title_requests: list[tuple[str, tuple[Message, ...]]] = []
+
+    async def generate_title(
+        self, *, pair_id: str, context: tuple[Message, ...]
+    ) -> str | None:
+        self.title_requests.append((pair_id, context))
+        user_message = next((item for item in context if item.source == "user"), None)
+        if user_message is None:
+            return None
+        text = " ".join(user_message.text.split())[:14]
+        return f"关于{text}" if text else None
 
     async def stream_reply(self, request: DialogueRequest) -> AsyncIterator[DialogueEvent]:
         if request.result_summary is not None:

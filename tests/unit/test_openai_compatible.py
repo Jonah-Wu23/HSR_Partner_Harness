@@ -57,6 +57,53 @@ async def test_openai_compatible_stream_yields_final_character_turn() -> None:
     assert finals[0].turn.speech == "你好，伙伴"
 
 
+@pytest.mark.asyncio
+async def test_generate_title_uses_assistant_only_non_streaming_request() -> None:
+    captured: list[dict] = []
+
+    def handler(request: Request) -> Response:
+        body = json.loads(request.content)
+        captured.append(body)
+        return Response(
+            200,
+            json={"choices": [{"message": {"content": "整理今天的工作"}}]},
+        )
+
+    client = AsyncClient(base_url="http://test", transport=MockTransport(handler))
+    model = OpenAICompatibleDialogueModel(
+        base_url="http://test",
+        api_key="test-key",
+        model="test-model",
+        client=client,
+    )
+    context = (
+        Message(
+            conversation_id="c",
+            pair_id="phainon_ancient_machine",
+            source=MessageSource.USER,
+            kind=MessageKind.USER_TEXT,
+            text="请帮我整理今天的工作",
+        ),
+        Message(
+            conversation_id="c",
+            pair_id="phainon_ancient_machine",
+            source=MessageSource.CHARACTER,
+            kind=MessageKind.CHARACTER_SPEECH,
+            text="好，我先陪你理清顺序。",
+        ),
+    )
+
+    title = await model.generate_title(pair_id="phainon_ancient_machine", context=context)
+
+    assert title == "整理今天的工作"
+    assert len(captured) == 1
+    assert captured[0]["stream"] is False
+    assert "不能调用工具" in captured[0]["messages"][0]["content"]
+    assert "用户：请帮我整理今天的工作" in captured[0]["messages"][1]["content"]
+    assert "角色：好，我先陪你理清顺序。" in captured[0]["messages"][1]["content"]
+    await client.aclose()
+
+
 @pytest.mark.parametrize(
     "raw, expected_instructions",
     [
