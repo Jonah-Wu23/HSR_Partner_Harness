@@ -91,6 +91,34 @@ export class MockDesktopBackend implements DesktopBackend {
         return this.setVoiceState({ ptt: false, vad: "idle" }) as T;
       case "voice.tts_stop":
         return this.setVoiceState({ tts: "idle" }) as T;
+      case "account.list":
+        return this.accountList() as T;
+      case "account.register":
+        return this.accountRegister(command.params) as T;
+      case "account.login":
+        return this.accountLogin(command.params) as T;
+      case "account.logout":
+        return this.accountLogin({ account_id: "default-local", password: "" }) as T;
+      case "account.update_profile":
+        return this.updateAccountProfile(command.params) as T;
+      case "account.change_password":
+        return { changed: true } as T;
+      case "config.get":
+        return this.configGet() as T;
+      case "config.set":
+        return this.configSet(command.params) as T;
+      case "config.test_connection":
+        return { ok: true, message: "连接正常（延迟 12 ms）" } as T;
+      case "codex.oauth_start":
+        return { status: "waiting", note: "mock 登录" } as T;
+      case "codex.oauth_status":
+        return { status: "logged_in", account_label: "mock@openai" } as T;
+      case "codex.logout":
+        return { status: "logged_out" } as T;
+      case "codex.api_login":
+        return { status: "logged_in", account_label: "OpenAI API Key" } as T;
+      case "voice.preview":
+        return { voice: this.scenario.snapshot.voice } as T;
       default:
         // 尚未实现的 V0.2 命令在 mock 中返回空对象（不阻断前端流程）
         return {} as T;
@@ -398,6 +426,126 @@ export class MockDesktopBackend implements DesktopBackend {
       target,
       turn_id: turnId,
     };
+  }
+
+  private accountList(): { accounts: DesktopSnapshot["accounts"]; current_account_id: string } {
+    return {
+      accounts: this.scenario.snapshot.accounts,
+      current_account_id: this.scenario.snapshot.current_account_id,
+    };
+  }
+
+  private accountRegister(params: Record<string, unknown>): {
+    account: DesktopSnapshot["current_account"];
+    accounts: DesktopSnapshot["accounts"];
+  } {
+    const username = String(params.username ?? "mock-user");
+    const account = {
+      account_id: `mock-account-${this.scenario.snapshot.accounts.length + 1}`,
+      username,
+      display_name: String(params.display_name ?? username),
+      avatar: "",
+      last_login_at: null,
+      onboarding_complete: false,
+      theme: "dark" as const,
+    };
+    this.scenario.snapshot.accounts = [
+      ...this.scenario.snapshot.accounts.map((item) => ({ ...item, is_last_login: false })),
+      { ...account, is_last_login: true },
+    ];
+    this.scenario.snapshot.current_account = account;
+    this.scenario.snapshot.current_account_id = account.account_id;
+    this.scenario.snapshot.projects = [];
+    this.scenario.snapshot.current_project_id = "";
+    this.scenario.snapshot.current_conversation_id = "";
+    this.emit("account.changed", {
+      account,
+      accounts: this.scenario.snapshot.accounts,
+    });
+    return { account, accounts: this.clone(this.scenario.snapshot.accounts) };
+  }
+
+  private accountLogin(params: Record<string, unknown>): {
+    account: DesktopSnapshot["current_account"];
+    accounts: DesktopSnapshot["accounts"];
+  } {
+    const accountId = String(params.account_id ?? "default-local");
+    const account = this.scenario.snapshot.accounts.find(
+      (item) => item.account_id === accountId,
+    ) ?? this.scenario.snapshot.accounts[0];
+    const next: DesktopSnapshot["current_account"] = {
+      account_id: account.account_id,
+      username: account.username,
+      display_name: account.display_name,
+      avatar: account.avatar,
+      last_login_at: new Date().toISOString(),
+      onboarding_complete: account.onboarding_complete,
+      theme: account.theme,
+    };
+    this.scenario.snapshot.accounts = this.scenario.snapshot.accounts.map((item) => ({
+      ...item,
+      is_last_login: item.account_id === account.account_id,
+    }));
+    this.scenario.snapshot.current_account = next;
+    this.scenario.snapshot.current_account_id = account.account_id;
+    this.emit("account.changed", {
+      account: next,
+      accounts: this.scenario.snapshot.accounts,
+    });
+    return { account: next, accounts: this.clone(this.scenario.snapshot.accounts) };
+  }
+
+  private updateAccountProfile(params: Record<string, unknown>): { account: DesktopSnapshot["current_account"] } {
+    const current = this.scenario.snapshot.current_account;
+    const next = {
+      ...current,
+      display_name: String(params.display_name ?? current.display_name),
+      avatar: params.avatar === undefined ? current.avatar : String(params.avatar),
+    };
+    this.scenario.snapshot.current_account = next;
+    this.scenario.snapshot.accounts = this.scenario.snapshot.accounts.map((item) =>
+      item.account_id === next.account_id ? { ...item, ...next } : item,
+    );
+    this.emit("account.changed", {
+      account: next,
+      accounts: this.scenario.snapshot.accounts,
+    });
+    return { account: next };
+  }
+
+  private configGet(): {
+    engine: string;
+    dialogue: Record<string, string>;
+    voice: Record<string, string>;
+    codex: Record<string, string | null>;
+  } {
+    return {
+      engine: "codex",
+      dialogue: {
+        provider: "deepseek",
+        model: "deepseek-chat",
+        base_url: "https://api.deepseek.com",
+        api_key_masked: "sk-d…1234",
+        reasoning_effort: "auto",
+      },
+      voice: {
+        enabled: "true",
+        base_url: "wss://dashscope.aliyuncs.com",
+        api_key_masked: "sk-v…5678",
+        asr_model: "qwen-audio-3.0-asr-flash-streaming",
+        tts_model: "qwen-audio-3.0-tts-flash",
+        character_voice: "longxiaoyu",
+        assistant_voice: "longxiaoyu",
+        vad_enabled: "true",
+      },
+      codex: { status: "logged_in", account_label: "mock@openai" },
+    };
+  }
+
+  private configSet(_params: Record<string, unknown>): {
+    config: ReturnType<MockDesktopBackend["configGet"]>;
+  } {
+    return { config: this.configGet() };
   }
 
   private emitQueueChanged(conversationId: string, items: QueueItem[]): void {

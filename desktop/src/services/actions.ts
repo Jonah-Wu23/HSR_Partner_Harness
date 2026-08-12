@@ -158,6 +158,48 @@ export function createActionController(backend: DesktopBackend): ActionControlle
           .setStatus("error", error instanceof Error ? error.message : String(error));
       }
     },
+    async listAccounts() {
+      await request("account.list");
+    },
+    async registerAccount(username, displayName, password) {
+      await request("account.register", { username, display_name: displayName, password });
+    },
+    async loginAccount(accountId, password) {
+      await request("account.login", { account_id: accountId, password });
+    },
+    async logoutAccount() {
+      await request("account.logout");
+    },
+    async updateAccountProfile(displayName, avatar) {
+      await request("account.update_profile", { display_name: displayName, avatar });
+    },
+    async changePassword(oldPassword, newPassword) {
+      await request("account.change_password", {
+        old_password: oldPassword,
+        new_password: newPassword,
+      });
+    },
+    async getConfig() {
+      await request("config.get");
+    },
+    async setConfig(updates) {
+      await request("config.set", { updates });
+    },
+    async testConnection() {
+      await request("config.test_connection");
+    },
+    async codexOauthStart() {
+      await request("codex.oauth_start");
+    },
+    async codexApiLogin(apiKey) {
+      await request("codex.api_login", { api_key: apiKey });
+    },
+    async codexLogout() {
+      await request("codex.logout");
+    },
+    async voicePreview(text) {
+      await request("voice.preview", { text });
+    },
   };
   return { actions, loadBootstrap };
 }

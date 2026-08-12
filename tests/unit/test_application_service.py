@@ -737,3 +737,175 @@ async def test_queue_persists_across_service_restart(tmp_path: Path) -> None:
         assert items[0]["status"] == "queued"
     finally:
         await restored.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_account_register_login_and_snapshot_fields(tmp_path: Path) -> None:
+    """V0.2 M3：注册即登录；快照携带当前账号与账号列表。"""
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        snapshot = await service.handle_command(command("b-1", "app.bootstrap"))
+        assert snapshot["current_account_id"] == "default-local"
+        assert snapshot["current_account"]["username"] == "default"
+
+        result = await service.handle_command(
+            command(
+                "reg-1",
+                "account.register",
+                username="alice",
+                display_name="爱丽丝",
+                password="s3cret-pass",
+            )
+        )
+        assert result["account"]["username"] == "alice"
+        assert "password" not in result["account"]
+
+        snapshot = await service.handle_command(command("b-2", "app.bootstrap"))
+        assert snapshot["current_account_id"] == result["account"]["account_id"]
+        assert snapshot["current_account"]["display_name"] == "爱丽丝"
+        assert any(a["is_last_login"] for a in snapshot["accounts"])
+        assert len(snapshot["accounts"]) == 2
+
+        # 登录（密码错误拒绝）
+        with pytest.raises(Exception):
+            await service.handle_command(
+                command(
+                    "login-bad",
+                    "account.login",
+                    account_id=result["account"]["account_id"],
+                    password="wrong-pass",
+                )
+            )
+        logged = await service.handle_command(
+            command(
+                "login-1",
+                "account.login",
+                account_id=result["account"]["account_id"],
+                password="s3cret-pass",
+            )
+        )
+        assert logged["account"]["account_id"] == result["account"]["account_id"]
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_account_switch_isolates_projects(tmp_path: Path) -> None:
+    """V0.2 M3：切换账号后项目/聊天按账号隔离。"""
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        default_project_id = service.current_project_id
+        # 注册新账号：默认账号项目不再可见
+        result = await service.handle_command(
+            command(
+                "reg-1",
+                "account.register",
+                username="bob",
+                display_name="鲍勃",
+                password="bob-pass-1",
+            )
+        )
+        snapshot = await service.handle_command(command("b-1", "app.bootstrap"))
+        assert snapshot["current_account_id"] == result["account"]["account_id"]
+        assert snapshot["projects"] == []  # 新账号无项目
+        assert service.current_project_id != default_project_id or service.current_project_id == ""
+
+        # 切回默认账号：项目恢复
+        back = await service.handle_command(
+            command("login-1", "account.login", account_id="default-local", password="")
+        )
+        assert back["account"]["username"] == "default"
+        snapshot = await service.handle_command(command("b-2", "app.bootstrap"))
+        assert any(p["project_id"] == default_project_id for p in snapshot["projects"])
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_config_get_set_masks_secrets(tmp_path: Path) -> None:
+    """V0.2 M3：账号级配置读写；密钥只回显掩码。"""
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        await service.handle_command(
+            command(
+                "set-1",
+                "config.set",
+                updates={
+                    "engine": "deepseek",
+                    "dialogue.base_url": "https://api.deepseek.com",
+                    "dialogue.model": "deepseek-chat",
+                    "dialogue.api_key": "sk-super-secret-123456",
+                    "voice.tts_model": "qwen-audio-3.0-tts-flash",
+                },
+            )
+        )
+        config = await service.handle_command(command("get-1", "config.get"))
+        assert config["engine"] == "deepseek"
+        assert config["dialogue"]["model"] == "deepseek-chat"
+        assert config["dialogue"]["api_key_masked"] == "sk-s…3456"
+        assert "sk-super-secret" not in config["dialogue"]["api_key_masked"]
+        # 明文只存 secret_refs，config.get 不回传
+        assert "sk-super-secret" not in str(config)
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_config_test_connection_without_credentials_reports_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # live 测试基建会 load_dotenv(.env)；本测试要求“环境无凭据”前提，
+    # 显式清空（与账号配置无关，纯环境兜底路径）。
+    for name in (
+        "PAIR_HARNESS_DIALOGUE_BASE_URL",
+        "PAIR_HARNESS_DIALOGUE_API_KEY",
+        "PAIR_HARNESS_DIALOGUE_MODEL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        result = await service.handle_command(command("t-1", "config.test_connection"))
+        assert result["ok"] is False
+        assert "缺少对话服务配置" in result["message"]
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_codex_login_state_machine(tmp_path: Path) -> None:
+    """V0.2 M3：codex.oauth_* 与 api_login 按当前账号隔离。"""
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        status = await service.handle_command(command("s-1", "codex.oauth_status"))
+        assert status["status"] in {"logged_out", "waiting", "logged_in"}
+
+        await service.handle_command(command("s-2", "codex.oauth_start"))
+        status = await service.handle_command(command("s-3", "codex.oauth_status"))
+        assert status["status"] == "waiting"
+
+        logged = await service.handle_command(
+            command("s-4", "codex.api_login", api_key="sk-codex-123")
+        )
+        assert logged["status"] == "logged_in"
+        status = await service.handle_command(command("s-5", "codex.oauth_status"))
+        assert status["status"] == "logged_in"
+
+        out = await service.handle_command(command("s-6", "codex.logout"))
+        assert out["status"] == "logged_out"
+    finally:
+        await service.shutdown()

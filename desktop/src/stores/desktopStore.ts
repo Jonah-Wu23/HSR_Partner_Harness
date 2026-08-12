@@ -2,6 +2,8 @@ import { createStore } from "zustand/vanilla";
 import { useStore } from "zustand";
 
 import type {
+  AccountListItem,
+  AccountRecord,
   ConversationRecord,
   DesktopEvent,
   DesktopSnapshot,
@@ -33,6 +35,9 @@ export interface DesktopState {
   turnsById: Record<string, Turn>;
   turnIdsByConversation: Record<string, string[]>;
   queueItemsByConversation: Record<string, QueueItem[]>;
+  currentAccountId: string;
+  currentAccount: AccountRecord | null;
+  accounts: AccountListItem[];
   currentProjectId: string;
   currentConversationId: string;
   pair: PairRecord | null;
@@ -73,6 +78,9 @@ export type DesktopRenderState = Pick<
   | "turnsById"
   | "turnIdsByConversation"
   | "queueItemsByConversation"
+  | "currentAccountId"
+  | "currentAccount"
+  | "accounts"
   | "currentProjectId"
   | "currentConversationId"
   | "pair"
@@ -123,6 +131,9 @@ function createInitialState(): Omit<
     turnsById: {},
     turnIdsByConversation: {},
     queueItemsByConversation: {},
+    currentAccountId: "",
+    currentAccount: null,
+    accounts: [],
     currentProjectId: "",
     currentConversationId: "",
     pair: null,
@@ -204,6 +215,9 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
     ...indexSnapshot(snapshot),
     status: "ready",
     error: null,
+    currentAccountId: snapshot.current_account_id,
+    currentAccount: snapshot.current_account ?? null,
+    accounts: snapshot.accounts ?? [],
     currentProjectId: snapshot.current_project_id,
     currentConversationId: snapshot.current_conversation_id,
     pair: snapshot.pair,
@@ -486,6 +500,9 @@ export const selectDesktopRenderState = (state: DesktopState): DesktopRenderStat
   turnsById: state.turnsById,
   turnIdsByConversation: state.turnIdsByConversation,
   queueItemsByConversation: state.queueItemsByConversation,
+  currentAccountId: state.currentAccountId,
+  currentAccount: state.currentAccount,
+  accounts: state.accounts,
   currentProjectId: state.currentProjectId,
   currentConversationId: state.currentConversationId,
   pair: state.pair,

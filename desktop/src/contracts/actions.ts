@@ -30,4 +30,17 @@ export interface HarnessActions {
   stopSpeech(): Promise<void>;
   /** 立即重连本地服务（Sidecar 断开时由 Rust 侧强制重启并重置退避）。 */
   reconnect(): Promise<void>;
+  listAccounts(): Promise<void>;
+  registerAccount(username: string, displayName: string, password: string): Promise<void>;
+  loginAccount(accountId: string, password: string): Promise<void>;
+  logoutAccount(): Promise<void>;
+  updateAccountProfile(displayName?: string, avatar?: string): Promise<void>;
+  changePassword(oldPassword: string, newPassword: string): Promise<void>;
+  getConfig(): Promise<void>;
+  setConfig(updates: Record<string, string>): Promise<void>;
+  testConnection(): Promise<void>;
+  codexOauthStart(): Promise<void>;
+  codexApiLogin(apiKey: string): Promise<void>;
+  codexLogout(): Promise<void>;
+  voicePreview(text: string): Promise<void>;
 }

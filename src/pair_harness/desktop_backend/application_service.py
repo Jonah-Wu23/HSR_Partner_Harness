@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping, cast
 from uuid import uuid4
 
+from pair_harness.adapters.codex.auth import CodexAuthService
 from pair_harness.adapters.codex.engine import CodexAppServerEngine
 from pair_harness.adapters.codex.transport import JsonlProcessTransport
 from pair_harness.adapters.demo import ScriptedCodingEngine, ScriptedDialogueModel
@@ -15,7 +16,7 @@ from pair_harness.adapters.reviewer import DialogueModelReviewer
 from pair_harness.app_paths import AppPaths
 from pair_harness.cli import load_dotenv
 from pair_harness.config.pairs import PairConfig, load_pair_config, load_prompt
-from pair_harness.config.providers import load_reasoning_preset
+from pair_harness.config.providers import detect_provider, load_reasoning_preset
 from pair_harness.core.contracts import (
     ApprovalDecision,
     ApprovalMode,
@@ -151,6 +152,8 @@ class DesktopApplicationService:
         self.approval_broker = approval_broker
         self.dialogue_model = dialogue_model
         self.coding_engine = coding_engine
+        # V0.2 M3：demo 模式无外部状态，账号切换不重建运行时
+        self._demo = isinstance(dialogue_model, ScriptedDialogueModel)
         self.current_project_id = current_project_id
         self.current_conversation_id = current_conversation_id
         self.voice_runtime = voice_runtime
@@ -165,6 +168,17 @@ class DesktopApplicationService:
         # 快照随 bootstrap 水合；终态保留供前端历史展示。
         self._turns: dict[str, dict[str, Any]] = {}
         self._conversation_turn_ids: dict[str, list[str]] = {}
+        # V0.2 M3：当前登录账号（重启后从 app_state 恢复；默认账号兜底）。
+        # 账号是项目/聊天/配置/Codex 数据的隔离边界。
+        self.current_account_id = (
+            store.get_app_state("current_account_id") or "default-local"
+        )
+        if not self._account_exists(self.current_account_id):
+            self.current_account_id = "default-local"
+            store.set_app_state("current_account_id", "default-local")
+        self.codex_auth = CodexAuthService(store.database.parent, self.current_account_id)
+        # 账号级配置缓存：config.set 写库，运行时重建时读取
+        self._account_config: dict[str, str] | None = None
         self._voice_state: dict[str, Any] = {
             "supported": voice_runtime is not None,
             "vad": "idle",
@@ -210,11 +224,75 @@ class DesktopApplicationService:
             await close_transport()
         self.store.close()
 
+    # ------------------------------------------------------------------ V0.2 M3 账号
+
+    def _account_exists(self, account_id: str) -> bool:
+        try:
+            self.store.get_account(account_id)
+            return True
+        except KeyError:
+            return False
+
+    def _account_payload(self, account_id: str) -> dict[str, Any]:
+        """AccountRecord 快照（不含密码派生结果与密钥）。"""
+        account = self.store.get_account(account_id)
+        return {
+            "account_id": account["account_id"],
+            "username": account["username"],
+            "display_name": account["display_name"],
+            "avatar": account["avatar"],
+            "last_login_at": account["last_login_at"],
+            "onboarding_complete": account["onboarding_complete"],
+            "theme": account["theme"],
+        }
+
+    def _load_account_config(self, account_id: str | None = None) -> dict[str, str]:
+        """账号级配置 + 密钥合并视图（api_key 保留明文供运行时使用）。"""
+        account_id = account_id or self.current_account_id
+        keys = (
+            "engine",
+            "dialogue.base_url",
+            "dialogue.model",
+            "dialogue.api_key",
+            "voice.base_url",
+            "voice.api_key",
+            "voice.asr_model",
+            "voice.tts_model",
+            "character_voice",
+            "assistant_voice",
+            "vad_enabled",
+        )
+        config: dict[str, str] = {}
+        for key in keys:
+            value = self.store.get_config(account_id, key)
+            if value is not None:
+                config[key] = value
+        for key in ("dialogue.api_key", "voice.api_key"):
+            secret = self.store.get_secret(account_id, key)
+            if secret:
+                config[key] = secret
+        return config
+
+    def _masked(self, value: str | None) -> str:
+        """密钥只回显掩码（方案：不回传明文）。"""
+        if not value:
+            return ""
+        if len(value) <= 8:
+            return "*" * len(value)
+        return f"{value[:4]}…{value[-4:]}"
+
+    def _set_current_account(self, account_id: str) -> None:
+        """切换当前账号并持久化；Codex 数据目录随之隔离。"""
+        self.current_account_id = account_id
+        self.store.set_app_state("current_account_id", account_id)
+        self.codex_auth = CodexAuthService(self.store.database.parent, account_id)
+        self._account_config = None
+
     # ------------------------------------------------------------------ 快照
 
     def bootstrap(self) -> dict[str, Any]:
         projects: list[dict[str, Any]] = []
-        for project in self.store.list_projects():
+        for project in self.store.list_projects_for_account(self.current_account_id):
             project_payload = dict(to_jsonable(project))
             project_payload["path_available"] = project.path_available
             project_payload["conversations"] = [
@@ -241,6 +319,12 @@ class DesktopApplicationService:
         active = self.orchestrator.state.active
         return {
             "projects": projects,
+            "current_account_id": self.current_account_id,
+            "current_account": self._account_payload(self.current_account_id),
+            "accounts": [
+                {**account, "is_last_login": account["account_id"] == self.current_account_id}
+                for account in self.store.list_accounts()
+            ],
             "current_project_id": self.current_project_id,
             "current_conversation_id": self.current_conversation_id,
             "current_project": (
@@ -871,59 +955,320 @@ class DesktopApplicationService:
 
     async def _account_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
-        raise ServiceError("本地账号将在账号阶段实现", code="not_implemented")
+        return {
+            "accounts": [
+                {**account, "is_last_login": account["account_id"] == self.current_account_id}
+                for account in self.store.list_accounts()
+            ],
+            "current_account_id": self.current_account_id,
+        }
 
     async def _account_register(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        del params
-        raise ServiceError("本地账号将在账号阶段实现", code="not_implemented")
+        """注册并登录：新账号成为当前账号（账号级数据从此隔离）。"""
+        username = self._required_string(params, "username")
+        password = self._required_string(params, "password")
+        display_name = str(params.get("display_name") or username)
+        if len(password) < 6:
+            raise ServiceError("密码至少 6 位", code="weak_password")
+        try:
+            account = self.store.create_account(
+                username=username, display_name=display_name, password=password
+            )
+        except ValueError as exc:
+            raise ServiceError(str(exc), code="username_taken") from exc
+        await self._switch_account(account["account_id"])
+        self.store.update_last_login(account["account_id"])
+        return {
+            "account": self._account_payload(account["account_id"]),
+            "accounts": self._account_list_payload(),
+        }
 
     async def _account_login(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        del params
-        raise ServiceError("本地账号将在账号阶段实现", code="not_implemented")
+        """本地登录：密码校验通过后切换为当前账号。"""
+        account_id = str(params.get("account_id") or "")
+        username = str(params.get("username") or "")
+        password = str(params.get("password") or "")
+        if not account_id and username:
+            account = self.store.get_account_by_username(username)
+            if account is None:
+                raise ServiceError("账号不存在", code="account_not_found")
+            account_id = account["account_id"]
+        if not account_id:
+            raise ServiceError("缺少 account_id 或 username", code="invalid_params")
+        if not self.store.verify_password(account_id, password):
+            raise ServiceError("密码错误", code="wrong_password")
+        await self._switch_account(account_id)
+        self.store.update_last_login(account_id)
+        return {
+            "account": self._account_payload(account_id),
+            "accounts": self._account_list_payload(),
+        }
 
     async def _account_logout(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """退出当前账号：回到默认账号（登录页状态），数据不删除。"""
         del params
-        raise ServiceError("本地账号将在账号阶段实现", code="not_implemented")
+        await self._switch_account("default-local")
+        return {
+            "account": self._account_payload("default-local"),
+            "accounts": self._account_list_payload(),
+        }
 
     async def _account_switch(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        del params
-        raise ServiceError("本地账号将在账号阶段实现", code="not_implemented")
+        """免密切换（本地信任的多账号切换；登录仍走 _account_login）。"""
+        account_id = self._required_string(params, "account_id")
+        if not self._account_exists(account_id):
+            raise ServiceError("账号不存在", code="account_not_found")
+        await self._switch_account(account_id)
+        return {
+            "account": self._account_payload(account_id),
+            "accounts": self._account_list_payload(),
+        }
 
     async def _account_update_profile(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        del params
-        raise ServiceError("本地账号将在账号阶段实现", code="not_implemented")
+        display_name = params.get("display_name")
+        avatar = params.get("avatar")
+        if display_name is None and avatar is None:
+            raise ServiceError("没有需要更新的字段", code="invalid_params")
+        account = self.store.update_account_profile(
+            self.current_account_id,
+            display_name=str(display_name) if display_name is not None else None,
+            avatar=str(avatar) if avatar is not None else None,
+        )
+        self._emit_account_changed()
+        return {"account": account}
 
     async def _account_change_password(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        del params
-        raise ServiceError("本地账号将在账号阶段实现", code="not_implemented")
+        old_password = self._required_string(params, "old_password")
+        new_password = self._required_string(params, "new_password")
+        if len(new_password) < 6:
+            raise ServiceError("新密码至少 6 位", code="weak_password")
+        if not self.store.change_password(
+            self.current_account_id, old_password, new_password
+        ):
+            raise ServiceError("原密码错误", code="wrong_password")
+        return {"changed": True}
 
     async def _config_get(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
-        raise ServiceError("配置中心将在设置阶段实现", code="not_implemented")
+        config = self._load_account_config()
+        codex = self.codex_auth.status()
+        return {
+            "engine": config.get("engine", "codex"),
+            "dialogue": {
+                "provider": self.dialogue_provider_name(config),
+                "model": config.get("dialogue.model") or self._env_dialogue_model(),
+                "base_url": config.get("dialogue.base_url") or "",
+                "api_key_masked": self._masked(
+                    config.get("dialogue.api_key") or self._env_dialogue_key()
+                ),
+                "reasoning_effort": "auto",
+            },
+            "voice": {
+                "enabled": self.voice_runtime is not None,
+                "base_url": config.get("voice.base_url") or "",
+                "api_key_masked": self._masked(
+                    config.get("voice.api_key") or self._env_voice_key()
+                ),
+                "asr_model": config.get("voice.asr_model") or "",
+                "tts_model": config.get("voice.tts_model") or "",
+                "character_voice": config.get("character_voice") or "",
+                "assistant_voice": config.get("assistant_voice") or "",
+                "vad_enabled": config.get("vad_enabled") or "",
+            },
+            "codex": {
+                "status": codex.get("status"),
+                "account_label": codex.get("account_label"),
+            },
+        }
 
     async def _config_set(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        del params
-        raise ServiceError("配置中心将在设置阶段实现", code="not_implemented")
+        """账号级配置：扁平键写入 provider_configs/secret_refs，立即生效。"""
+        updates = params.get("updates")
+        if not isinstance(updates, dict):
+            raise ServiceError("updates 必须是对象", code="invalid_params")
+        for key, value in updates.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise ServiceError("配置键与值必须是字符串", code="invalid_params")
+        secret_keys = {"dialogue.api_key", "voice.api_key"}
+        for key, value in updates.items():
+            if key in secret_keys:
+                self.store.set_secret(self.current_account_id, key, value)
+            else:
+                self.store.set_config(self.current_account_id, key, value)
+        self._account_config = None
+        return {"config": self._config_get({})}
 
     async def _config_test_connection(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """探测对话服务连接：短请求验证 base_url/model/api_key。"""
         del params
-        raise ServiceError("测试连接将在设置阶段实现", code="not_implemented")
+        config = self._load_account_config()
+        base_url = config.get("dialogue.base_url") or self._env_dialogue_base()
+        api_key = config.get("dialogue.api_key") or self._env_dialogue_key()
+        model = config.get("dialogue.model") or self._env_dialogue_model()
+        if not (base_url and api_key and model):
+            return {"ok": False, "message": "缺少对话服务配置（Base URL / API Key / 模型）"}
+        return await self._probe_dialogue_connection(base_url, api_key, model)
 
     async def _codex_oauth_start(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
-        raise ServiceError("Codex 登录将在账号阶段实现", code="not_implemented")
+        return self.codex_auth.start_login()
 
     async def _codex_oauth_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
-        raise ServiceError("Codex 登录将在账号阶段实现", code="not_implemented")
+        status = self.codex_auth.status()
+        status["account_id"] = self.current_account_id
+        return status
 
     async def _codex_logout(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
-        raise ServiceError("Codex 登录将在账号阶段实现", code="not_implemented")
+        return self.codex_auth.logout()
 
     async def _codex_api_login(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        del params
-        raise ServiceError("Codex 登录将在账号阶段实现", code="not_implemented")
+        api_key = self._required_string(params, "api_key")
+        try:
+            return self.codex_auth.api_login(api_key)
+        except ValueError as exc:
+            raise ServiceError(str(exc), code="invalid_api_key") from exc
+
+    # ---- M3 辅助 ----
+
+    def _account_list_payload(self) -> list[dict[str, Any]]:
+        return [
+            {**account, "is_last_login": account["account_id"] == self.current_account_id}
+            for account in self.store.list_accounts()
+        ]
+
+    def _emit_account_changed(self) -> None:
+        self.emitter.emit(
+            "account.changed",
+            {
+                "account": self._account_payload(self.current_account_id),
+                "accounts": self._account_list_payload(),
+            },
+        )
+
+    def _rebuild_runtime_for_account(self, config: dict[str, str]) -> None:
+        """按账号配置重建对话与编程助手运行时（方案 §M3-2 第 5 步）。
+
+        demo 模式（Scripted）无外部状态，跳过；真实模式替换
+        dialogue_model/coding_engine 引用与编排器、审查智能体依赖。
+        """
+        if self._demo:
+            return
+        engine_choice = config.get("engine", "codex")
+        dialogue_base = config.get("dialogue.base_url") or self._env_dialogue_base()
+        dialogue_key = config.get("dialogue.api_key") or self._env_dialogue_key()
+        dialogue_model_name = config.get("dialogue.model") or self._env_dialogue_model()
+        if dialogue_base and dialogue_key and dialogue_model_name:
+            preset = load_reasoning_preset(dialogue_base, dialogue_model_name)
+            self.dialogue_model = OpenAICompatibleDialogueModel(
+                base_url=dialogue_base,
+                api_key=dialogue_key,
+                model=dialogue_model_name,
+                thinking=preset.default_thinking,
+                reasoning_effort="auto",
+                temperature=1.0,
+            )
+            self.orchestrator.dialogue_model = self.dialogue_model  # type: ignore[attr-defined]
+            self.orchestrator.reviewer = DialogueModelReviewer(self.dialogue_model)  # type: ignore[attr-defined]
+        try:
+            from .engine_factory import build_coding_engine
+
+            self.coding_engine = build_coding_engine(
+                engine_choice=engine_choice,
+                codex_auth=self.codex_auth,
+                codex_bin=os.getenv("PAIR_HARNESS_BUNDLED_CODEX_BIN"),
+            )
+            self.orchestrator.coding_engine = self.coding_engine  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001 - 引擎构建失败不阻断账号切换
+            logger.warning("重建编程助手引擎失败：%s", exc)
+
+    def dialogue_provider_name(self, config: dict[str, str]) -> str:
+        """按 base_url 识别服务商（复用供应商探测）。"""
+        base_url = config.get("dialogue.base_url") or self._env_dialogue_base()
+        if not base_url:
+            return "openai-compatible"
+        return detect_provider(base_url)
+
+    @staticmethod
+    def _env_dialogue_base() -> str:
+        return os.getenv("PAIR_HARNESS_DIALOGUE_BASE_URL", "")
+
+    @staticmethod
+    def _env_dialogue_key() -> str:
+        return os.getenv("PAIR_HARNESS_DIALOGUE_API_KEY", "")
+
+    @staticmethod
+    def _env_dialogue_model() -> str:
+        return os.getenv("PAIR_HARNESS_DIALOGUE_MODEL", "")
+
+    @staticmethod
+    def _env_voice_key() -> str:
+        return os.getenv("DASHSCOPE_API_KEY", "")
+
+    async def _probe_dialogue_connection(
+        self, base_url: str, api_key: str, model: str
+    ) -> dict[str, Any]:
+        """短请求探测对话服务（不产生对话历史）。"""
+        import httpx
+        import time
+
+        started = time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    f"{base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "max_tokens": 1,
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001 - 探测失败给用户可读信息
+            return {"ok": False, "message": f"连接失败：{exc}"}
+        latency = int((time.monotonic() - started) * 1000)
+        if response.status_code >= 400:
+            return {
+                "ok": False,
+                "message": f"服务返回 {response.status_code}："
+                f"{response.text[:120]}",
+            }
+        return {"ok": True, "message": f"连接正常（延迟 {latency} ms）"}
+
+    async def _switch_account(self, account_id: str) -> None:
+        """V0.2 M3：切换账号——停止任务、重建认证与运行时、加载新账号数据。
+
+        步骤（方案 §M3-2）：停止或明确处理当前任务 → 关闭当前模型运行时
+        引用 → 按新账号重建 → 切到新账号项目/聊天 → 广播 account.changed
+        与整份快照（前端清空旧账号快照）。
+        """
+        if account_id == self.current_account_id:
+            return
+        # 1. 停止当前任务（若有）
+        try:
+            await self.orchestrator.cancel_active_task()
+        except Exception:  # noqa: BLE001 - 切换账号不因取消失败而中断
+            logger.warning("切换账号时取消任务失败，忽略")
+        # 2. 重建认证与运行时（真实模式按账号配置；demo 模式无状态）
+        self._set_current_account(account_id)
+        config = self._load_account_config()
+        self._rebuild_runtime_for_account(config)
+        # 3. 切到新账号的项目/聊天
+        projects = self.store.list_projects_for_account(account_id)
+        if projects:
+            self.current_project_id = projects[0].project_id
+            conversations = self.store.list_conversations(self.current_project_id)
+            self.current_conversation_id = (
+                conversations[0].conversation_id if conversations else ""
+            )
+        else:
+            self.current_project_id = ""
+            self.current_conversation_id = ""
+        self._restore_current_conversation()
+        # 4. 广播账号变更与整份快照
+        self._emit_account_changed()
+        self.emitter.emit("state.snapshot", self.bootstrap())
 
     # ------------------------------------------------------------------ 状态与事件
 

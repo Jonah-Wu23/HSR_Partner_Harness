@@ -198,8 +198,15 @@ export interface VoiceState {
   error: string | null;
 }
 
+export interface AccountListItem extends AccountRecord {
+  is_last_login: boolean;
+}
+
 export interface DesktopSnapshot {
   projects: ProjectRecord[];
+  current_account_id: string;
+  current_account: AccountRecord;
+  accounts: AccountListItem[];
   current_project_id: string;
   current_conversation_id: string;
   current_project: Omit<ProjectRecord, "conversations">;

@@ -28,7 +28,7 @@ def _dt(value: str) -> datetime:
 # O4.3：数据库结构版本。新库由 schema.sql 一次建全，直接标记为该版本；
 # 旧库（user_version=0）按 MIGRATIONS 逐级升级。每次结构变更 +1，
 # 并在 MIGRATIONS 里补对应迁移步骤。
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # 索引 i 对应“从版本 i 升到 i+1”的迁移步骤（每级一条或多条 SQL）。
 MIGRATIONS: tuple[tuple[str, ...], ...] = (
@@ -101,6 +101,12 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         "'', '', datetime('now'))",
         "INSERT OR IGNORE INTO account_preferences(account_id) VALUES ('default-local')",
         "UPDATE projects SET account_id = 'default-local' WHERE account_id = ''",
+    ),
+    # 版本 6：应用级单值状态（当前登录账号等）
+    (
+        "CREATE TABLE IF NOT EXISTS app_state ("
+        "key TEXT PRIMARY KEY,"
+        "value TEXT NOT NULL)",
     ),
 )
 
@@ -825,6 +831,20 @@ class SQLiteStore(StateStore):
         self.connection.execute(
             f"UPDATE account_preferences SET {key} = ? WHERE account_id = ?",
             (value, account_id),
+        )
+        self.connection.commit()
+
+    def get_app_state(self, key: str) -> str | None:
+        row = self.connection.execute(
+            "SELECT value FROM app_state WHERE key = ?", (key,)
+        ).fetchone()
+        return row["value"] if row is not None else None
+
+    def set_app_state(self, key: str, value: str) -> None:
+        self.connection.execute(
+            "INSERT INTO app_state(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
         )
         self.connection.commit()
 

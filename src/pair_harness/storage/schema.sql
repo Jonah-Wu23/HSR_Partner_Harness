@@ -16,6 +16,12 @@ CREATE TABLE IF NOT EXISTS accounts (
     created_at TEXT NOT NULL
 );
 
+-- V0.2 M3：应用级单值状态（当前登录账号等）。
+CREATE TABLE IF NOT EXISTS app_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 -- V0.2 M3：账号级偏好（语音/VAD/模式等键值）。
 CREATE TABLE IF NOT EXISTS account_preferences (
     account_id TEXT PRIMARY KEY REFERENCES accounts(account_id) ON DELETE CASCADE,

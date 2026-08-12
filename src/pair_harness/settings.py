@@ -27,6 +27,47 @@ class Settings:
     qwen_asr_model: str = "qwen-audio-3.0-asr-flash-streaming"
     qwen_tts_model: str = "qwen-audio-3.0-tts-flash"
 
+    @classmethod
+    def overlay(cls, base: "Settings", account_config: dict[str, str]) -> "Settings":
+        """V0.2 M3：用账号级配置覆盖环境默认（账号配置优先）。
+
+        键名与 config.set 的扁平键一致：dialogue.base_url / dialogue.api_key /
+        dialogue.model / voice.base_url / voice.api_key / voice.asr_model /
+        voice.tts_model / engine。未提供的键保留环境值。
+        """
+        voice_host = account_config.get("voice.host") or cls._host_from_url(
+            account_config.get("voice.base_url")
+        )
+        return cls(
+            codex_bin=account_config.get("codex.bin") or base.codex_bin,
+            dialogue_base_url=(
+                account_config.get("dialogue.base_url") or base.dialogue_base_url
+            ),
+            dialogue_api_key=(
+                account_config.get("dialogue.api_key") or base.dialogue_api_key
+            ),
+            dialogue_model=account_config.get("dialogue.model") or base.dialogue_model,
+            dashscope_api_key=(
+                account_config.get("voice.api_key") or base.dashscope_api_key
+            ),
+            dashscope_host=voice_host or base.dashscope_host,
+            dashscope_ws_url=base.dashscope_ws_url,
+            dashscope_http_url=base.dashscope_http_url,
+            qwen_asr_model=(
+                account_config.get("voice.asr_model") or base.qwen_asr_model
+            ),
+            qwen_tts_model=(
+                account_config.get("voice.tts_model") or base.qwen_tts_model
+            ),
+        )
+
+    @staticmethod
+    def _host_from_url(url: str | None) -> str | None:
+        if not url:
+            return None
+        parsed = urlsplit(url if "://" in url else f"https://{url}")
+        return parsed.hostname
+
     @property
     def resolved_ws_url(self) -> str:
         """WebSocket 地址：默认按专属端点推导（B2 联调验证点 R5）。"""

@@ -144,6 +144,28 @@ function baseSnapshot(
   const fallbackConversation = currentConversation ?? fallbackProject?.conversations[0];
   return {
     projects,
+    current_account_id: "default-local",
+    current_account: {
+      account_id: "default-local",
+      username: "default",
+      display_name: "默认账号",
+      avatar: "",
+      last_login_at: null,
+      onboarding_complete: false,
+      theme: "dark",
+    },
+    accounts: [
+      {
+        account_id: "default-local",
+        username: "default",
+        display_name: "默认账号",
+        avatar: "",
+        last_login_at: null,
+        onboarding_complete: false,
+        theme: "dark",
+        is_last_login: true,
+      },
+    ],
     current_project_id: fallbackProject?.project_id ?? "",
     current_conversation_id: fallbackConversation?.conversation_id ?? "",
     current_project: fallbackProject
