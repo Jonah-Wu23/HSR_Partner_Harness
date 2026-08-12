@@ -25,7 +25,7 @@ def _dt(value: str) -> datetime:
 # O4.3：数据库结构版本。新库由 schema.sql 一次建全，直接标记为该版本；
 # 旧库（user_version=0）按 MIGRATIONS 逐级升级。每次结构变更 +1，
 # 并在 MIGRATIONS 里补对应迁移步骤。
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # 索引 i 对应“从版本 i 升到 i+1”的迁移步骤（每级一条或多条 SQL）。
 MIGRATIONS: tuple[tuple[str, ...], ...] = (
@@ -44,6 +44,22 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
     (
         "ALTER TABLE projects ADD COLUMN reasoning_effort "
         "TEXT NOT NULL DEFAULT 'low'",
+    ),
+    # 版本 4：V0.2 M2 持久化会话队列（conversation_inbox）
+    (
+        "CREATE TABLE IF NOT EXISTS conversation_inbox ("
+        "queue_item_id TEXT PRIMARY KEY,"
+        "account_id TEXT NOT NULL DEFAULT '',"
+        "conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,"
+        "target TEXT NOT NULL,"
+        "text TEXT NOT NULL,"
+        "intent TEXT NOT NULL DEFAULT 'followup',"
+        "position INTEGER NOT NULL DEFAULT 0,"
+        "status TEXT NOT NULL DEFAULT 'queued',"
+        "created_at TEXT NOT NULL,"
+        "source_message_id TEXT)",
+        "CREATE INDEX IF NOT EXISTS idx_conversation_inbox_dispatch "
+        "ON conversation_inbox(conversation_id, status, position)",
     ),
 )
 
@@ -422,6 +438,136 @@ class SQLiteStore(StateStore):
             "UPDATE conversations SET archived = 1 WHERE project_id = ?", (project_id,)
         )
         self.connection.commit()
+
+    # ------------------------------------------------------------------ V0.2 M2 会话队列
+
+    def enqueue_queue_item(
+        self,
+        *,
+        conversation_id: str,
+        target: str,
+        text: str,
+        intent: str = "followup",
+        account_id: str = "",
+    ) -> dict:
+        """入队（先持久化，再向前端确认）。steer 置队首并重排其余 queued 项。"""
+        queue_item_id = str(uuid4())
+        if intent == "steer":
+            position = 0
+            self.connection.execute(
+                "UPDATE conversation_inbox SET position = position + 1 "
+                "WHERE conversation_id = ? AND status = 'queued'",
+                (conversation_id,),
+            )
+        else:
+            row = self.connection.execute(
+                "SELECT COALESCE(MAX(position), -1) FROM conversation_inbox "
+                "WHERE conversation_id = ? AND status = 'queued'",
+                (conversation_id,),
+            ).fetchone()
+            position = int(row[0]) + 1
+        self.connection.execute(
+            "INSERT INTO conversation_inbox("
+            "queue_item_id, account_id, conversation_id, target, text, intent,"
+            "position, status, created_at, source_message_id"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, NULL)",
+            (queue_item_id, account_id, conversation_id, target, text, intent, position, _now()),
+        )
+        self.connection.commit()
+        return self.get_queue_item(queue_item_id)
+
+    def get_queue_item(self, queue_item_id: str) -> dict:
+        row = self.connection.execute(
+            "SELECT * FROM conversation_inbox WHERE queue_item_id = ?", (queue_item_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown queue_item_id: {queue_item_id}")
+        return self._queue_item_dict(row)
+
+    def list_queue_items(self, conversation_id: str) -> list[dict]:
+        """会话内按 position 升序的队列快照（含 withdrawn 历史）。"""
+        rows = self.connection.execute(
+            "SELECT * FROM conversation_inbox WHERE conversation_id = ? "
+            "ORDER BY position, created_at",
+            (conversation_id,),
+        ).fetchall()
+        return [self._queue_item_dict(row) for row in rows]
+
+    def peek_queue_item(self, conversation_id: str) -> dict | None:
+        """下一个待派发项（最前 queued）。"""
+        row = self.connection.execute(
+            "SELECT * FROM conversation_inbox WHERE conversation_id = ? AND status = 'queued' "
+            "ORDER BY position, created_at LIMIT 1",
+            (conversation_id,),
+        ).fetchone()
+        return self._queue_item_dict(row) if row is not None else None
+
+    def edit_queue_item(self, queue_item_id: str, text: str) -> dict:
+        """编辑尚未派发的队列项文本。"""
+        self.connection.execute(
+            "UPDATE conversation_inbox SET text = ? WHERE queue_item_id = ? AND status = 'queued'",
+            (text, queue_item_id),
+        )
+        self.connection.commit()
+        return self.get_queue_item(queue_item_id)
+
+    def withdraw_queue_item(self, queue_item_id: str) -> dict:
+        """撤回队列项（状态置 withdrawn，不再派发）。"""
+        self.connection.execute(
+            "UPDATE conversation_inbox SET status = 'withdrawn' WHERE queue_item_id = ?",
+            (queue_item_id,),
+        )
+        self.connection.commit()
+        return self.get_queue_item(queue_item_id)
+
+    def prioritize_queue_item(self, queue_item_id: str) -> None:
+        """把 queued 项置队首，其余 queued 项依次后移。"""
+        row = self.connection.execute(
+            "SELECT * FROM conversation_inbox WHERE queue_item_id = ? AND status = 'queued'",
+            (queue_item_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"queue_item 不存在或已派发: {queue_item_id}")
+        self.connection.execute(
+            "UPDATE conversation_inbox SET position = position + 1 "
+            "WHERE conversation_id = ? AND status = 'queued' AND queue_item_id != ?",
+            (row["conversation_id"], queue_item_id),
+        )
+        self.connection.execute(
+            "UPDATE conversation_inbox SET position = 0 WHERE queue_item_id = ?",
+            (queue_item_id,),
+        )
+        self.connection.commit()
+
+    def set_queue_item_status(self, queue_item_id: str, status: str) -> dict:
+        self.connection.execute(
+            "UPDATE conversation_inbox SET status = ? WHERE queue_item_id = ?",
+            (status, queue_item_id),
+        )
+        self.connection.commit()
+        return self.get_queue_item(queue_item_id)
+
+    def delete_queue_item(self, queue_item_id: str) -> None:
+        """派发完成即删除（不再占快照）。"""
+        self.connection.execute(
+            "DELETE FROM conversation_inbox WHERE queue_item_id = ?", (queue_item_id,)
+        )
+        self.connection.commit()
+
+    @staticmethod
+    def _queue_item_dict(row: sqlite3.Row) -> dict:
+        return {
+            "queue_item_id": row["queue_item_id"],
+            "account_id": row["account_id"],
+            "conversation_id": row["conversation_id"],
+            "target": row["target"],
+            "text": row["text"],
+            "intent": row["intent"],
+            "position": int(row["position"]),
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "source_message_id": row["source_message_id"],
+        }
 
     def _touch_conversation(self, conversation_id: str) -> None:
         self.connection.execute(

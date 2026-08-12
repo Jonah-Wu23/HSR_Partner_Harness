@@ -12,7 +12,14 @@ export interface HarnessActions {
   archiveConversation(conversationId: string): Promise<void>;
   switchMode(mode: "chat" | "collaboration"): void;
   switchTheme(theme: "dark" | "light"): void;
-  submitMessage(text: string, target?: "character" | "assistant"): Promise<void>;
+  submitMessage(
+    text: string,
+    target?: "character" | "assistant",
+    intent?: "followup" | "steer",
+  ): Promise<void>;
+  editQueueItem(queueItemId: string, text: string): Promise<void>;
+  withdrawQueueItem(queueItemId: string): Promise<void>;
+  prioritizeQueueItem(queueItemId: string): Promise<void>;
   cancelTask(): Promise<void>;
   resolveApproval(approvalId: string, decision: string): Promise<void>;
   setApprovalMode(mode: ApprovalMode): Promise<void>;

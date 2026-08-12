@@ -6,6 +6,7 @@ import type {
   Message,
   PendingApproval,
   ProjectRecord,
+  QueueItem,
   ToolRun,
 } from "../contracts/protocol";
 import type { DesktopBackend } from "./backend";
@@ -65,6 +66,12 @@ export class MockDesktopBackend implements DesktopBackend {
         return this.setConversationMode(command.params) as T;
       case "chat.submit":
         return this.submitMessage(command.params) as T;
+      case "queue.edit":
+        return this.editQueueItem(command.params) as T;
+      case "queue.withdraw":
+        return this.withdrawQueueItem(command.params) as T;
+      case "queue.prioritize":
+        return this.prioritizeQueueItem(command.params) as T;
       case "task.cancel":
         this.emit("task.busy_changed", { busy: false, active_task: null });
         return { cancelled: true } as T;
@@ -378,6 +385,48 @@ export class MockDesktopBackend implements DesktopBackend {
       target,
       turn_id: turnId,
     };
+  }
+
+  private emitQueueChanged(conversationId: string, items: QueueItem[]): void {
+    this.scenario.snapshot.queue_items = items;
+    this.emit("queue.changed", { conversation_id: conversationId, items });
+  }
+
+  private editQueueItem(params: Record<string, unknown>): { queue_item: QueueItem } {
+    const queueItemId = String(params.queue_item_id ?? "");
+    const text = String(params.text ?? "");
+    const items = this.scenario.snapshot.queue_items.map((item) =>
+      item.queue_item_id === queueItemId && item.status === "queued"
+        ? { ...item, text }
+        : item,
+    );
+    const queueItem = items.find((item) => item.queue_item_id === queueItemId)!;
+    this.emitQueueChanged(queueItem.conversation_id, items);
+    return { queue_item: queueItem };
+  }
+
+  private withdrawQueueItem(params: Record<string, unknown>): { queue_item: QueueItem } {
+    const queueItemId = String(params.queue_item_id ?? "");
+    const items = this.scenario.snapshot.queue_items.map((item) =>
+      item.queue_item_id === queueItemId ? { ...item, status: "withdrawn" as const } : item,
+    );
+    const queueItem = items.find((item) => item.queue_item_id === queueItemId)!;
+    this.emitQueueChanged(queueItem.conversation_id, items);
+    return { queue_item: queueItem };
+  }
+
+  private prioritizeQueueItem(params: Record<string, unknown>): { queue_item: QueueItem } {
+    const queueItemId = String(params.queue_item_id ?? "");
+    const items = this.scenario.snapshot.queue_items
+      .map((item) =>
+        item.queue_item_id === queueItemId && item.status === "queued"
+          ? { ...item, position: 0 }
+          : item,
+      )
+      .sort((a, b) => a.position - b.position);
+    const queueItem = items.find((item) => item.queue_item_id === queueItemId)!;
+    this.emitQueueChanged(queueItem.conversation_id, items);
+    return { queue_item: queueItem };
   }
 
   private setVoiceState(changes: Record<string, unknown>): { voice: DesktopSnapshot["voice"] } {

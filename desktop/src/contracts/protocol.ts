@@ -207,6 +207,7 @@ export interface DesktopSnapshot {
   messages: Message[];
   tool_runs: ToolRun[];
   turns: Turn[];
+  queue_items: QueueItem[];
   active_task: ActiveTask | null;
   busy: boolean;
   approvals: PendingApproval[];

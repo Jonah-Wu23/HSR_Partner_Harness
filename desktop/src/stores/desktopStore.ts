@@ -9,6 +9,7 @@ import type {
   PairRecord,
   PendingApproval,
   ProjectRecord,
+  QueueItem,
   ToolRun,
   Turn,
   VoiceState,
@@ -31,6 +32,7 @@ export interface DesktopState {
   toolIdsByConversation: Record<string, string[]>;
   turnsById: Record<string, Turn>;
   turnIdsByConversation: Record<string, string[]>;
+  queueItemsByConversation: Record<string, QueueItem[]>;
   currentProjectId: string;
   currentConversationId: string;
   pair: PairRecord | null;
@@ -70,6 +72,7 @@ export type DesktopRenderState = Pick<
   | "toolIdsByConversation"
   | "turnsById"
   | "turnIdsByConversation"
+  | "queueItemsByConversation"
   | "currentProjectId"
   | "currentConversationId"
   | "pair"
@@ -119,6 +122,7 @@ function createInitialState(): Omit<
     toolIdsByConversation: {},
     turnsById: {},
     turnIdsByConversation: {},
+    queueItemsByConversation: {},
     currentProjectId: "",
     currentConversationId: "",
     pair: null,
@@ -166,6 +170,10 @@ function indexSnapshot(snapshot: DesktopSnapshot) {
     turnsById[turn.turn_id] = turn;
     (turnIdsByConversation[turn.conversation_id] ??= []).push(turn.turn_id);
   }
+  const queueItemsByConversation: Record<string, QueueItem[]> = {};
+  for (const item of snapshot.queue_items ?? []) {
+    (queueItemsByConversation[item.conversation_id] ??= []).push(item);
+  }
   return {
     projectsById,
     conversationsById,
@@ -175,6 +183,7 @@ function indexSnapshot(snapshot: DesktopSnapshot) {
     toolIdsByConversation,
     turnsById,
     turnIdsByConversation,
+    queueItemsByConversation,
   };
 }
 
@@ -333,6 +342,18 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
       }
       break;
     }
+    case "queue.changed": {
+      // V0.2 M2：队列变化推全量有序列表（按 position 升序），直接替换
+      const payload = event.payload as { conversation_id?: string; items?: QueueItem[] };
+      const conversationId = payload.conversation_id ?? next.currentConversationId;
+      if (conversationId) {
+        next.queueItemsByConversation = {
+          ...next.queueItemsByConversation,
+          [conversationId]: payload.items ?? [],
+        };
+      }
+      break;
+    }
     case "review.started":
       // V0.2 问题 14：只有审查智能体真正被调用时才显示审查状态
       next.reviewActive = true;
@@ -451,6 +472,7 @@ export const selectDesktopRenderState = (state: DesktopState): DesktopRenderStat
   toolIdsByConversation: state.toolIdsByConversation,
   turnsById: state.turnsById,
   turnIdsByConversation: state.turnIdsByConversation,
+  queueItemsByConversation: state.queueItemsByConversation,
   currentProjectId: state.currentProjectId,
   currentConversationId: state.currentConversationId,
   pair: state.pair,

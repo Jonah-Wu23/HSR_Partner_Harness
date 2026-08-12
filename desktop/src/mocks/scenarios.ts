@@ -172,6 +172,7 @@ function baseSnapshot(
     messages,
     tool_runs: toolRuns,
     turns: [],
+    queue_items: [],
     active_task: null,
     busy: false,
     approvals: [],

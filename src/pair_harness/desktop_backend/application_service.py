@@ -255,6 +255,9 @@ class DesktopApplicationService:
             "messages": list(to_jsonable(snapshot["messages"])),
             "tool_runs": list(to_jsonable(snapshot["tool_runs"])),
             "turns": self._conversation_turns_payload(self.current_conversation_id),
+            "queue_items": self.store.list_queue_items(self.current_conversation_id)
+            if self.current_conversation_id
+            else [],
             "active_task": to_jsonable(active),
             "busy": active is not None,
             "approvals": self.approval_broker.snapshot(),
@@ -537,6 +540,26 @@ class DesktopApplicationService:
         if conversation_id != self.current_conversation_id:
             self._select_conversation_context(conversation_id, emit=False)
 
+        # V0.2 M2（问题 9）：忙碌时提交先入队（followup 追加 / steer 置队首），
+        # 先持久化再向前端确认；派发由回合完成后的自动派发链处理。
+        active = self.orchestrator.state.active
+        if active is not None:
+            intent = str(params.get("intent", "followup"))
+            if intent not in {"followup", "steer"}:
+                raise ServiceError("intent 必须是 followup 或 steer", code="invalid_intent")
+            item = self.store.enqueue_queue_item(
+                conversation_id=conversation_id,
+                target=target,
+                text=text,
+                intent=intent,
+            )
+            self._emit_queue_changed(conversation_id)
+            return {
+                "queue_item": item,
+                "queued": True,
+                "conversation_id": conversation_id,
+            }
+
         user_message = await self.orchestrator.submit_user_message(
             conversation_id=conversation_id, text=text, target=target
         )
@@ -544,7 +567,9 @@ class DesktopApplicationService:
         # 生命周期事件由后台任务按 started → completed/failed 推进。
         turn = self._register_turn(conversation_id, user_message, target)
         task = asyncio.create_task(
-            self._run_submit_turn(conversation_id, user_message, target, turn["turn_id"]),
+            self._run_submit_chain(
+                conversation_id, user_message, target, turn["turn_id"]
+            ),
             name=f"turn:{conversation_id}:{user_message.message_id}",
         )
         self._turn_tasks.add(task)
@@ -600,12 +625,63 @@ class DesktopApplicationService:
             {"turn": updated},
         )
 
-    async def _run_submit_turn(
+    async def _run_submit_chain(
         self, conversation_id: str, user_message: Any, target: str, turn_id: str
     ) -> None:
+        """V0.2 M2：回合 + 队列自动派发链（问题 9）。
+
+        当前回合完成后自动派发队列下一条；失败停止派发（避免连发失败请求）。
+        """
+        status = await self._run_submit_turn(
+            conversation_id, user_message, target, turn_id
+        )
+        if status == "completed":
+            await self._dispatch_from_inbox(conversation_id)
+
+    async def _dispatch_from_inbox(self, conversation_id: str) -> None:
+        """V0.2 M2：持久化队列自动派发——processing → 回合 → 完成删除；
+        回合失败退回 queued（可重试），不再自动派发后续。"""
+        while True:
+            item = self.store.peek_queue_item(conversation_id)
+            if item is None:
+                return
+            self.store.set_queue_item_status(item["queue_item_id"], "processing")
+            self._emit_queue_changed(conversation_id)
+            user_message = await self.orchestrator.submit_user_message(
+                conversation_id=item["conversation_id"],
+                text=item["text"],
+                target=item["target"],
+            )
+            turn = self._register_turn(
+                item["conversation_id"], user_message, item["target"]
+            )
+            status = await self._run_submit_turn(
+                item["conversation_id"], user_message, item["target"], turn["turn_id"]
+            )
+            if status != "completed":
+                self.store.set_queue_item_status(item["queue_item_id"], "queued")
+                self._emit_queue_changed(conversation_id)
+                return
+            self.store.delete_queue_item(item["queue_item_id"])
+            self._emit_queue_changed(conversation_id)
+
+    def _emit_queue_changed(self, conversation_id: str) -> None:
+        """V0.2 M2：队列变化推送全量快照（按 position 有序）。"""
+        self.emitter.emit(
+            "queue.changed",
+            {
+                "conversation_id": conversation_id,
+                "items": self.store.list_queue_items(conversation_id),
+            },
+        )
+
+    async def _run_submit_turn(
+        self, conversation_id: str, user_message: Any, target: str, turn_id: str
+    ) -> str:
         """V0.2 M2：Turn 生命周期——started(running) → completed/failed/cancelled。
 
-        失败仍把用户消息标记 failed（文字保留可重试），与消息状态对账。
+        失败仍把用户消息标记 failed（文字保留可重试），与消息状态对账；
+        返回终态供派发链决定是否继续。
         """
         self._emit_turn_status(turn_id, "running")
         try:
@@ -629,8 +705,9 @@ class DesktopApplicationService:
             self.orchestrator.report_system_status(
                 conversation_id, f"本次回复失败：{exc}"
             )
-        else:
-            self._emit_turn_status(turn_id, "completed")
+            return "failed"
+        self._emit_turn_status(turn_id, "completed")
+        return "completed"
 
     def _set_conversation_mode(
         self, conversation_id: str, mode: str
@@ -721,16 +798,38 @@ class DesktopApplicationService:
         raise ServiceError("应用重连由桌面进程负责，Sidecar 侧无需重建", code="not_implemented")
 
     async def _queue_edit(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        del params
-        raise ServiceError("队列编辑将在流式队列阶段实现", code="not_implemented")
+        """编辑队列项文本（仅尚未派发的 queued 项）。"""
+        queue_item_id = self._required_string(params, "queue_item_id")
+        text = self._required_string(params, "text")
+        if not text.strip():
+            raise ServiceError("队列项文本不能为空", code="invalid_text")
+        try:
+            item = self.store.edit_queue_item(queue_item_id, text)
+        except KeyError as exc:
+            raise ServiceError("队列项不存在或已派发", code="queue_item_not_found") from exc
+        self._emit_queue_changed(item["conversation_id"])
+        return {"queue_item": item}
 
     async def _queue_withdraw(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        del params
-        raise ServiceError("队列撤回将在流式队列阶段实现", code="not_implemented")
+        """撤回队列项（不再自动派发，状态置 withdrawn）。"""
+        queue_item_id = self._required_string(params, "queue_item_id")
+        try:
+            item = self.store.withdraw_queue_item(queue_item_id)
+        except KeyError as exc:
+            raise ServiceError("队列项不存在", code="queue_item_not_found") from exc
+        self._emit_queue_changed(item["conversation_id"])
+        return {"queue_item": item}
 
     async def _queue_prioritize(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        del params
-        raise ServiceError("队列调序将在流式队列阶段实现", code="not_implemented")
+        """把队列项置队首（steer）。"""
+        queue_item_id = self._required_string(params, "queue_item_id")
+        try:
+            self.store.prioritize_queue_item(queue_item_id)
+        except KeyError as exc:
+            raise ServiceError("队列项不存在或已派发", code="queue_item_not_found") from exc
+        item = self.store.get_queue_item(queue_item_id)
+        self._emit_queue_changed(item["conversation_id"])
+        return {"queue_item": item}
 
     async def _voice_tts_play(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params

@@ -92,7 +92,7 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       if (typeof window !== "undefined") window.localStorage.setItem("pair-harness-theme", theme);
       desktopStore.getState().setTheme(theme);
     },
-    async submitMessage(text, target) {
+    async submitMessage(text, target, intent) {
       const state = desktopStore.getState();
       const actualTarget = target ?? state.composerTarget;
       desktopStore.getState().setComposerDraft("");
@@ -101,7 +101,17 @@ export function createActionController(backend: DesktopBackend): ActionControlle
         target: actualTarget,
         mode: state.mode,
         text,
+        ...(intent ? { intent } : {}),
       });
+    },
+    async editQueueItem(queueItemId, text) {
+      await request("queue.edit", { queue_item_id: queueItemId, text });
+    },
+    async withdrawQueueItem(queueItemId) {
+      await request("queue.withdraw", { queue_item_id: queueItemId });
+    },
+    async prioritizeQueueItem(queueItemId) {
+      await request("queue.prioritize", { queue_item_id: queueItemId });
     },
     async cancelTask() {
       await request("task.cancel");

@@ -58,6 +58,25 @@ CREATE TABLE IF NOT EXISTS engine_sessions (
     session_ref TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- V0.2 M2（问题 9）：持久化会话队列（conversation_inbox）。
+-- 忙碌时提交先入队（followup），明确选择“立即插入”才是 steer（置队首）。
+-- status: queued / processing / withdrawn；派发完成即删除，withdrawn 供撤回历史。
+CREATE TABLE IF NOT EXISTS conversation_inbox (
+    queue_item_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL DEFAULT '',
+    conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+    target TEXT NOT NULL,
+    text TEXT NOT NULL,
+    intent TEXT NOT NULL DEFAULT 'followup',
+    position INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'queued',
+    created_at TEXT NOT NULL,
+    source_message_id TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_inbox_dispatch
+ON conversation_inbox(conversation_id, status, position);
 -- O4.3：新库的完整表结构由本文件保证（IF NOT EXISTS 只影响新库）。
 -- 旧库（user_version=0）的补列/删列迁移在 sqlite_store.SCHEMA_VERSION
 -- 中逐级执行；新库创建后由 sqlite_store 直接标记当前版本。

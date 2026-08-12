@@ -499,3 +499,166 @@ async def test_failed_turn_marks_turn_failed_and_message_failed(tmp_path: Path) 
         assert "cancelled" in statuses or "completed" in statuses
     finally:
         await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_busy_submit_enqueues_then_auto_dispatches_after_turn(tmp_path: Path) -> None:
+    """V0.2 M2（问题 9）：忙碌时提交先入队返回 queue_item；回合完成后
+    自动派发队列项（成为真实用户消息），队列消费后清空。"""
+    events: list[dict] = []
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+        event_sink=events.append,
+    )
+    try:
+        conversation_id = service.current_conversation_id
+
+        async def wait_for(predicate, *, message: str, timeout: float = 5.0) -> None:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + timeout
+            while loop.time() < deadline:
+                if predicate():
+                    return
+                await asyncio.sleep(0.01)
+            raise AssertionError(message)
+
+        # 制造忙碌：编排器有活动任务时提交会入队
+        service.orchestrator.state.start(
+            project_id="project-demo", conversation_id=conversation_id, task_id="task-busy"
+        )
+        result = await service.handle_command(
+            command(
+                "chat-1",
+                "chat.submit",
+                conversation_id=conversation_id,
+                target="character",
+                text="等你忙完再说这个。",
+            )
+        )
+        assert result["queued"] is True
+        assert result["queue_item"]["status"] == "queued"
+        assert result["queue_item"]["conversation_id"] == conversation_id
+        # 入队时不创建用户消息（派发时才落库）
+        assert not any(
+            e["event"] == "message.created" for e in events
+        )
+        queue_changed = [e for e in events if e["event"] == "queue.changed"]
+        assert queue_changed, "入队应推送 queue.changed"
+        assert len(queue_changed[-1]["payload"]["items"]) == 1
+
+        # 清理忙碌：下一条提交的回合完成后应自动派发队列项
+        service.orchestrator.state.finish("task-busy")
+        events.clear()
+        await service.handle_command(
+            command(
+                "chat-2",
+                "chat.submit",
+                conversation_id=conversation_id,
+                target="character",
+                text="现在有空了吗？",
+            )
+        )
+
+        async def queued_text_dispatched() -> bool:
+            messages = [
+                m for m in service.bootstrap()["messages"]
+                if m["source"] == "user"
+            ]
+            return any("等你忙完再说这个" in m["text"] for m in messages)
+
+        await wait_for(queued_text_dispatched, message="队列项应被自动派发为用户消息")
+        # 队列消费后清空（processing → 完成删除）
+        await wait_for(
+            lambda: service.store.list_queue_items(conversation_id) == [],
+            message="队列项派发完成后应从队列移除",
+        )
+        # 派发的队列项也走 Turn 生命周期
+        turn_events = [
+            e for e in events if e["event"] in ("turn.started", "turn.status_changed")
+        ]
+        assert len([e for e in turn_events if e["event"] == "turn.started"]) == 2
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_queue_edit_withdraw_and_prioritize(tmp_path: Path) -> None:
+    """V0.2 M2：queue.edit 改文本、queue.withdraw 撤回、queue.prioritize 置队首。"""
+    events: list[dict] = []
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+        event_sink=events.append,
+    )
+    try:
+        conversation_id = service.current_conversation_id
+        service.orchestrator.state.start(
+            project_id="project-demo", conversation_id=conversation_id, task_id="task-busy"
+        )
+        first = await service.handle_command(
+            command("chat-1", "chat.submit", conversation_id=conversation_id, text="第一条")
+        )
+        second = await service.handle_command(
+            command("chat-2", "chat.submit", conversation_id=conversation_id, text="第二条")
+        )
+        first_item, second_item = first["queue_item"], second["queue_item"]
+        assert first_item["position"] == 0
+        assert second_item["position"] == 1
+
+        # 编辑
+        edited = await service.handle_command(
+            command("edit-1", "queue.edit", queue_item_id=first_item["queue_item_id"], text="改过的第一条")
+        )
+        assert edited["queue_item"]["text"] == "改过的第一条"
+
+        # 调序：第二条置队首
+        await service.handle_command(
+            command("pri-1", "queue.prioritize", queue_item_id=second_item["queue_item_id"])
+        )
+        items = service.store.list_queue_items(conversation_id)
+        assert items[0]["queue_item_id"] == second_item["queue_item_id"]
+        assert items[0]["position"] == 0
+        assert items[1]["position"] == 1
+
+        # 撤回第一条
+        withdrawn = await service.handle_command(
+            command("wd-1", "queue.withdraw", queue_item_id=first_item["queue_item_id"])
+        )
+        assert withdrawn["queue_item"]["status"] == "withdrawn"
+        assert service.store.peek_queue_item(conversation_id)["queue_item_id"] == second_item["queue_item_id"]
+
+        # 每个命令都推送 queue.changed 全量快照
+        changed = [e for e in events if e["event"] == "queue.changed"]
+        # 两次入队 + 编辑/调序/撤回 各一次 = 5 次全量推送
+        assert len(changed) == 5
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_queue_persists_across_service_restart(tmp_path: Path) -> None:
+    """V0.2 M2：conversation_inbox 持久化——重启后 bootstrap 快照仍含队列项。"""
+    database = tmp_path / "data" / "pair_harness.db"
+    service = build_demo_service(database=database, project_root=tmp_path)
+    try:
+        conversation_id = service.current_conversation_id
+        service.orchestrator.state.start(
+            project_id="project-demo", conversation_id=conversation_id, task_id="task-busy"
+        )
+        result = await service.handle_command(
+            command("chat-1", "chat.submit", conversation_id=conversation_id, text="跨重启的队列项")
+        )
+        assert result["queued"] is True
+    finally:
+        await service.shutdown()
+
+    restored = build_demo_service(database=database, project_root=tmp_path)
+    try:
+        snapshot = restored.bootstrap()
+        items = [item for item in snapshot["queue_items"] if item["conversation_id"] == conversation_id]
+        assert len(items) == 1
+        assert items[0]["text"] == "跨重启的队列项"
+        assert items[0]["status"] == "queued"
+    finally:
+        await restored.shutdown()
