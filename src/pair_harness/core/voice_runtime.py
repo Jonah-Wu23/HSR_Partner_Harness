@@ -10,6 +10,10 @@
 TTS 播放期间暂停向 VAD 喂帧（采集继续、帧丢弃），播放结束重开 VAD 会话，
 避免把扬声器尾音误判为说话。按键说话先 ``stop_speaking()`` 再直录，
 松开后等 final，非空才提交。空 final / 误触发不产生消息。
+
+下行（V0.2 M2-4）：播放器持有长期输出流与有界缓冲，句间/块间不断流；
+``skip_playing()`` 跳过当前句继续播队列下一句（队列空则停止）；tts 状态
+机经 ``on_tts_state`` 上报（idle/playing/skipping），vad 状态保持既有语义。
 """
 
 from __future__ import annotations
@@ -70,6 +74,7 @@ class VoiceRuntime:
         on_vad_state: Callable[[str], None] = lambda _s: None,
         on_asr_partial: Callable[[str], None] = lambda _t: None,
         on_error: Callable[[str], None] = lambda _m: None,
+        on_tts_state: Callable[[str], None] = lambda _s: None,
     ) -> None:
         self._orchestrator = orchestrator
         self._recognizer = recognizer
@@ -83,6 +88,7 @@ class VoiceRuntime:
         self._on_vad_state = on_vad_state
         self._on_asr_partial = on_asr_partial
         self._on_error = on_error
+        self._on_tts_state = on_tts_state
 
         self._capture: "MicrophoneCapture | None" = None
         self._capture_task: asyncio.Task | None = None
@@ -100,6 +106,8 @@ class VoiceRuntime:
         self._ptt_active = False
         self._ptt_target = "character"
         self._started = False
+        # V0.2 M2-4：跳过当前句的标记，由播放循环消费（见 skip_playing）
+        self._skip = False
 
     # ------------------------------------------------------------ 生命周期
 
@@ -145,9 +153,10 @@ class VoiceRuntime:
         self._on_vad_state("idle")
 
     def start_playback(self) -> None:
-        """启动唯一的播放消费任务；重复调用无效。"""
+        """启动唯一的播放消费任务与播放器线程；重复调用无效。"""
         if self._playback_task is None or self._playback_task.done():
             self._playback_task = asyncio.create_task(self.run_playback_loop())
+        self._player.start()
 
     async def shutdown(self) -> None:
         """B2 UI 退出时关闭采集、识别与播放任务。"""
@@ -160,6 +169,7 @@ class VoiceRuntime:
             with suppress(asyncio.CancelledError):
                 await self._playback_task
         self._playback_task = None
+        self._player.close()
 
     # ------------------------------------------------------------ 上行：采集分发
 
@@ -306,12 +316,39 @@ class VoiceRuntime:
             return
         if not is_tts_eligible(message.source, message.kind):
             return
-        if message.source == MessageSource.CHARACTER:
-            voice_id = self._pair_config.character.voice_id
-            segments = [message.text]
-        else:
+        self._enqueue_for_playback(message)
+
+    def replay_message(self, message: Message) -> None:
+        """逐条朗读（voice.tts_play）：用户主动指定重播，无视 tts_eligible。
+
+        USER/CHARACTER 消息用角色音色全文朗读；assistant 及其余来源用
+        助手音色按段落朗读。不可读文本（省略号/纯标点）仍被过滤。
+        """
+        if message.conversation_id != self._conversation_id:
+            return
+        self._enqueue_for_playback(message)
+
+    def enqueue_text(self, text: str, *, voice_id: str | None = None) -> None:
+        """直接按文本入队（voice.preview 试听）；voice_id 缺省取角色音色。"""
+        text = text.strip()
+        if not is_readable_text(text):
+            return
+        self._queue.enqueue(
+            SpeechRequest(
+                text=text,
+                voice_id=voice_id or self._pair_config.character.voice_id,
+                message_id="preview",
+            )
+        )
+
+    def _enqueue_for_playback(self, message: Message) -> None:
+        """按消息来源选音色/分段，过滤不可读文本后入队。"""
+        if message.source == MessageSource.ASSISTANT:
             voice_id = self._pair_config.assistant.voice_id
             segments = extract_speech_segments(message.text)
+        else:
+            voice_id = self._pair_config.character.voice_id
+            segments = [message.text]
         for segment in segments:
             text = segment.strip()
             # V0.2 问题 2：入队前再次检查有效自然语言——省略号/纯标点
@@ -331,11 +368,29 @@ class VoiceRuntime:
         self._pair_config = pair_config
 
     def stop_speaking(self) -> None:
-        """停止播放并清空待播队列（同步入口，供 UI 信号直接调用）。"""
+        """停止播放并清空待播队列（同步入口，供 UI 信号直接调用）。
+
+        V0.2 M2-4：立即清空播放器缓冲并停止写流，当前句即刻无声；
+        播放循环在下一个块检查时退出合成并重开 VAD。
+        """
+        self._player.stop()
         self._queue.stop()
+        self._skip = False
+
+    def skip_playing(self) -> None:
+        """跳过当前句：立即停声并放弃当前合成，继续播队列下一句。
+
+        队列已空时播放循环自然停止（tts 回 idle、VAD 重开）；未在播放时
+        无句可跳，待播项由播放循环自行消费。
+        """
+        if not self._queue.playing:
+            return
+        self._player.stop()
+        self._skip = True
+        self._on_tts_state("skipping")
 
     async def run_playback_loop(self) -> None:
-        """消费 SpeechQueue：合成 → 播放；打断时中断当前合成。"""
+        """消费 SpeechQueue：合成 → 写入长期输出流；stop/skip 中断当前合成。"""
         while True:
             request = self._queue.pop_next()
             if request is None:
@@ -343,29 +398,40 @@ class VoiceRuntime:
                 continue
             self._queue.begin_playback()
             self._on_vad_state("playing")
+            self._on_tts_state("playing")
             try:
-                agen = self._synthesizer.synthesize(request)
-                try:
-                    async for chunk in agen:
-                        if chunk.final:
-                            break
-                        if not self._queue.playing:
-                            # stop_speaking 已清队列并复位 playing：中断合成
-                            break
-                        if chunk.pcm:
-                            await asyncio.to_thread(
-                                self._player.play_blocking, chunk.pcm
-                            )
-                finally:
-                    await agen.aclose()
+                await self._play_request(request)
             except Exception as exc:  # noqa: BLE001 - TTS 失败降级为静音提示
                 self._on_error(f"语音合成失败：{exc}")
-            finally:
-                self._queue.end_playback()
-                await self._restart_vad()
-                # _restart_vad 已发出 "listening"；仅无 VAD/未启动时置 "idle"
-                if self._vad is None or not self._started:
-                    self._on_vad_state("idle")
+            skipped = self._skip
+            self._skip = False
+            self._queue.end_playback()
+            if skipped and self._queue.pending:
+                # 跳过当前句：不重开 VAD，直接消费下一句（连续播放）
+                continue
+            self._on_tts_state("idle")
+            await self._restart_vad()
+            # _restart_vad 已发出 "listening"；仅无 VAD/未启动时置 "idle"
+            if self._vad is None or not self._started:
+                self._on_vad_state("idle")
+
+    async def _play_request(self, request: SpeechRequest) -> None:
+        """合成一条请求并把 PCM 写入播放器；stop/skip 由块循环检查。"""
+        agen = self._synthesizer.synthesize(request)
+        try:
+            async for chunk in agen:
+                if chunk.final:
+                    break
+                if not self._queue.playing:
+                    # stop_speaking 已清队列并复位 playing：中断合成
+                    break
+                if self._skip:
+                    # skip_playing：放弃当前句，改播队列下一句
+                    break
+                if chunk.pcm:
+                    await asyncio.to_thread(self._player.play_blocking, chunk.pcm)
+        finally:
+            await agen.aclose()
 
     async def _restart_vad(self) -> None:
         """播放结束后重开 VAD 会话，避免把扬声器尾音误判为说话。"""

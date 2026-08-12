@@ -31,6 +31,7 @@ from pair_harness.core.contracts import (
     utc_now,
 )
 from pair_harness.core.orchestrator import ConversationOrchestrator
+from pair_harness.core.voice_policy import is_readable_text
 from pair_harness.core.voice_runtime import VoiceRuntime
 from pair_harness.settings import Settings
 from pair_harness.storage.sqlite_store import SQLiteStore
@@ -287,8 +288,13 @@ class DesktopApplicationService:
             self._on_voice_error(f"语音启动失败：{exc}")
 
     def _on_voice_state(self, state: str) -> None:
+        # vad 通道保持既有语义（playing=播放期间暂停监听）
         self._voice_state["vad"] = state
-        self._voice_state["tts"] = "playing" if state == "playing" else "idle"
+        self.emitter.emit("voice.state_changed", {"voice": dict(self._voice_state)})
+
+    def _on_tts_state(self, state: str) -> None:
+        # V0.2 M2-4：tts 状态机独立于 vad——idle/playing/skipping
+        self._voice_state["tts"] = state
         self.emitter.emit("voice.state_changed", {"voice": dict(self._voice_state)})
 
     def _on_asr_partial(self, text: str) -> None:
@@ -789,8 +795,8 @@ class DesktopApplicationService:
         self.emitter.emit("voice.state_changed", {"voice": self._voice_state})
         return {"voice": dict(self._voice_state)}
 
-    # ------------------------------------------------------------------ M2/M3 占位
-    # 下列处理器在本阶段的后续里程碑实现；此处先注册保证路由可用，
+    # ------------------------------------------------------------------ M3 占位
+    # 下列处理器在设置/账号阶段实现；此处先注册保证路由可用，
     # 未实现时返回明确的 ServiceError，不静默吞掉。
 
     async def _app_reconnect(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -832,16 +838,36 @@ class DesktopApplicationService:
         return {"queue_item": item}
 
     async def _voice_tts_play(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        del params
-        raise ServiceError("逐条朗读将在语音阶段实现", code="not_implemented")
+        """逐条朗读：按 message_id 从会话取消息文本，重新合成入队（可重播）。"""
+        if self.voice_runtime is None:
+            raise ServiceError("语音运行时未启用", code="voice_unavailable")
+        message_id = self._required_string(params, "message_id")
+        snapshot = self.store.load_conversation(self.current_conversation_id)
+        message = next(
+            (m for m in snapshot["messages"] if m.message_id == message_id),
+            None,
+        )
+        if message is None:
+            raise ServiceError("消息不存在", code="message_not_found")
+        self.voice_runtime.replay_message(message)
+        return {"voice": dict(self._voice_state)}
 
     async def _voice_tts_skip(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
-        raise ServiceError("跳过语音将在语音阶段实现", code="not_implemented")
+        if self.voice_runtime is None:
+            raise ServiceError("语音运行时未启用", code="voice_unavailable")
+        self.voice_runtime.skip_playing()
+        return {"voice": dict(self._voice_state)}
 
     async def _voice_preview(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        del params
-        raise ServiceError("语音试听将在设置中心阶段实现", code="not_implemented")
+        """语音试听：按指定文本用当前 pair 的角色音色合成入队。"""
+        if self.voice_runtime is None:
+            raise ServiceError("语音运行时未启用", code="voice_unavailable")
+        text = self._required_string(params, "text")
+        if not is_readable_text(text):
+            raise ServiceError("试听文本为空或只有标点", code="invalid_text")
+        self.voice_runtime.enqueue_text(text)
+        return {"voice": dict(self._voice_state)}
 
     async def _account_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
@@ -1426,6 +1452,7 @@ def _build_service(
                 on_vad_state=service._on_voice_state,
                 on_asr_partial=service._on_asr_partial,
                 on_error=service._on_voice_error,
+                on_tts_state=service._on_tts_state,
             )
             service.attach_voice_runtime(runtime)
         except Exception as exc:  # noqa: BLE001 - 文本功能不因语音依赖失败而退出

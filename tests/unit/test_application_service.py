@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from pair_harness.core.contracts import ApprovalMode, MessageSource
-from pair_harness.desktop_backend.application_service import build_demo_service
+from pair_harness.desktop_backend.application_service import (
+    ServiceError,
+    build_demo_service,
+)
 from pair_harness.desktop_backend.commands import DesktopCommand
 
 
@@ -395,6 +399,77 @@ async def test_voice_commands_only_exchange_state_with_attached_runtime(tmp_path
         assert runtime.ptt is False
         assert runtime.stopped is True
         assert "voice.state_changed" in [event["event"] for event in events]
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_voice_tts_play_skip_and_preview_commands(tmp_path: Path) -> None:
+    """V0.2 M2-4：voice.tts_play 按 message_id 重播、tts_skip 跳过、preview 试听入队。"""
+    events: list[dict] = []
+
+    class FakeVoiceRuntime:
+        on_message = lambda self, _message: None
+
+        def __init__(self) -> None:
+            self.replayed: list[Any] = []
+            self.skips = 0
+            self.preview_texts: list[str] = []
+
+        def replay_message(self, message: Any) -> None:
+            self.replayed.append(message)
+
+        def skip_playing(self) -> None:
+            self.skips += 1
+
+        def enqueue_text(self, text: str, *, voice_id: str | None = None) -> None:
+            del voice_id
+            self.preview_texts.append(text)
+
+        async def shutdown(self) -> None:
+            pass
+
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+        event_sink=events.append,
+    )
+    runtime = FakeVoiceRuntime()
+    service.attach_voice_runtime(runtime)  # type: ignore[arg-type]
+    try:
+        conversation_id = service.current_conversation_id
+        result = await service.handle_command(
+            command(
+                "chat-1",
+                "chat.submit",
+                conversation_id=conversation_id,
+                target="character",
+                text="你好，白厄。",
+            )
+        )
+        message_id = result["message_id"]
+
+        # tts_play：从会话消息取文本重播（返回真实 message_id 的用户消息）
+        await service.handle_command(
+            command("play-1", "voice.tts_play", message_id=message_id)
+        )
+        assert [m.message_id for m in runtime.replayed] == [message_id]
+
+        # tts_skip：调用 runtime.skip_playing
+        await service.handle_command(command("skip-1", "voice.tts_skip"))
+        assert runtime.skips == 1
+
+        # preview：文本入队试听
+        await service.handle_command(command("preview-1", "voice.preview", text="试听一下"))
+        assert runtime.preview_texts == ["试听一下"]
+
+        # 错误路径：消息不存在 / 试听文本不可读
+        with pytest.raises(ServiceError):
+            await service.handle_command(
+                command("play-2", "voice.tts_play", message_id="no-such-message")
+            )
+        with pytest.raises(ServiceError):
+            await service.handle_command(command("preview-2", "voice.preview", text="……"))
     finally:
         await service.shutdown()
 

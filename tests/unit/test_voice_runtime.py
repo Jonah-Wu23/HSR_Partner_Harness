@@ -135,28 +135,51 @@ class FakeRecognizer:
 
 
 class FakeSynthesizer:
-    """产出若干非 final 块后（可选 hold 阻塞）收尾的假 TTS。"""
+    """产出若干非 final 块后（可选 hold 阻塞）收尾的假 TTS。
 
-    def __init__(self, hold: asyncio.Event | None = None, chunks: int = 2) -> None:
+    ``holds_by_message`` 按 message_id 指定阻塞点，供 skip 测试在
+    第二句播放中途做确定性断言；缺省回退到共用的 ``hold``。
+    """
+
+    def __init__(
+        self,
+        hold: asyncio.Event | None = None,
+        chunks: int = 2,
+        holds_by_message: dict[str, asyncio.Event] | None = None,
+    ) -> None:
         self.hold = hold
         self.chunks = chunks
+        self.holds_by_message = holds_by_message or {}
         self.requests: list[SpeechRequest] = []
 
     async def synthesize(self, request: SpeechRequest) -> AsyncIterator[AudioChunk]:
         self.requests.append(request)
         for _ in range(self.chunks):
             yield AudioChunk(pcm=BLOCK, final=False)
-        if self.hold is not None:
-            await self.hold.wait()
+        gate = self.holds_by_message.get(request.message_id, self.hold)
+        if gate is not None:
+            await gate.wait()
         yield AudioChunk(pcm=b"", final=True)
 
 
 class FakePlayer:
+    """V0.2 M2-4：记录写入块与 stop 次数，start/close 为空操作。"""
+
     def __init__(self) -> None:
         self.played: list[bytes] = []
+        self.stopped = 0
 
     def play_blocking(self, pcm: bytes) -> None:
         self.played.append(pcm)
+
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        self.stopped += 1
+
+    def close(self) -> None:
+        pass
 
 
 class FakeOrchestrator:
@@ -190,6 +213,7 @@ def make_runtime(
     states: list[str] = []
     partials_seen: list[str] = []
     errors: list[str] = []
+    tts_states: list[str] = []
     runtime = VoiceRuntime(
         orchestrator=orch,
         recognizer=recognizer,
@@ -203,6 +227,7 @@ def make_runtime(
         on_vad_state=states.append,
         on_asr_partial=partials_seen.append,
         on_error=errors.append,
+        on_tts_state=tts_states.append,
     )
     return runtime, SimpleNamespace(
         runtime=runtime,
@@ -215,6 +240,8 @@ def make_runtime(
         states=states,
         partials_seen=partials_seen,
         errors=errors,
+        vad=vad,
+        tts_states=tts_states,
     )
 
 
@@ -475,3 +502,182 @@ async def test_vad_unavailable_falls_back_to_ptt() -> None:
         assert ctx.recognizer.received_audio == [[BLOCK, BLOCK]]
     finally:
         await runtime.stop_listening()
+
+
+# ---------------------------------------------------------------- V0.2 M2-4：连续播放与语音状态机
+
+
+async def test_tts_state_follows_playback_lifecycle() -> None:
+    """M2-4：tts 状态机——播放开始 playing、结束回 idle。"""
+    runtime, ctx = make_runtime(vad=None, synthesizer=FakeSynthesizer(chunks=1))
+    playback = asyncio.create_task(runtime.run_playback_loop())
+    try:
+        ctx.queue.enqueue(SpeechRequest(text="你好", voice_id="demo", message_id="m1"))
+        await wait_until(lambda: ctx.tts_states and ctx.tts_states[-1] == "playing")
+        await wait_until(lambda: ctx.tts_states and ctx.tts_states[-1] == "idle")
+        assert ctx.tts_states == ["playing", "idle"]
+    finally:
+        playback.cancel()
+        try:
+            await playback
+        except asyncio.CancelledError:
+            pass
+
+
+async def test_skip_playing_aborts_current_and_continues_next() -> None:
+    """M2-4：skip 立即停声并放弃当前句，队列下一句接着播（VAD 不重开）。"""
+    hold_m1 = asyncio.Event()
+    hold_m2 = asyncio.Event()
+    runtime, ctx = make_runtime(
+        vad=FakeVad({}),
+        synthesizer=FakeSynthesizer(
+            chunks=1, holds_by_message={"m1": hold_m1, "m2": hold_m2}
+        ),
+    )
+    await runtime.start_listening()
+    playback = asyncio.create_task(runtime.run_playback_loop())
+    try:
+        ctx.queue.enqueue(
+            SpeechRequest(text="第一句", voice_id="demo", message_id="m1")
+        )
+        await wait_until(lambda: ctx.queue.playing)
+        assert len(ctx.synthesizer.requests) == 1
+        played_before = len(ctx.player.played)
+        assert played_before >= 1
+
+        ctx.queue.enqueue(
+            SpeechRequest(text="第二句", voice_id="demo", message_id="m2")
+        )
+        runtime.skip_playing()
+        assert ctx.tts_states[-1] == "skipping"  # 状态机进入 skipping
+        assert ctx.player.stopped == 1  # 立即停声
+        assert ctx.queue.pending == 1  # 下一句仍留在队列
+        hold_m1.set()  # 释放当前合成，让跳过检查截断本句
+        await wait_until(lambda: len(ctx.synthesizer.requests) == 2)  # 接着播第二句
+        await wait_until(lambda: len(ctx.player.played) > played_before)
+        assert ctx.vad.sessions == 1  # skip 连续播放：不重开 VAD 会话
+        assert ctx.tts_states[-1] == "playing"
+        assert ctx.queue.pending == 0
+        hold_m2.set()
+        await wait_until(lambda: ctx.states[-1] == "listening")
+    finally:
+        hold_m1.set()
+        hold_m2.set()
+        playback.cancel()
+        try:
+            await playback
+        except asyncio.CancelledError:
+            pass
+        await runtime.stop_listening()
+
+
+async def test_skip_playing_with_empty_queue_stops() -> None:
+    """M2-4：skip 后队列已空 → 停止播放，tts 回 idle、VAD 重开。"""
+    hold_m1 = asyncio.Event()
+    runtime, ctx = make_runtime(
+        vad=FakeVad({}),
+        synthesizer=FakeSynthesizer(chunks=1, holds_by_message={"m1": hold_m1}),
+    )
+    await runtime.start_listening()
+    playback = asyncio.create_task(runtime.run_playback_loop())
+    try:
+        ctx.queue.enqueue(
+            SpeechRequest(text="唯一一句", voice_id="demo", message_id="m1")
+        )
+        await wait_until(lambda: ctx.queue.playing)
+        runtime.skip_playing()
+        assert ctx.tts_states[-1] == "skipping"
+        hold_m1.set()
+        await wait_until(lambda: not ctx.queue.playing)
+        await wait_until(lambda: ctx.states[-1] == "listening")  # VAD 重开
+        assert ctx.tts_states[-1] == "idle"
+    finally:
+        hold_m1.set()
+        playback.cancel()
+        try:
+            await playback
+        except asyncio.CancelledError:
+            pass
+        await runtime.stop_listening()
+
+
+async def test_skip_playing_when_idle_is_noop() -> None:
+    """M2-4：未在播放时 skip 无句可跳，不产生 skipping 事件。"""
+    runtime, ctx = make_runtime(vad=FakeVad({}))
+    await runtime.start_listening()
+    playback = asyncio.create_task(runtime.run_playback_loop())
+    try:
+        runtime.skip_playing()
+        assert not ctx.queue.playing
+        assert ctx.queue.pending == 0
+        assert ctx.tts_states == []
+    finally:
+        playback.cancel()
+        try:
+            await playback
+        except asyncio.CancelledError:
+            pass
+        await runtime.stop_listening()
+
+
+def test_stop_speaking_stops_player_and_clears_queue() -> None:
+    """M2-4：stop 立即停声（清播放器缓冲）并清空待播队列。"""
+    runtime, ctx = make_runtime(vad=None)
+    ctx.queue.enqueue(SpeechRequest(text="一", voice_id="demo", message_id="m1"))
+    ctx.queue.begin_playback()
+    runtime.stop_speaking()
+    assert ctx.player.stopped == 1
+    assert not ctx.queue.playing
+    assert ctx.queue.pending == 0
+
+
+def test_replay_message_ignores_tts_eligibility() -> None:
+    """M2-4：voice.tts_play 重播无视 tts_eligible——用户消息也可朗读。"""
+    runtime, ctx = make_runtime(vad=None)
+    user = Message(
+        conversation_id="conv-1",
+        pair_id=PAIR_ID,
+        source=MessageSource.USER,
+        kind=MessageKind.USER_TEXT,
+        text="在吗，白厄。",
+    )
+    runtime.replay_message(user)
+    pair = load_pair_config(PAIR_ID)
+    request = ctx.queue.pop_next()
+    assert request is not None
+    assert request.voice_id == pair.character.voice_id  # 用户消息用角色音色
+    assert request.text == "在吗，白厄。"
+    # 其他会话的消息不入队
+    runtime.replay_message(
+        user.model_copy(update={"conversation_id": "conv-other"})
+    )
+    assert ctx.queue.pop_next() is None
+
+
+def test_replay_message_filters_unreadable_text() -> None:
+    """M2-4：重播同样过滤省略号/纯标点降级文本。"""
+    runtime, ctx = make_runtime(vad=None)
+    for text in ("……", "。。。", ""):
+        runtime.replay_message(
+            Message(
+                conversation_id="conv-1",
+                pair_id=PAIR_ID,
+                source=MessageSource.USER,
+                kind=MessageKind.USER_TEXT,
+                text=text,
+            )
+        )
+    assert ctx.queue.pop_next() is None
+
+
+def test_enqueue_text_preview_defaults_to_character_voice() -> None:
+    """M2-4：voice.preview 试听文本入队，音色缺省取角色音色。"""
+    runtime, ctx = make_runtime(vad=None)
+    runtime.enqueue_text("这是一句试听。")
+    pair = load_pair_config(PAIR_ID)
+    request = ctx.queue.pop_next()
+    assert request is not None
+    assert request.voice_id == pair.character.voice_id
+    assert request.message_id == "preview"
+    runtime.enqueue_text("……")  # 不可读文本不入队
+    assert ctx.queue.pop_next() is None

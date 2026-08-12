@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
+from collections import deque
 from collections.abc import AsyncIterator
 
 import numpy as np
@@ -146,19 +149,142 @@ def _resample_input(raw: bytes, channels: int, source_rate: int, target_rate: in
 
 
 class AudioPlayer:
-    """把 PCM 播放到默认输出设备。"""
+    """长生命周期输出流播放器（V0.2 M2-4：连续音频输出流）。
 
-    def __init__(self, *, sample_rate: int = 16_000, channels: int = 1) -> None:
+    持有单一 sounddevice.OutputStream，惰性创建、设备异常/被 stop 时重建；
+    PCM 块写入有界缓冲（``buffer_chunks``，防止 TTS 超速），后台播放线程
+    从缓冲取块连续写流，并以块时长近似节奏播放（写流后 sleep 剩余时间）。
+    缓冲无数据时短暂等待而非退出——块间间隙、句与句之间都不关闭流。
+
+    ``play_blocking`` 保留原名：缓冲满时阻塞等待播放线程消费（即生产节奏
+    被消费节奏钳制），调用方经 ``asyncio.to_thread`` 调用，不占用事件循环。
+    ``stop()`` 立即清空缓冲并关闭流（丢弃设备端积压），下次播放惰性重建。
+    """
+
+    def __init__(
+        self,
+        *,
+        sample_rate: int = 16_000,
+        channels: int = 1,
+        buffer_chunks: int = 16,
+    ) -> None:
         self.sample_rate = sample_rate
         self.channels = channels
+        self.buffer_chunks = buffer_chunks
+        self._buffer: deque[bytes] = deque()
+        self._cond = threading.Condition()
+        self._stream_lock = threading.Lock()
+        self._stream: sd.OutputStream | None = None
+        self._thread: threading.Thread | None = None
+        self._running = False
+        self._closed = False
+        self._stopped = False
+
+    # ------------------------------------------------------------ 生命周期
+
+    def start(self) -> None:
+        """启动播放线程（幂等）；输出流仍惰性创建。"""
+        with self._cond:
+            if self._closed:
+                return
+            self._stopped = False
+            if self._running and self._thread is not None and self._thread.is_alive():
+                return
+            self._running = True
+        if self._thread is None or not self._thread.is_alive():
+            self._thread = threading.Thread(
+                target=self._run, name="audio-player", daemon=True
+            )
+            self._thread.start()
+
+    def close(self) -> None:
+        """停止播放线程并关闭输出流（shutdown 时调用）。"""
+        with self._cond:
+            self._running = False
+            self._closed = True
+            self._cond.notify_all()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+        self._thread = None
+        self._close_stream()
+
+    def stop(self) -> None:
+        """立即停止播放：清空缓冲、丢弃在途块并关闭流（流下次重建）。"""
+        with self._cond:
+            self._buffer.clear()
+            self._stopped = True
+            self._cond.notify_all()
+        self._close_stream()
+
+    # ------------------------------------------------------------ 生产者
 
     def play_blocking(self, pcm: bytes) -> None:
-        samples = np.frombuffer(pcm, dtype=np.int16)
-        if samples.size == 0:
+        """把一块 PCM 写入缓冲；缓冲满时阻塞等待（防止 TTS 超速）。"""
+        if not pcm:
             return
-        with sd.OutputStream(
-            samplerate=self.sample_rate,
-            channels=self.channels,
-            dtype="int16",
-        ) as stream:
-            stream.write(samples)
+        self.start()  # 幂等：未启动时惰性启动播放线程
+        with self._cond:
+            while len(self._buffer) >= self.buffer_chunks:
+                self._cond.wait()
+            if self._closed or self._stopped:
+                return  # stop/close 后到达的块：丢弃
+            self._buffer.append(pcm)
+            self._cond.notify_all()
+
+    # ------------------------------------------------------------ 播放线程
+
+    def _run(self) -> None:
+        while True:
+            try:
+                with self._cond:
+                    while self._running and not self._buffer:
+                        self._cond.wait(timeout=0.05)  # 无数据：短暂等待而非退出
+                    if not self._running:
+                        return
+                    pcm = self._buffer.popleft()
+                    # 腾出空间：唤醒等待入队的生产者（防止满缓冲死锁）
+                    self._cond.notify_all()
+                self._play(pcm)
+            except Exception:  # noqa: BLE001 - 单块失败不影响播放线程存活
+                with self._cond:
+                    self._buffer.clear()
+                    self._cond.notify_all()
+
+    def _play(self, pcm: bytes) -> None:
+        """写流并按块时长近似节奏播放；设备异常时重建流，不中断线程。"""
+        duration = len(pcm) / (self.sample_rate * self.channels * 2)
+        start = time.monotonic()
+        stream = self._ensure_stream()
+        if stream is not None:
+            try:
+                stream.write(np.frombuffer(pcm, dtype=np.int16))
+            except Exception:  # noqa: BLE001 - 设备被 stop/拔出：丢弃本块，下次重建
+                self._close_stream()
+        elapsed = time.monotonic() - start
+        remain = duration - elapsed
+        if remain > 0:
+            time.sleep(remain)
+
+    def _ensure_stream(self) -> sd.OutputStream | None:
+        """惰性创建输出流；创建失败返回 None（本块静默丢弃，下块重试）。"""
+        with self._stream_lock:
+            if self._stream is None:
+                try:
+                    self._stream = sd.OutputStream(
+                        samplerate=self.sample_rate,
+                        channels=self.channels,
+                        dtype="int16",
+                    )
+                    self._stream.start()
+                except Exception:  # noqa: BLE001 - PortAudio 错误类型不稳定
+                    self._stream = None
+            return self._stream
+
+    def _close_stream(self) -> None:
+        with self._stream_lock:
+            stream, self._stream = self._stream, None
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001 - 关闭失败不阻塞后续重建
+                pass

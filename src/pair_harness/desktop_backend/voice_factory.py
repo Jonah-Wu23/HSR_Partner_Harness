@@ -17,6 +17,7 @@ def build_real_voice_runtime(
     on_vad_state: Callable[[str], None],
     on_asr_partial: Callable[[str], None],
     on_error: Callable[[str], None],
+    on_tts_state: Callable[[str], None] = lambda _s: None,
 ) -> VoiceRuntime:
     """创建供桌面 Sidecar 使用的 VoiceRuntime。"""
     if not settings.dashscope_api_key:
@@ -62,4 +63,5 @@ def build_real_voice_runtime(
         on_vad_state=on_vad_state,
         on_asr_partial=on_asr_partial,
         on_error=on_error,
+        on_tts_state=on_tts_state,
     )
