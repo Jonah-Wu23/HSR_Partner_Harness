@@ -26,6 +26,9 @@ from pair_harness.core.contracts import (
     ProjectRef,
     PendingOperation,
     ToolRun,
+    Turn,
+    TurnStatus,
+    utc_now,
 )
 from pair_harness.core.orchestrator import ConversationOrchestrator
 from pair_harness.core.voice_runtime import VoiceRuntime
@@ -157,6 +160,10 @@ class DesktopApplicationService:
         # V0.2：后台回合任务集合（快速接受后立即返回，回合在后台推进）
         self._turn_tasks: set[asyncio.Task[None]] = set()
         self._title_generation_started: set[str] = set()
+        # V0.2 M2：Turn 统一运行模型——一次提交 = 一个 Turn。运行态记录，
+        # 快照随 bootstrap 水合；终态保留供前端历史展示。
+        self._turns: dict[str, dict[str, Any]] = {}
+        self._conversation_turn_ids: dict[str, list[str]] = {}
         self._voice_state: dict[str, Any] = {
             "supported": voice_runtime is not None,
             "vad": "idle",
@@ -247,6 +254,7 @@ class DesktopApplicationService:
             ),
             "messages": list(to_jsonable(snapshot["messages"])),
             "tool_runs": list(to_jsonable(snapshot["tool_runs"])),
+            "turns": self._conversation_turns_payload(self.current_conversation_id),
             "active_task": to_jsonable(active),
             "busy": active is not None,
             "approvals": self.approval_broker.snapshot(),
@@ -532,8 +540,11 @@ class DesktopApplicationService:
         user_message = await self.orchestrator.submit_user_message(
             conversation_id=conversation_id, text=text, target=target
         )
+        # V0.2 M2：同步创建 Turn（accepted），随提交返回 turn_id 供前端追踪；
+        # 生命周期事件由后台任务按 started → completed/failed 推进。
+        turn = self._register_turn(conversation_id, user_message, target)
         task = asyncio.create_task(
-            self._run_submit_turn(conversation_id, user_message, target),
+            self._run_submit_turn(conversation_id, user_message, target, turn["turn_id"]),
             name=f"turn:{conversation_id}:{user_message.message_id}",
         )
         self._turn_tasks.add(task)
@@ -545,12 +556,58 @@ class DesktopApplicationService:
             "conversation_id": conversation_id,
             "status": "received",
             "target": target,
+            "turn_id": turn["turn_id"],
         }
 
+    def _register_turn(self, conversation_id: str, user_message: Any, target: str) -> dict[str, Any]:
+        """创建并登记 Turn（accepted 态），返回 payload。"""
+        project_id = ""
+        try:
+            project_id = self.store.get_conversation(conversation_id).project_id or ""
+        except KeyError:
+            pass
+        turn = Turn(
+            project_id=project_id,
+            conversation_id=conversation_id,
+            target=target,  # type: ignore[arg-type]
+            source_message_id=user_message.message_id,
+            status=TurnStatus.ACCEPTED,
+        )
+        payload = to_jsonable(turn)
+        self._turns[turn.turn_id] = payload
+        ids = self._conversation_turn_ids.setdefault(conversation_id, [])
+        if turn.turn_id not in ids:
+            ids.append(turn.turn_id)
+        return payload
+
+    def _conversation_turns_payload(self, conversation_id: str) -> list[dict[str, Any]]:
+        """快照用：会话内按创建顺序的 turns。"""
+        return [
+            dict(self._turns[turn_id])
+            for turn_id in self._conversation_turn_ids.get(conversation_id, [])
+            if turn_id in self._turns
+        ]
+
+    def _emit_turn_status(self, turn_id: str, status: str) -> None:
+        """推进 Turn 状态并发射事件；running 首态用 turn.started。"""
+        turn = self._turns.get(turn_id)
+        if turn is None:
+            return
+        updated = {**turn, "status": status, "updated_at": utc_now().isoformat()}
+        self._turns[turn_id] = updated
+        self.emitter.emit(
+            "turn.started" if status == "running" else "turn.status_changed",
+            {"turn": updated},
+        )
+
     async def _run_submit_turn(
-        self, conversation_id: str, user_message: Any, target: str
+        self, conversation_id: str, user_message: Any, target: str, turn_id: str
     ) -> None:
-        """V0.2：后台推进快速接受后的回合；失败把用户消息标记 failed。"""
+        """V0.2 M2：Turn 生命周期——started(running) → completed/failed/cancelled。
+
+        失败仍把用户消息标记 failed（文字保留可重试），与消息状态对账。
+        """
+        self._emit_turn_status(turn_id, "running")
         try:
             if target == "assistant":
                 await self.orchestrator.process_direct_input(
@@ -561,15 +618,19 @@ class DesktopApplicationService:
                     conversation_id=conversation_id, user_message=user_message
                 )
         except asyncio.CancelledError:
+            self._emit_turn_status(turn_id, "cancelled")
             raise
         except Exception as exc:  # noqa: BLE001 - 回合失败转为可见消息状态
             logger.exception("后台回合失败：%s", conversation_id)
+            self._emit_turn_status(turn_id, "failed")
             self.orchestrator.mark_message_failed(
                 conversation_id, user_message.message_id, str(exc)
             )
             self.orchestrator.report_system_status(
                 conversation_id, f"本次回复失败：{exc}"
             )
+        else:
+            self._emit_turn_status(turn_id, "completed")
 
     def _set_conversation_mode(
         self, conversation_id: str, mode: str

@@ -2,7 +2,6 @@ import { createStore } from "zustand/vanilla";
 import { useStore } from "zustand";
 
 import type {
-  ApprovalMode,
   ConversationRecord,
   DesktopEvent,
   DesktopSnapshot,
@@ -11,6 +10,7 @@ import type {
   PendingApproval,
   ProjectRecord,
   ToolRun,
+  Turn,
   VoiceState,
 } from "../contracts/protocol";
 
@@ -29,6 +29,8 @@ export interface DesktopState {
   messageIdsByConversation: Record<string, string[]>;
   toolRunsById: Record<string, ToolRun>;
   toolIdsByConversation: Record<string, string[]>;
+  turnsById: Record<string, Turn>;
+  turnIdsByConversation: Record<string, string[]>;
   currentProjectId: string;
   currentConversationId: string;
   pair: PairRecord | null;
@@ -66,6 +68,8 @@ export type DesktopRenderState = Pick<
   | "messageIdsByConversation"
   | "toolRunsById"
   | "toolIdsByConversation"
+  | "turnsById"
+  | "turnIdsByConversation"
   | "currentProjectId"
   | "currentConversationId"
   | "pair"
@@ -113,6 +117,8 @@ function createInitialState(): Omit<
     messageIdsByConversation: {},
     toolRunsById: {},
     toolIdsByConversation: {},
+    turnsById: {},
+    turnIdsByConversation: {},
     currentProjectId: "",
     currentConversationId: "",
     pair: null,
@@ -154,6 +160,12 @@ function indexSnapshot(snapshot: DesktopSnapshot) {
     toolRunsById[toolRun.tool_call_id] = toolRun;
     (toolIdsByConversation[toolRun.conversation_id] ??= []).push(toolRun.tool_call_id);
   }
+  const turnsById: Record<string, Turn> = {};
+  const turnIdsByConversation: Record<string, string[]> = {};
+  for (const turn of snapshot.turns ?? []) {
+    turnsById[turn.turn_id] = turn;
+    (turnIdsByConversation[turn.conversation_id] ??= []).push(turn.turn_id);
+  }
   return {
     projectsById,
     conversationsById,
@@ -161,6 +173,8 @@ function indexSnapshot(snapshot: DesktopSnapshot) {
     messageIdsByConversation,
     toolRunsById,
     toolIdsByConversation,
+    turnsById,
+    turnIdsByConversation,
   };
 }
 
@@ -303,6 +317,22 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
       next.busy = Boolean(event.payload.busy);
       next.activeTask = (event.payload.active_task as DesktopSnapshot["active_task"]) ?? null;
       break;
+    case "turn.started":
+    case "turn.status_changed": {
+      // V0.2 M2：Turn 生命周期推进（started → running → completed/failed/cancelled）。
+      // 快照水合后同 turn 的事件按状态覆盖。
+      const turn = event.payload.turn as Turn;
+      if (!turn) break;
+      next.turnsById = { ...next.turnsById, [turn.turn_id]: turn };
+      const ids = next.turnIdsByConversation[turn.conversation_id] ?? [];
+      if (!ids.includes(turn.turn_id)) {
+        next.turnIdsByConversation = {
+          ...next.turnIdsByConversation,
+          [turn.conversation_id]: [...ids, turn.turn_id],
+        };
+      }
+      break;
+    }
     case "review.started":
       // V0.2 问题 14：只有审查智能体真正被调用时才显示审查状态
       next.reviewActive = true;
@@ -419,6 +449,8 @@ export const selectDesktopRenderState = (state: DesktopState): DesktopRenderStat
   messageIdsByConversation: state.messageIdsByConversation,
   toolRunsById: state.toolRunsById,
   toolIdsByConversation: state.toolIdsByConversation,
+  turnsById: state.turnsById,
+  turnIdsByConversation: state.turnIdsByConversation,
   currentProjectId: state.currentProjectId,
   currentConversationId: state.currentConversationId,
   pair: state.pair,

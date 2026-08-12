@@ -2,7 +2,6 @@ import type {
   ConversationRecord,
   DesktopCommand,
   DesktopEvent,
-  DesktopResponse,
   DesktopSnapshot,
   Message,
   PendingApproval,
@@ -285,6 +284,7 @@ export class MockDesktopBackend implements DesktopBackend {
     conversation_id: string;
     status: string;
     target: string;
+    turn_id: string;
   } {
     const conversationId = String(
       params.conversation_id ?? this.scenario.snapshot.current_conversation_id,
@@ -307,11 +307,55 @@ export class MockDesktopBackend implements DesktopBackend {
     userMessage.origin = "user";
     userMessage.status = "received";
     this.emit("message.created", { message: userMessage });
+    // V0.2 M2：Turn 生命周期模拟——accepted → running → completed
+    const turnId = `mock-turn-${this.sequence + 1}`;
+    const projectId = this.scenario.snapshot.projects.find((item) =>
+      item.conversations.some((item) => item.conversation_id === conversationId),
+    )?.project_id ?? "";
+    this.emit("turn.status_changed", {
+      turn: {
+        turn_id: turnId,
+        account_id: "",
+        project_id: projectId,
+        conversation_id: conversationId,
+        target,
+        source_message_id: userMessageId,
+        status: "accepted",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    });
     const events =
       this.scenario.name === "chat-streaming" && conversationId === "conv-1"
         ? this.scenario.submitEvents
         : createSubmitEvents(conversationId, text, target);
     for (const event of events) this.emit(event.event, event.payload);
+    this.emit("turn.started", {
+      turn: {
+        turn_id: turnId,
+        account_id: "",
+        project_id: projectId,
+        conversation_id: conversationId,
+        target,
+        source_message_id: userMessageId,
+        status: "running",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    });
+    this.emit("turn.status_changed", {
+      turn: {
+        turn_id: turnId,
+        account_id: "",
+        project_id: projectId,
+        conversation_id: conversationId,
+        target,
+        source_message_id: userMessageId,
+        status: "completed",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    });
     if (!hadUserMessage) {
       const title = titleFromMessage(text);
       this.scenario.snapshot.projects = this.scenario.snapshot.projects.map((item) => ({
@@ -332,6 +376,7 @@ export class MockDesktopBackend implements DesktopBackend {
       conversation_id: conversationId,
       status: "received",
       target,
+      turn_id: turnId,
     };
   }
 
@@ -415,6 +460,12 @@ export class MockDesktopBackend implements DesktopBackend {
           ),
         }));
       }
+    } else if (event.event === "turn.started" || event.event === "turn.status_changed") {
+      const turn = event.payload.turn as DesktopSnapshot["turns"][number];
+      snapshot.turns = [
+        ...snapshot.turns.filter((item) => item.turn_id !== turn.turn_id),
+        turn,
+      ];
     } else if (event.event === "task.busy_changed") {
       snapshot.busy = Boolean(event.payload.busy);
       snapshot.active_task = (event.payload.active_task as DesktopSnapshot["active_task"]) ?? null;

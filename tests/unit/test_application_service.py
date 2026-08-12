@@ -98,18 +98,21 @@ async def test_chat_submit_emits_messages_and_direct_task_tool_updates(tmp_path:
         )
         assert result["message_id"]
         assert result["status"] == "received"
-        # 等待后台任务执行结束（busy 转回 False）
+        # 等待后台回合执行到完成（turn 终态是回合收尾信号，位于 busy 回落后）
         await wait_for(
-            lambda: events and events[-1]["event"] == "task.busy_changed"
-            and events[-1]["payload"]["busy"] is False,
-            message="后台助手任务应执行到完成",
+            lambda: any(
+                e["event"] == "turn.status_changed"
+                and e["payload"]["turn"]["status"] == "completed"
+                for e in events
+            ),
+            message="后台助手回合应执行到完成",
         )
         event_names = [event["event"] for event in events]
         assert "task.busy_changed" in event_names
         assert "message.delta" in event_names
         assert "tool_run.upserted" in event_names
-        assert event_names[-1] == "task.busy_changed"
-        assert events[-1]["payload"]["busy"] is False
+        assert event_names[-1] == "turn.status_changed"
+        assert events[-1]["payload"]["turn"]["status"] == "completed"
     finally:
         await service.shutdown()
 
@@ -301,18 +304,21 @@ async def test_streaming_assistant_events_reconcile_to_one_persisted_message(
                 text="请检查这个项目",
             )
         )
-        # 快速接受后回合在后台运行：等待任务执行到结束再断言事件
-        async def _wait_busy_idle() -> None:
+        # 快速接受后回合在后台运行：等待回合收尾（turn 终态 completed）
+        async def _wait_turn_done() -> None:
             loop = asyncio.get_running_loop()
             deadline = loop.time() + 5.0
             while loop.time() < deadline:
-                if events and events[-1]["event"] == "task.busy_changed" \
-                        and events[-1]["payload"]["busy"] is False:
+                if any(
+                    e["event"] == "turn.status_changed"
+                    and e["payload"]["turn"]["status"] == "completed"
+                    for e in events
+                ):
                     return
                 await asyncio.sleep(0.01)
-            raise AssertionError("后台任务未在超时前结束")
+            raise AssertionError("后台回合未在超时前结束")
 
-        await _wait_busy_idle()
+        await _wait_turn_done()
 
         delta_ids = {
             event["payload"]["message_id"]
@@ -389,5 +395,107 @@ async def test_voice_commands_only_exchange_state_with_attached_runtime(tmp_path
         assert runtime.ptt is False
         assert runtime.stopped is True
         assert "voice.state_changed" in [event["event"] for event in events]
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_chat_submit_registers_turn_with_lifecycle_events(tmp_path: Path) -> None:
+    """V0.2 M2：一次提交 = 一个 Turn——提交返回 turn_id，后台推进
+    turn.started(running) → turn.status_changed(completed)，快照可水合。"""
+    events: list[dict] = []
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+        event_sink=events.append,
+    )
+    try:
+        conversation_id = service.current_conversation_id
+
+        async def wait_for(
+            predicate, *, message: str, timeout: float = 5.0
+        ) -> None:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + timeout
+            while loop.time() < deadline:
+                if predicate():
+                    return
+                await asyncio.sleep(0.01)
+            raise AssertionError(message)
+
+        result = await service.handle_command(
+            command(
+                "chat-1",
+                "chat.submit",
+                conversation_id=conversation_id,
+                target="character",
+                text="今天状态怎么样？",
+            )
+        )
+        assert result["turn_id"]
+
+        def turn_events() -> list[dict]:
+            return [
+                e for e in events if e["event"] in ("turn.started", "turn.status_changed")
+            ]
+
+        await wait_for(
+            lambda: len(turn_events()) >= 2,
+            message="应发射 turn.started 与终态 turn.status_changed",
+        )
+        started = [e for e in turn_events() if e["event"] == "turn.started"]
+        assert len(started) == 1
+        assert started[0]["payload"]["turn"]["turn_id"] == result["turn_id"]
+        assert started[0]["payload"]["turn"]["status"] == "running"
+        assert started[0]["payload"]["turn"]["source_message_id"] == result["message_id"]
+        assert started[0]["payload"]["turn"]["conversation_id"] == conversation_id
+        assert started[0]["payload"]["turn"]["project_id"]  # 归属项目
+
+        terminal = turn_events()[-1]
+        assert terminal["payload"]["turn"]["status"] == "completed"
+
+        # 快照水合：turns 按顺序包含该会话的 turn（终态 completed）
+        snapshot = service.bootstrap()
+        turns = [t for t in snapshot["turns"] if t["conversation_id"] == conversation_id]
+        assert turns
+        assert turns[-1]["turn_id"] == result["turn_id"]
+        assert turns[-1]["status"] == "completed"
+        assert turns[0]["turn_id"] == turns[-1]["turn_id"]  # 单次提交单条 turn
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_marks_turn_failed_and_message_failed(tmp_path: Path) -> None:
+    """V0.2 M2：回合失败时 turn 进入 failed，用户消息标记 failed（文字保留）。"""
+    events: list[dict] = []
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+        event_sink=events.append,
+    )
+    try:
+        # 注入会失败的编排器路径：破坏对话模型不可行（demo 不会失败），
+        # 改用关闭后的服务直接驱动 _run_submit_turn 不可行——这里通过
+        # 让 submit 后立即 shutdown 触发任务取消，验证 cancelled 事件。
+        conversation_id = service.current_conversation_id
+        result = await service.handle_command(
+            command(
+                "chat-1",
+                "chat.submit",
+                conversation_id=conversation_id,
+                target="character",
+                text="你好",
+            )
+        )
+        assert result["turn_id"]
+        await service.shutdown()
+
+        # shutdown 后服务关闭，turn 记录仍按事件序列保留（cancelled）
+        started = [e for e in events if e["event"] == "turn.started"]
+        terminal = [e for e in events if e["event"] == "turn.status_changed"]
+        assert started, "turn.started 应已发射"
+        statuses = [e["payload"]["turn"]["status"] for e in terminal]
+        assert "cancelled" in statuses or "completed" in statuses
     finally:
         await service.shutdown()

@@ -206,6 +206,7 @@ export interface DesktopSnapshot {
   current_conversation: ConversationRecord;
   messages: Message[];
   tool_runs: ToolRun[];
+  turns: Turn[];
   active_task: ActiveTask | null;
   busy: boolean;
   approvals: PendingApproval[];
