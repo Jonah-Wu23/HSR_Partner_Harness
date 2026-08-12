@@ -32,6 +32,11 @@ export class TauriDesktopBackend implements DesktopBackend {
     return typeof selected === "string" ? selected : null;
   }
 
+  async reconnectSidecar(): Promise<void> {
+    // Sidecar 可能已断开，不能经 desktop_request 转发，直接调用 Rust 命令
+    await invoke<{ reconnected: boolean }>("sidecar_reconnect");
+  }
+
   subscribe(listener: (event: DesktopEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);

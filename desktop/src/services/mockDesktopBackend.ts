@@ -101,6 +101,19 @@ export class MockDesktopBackend implements DesktopBackend {
     return null;
   }
 
+  async reconnectSidecar(): Promise<void> {
+    // 模拟一次断线-恢复：先断开并上报可恢复错误，随后立即恢复
+    // （connection.status connected 会驱动 store 进入 booting 并重新 bootstrap）。
+    this.emit("connection.status", { status: "disconnected" });
+    this.emit("error.reported", {
+      code: "backend_disconnected",
+      message: "Python Sidecar 已断开，正在重连…",
+      severity: "recoverable",
+      source: "sidecar",
+    });
+    this.emit("connection.status", { status: "connected" });
+  }
+
   subscribe(listener: (event: DesktopEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);

@@ -64,6 +64,27 @@ describe("MockDesktopBackend project and conversation flow", () => {
     }
   });
 
+  it("reconnect 模拟断线-恢复并驱动连接状态机", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    const controller = createActionController(backend);
+    const unsubscribe = backend.subscribe((event) => desktopStore.getState().applyEvents([event]));
+    try {
+      await controller.loadBootstrap();
+      expect(desktopStore.getState().status).toBe("ready");
+
+      await controller.actions.reconnect();
+      // 断线-恢复事件驱动 store：connected 进入 booting 并标记需要重新 bootstrap
+      expect(desktopStore.getState().status).toBe("booting");
+      expect(desktopStore.getState().needsBootstrap).toBe(true);
+
+      // 与 AppController 的恢复流程一致：重新 bootstrap 后回到 ready
+      await controller.loadBootstrap();
+      expect(desktopStore.getState().status).toBe("ready");
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("archives a project even when it is the only project", async () => {
     const backend = new MockDesktopBackend("single-project");
     const controller = createActionController(backend);

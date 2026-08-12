@@ -147,6 +147,17 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async stopSpeech() {
       await request("voice.tts_stop");
     },
+    async reconnect() {
+      // Sidecar 断开时走 Rust 侧强制重启（sidecar_reconnect），成功后由
+      // connection.status connected 事件驱动重新 bootstrap；失败则上报错误状态。
+      try {
+        await backend.reconnectSidecar();
+      } catch (error) {
+        desktopStore
+          .getState()
+          .setStatus("error", error instanceof Error ? error.message : String(error));
+      }
+    },
   };
   return { actions, loadBootstrap };
 }

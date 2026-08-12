@@ -28,4 +28,6 @@ export interface HarnessActions {
   startPushToTalk(target?: "character" | "assistant"): Promise<void>;
   stopPushToTalk(): Promise<void>;
   stopSpeech(): Promise<void>;
+  /** 立即重连本地服务（Sidecar 断开时由 Rust 侧强制重启并重置退避）。 */
+  reconnect(): Promise<void>;
 }

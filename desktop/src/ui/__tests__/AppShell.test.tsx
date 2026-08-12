@@ -110,6 +110,20 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
     expect(screen.getByTestId("app-shell")).toHaveAttribute("data-theme", "light");
   });
 
+  it("disconnected：技术详情抽屉提供立即重连", async () => {
+    const { controller, rerender, present } = await renderScenario("single-project");
+    desktopStore.getState().setStatus("disconnected");
+    rerender(<AppShell vm={present()} actions={controller.actions} />);
+
+    // 断线横幅 + 连接药丸均指向技术详情抽屉
+    expect(screen.getByRole("alert")).toHaveTextContent("与本地服务失去连接");
+    fireEvent.click(screen.getByRole("button", { name: /连接状态/ }));
+    // 逻辑线接入 app.reconnect 后，抽屉提供「立即重连」按钮
+    const reconnectButton = screen.getByRole("button", { name: "立即重连" });
+    expect(reconnectButton).toBeInTheDocument();
+    fireEvent.click(reconnectButton);
+  });
+
   it("booting：只渲染状态页", async () => {
     const backend = new MockDesktopBackend("single-project");
     const controller = createActionController(backend);

@@ -389,6 +389,19 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
     case "voice.state_changed":
       next.voice = { ...next.voice, ...(event.payload.voice as Partial<VoiceState>) };
       break;
+    case "connection.status": {
+      // V0.2 M2-5 连接恢复（问题 12）：断线保留已加载内容（不整屏接管），
+      // 恢复后进入 booting 并请求重新 bootstrap 水合最新快照。
+      const status = String(event.payload.status ?? "");
+      if (status === "disconnected") {
+        next.status = "disconnected";
+        next.needsBootstrap = false; // 断线中不发起 bootstrap，等 connected 后恢复
+      } else if (status === "connected") {
+        next.status = "booting";
+        next.needsBootstrap = true; // AppController 会随后重新 loadBootstrap
+      }
+      break;
+    }
     case "error.reported": {
       // V0.2 错误分级（问题 9）：只有 fatal 才接管整屏；recoverable/info
       // 保留已加载内容，由连接药丸/Toast 消费。

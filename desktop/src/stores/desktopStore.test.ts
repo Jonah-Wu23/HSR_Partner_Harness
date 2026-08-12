@@ -51,6 +51,55 @@ describe("desktopStore event projection", () => {
     expect(state.messageIdsByConversation["conv-1"]).toEqual(["message-1", "message-2"]);
   });
 
+  it("connection.status 断线切换状态但保留已加载内容", () => {
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "connection.status",
+        sequence: 1,
+        payload: { status: "disconnected" },
+      },
+      {
+        kind: "event",
+        event: "error.reported",
+        sequence: 2,
+        payload: {
+          code: "backend_disconnected",
+          message: "Python Sidecar 已断开，正在重连…",
+          severity: "recoverable",
+          source: "sidecar",
+        },
+      },
+    ]);
+    const state = desktopStore.getState();
+    expect(state.status).toBe("disconnected");
+    expect(state.needsBootstrap).toBe(false);
+    expect(state.error).toBe("Python Sidecar 已断开，正在重连…");
+    // 已加载内容保留，不整屏接管
+    expect(state.conversationsById["conv-1"]).toBeDefined();
+    expect(state.messagesById["message-1"]).toBeDefined();
+  });
+
+  it("connection.status 恢复后进入 booting 并请求重新 bootstrap", () => {
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "connection.status",
+        sequence: 1,
+        payload: { status: "disconnected" },
+      },
+      {
+        kind: "event",
+        event: "connection.status",
+        sequence: 2,
+        payload: { status: "connected" },
+      },
+    ]);
+    const state = desktopStore.getState();
+    expect(state.status).toBe("booting");
+    expect(state.needsBootstrap).toBe(true);
+  });
+
   it("locks approval actions until the resolved event arrives", () => {
     desktopStore.getState().applyEvents([
       {

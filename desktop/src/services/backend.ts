@@ -8,6 +8,8 @@ export interface DesktopBackend {
   request<T>(command: DesktopCommand): Promise<T>;
   pickFolder(title?: string): Promise<string | null>;
   subscribe(listener: (event: DesktopEvent) => void): () => void;
+  /** 强制重连本地服务；Sidecar 断开时无法走 JSONL 请求，直接触达 Rust 命令。 */
+  reconnectSidecar(): Promise<void>;
 }
 
 export function unwrapResponse<T>(response: DesktopResponse<T>): T {

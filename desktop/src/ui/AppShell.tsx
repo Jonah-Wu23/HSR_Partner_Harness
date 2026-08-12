@@ -110,6 +110,7 @@ export function AppShell({ vm, actions }: AppShellProps) {
           status={connectionStatus}
           details={{ lastError: vm.error }}
           onClose={() => setTechDetailsOpen(false)}
+          onReconnect={() => void actions.reconnect()}
         />
       </>
     );
