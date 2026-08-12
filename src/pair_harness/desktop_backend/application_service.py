@@ -353,7 +353,9 @@ class DesktopApplicationService:
             "approvals": self.approval_broker.snapshot(),
             "voice": self._voice_snapshot(),
             "pair": self._pair_payload(self.pair_config),
-            "sequence": self.emitter.next_sequence,
+            # 快照记录最近一条已经发出的事件；next_sequence 指向下一条待发事件。
+            # 前端以该值作为 lastSequence，下一条事件必须从它递增一位。
+            "sequence": self.emitter.next_sequence - 1,
         }
 
     def approval_conversation_id(self) -> str:
@@ -1130,7 +1132,7 @@ class DesktopApplicationService:
             else:
                 self.store.set_config(self.current_account_id, key, value)
         self._account_config = None
-        return {"config": self._config_get({})}
+        return {"config": await self._config_get({})}
 
     async def _config_test_connection(self, params: Mapping[str, Any]) -> dict[str, Any]:
         """探测对话服务连接：短请求验证 base_url/model/api_key。"""

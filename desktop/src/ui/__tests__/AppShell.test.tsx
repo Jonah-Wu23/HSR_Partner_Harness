@@ -197,6 +197,21 @@ describe("AppShell V0.2 M4 接口接线", () => {
     expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
   });
 
+  it("连续跳过项目与模型配置后进入主页", async () => {
+    const { controller, rerender, present } = await renderScenario("onboarding-pending");
+
+    fireEvent.click(screen.getByRole("button", { name: "跳过" }));
+    fireEvent.click(screen.getByRole("button", { name: "跳过，之后再说" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始使用" }));
+
+    await waitFor(() =>
+      expect(desktopStore.getState().currentAccount?.onboarding_complete).toBe(true),
+    );
+    rerender(<AppShell vm={present()} actions={controller.actions} />);
+    expect(screen.queryByText("都准备好了")).not.toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "项目轨道" })).toBeInTheDocument();
+  });
+
   it("error.reported recoverable：Toast 渲染并可关闭", async () => {
     const { controller, rerender, present } = await renderScenario("single-project");
     desktopStore.getState().applyEvents([

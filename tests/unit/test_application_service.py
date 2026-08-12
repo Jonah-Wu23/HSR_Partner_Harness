@@ -35,6 +35,11 @@ async def test_bootstrap_contains_projects_conversation_and_voice_shape(tmp_path
         # V0.2 M4：voice 快照携带待播队列长度（VoiceMiniPlayer 的 queuedCount）
         assert snapshot["voice"]["speech_queue_len"] == 0
         assert snapshot["busy"] is False
+        assert snapshot["sequence"] == -1
+
+        service.emitter.emit("test.event", {})
+        next_snapshot = service.bootstrap()
+        assert next_snapshot["sequence"] == events[-1]["sequence"]
     finally:
         await service.shutdown()
 
@@ -892,7 +897,7 @@ async def test_config_get_set_masks_secrets(tmp_path: Path) -> None:
         project_root=tmp_path,
     )
     try:
-        await service.handle_command(
+        updated = await service.handle_command(
             command(
                 "set-1",
                 "config.set",
@@ -905,6 +910,8 @@ async def test_config_get_set_masks_secrets(tmp_path: Path) -> None:
                 },
             )
         )
+        assert updated["config"]["engine"] == "deepseek"
+        assert updated["config"]["dialogue"]["model"] == "deepseek-chat"
         config = await service.handle_command(command("get-1", "config.get"))
         assert config["engine"] == "deepseek"
         assert config["dialogue"]["model"] == "deepseek-chat"

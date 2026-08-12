@@ -56,6 +56,8 @@ npm run build:sidecar
 npm run tauri -- build --bundles nsis
 ```
 
+发布节奏：开发迭代只更新 `desktop/src-tauri/target/release/hsr-partner-harness.exe`，不重新生成或上传安装包。当前已经生成的安装包保持现状，下一次安装包更新安排在 v0.3.0。
+
 ## 外部代码
 
 `src/pair_harness/config/providers.py` 含有根据 DeepSeek-Reasonix 改写的供应商识别逻辑。修改这部分时保留文件内出处，并同步检查 `THIRD_PARTY_NOTICES.md`。
