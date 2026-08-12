@@ -128,6 +128,64 @@ async def test_dialogue_reviewer_parses_role_protocol_wrapper() -> None:
 
 
 @pytest.mark.asyncio
+async def test_dialogue_reviewer_prefers_raw_from_speech_completed() -> None:
+    """V0.2 M2：真实适配器下 speech.delta 是干净台词（裸裁决 JSON 无 speech
+    字段时不产生 delta），审查 JSON 只存在于 speech.completed.raw——
+    必须优先取 raw，而不是依赖 delta 拼接。"""
+    verdict = {"allow": False, "reason": "删除操作", "suggestion": "改用移动"}
+
+    class RealAdapterModel(DialogueModel):
+        async def stream_reply(
+            self, request: DialogueRequest
+        ) -> AsyncIterator[DialogueEvent]:
+            # 模拟真实适配器：裸裁决 JSON 无 speech 字段 → 无 speech.delta；
+            # speech.completed 携带完整原始输出
+            yield DialogueEvent(type="speech.completed", raw=json.dumps(verdict))
+            yield DialogueEvent(
+                type="character.final",
+                turn=CharacterTurn(
+                    speech="……", delegation=None
+                ),
+            )
+
+    reviewer = DialogueModelReviewer(RealAdapterModel())
+    op = PendingOperation(tool_kind="shell", command="rm x", summary="删除文件")
+    verdict_result = await reviewer.review(op, [])
+    assert verdict_result.allow is False
+    assert verdict_result.reason == "删除操作"
+    assert verdict_result.suggestion == "改用移动"
+
+
+@pytest.mark.asyncio
+async def test_dialogue_reviewer_parses_clean_speech_delta_stream() -> None:
+    """V0.2 M2：审查模型按角色协议输出（speech 内嵌裁决 JSON）时，
+    适配器 speech.delta 是内嵌 JSON 的干净分片，拼接即可解析。"""
+    verdict = {"allow": True, "reason": "", "suggestion": ""}
+    inner = json.dumps(verdict)
+    wrapped = json.dumps({"speech": inner, "delegation": None})
+
+    class CleanDeltaModel(DialogueModel):
+        async def stream_reply(
+            self, request: DialogueRequest
+        ) -> AsyncIterator[DialogueEvent]:
+            yield DialogueEvent(type="speech.started")
+            yield DialogueEvent(type="speech.delta", delta=inner[:8])
+            yield DialogueEvent(type="speech.delta", delta=inner[8:])
+            yield DialogueEvent(type="speech.completed", raw=wrapped)
+            yield DialogueEvent(
+                type="character.final",
+                turn=CharacterTurn(speech=inner, delegation=None),
+            )
+
+    reviewer = DialogueModelReviewer(CleanDeltaModel())
+    result = await reviewer.review(
+        PendingOperation(tool_kind="shell", command="pytest", summary="运行测试"),
+        [],
+    )
+    assert result.allow is True
+
+
+@pytest.mark.asyncio
 async def test_dialogue_reviewer_fails_closed_on_invalid_json() -> None:
     """O1.1：非法 JSON 输出保持 fail-closed 否决并给出固定理由。"""
     model = DeltaAndFinalModel("这不是 JSON")

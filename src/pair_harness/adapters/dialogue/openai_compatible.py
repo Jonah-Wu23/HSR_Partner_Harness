@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from pair_harness.config.pairs import load_pair_config, load_prompt
+from pair_harness.adapters.dialogue.incremental_json import IncrementalJsonSpeechParser
 from pair_harness.config.providers import (
     deepseek_request_extras,
     detect_provider,
@@ -355,8 +356,14 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         if self.temperature is not None:
             payload["temperature"] = self.temperature
         payload.update(self._request_extras())
+        # V0.2 M2（问题 10）：content 增量经 IncrementalJsonSpeechParser 只提取
+        # 干净 speech 上屏（不再闪烁 JSON 键名）；reasoning_content 走独立通道。
+        # 增量期间若字段尚未解析出来，界面显示“正在组织语言…”。
         text_chunks: list[str] = []
         reasoning_chunks: list[str] = []
+        parser = IncrementalJsonSpeechParser()
+        speech_started = False
+        reasoning_started = False
         async with client.stream("POST", "/chat/completions", json=payload) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():
@@ -373,10 +380,26 @@ class OpenAICompatibleDialogueModel(DialogueModel):
                 content_delta = delta_payload.get("content", "")
                 reasoning_delta = delta_payload.get("reasoning_content", "")
                 if reasoning_delta:
+                    if not reasoning_started:
+                        yield DialogueEvent(type="reasoning.started")
+                        reasoning_started = True
                     reasoning_chunks.append(str(reasoning_delta))
+                    yield DialogueEvent(type="reasoning.delta", delta=str(reasoning_delta))
                 if content_delta:
-                    text_chunks.append(str(content_delta))
-                    yield DialogueEvent(type="speech.delta", delta=str(content_delta))
+                    raw_text = str(content_delta)
+                    text_chunks.append(raw_text)
+                    speech_delta = parser.feed(raw_text)
+                    if speech_delta:
+                        if not speech_started:
+                            yield DialogueEvent(type="speech.started")
+                            speech_started = True
+                        yield DialogueEvent(type="speech.delta", delta=speech_delta)
+        if reasoning_started:
+            yield DialogueEvent(type="reasoning.completed")
+        if text_chunks:
+            # speech.completed 携带完整原始输出（含解析失败的 JSON），
+            # 供技术详情与审查智能体复用；raw 绝不进入气泡。
+            yield DialogueEvent(type="speech.completed", raw="".join(text_chunks))
         turn = self._parse_output("".join(text_chunks)).model_copy(
             update={"reasoning": "".join(reasoning_chunks).strip()}
         )

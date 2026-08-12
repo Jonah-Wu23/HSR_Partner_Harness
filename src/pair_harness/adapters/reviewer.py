@@ -67,19 +67,26 @@ class DialogueModelReviewer:
             user_message=synthetic,
         )
 
-        # 优先拼接 speech.delta 取模型原始输出：角色适配器的 character.final
-        # 是 _parse_output 的二次加工（整体 JSON 会被拆成 speech/delegation，
-        # 纯 JSON 输出会被降级成“……”），审查 JSON 会被吞掉；delta 流本身
-        # 就是模型输出的完整 content。delta 拼接解析失败（测试/演示模型只
-        # 发半截 delta）时回退 final 台词。
+        # V0.2 M2：适配器的 speech.delta 已是干净 speech（剥离 JSON 包裹），
+        # 裸裁决 JSON（无 speech 字段）只存在于 speech.completed.raw 与
+        # character.final 的二次加工里。按 原始输出 → delta 拼接 → final 台词
+        # 的顺序取裁决 JSON。delta 拼接仅用于演示/测试模型只发半截 delta 的
+        # 场景，不依赖真实适配器（真实适配器必发 speech.completed）。
         chunks: list[str] = []
         final_speech: str | None = None
+        raw_content: str | None = None
         async for event in self._model.stream_reply(request):
             if event.type == "speech.delta":
                 chunks.append(event.delta)
+            elif event.type == "reasoning.delta":
+                chunks.append(event.delta)
+            elif event.type == "speech.completed" and event.raw:
+                raw_content = event.raw
             elif event.type == "character.final" and event.turn:
                 final_speech = event.turn.speech
-        data = self._parse_verdict_json("".join(chunks))
+        data = self._parse_verdict_json(raw_content) if raw_content else None
+        if data is None:
+            data = self._parse_verdict_json("".join(chunks))
         if data is None and final_speech:
             data = self._parse_verdict_json(final_speech)
         if data is None:
