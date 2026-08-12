@@ -43,20 +43,35 @@ class SubprocessJsonLineConnection:
         return found or executable
 
     @classmethod
-    async def create(cls, executable: str) -> "SubprocessJsonLineConnection":
-        # stderr 无人消费会打满管道缓冲并阻塞子进程（O1.3）。
-        # MVP 阶段丢弃 stderr；B1 联调需要诊断输出时再改为独立任务消费并接入日志。
+    async def create(
+        cls,
+        executable: str,
+        args: list[str] | None = None,
+        env: dict[str, str] | None = None,
+    ) -> "SubprocessJsonLineConnection":
+        """启动子进程。
+
+        ``args`` 追加到可执行文件后（codex 用 ``app-server``，Reasonix
+        ACP 用 ``acp``）；``env`` 为账号级环境覆盖（V0.2 M3：每个本地
+        账号独立的 Codex 数据目录 CODEX_HOME，见 CodexAuthService）。
+        stderr 无人消费会打满管道缓冲并阻塞子进程（O1.3）。MVP 阶段丢弃
+        stderr；B1 联调需要诊断输出时再改为独立任务消费并接入日志。
+        """
         resolved = cls._resolve_executable(executable)
         if resolved.lower().endswith((".cmd", ".bat")):
             # 批处理 shim 必须经 cmd.exe 启动，直接 CreateProcess 会 WinError 193
-            args = [os.environ.get("COMSPEC", "cmd.exe"), "/c", resolved, "app-server"]
+            cmd = [os.environ.get("COMSPEC", "cmd.exe"), "/c", resolved, *(args or [])]
         else:
-            args = [resolved, "app-server"]
+            cmd = [resolved, *(args or [])]
+        merged_env = dict(os.environ)
+        if env:
+            merged_env.update(env)
         process = await asyncio.create_subprocess_exec(
-            *args,
+            *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=merged_env,
         )
         return cls(process)
 
