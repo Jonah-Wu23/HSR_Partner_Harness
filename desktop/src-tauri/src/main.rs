@@ -1,10 +1,13 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager, State};
@@ -51,6 +54,46 @@ fn packaged_sidecar(app: &tauri::AppHandle) -> Option<PathBuf> {
     None
 }
 
+fn packaged_codex(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let resource_root = app.path().resource_dir().ok()?;
+    for root in [resource_root.clone(), resource_root.join("resources")] {
+        let candidate = root.join("codex").join("bin").join("codex.exe");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn debug_console_requested<I>(args: I) -> bool
+where
+    I: IntoIterator<Item = String>,
+{
+    args.into_iter()
+        .any(|arg| matches!(arg.as_str(), "--debug-console" | "--console"))
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn AllocConsole() -> i32;
+    fn FreeConsole() -> i32;
+}
+
+#[cfg(windows)]
+fn configure_console(debug_console: bool) {
+    unsafe {
+        if debug_console {
+            let _ = AllocConsole();
+        } else {
+            let _ = FreeConsole();
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn configure_console(_debug_console: bool) {}
+
 fn env_flag(name: &str) -> Option<bool> {
     match std::env::var(name).ok()?.to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Some(true),
@@ -65,6 +108,14 @@ fn configured_env_file(app: &tauri::AppHandle, root: &Path) -> Option<PathBuf> {
         candidates.push(PathBuf::from(value));
     }
     candidates.push(root.join(".env"));
+    if let Ok(current_dir) = std::env::current_dir() {
+        candidates.push(current_dir.join(".env"));
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(parent) = executable.parent() {
+            candidates.push(parent.join(".env"));
+        }
+    }
     if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
         candidates.push(
             PathBuf::from(local_app_data)
@@ -91,8 +142,9 @@ fn use_real_backend(env_file: Option<&Path>) -> bool {
     env_file.is_some()
 }
 
-fn spawn_backend(app: &tauri::AppHandle) -> Result<BackendState, String> {
+fn spawn_backend(app: &tauri::AppHandle, debug_console: bool) -> Result<BackendState, String> {
     let packaged = packaged_sidecar(app);
+    let bundled_codex = packaged_codex(app);
     let root = std::env::var_os("PAIR_HARNESS_ROOT")
         .map(PathBuf::from)
         .or_else(|| {
@@ -115,11 +167,19 @@ fn spawn_backend(app: &tauri::AppHandle) -> Result<BackendState, String> {
     if let Some(env_file) = env_file {
         command.env("PAIR_HARNESS_ENV_FILE", env_file);
     }
+    if let Some(codex) = bundled_codex {
+        command.env("PAIR_HARNESS_BUNDLED_CODEX_BIN", codex);
+    }
     command
         .arg(&root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
+
+    #[cfg(windows)]
+    if !debug_console {
+        command.creation_flags(0x08000000);
+    }
 
     let mut child = command
         .spawn()
@@ -250,10 +310,12 @@ fn stop_backend(state: &BackendState) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let debug_console = debug_console_requested(std::env::args());
+    configure_console(debug_console);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
-            let state = spawn_backend(app.handle())?;
+        .setup(move |app| {
+            let state = spawn_backend(app.handle(), debug_console)?;
             app.manage(state);
             Ok(())
         })
@@ -275,7 +337,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_request_line, fail_pending, PendingMap};
+    use super::{debug_console_requested, encode_request_line, fail_pending, PendingMap};
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -301,6 +363,21 @@ mod tests {
             serde_json::from_slice::<serde_json::Value>(&line[..line.len() - 1]).unwrap()["id"],
             "r1"
         );
+    }
+
+    #[test]
+    fn debug_console_requires_explicit_flag() {
+        assert!(!debug_console_requested([
+            "hsr-partner-harness.exe".to_string()
+        ]));
+        assert!(debug_console_requested([
+            "hsr-partner-harness.exe".to_string(),
+            "--debug-console".to_string(),
+        ]));
+        assert!(debug_console_requested([
+            "hsr-partner-harness.exe".to_string(),
+            "--console".to_string(),
+        ]));
     }
 
     #[tokio::test]

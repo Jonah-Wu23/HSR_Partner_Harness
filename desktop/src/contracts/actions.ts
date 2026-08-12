@@ -5,6 +5,7 @@ export interface HarnessActions {
   renameProject(projectId: string, name: string): Promise<void>;
   repairProjectPath(projectId: string): Promise<void>;
   selectProject(projectId: string): Promise<void>;
+  archiveProject(projectId: string): Promise<void>;
   createConversation(projectId?: string, title?: string): Promise<void>;
   selectConversation(conversationId: string): Promise<void>;
   renameConversation(conversationId: string, title: string): Promise<void>;

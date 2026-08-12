@@ -31,10 +31,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def _run(args: argparse.Namespace) -> int:
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
-    if hasattr(sys.stderr, "reconfigure"):
-        sys.stderr.reconfigure(encoding="utf-8")
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
     writer = JsonlWriter(sys.stdout)
     service = None
 

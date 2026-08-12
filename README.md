@@ -34,7 +34,7 @@ Windows x64 安装包发布在 [GitHub Releases](https://github.com/Jonah-Wu23/H
 
 ## 运行真实模式
 
-真实的编程功能要靠本机装好的 [OpenAI Codex](https://github.com/openai/codex)，先确认命令可用：
+从源码运行真实编程功能时，需要本机装好的 [OpenAI Codex](https://github.com/openai/codex)，先确认命令可用：
 
 ```powershell
 codex --version
@@ -51,7 +51,7 @@ codex --version
 | `PAIR_HARNESS_DIALOGUE_BASE_URL` | 对话模型的 OpenAI 兼容地址。 |
 | `PAIR_HARNESS_DIALOGUE_API_KEY` | 对话模型的密钥。 |
 | `PAIR_HARNESS_DIALOGUE_MODEL` | 对话模型的名称。 |
-| `PAIR_HARNESS_CODEX_BIN` | Codex 可执行文件的路径，默认是 `codex`。 |
+| `PAIR_HARNESS_CODEX_BIN` | 覆盖 Codex 可执行文件路径；安装版默认使用随包携带的 Codex。 |
 | `DASHSCOPE_API_KEY` | DashScope 的语音密钥。 |
 | `PAIR_HARNESS_DASHSCOPE_HOST` | DashScope 工作空间的域名。 |
 
@@ -70,6 +70,20 @@ npm install
 npm run build:sidecar
 npm run tauri:dev
 ```
+
+发布构建会把 Windows 原生 Codex app-server 一起复制进安装包。构建机需要先安装
+`@openai/codex`，或者设置 `PAIR_HARNESS_CODEX_NATIVE_ROOT` 指向包含
+`bin\codex.exe` 的原生发行目录：
+
+```powershell
+npm install -g @openai/codex
+Set-Location desktop
+npm run tauri:build
+```
+
+安装包在 `desktop/src-tauri/target/release/bundle/nsis/`，可直接运行的 GUI EXE 在
+`desktop/src-tauri/target/release/hsr-partner-harness.exe`。正常启动不会弹出控制台窗口；研发调试时可在命令行使用
+`hsr-partner-harness.exe --debug-console`（`--console` 也是别名）保留黑框并查看 Sidecar 日志。
 
 ## 测试
 
@@ -120,7 +134,7 @@ npm run tauri -- build --bundles nsis
 
 `src/pair_harness/config/providers.py` 里的供应商识别方式和推理档位语义是从 [DeepSeek-Reasonix](https://github.com/esengine/deepseek-reasonix) 改写来的，原项目用 MIT License，完整声明在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-编程后端用的是 [OpenAI Codex](https://github.com/openai/codex)，应用连接的是你本机装好的 Codex app-server，仓库里不包含 Codex 的源码和二进制文件。
+编程后端用的是 [OpenAI Codex](https://github.com/openai/codex)。源码仓库不提交 Codex 二进制；发布脚本会在构建时把构建机上 `@openai/codex` 的 Windows 原生 app-server 复制进安装包。
 
 ## 许可
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import sys
 from pathlib import Path
 
 from pair_harness.adapters.codex.engine import CodexAppServerEngine
@@ -27,7 +28,12 @@ def load_dotenv(path: Path) -> None:
     """
     if not path.is_file():
         return
-    for line in path.read_text(encoding="utf-8").splitlines():
+    try:
+        dotenv_text = path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        # Windows 用户可能把本地 .env 保存成 GBK；配置键本身仍按文本解析。
+        dotenv_text = path.read_text(encoding="gb18030")
+    for line in dotenv_text.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -221,6 +227,7 @@ async def run_real(
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_stdio_utf8()
     args = build_parser().parse_args(argv)
     if args.demo:
         return asyncio.run(run_demo(Path(args.project), args.message))
@@ -238,6 +245,14 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
     raise SystemExit("需要 --demo 或 --real")
+
+
+def _configure_stdio_utf8() -> None:
+    """让 CLI 在 Windows GBK 与系统 UTF-8 模式下都使用稳定的 UTF-8 I/O。"""
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
 
 
 if __name__ == "__main__":

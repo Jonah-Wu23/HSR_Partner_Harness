@@ -73,7 +73,7 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
     composer: {
       target: state.composerTarget,
       draft: state.composerDraft,
-      enabled: state.status === "ready",
+      enabled: state.status === "ready" && currentConversation !== undefined,
       approvalMode,
       reasoningEffort: currentProject?.reasoning_effort ?? "low",
       asrPartial: state.voice.asr_partial,

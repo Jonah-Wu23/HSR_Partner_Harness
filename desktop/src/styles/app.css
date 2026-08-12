@@ -1101,16 +1101,9 @@
 .menu-item.is-selected { color: var(--accent); font-weight: 500; }
 .menu-item-check { width: 14px !important; height: 14px !important; margin-left: auto; color: var(--accent); }
 
-/* ========== 大屏自适应：1680px 以上放大字阶与布局节奏 ========== */
+/* ========== 大屏自适应：1680px 以上放大布局节奏 ========== */
 
 @media (min-width: 1680px) {
-  .app-shell {
-    --text-t2-size: 19px; --text-t2-line: 28px;
-    --text-b1-size: 17px; --text-b1-line: 25px;
-    --text-b2-size: 16px; --text-b2-line: 23px;
-    --text-c1-size: 13px; --text-c1-line: 19px;
-    --text-title-size: 18px; --text-title-line: 27px;
-  }
   .app-topbar { height: 52px; padding: 0 var(--space-6); }
   .chat-column, .chat-column-inner { width: 256px; }
   .chat-column.is-collapsed { width: 0; }

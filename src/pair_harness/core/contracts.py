@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping as ABCMapping
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal, Mapping
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def new_id() -> str:
@@ -18,6 +19,26 @@ def utc_now() -> datetime:
 
 class FrozenModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", use_enum_values=True)
+
+
+def _normalize_unicode(value: Any) -> Any:
+    """把字符串中的孤立 UTF-16 代理字符替换为 Unicode replacement character。"""
+    if isinstance(value, str):
+        if not any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+            return value
+        # surrogatepass 保留成对代理，随后由 decode 合并；孤立代理由
+        # errors="replace" 转成可安全序列化的 U+FFFD。
+        return value.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    if isinstance(value, ABCMapping):
+        return {
+            _normalize_unicode(key): _normalize_unicode(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_normalize_unicode(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_normalize_unicode(item) for item in value)
+    return value
 
 
 def enum_value(value: "MessageSource | MessageKind | str") -> str:
@@ -74,6 +95,11 @@ class Message(FrozenModel):
     payload: Mapping[str, Any] = Field(default_factory=dict)
     tts_eligible: bool = False
     created_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("text", "payload", mode="before")
+    @classmethod
+    def normalize_unicode(cls, value: Any) -> Any:
+        return _normalize_unicode(value)
 
 
 class TaskRequestDraft(FrozenModel):

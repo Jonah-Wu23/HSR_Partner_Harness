@@ -11,6 +11,7 @@ DESKTOP_COMMANDS = frozenset(
         "project.create",
         "project.select",
         "project.update_settings",
+        "project.archive",
         "conversation.create",
         "conversation.select",
         "conversation.rename",

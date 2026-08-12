@@ -63,4 +63,17 @@ describe("MockDesktopBackend project and conversation flow", () => {
       unsubscribe();
     }
   });
+
+  it("archives a project even when it is the only project", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    const controller = createActionController(backend);
+    await controller.loadBootstrap();
+
+    await controller.actions.archiveProject("project-1");
+
+    const state = desktopStore.getState();
+    expect(state.currentProjectId).toBe("");
+    expect(state.currentConversationId).toBe("");
+    expect(state.projectsById).toEqual({});
+  });
 });

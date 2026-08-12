@@ -1,6 +1,10 @@
 import { useMemo, useState } from "react";
 import type { HarnessActions } from "../../contracts/actions";
-import type { ConversationViewModel, NavigationViewModel } from "../../contracts/view-models";
+import type {
+  ConversationViewModel,
+  NavigationViewModel,
+  ProjectViewModel,
+} from "../../contracts/view-models";
 import {
   AddConversationIcon,
   CheckIcon,
@@ -33,6 +37,7 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
   const [editingProject, setEditingProject] = useState(false);
   const [editingProjectTitle, setEditingProjectTitle] = useState("");
   const [pendingArchive, setPendingArchive] = useState<ConversationViewModel | null>(null);
+  const [pendingArchiveProject, setPendingArchiveProject] = useState<ProjectViewModel | null>(null);
 
   const currentProject = navigation.projects.find((project) => project.isCurrent) ?? null;
   // presenters 在运行时将 conversations 标注为 ConversationViewModel，接口未重声明，这里显式收窄。
@@ -197,11 +202,14 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
             items={[
               { id: "rename", label: "重命名项目", icon: <EditIcon /> },
               { id: "settings", label: "项目设置", icon: <SettingIcon />, disabled: true },
+              { id: "archive", label: "归档项目", icon: <DeleteIcon />, danger: true, disabled: !currentProject },
             ]}
             onSelect={(id) => {
               if (id === "rename" && currentProject) {
                 setEditingProjectTitle(currentProject.name);
                 setEditingProject(true);
+              } else if (id === "archive" && currentProject) {
+                setPendingArchiveProject(currentProject);
               }
             }}
           />
@@ -278,6 +286,33 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
               归档
             </button>
             <button type="button" className="btn btn-secondary" onClick={() => setPendingArchive(null)}>
+              取消
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {pendingArchiveProject ? (
+        <div className="archive-confirm" role="alertdialog" aria-label="确认归档项目">
+          <span>
+            确定归档项目“{pendingArchiveProject.name}”吗？其中的聊天会一起归档。
+          </span>
+          <div className="archive-confirm-actions">
+            <button
+              type="button"
+              className="btn btn-danger-outline"
+              onClick={() => {
+                void actions.archiveProject(pendingArchiveProject.project_id);
+                setPendingArchiveProject(null);
+              }}
+            >
+              归档项目
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setPendingArchiveProject(null)}
+            >
               取消
             </button>
           </div>

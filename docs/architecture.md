@@ -16,7 +16,7 @@ Sidecar 按请求创建并发任务，因此长时间编程任务运行时，聊
 
 ## 对话与执行
 
-角色模型通过 OpenAI 兼容接口接入。编程任务交给本机 Codex app-server。
+角色模型通过 OpenAI 兼容接口接入。源码运行时编程任务交给本机 Codex app-server；发布构建会把 Windows 原生 Codex app-server 一起放进 Tauri resources，安装版优先使用随包版本。
 
 角色发言与助手输出拥有明确身份。工具事件保持结构化，前端根据事件更新工作台。
 

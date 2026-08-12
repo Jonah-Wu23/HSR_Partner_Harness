@@ -105,7 +105,12 @@ class VoiceRuntime:
             return
         self._started = True
         self._capture = self._capture_factory()
-        await self._capture.__aenter__()
+        try:
+            await self._capture.__aenter__()
+        except Exception:
+            self._capture = None
+            self._started = False
+            raise
         self._capture_task = asyncio.create_task(self._capture_loop())
         if self._vad is None:
             self._on_vad_state("idle")

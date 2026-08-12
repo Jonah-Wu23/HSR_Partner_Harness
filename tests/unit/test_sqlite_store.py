@@ -286,6 +286,28 @@ def test_message_source_kind_columns_store_enum_values(tmp_path: Path) -> None:
         assert row["source"] != "MessageSource.CHARACTER"
 
 
+def test_message_with_lone_surrogates_can_be_persisted(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "db.sqlite") as store:
+        store.create_project(name="Repo", root_path=str(tmp_path), project_id="p")
+        store.create_conversation(
+            project_id="p", pair_id="phainon_ancient_machine", conversation_id="c"
+        )
+        message = Message(
+            conversation_id="c",
+            pair_id="phainon_ancient_machine",
+            source=MessageSource.CHARACTER,
+            kind=MessageKind.CHARACTER_SPEECH,
+            text="前\udc80后 😀",
+            payload={"reasoning": "思考\ud800", "items": ["\udfff"]},
+        )
+
+        store.save_message(message)
+
+        assert message.text == "前�后 😀"
+        assert message.payload == {"reasoning": "思考�", "items": ["�"]}
+        assert store.load_conversation("c")["messages"] == (message,)
+
+
 def test_fresh_database_marks_schema_version(tmp_path: Path) -> None:
     """O4.3：新库由 schema.sql 一次建全，直接标记 SCHEMA_VERSION。"""
     with SQLiteStore(tmp_path / "db.sqlite") as store:

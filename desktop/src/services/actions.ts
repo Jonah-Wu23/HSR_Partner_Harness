@@ -59,6 +59,9 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async selectProject(projectId) {
       await request("project.select", { project_id: projectId });
     },
+    async archiveProject(projectId) {
+      await request("project.archive", { project_id: projectId });
+    },
     async createConversation(projectId, title) {
       await request("conversation.create", { project_id: projectId, title });
     },

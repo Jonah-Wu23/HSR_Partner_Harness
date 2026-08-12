@@ -34,8 +34,12 @@ def build_real_voice_runtime(
     model_path = repository_root() / "assets" / "models" / "silero_vad_v5.onnx"
     try:
         vad = SileroVoiceActivityDetector(model_path)
-    except VadUnavailableError:
+    except VadUnavailableError as exc:
         vad = None
+        on_vad_state("unavailable")
+        on_error(f"VAD 模型未启用：{exc}")
+    else:
+        on_vad_state("ready")
 
     return VoiceRuntime(
         orchestrator=orchestrator,

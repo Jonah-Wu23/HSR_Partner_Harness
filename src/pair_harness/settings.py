@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True)
@@ -38,16 +39,25 @@ class Settings:
 
     @classmethod
     def from_environment(cls) -> "Settings":
+        configured_host = os.getenv("PAIR_HARNESS_DASHSCOPE_HOST")
+        if not configured_host:
+            base_url = os.getenv("DASHSCOPE_BASE_URL", "")
+            if base_url:
+                parsed = urlsplit(
+                    base_url if "://" in base_url else f"https://{base_url}"
+                )
+                configured_host = parsed.hostname
         return cls(
-            codex_bin=os.getenv("PAIR_HARNESS_CODEX_BIN", "codex"),
+            codex_bin=(
+                os.getenv("PAIR_HARNESS_CODEX_BIN")
+                or os.getenv("PAIR_HARNESS_BUNDLED_CODEX_BIN")
+                or "codex"
+            ),
             dialogue_base_url=os.getenv("PAIR_HARNESS_DIALOGUE_BASE_URL"),
             dialogue_api_key=os.getenv("PAIR_HARNESS_DIALOGUE_API_KEY"),
             dialogue_model=os.getenv("PAIR_HARNESS_DIALOGUE_MODEL"),
             dashscope_api_key=os.getenv("DASHSCOPE_API_KEY"),
-            dashscope_host=os.getenv(
-                "PAIR_HARNESS_DASHSCOPE_HOST",
-                "dashscope.aliyuncs.com",
-            ),
+            dashscope_host=configured_host or "dashscope.aliyuncs.com",
             dashscope_ws_url=os.getenv("PAIR_HARNESS_DASHSCOPE_WS_URL"),
             dashscope_http_url=os.getenv("PAIR_HARNESS_DASHSCOPE_HTTP_URL"),
             qwen_asr_model=os.getenv(

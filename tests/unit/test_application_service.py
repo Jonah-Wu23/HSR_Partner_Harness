@@ -158,6 +158,36 @@ async def test_project_defaults_to_folder_name_and_manual_name_survives_path_rep
 
 
 @pytest.mark.asyncio
+async def test_project_archive_works_for_current_last_project(tmp_path: Path) -> None:
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        project_id = service.current_project_id
+        snapshot = await service.handle_command(
+            command("archive-1", "project.archive", project_id=project_id)
+        )
+        assert snapshot["projects"] == []
+        assert snapshot["current_project_id"] == ""
+        assert snapshot["current_conversation_id"] == ""
+        assert snapshot["current_project"]["project_id"] == ""
+    finally:
+        await service.shutdown()
+
+    restored = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        restored_snapshot = restored.bootstrap()
+        assert restored_snapshot["projects"] == []
+        assert restored_snapshot["current_project_id"] == ""
+    finally:
+        await restored.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_first_complete_reply_generates_title_from_dialogue_only_and_manual_name_wins(
     tmp_path: Path,
 ) -> None:

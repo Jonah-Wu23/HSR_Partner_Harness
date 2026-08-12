@@ -34,7 +34,7 @@ The bundled pair is Phainon and the Mysterious Ancient Machine.
 
 ## Live mode
 
-Live coding depends on [OpenAI Codex](https://github.com/openai/codex) installed on this machine. Check that the command works:
+When running from source, live coding depends on [OpenAI Codex](https://github.com/openai/codex) installed on this machine. Check that the command works:
 
 ```powershell
 codex --version
@@ -51,7 +51,7 @@ The dialogue model works with DeepSeek and OpenAI-compatible endpoints. The vari
 | `PAIR_HARNESS_DIALOGUE_BASE_URL` | OpenAI-compatible endpoint for the dialogue model. |
 | `PAIR_HARNESS_DIALOGUE_API_KEY` | Dialogue model API key. |
 | `PAIR_HARNESS_DIALOGUE_MODEL` | Dialogue model name. |
-| `PAIR_HARNESS_CODEX_BIN` | Path to the Codex executable. Defaults to `codex`. |
+| `PAIR_HARNESS_CODEX_BIN` | Override for the Codex executable. Installed builds use the bundled Codex by default. |
 | `DASHSCOPE_API_KEY` | DashScope API key for voice. |
 | `PAIR_HARNESS_DASHSCOPE_HOST` | DashScope workspace host. |
 
@@ -70,6 +70,22 @@ npm install
 npm run build:sidecar
 npm run tauri:dev
 ```
+
+Release builds copy the native Windows Codex app-server into the installer. The build machine
+needs `@openai/codex` installed, or `PAIR_HARNESS_CODEX_NATIVE_ROOT` set to a native release
+directory containing `bin\codex.exe`:
+
+```powershell
+npm install -g @openai/codex
+Set-Location desktop
+npm run tauri:build
+```
+
+The installer is written to `desktop/src-tauri/target/release/bundle/nsis/`, and the directly
+runnable GUI executable is `desktop/src-tauri/target/release/hsr-partner-harness.exe`. Normal
+launches have no console window. For development diagnostics, run
+`hsr-partner-harness.exe --debug-console` (`--console` is an alias) to keep a console and see
+Sidecar logs.
 
 ## Tests
 
@@ -120,7 +136,9 @@ The finished installer is written to `desktop/src-tauri/target/release/bundle/ns
 
 The provider detection and reasoning-effort semantics in `src/pair_harness/config/providers.py` are rewritten from [DeepSeek-Reasonix](https://github.com/esengine/deepseek-reasonix), which uses the MIT License. The full notice is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-The coding backend is [OpenAI Codex](https://github.com/openai/codex). The app connects to the Codex app-server installed on your machine, and the repository contains no Codex source or binaries.
+The coding backend is [OpenAI Codex](https://github.com/openai/codex). The repository does not
+commit Codex binaries; the release script copies the Windows-native app-server from the build
+machine's `@openai/codex` package into the installer.
 
 ## License
 

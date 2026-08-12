@@ -206,17 +206,36 @@ class DesktopApplicationService:
             ]
             projects.append(project_payload)
 
-        conversation = self.store.get_conversation(self.current_conversation_id)
-        snapshot = self.store.load_conversation(self.current_conversation_id)
+        current_project = None
+        if self.current_project_id:
+            try:
+                current_project = self.store.get_project(self.current_project_id)
+            except KeyError:
+                self.current_project_id = ""
+
+        conversation = None
+        snapshot: dict[str, Any] = {"messages": [], "tool_runs": []}
+        if self.current_conversation_id:
+            try:
+                conversation = self.store.get_conversation(self.current_conversation_id)
+                snapshot = self.store.load_conversation(self.current_conversation_id)
+            except KeyError:
+                self.current_conversation_id = ""
         active = self.orchestrator.state.active
         return {
             "projects": projects,
             "current_project_id": self.current_project_id,
             "current_conversation_id": self.current_conversation_id,
-            "current_project": self._project_payload(
-                self.store.get_project(self.current_project_id)
+            "current_project": (
+                self._project_payload(current_project)
+                if current_project is not None
+                else self._empty_project_payload()
             ),
-            "current_conversation": self._conversation_payload(conversation),
+            "current_conversation": (
+                self._conversation_payload(conversation)
+                if conversation is not None
+                else self._empty_conversation_payload()
+            ),
             "messages": list(to_jsonable(snapshot["messages"])),
             "tool_runs": list(to_jsonable(snapshot["tool_runs"])),
             "active_task": to_jsonable(active),
@@ -236,6 +255,7 @@ class DesktopApplicationService:
         self.voice_runtime = runtime
         self._voice_state["supported"] = True
         self.orchestrator.add_message_listener(runtime.on_message)
+        self.emitter.emit("voice.state_changed", {"voice": dict(self._voice_state)})
 
     async def start_voice(self) -> None:
         if self.voice_runtime is None:
@@ -270,6 +290,7 @@ class DesktopApplicationService:
             "project.create": self._project_create,
             "project.select": self._project_select,
             "project.update_settings": self._project_update_settings,
+            "project.archive": self._project_archive,
             "conversation.create": self._conversation_create,
             "conversation.select": self._conversation_select,
             "conversation.rename": self._conversation_rename,
@@ -378,6 +399,34 @@ class DesktopApplicationService:
             )
         return self.bootstrap()
 
+    async def _project_archive(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        project_id = str(params.get("project_id") or self.current_project_id)
+        if not project_id:
+            raise ServiceError("没有可归档的项目", code="project_not_found")
+        active = self.orchestrator.state.active
+        if active is not None and getattr(active, "project_id", None) == project_id:
+            raise ServiceError("项目正在执行任务，暂时不能归档", code="project_busy")
+
+        self.store.get_project(project_id)
+        was_current = project_id == self.current_project_id
+        previous_conversation_id = self.current_conversation_id
+        self.store.archive_project(project_id)
+
+        if was_current:
+            remaining = self.store.list_projects()
+            if remaining:
+                conversation = self._find_or_create_conversation(
+                    remaining[0].project_id,
+                    pair_id=self.pair_config.pair_id,
+                )
+                self._select_conversation_context(conversation.conversation_id, emit=True)
+            else:
+                if previous_conversation_id:
+                    self.orchestrator.close_conversation(previous_conversation_id)
+                self.current_project_id = ""
+                self.current_conversation_id = ""
+        return self.bootstrap()
+
     async def _conversation_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
         project_id = str(params.get("project_id") or self.current_project_id)
         project = self.store.get_project(project_id)
@@ -423,6 +472,8 @@ class DesktopApplicationService:
 
     async def _chat_submit(self, params: Mapping[str, Any]) -> dict[str, Any]:
         conversation_id = str(params.get("conversation_id") or self.current_conversation_id)
+        if not conversation_id:
+            raise ServiceError("请先创建或选择项目", code="no_active_conversation")
         target = str(params.get("target", "character"))
         text = self._required_string(params, "text")
         had_user_messages = any(
@@ -619,6 +670,8 @@ class DesktopApplicationService:
     # ------------------------------------------------------------------ 上下文工具
 
     def _restore_current_conversation(self) -> None:
+        if not self.current_conversation_id:
+            return
         snapshot = self.store.load_conversation(self.current_conversation_id)
         self.orchestrator.restore_conversation(snapshot)
         for tool_run in snapshot["tool_runs"]:
@@ -748,6 +801,33 @@ class DesktopApplicationService:
         return dict(to_jsonable(conversation))
 
     @staticmethod
+    def _empty_project_payload() -> dict[str, Any]:
+        return {
+            "project_id": "",
+            "name": "",
+            "root_path": "",
+            "approval_mode": ApprovalMode.REQUEST_APPROVAL.value,
+            "reasoning_effort": "low",
+            "archived": False,
+            "created_at": None,
+            "last_opened_at": None,
+            "path_available": False,
+        }
+
+    @staticmethod
+    def _empty_conversation_payload() -> dict[str, Any]:
+        return {
+            "conversation_id": "",
+            "project_id": None,
+            "pair_id": "",
+            "title": "",
+            "last_mode": "chat",
+            "archived": False,
+            "created_at": "",
+            "updated_at": "",
+        }
+
+    @staticmethod
     def _project_payload(project: Any) -> dict[str, Any]:
         payload = dict(to_jsonable(project))
         payload["path_available"] = project.path_available
@@ -779,6 +859,9 @@ def _get_or_create_project(store: SQLiteStore, root_path: Path):
     existing = store.find_project_by_root_path(str(root_path))
     if existing is not None:
         return store.mark_project_opened(existing.project_id)
+    if store.list_projects(include_archived=True):
+        # 用户已经把全部项目归档时，重启仍保持“暂无项目”，等待用户主动新建。
+        return None
     return store.create_project(
         project_id=str(uuid4()),
         name=root_path.name or str(root_path),
@@ -808,8 +891,12 @@ def _build_service(
     pair_config = load_pair_config(pair_id)
     store = SQLiteStore(database)
     project = _get_or_create_project(store, project_root)
-    conversation = _get_or_create_conversation(
-        store, project_id=project.project_id, pair_id=pair_id
+    conversation = (
+        _get_or_create_conversation(
+            store, project_id=project.project_id, pair_id=pair_id
+        )
+        if project is not None
+        else None
     )
     emitter = EventEmitter(event_sink)
     broker = ApprovalBroker(emitter, lambda: service.approval_conversation_id())
@@ -843,7 +930,9 @@ def _build_service(
             model=settings.dialogue_model,
             thinking=preset.default_thinking,
             reasoning_effort=(
-                None if project.reasoning_effort == "auto" else project.reasoning_effort
+                None
+                if project is None or project.reasoning_effort == "auto"
+                else project.reasoning_effort
             ),
             temperature=1.0,
         )
@@ -852,14 +941,16 @@ def _build_service(
     orchestrator = ConversationOrchestrator(
         pair_id=pair_id,
         project=ProjectRef(
-            project_id=project.project_id,
-            name=project.name,
-            root_path=project.root_path,
+            project_id=project.project_id if project is not None else "",
+            name=project.name if project is not None else "",
+            root_path=project.root_path if project is not None else str(project_root),
         ),
         dialogue_model=dialogue_model,
         coding_engine=coding_engine,
         store=store,
-        approval_mode=ApprovalMode(project.approval_mode),
+        approval_mode=ApprovalMode(
+            project.approval_mode if project is not None else ApprovalMode.REQUEST_APPROVAL.value
+        ),
         approval_callback=broker.request,
         reviewer=DialogueModelReviewer(dialogue_model) if not demo else None,
         assistant_instructions=load_prompt(pair_config.assistant.prompt),
@@ -872,10 +963,10 @@ def _build_service(
         approval_broker=broker,
         dialogue_model=dialogue_model,
         coding_engine=coding_engine,
-        current_project_id=project.project_id,
-        current_conversation_id=conversation.conversation_id,
+        current_project_id=project.project_id if project is not None else "",
+        current_conversation_id=conversation.conversation_id if conversation is not None else "",
     )
-    if not demo and settings is not None and settings.dashscope_api_key:
+    if not demo and settings is not None and settings.dashscope_api_key and conversation is not None:
         try:
             runtime = build_real_voice_runtime(
                 settings=settings,
@@ -889,6 +980,8 @@ def _build_service(
             service.attach_voice_runtime(runtime)
         except Exception as exc:  # noqa: BLE001 - 文本功能不因语音依赖失败而退出
             service._on_voice_error(f"语音运行时未启用：{exc}")
+    elif not demo and settings is not None and not settings.dashscope_api_key:
+        service._on_voice_error("真实语音未启用：DASHSCOPE_API_KEY 未配置")
     return service
 
 

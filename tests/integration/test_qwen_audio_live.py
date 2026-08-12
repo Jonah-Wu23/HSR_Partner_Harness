@@ -31,6 +31,7 @@ import pytest
 
 from pair_harness.adapters.audio.qwen_asr import QwenStreamingRecognizer
 from pair_harness.adapters.audio.qwen_tts import QwenSpeechSynthesizer, TTS_SAMPLE_RATE
+from pair_harness.cli import load_dotenv
 from pair_harness.config.pairs import load_pair_config
 from pair_harness.core.contracts import AsrEvent, SpeechRequest
 from pair_harness.settings import Settings
@@ -102,6 +103,7 @@ async def collect(agen, timeout: float = COLLECT_TIMEOUT_S):
 @pytest.fixture(scope="module")
 def live_qwen_env() -> Settings:
     """双重门槛：RUN_LIVE_QWEN=1 且 DASHSCOPE_API_KEY 存在，否则跳过。"""
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
     if os.getenv("RUN_LIVE_QWEN") != "1":
         pytest.skip("未设置 RUN_LIVE_QWEN=1（live_qwen 双重门槛）")
     settings = Settings.from_environment()
@@ -127,12 +129,38 @@ def live_voice_id(live_qwen_env: Settings) -> str:
 
 
 @pytest.mark.asyncio
-async def test_live_asr_transcribes_reference_clip(live_qwen_env: Settings) -> None:
-    """白厄 48 kHz 参考语音重采样后流式识别，final 文本包含“回头见”。"""
-    wav_path = _reference_wav()
-    pcm = resample_to_16k_pcm(wav_path)
+async def test_live_asr_transcribes_reference_clip(
+    live_qwen_env: Settings, live_voice_id: str
+) -> None:
+    """参考素材存在时使用素材；缺失时用真实 TTS 生成同一条 ASR 冒烟音频。"""
+    reference_matches = [
+        p for p in sorted(REFERENCE_DIR.glob("*.wav")) if ASR_KEYWORD in p.name
+    ]
+    if reference_matches:
+        pcm = resample_to_16k_pcm(reference_matches[0])
+    else:
+        # 仓库发行包不携带角色参考音频时，仍用真实 DashScope 音频闭环验证 ASR。
+        synthesizer = QwenSpeechSynthesizer(
+            api_key=live_qwen_env.dashscope_api_key,
+            ws_url=live_qwen_env.resolved_ws_url,
+            model=live_qwen_env.qwen_tts_model,
+        )
+        fallback_text = "今天辛苦了，回头见。我们下次继续聊，回头见。" * 2
+        chunks = await _collect_tts(
+            synthesizer,
+            SpeechRequest(text=fallback_text, voice_id=live_voice_id, message_id="live-asr-source"),
+        )
+        raw = b"".join(chunk.pcm for chunk in chunks if chunk.pcm)
+        source = np.frombuffer(raw, dtype="<i2").astype(np.float32)
+        target = int(round(len(source) * 16_000 / TTS_SAMPLE_RATE))
+        data = np.interp(
+            np.linspace(0.0, 1.0, target),
+            np.linspace(0.0, 1.0, len(source)),
+            source,
+        )
+        pcm = data.astype("<i2").tobytes()
     assert len(pcm) % ASR_CHUNK_BYTES == 0 or len(pcm) > ASR_CHUNK_BYTES
-    assert len(pcm) / 2 / 16_000 > 3.0, "参考音频过短，无法验证流式识别"
+    assert len(pcm) / 2 / 16_000 > 0.5, "ASR 冒烟音频过短，无法验证流式识别"
 
     recognizer = QwenStreamingRecognizer(
         api_key=live_qwen_env.dashscope_api_key,

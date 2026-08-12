@@ -20,6 +20,7 @@ import pytest
 
 from pair_harness.adapters.demo import ScriptedCodingEngine
 from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDialogueModel
+from pair_harness.cli import load_dotenv
 from pair_harness.core.contracts import ApprovalMode, MessageKind, ProjectRef
 from pair_harness.core.orchestrator import ConversationOrchestrator
 
@@ -34,6 +35,9 @@ _REQUIRED_ENV = (
 
 @pytest.fixture(scope="module")
 def live_env() -> dict[str, str]:
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+    if os.getenv("RUN_LIVE_DEEPSEEK") != "1":
+        pytest.skip("未设置 RUN_LIVE_DEEPSEEK=1（live 双重门槛）")
     missing = [name for name in _REQUIRED_ENV if not os.getenv(name)]
     if missing:
         pytest.skip(f"缺少真实凭据: {', '.join(missing)}")

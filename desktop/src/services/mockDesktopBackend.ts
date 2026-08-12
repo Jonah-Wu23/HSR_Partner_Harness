@@ -52,6 +52,8 @@ export class MockDesktopBackend implements DesktopBackend {
         return this.selectProject(command.params) as T;
       case "project.update_settings":
         return this.updateProjectSettings(command.params) as T;
+      case "project.archive":
+        return this.archiveProject(command.params) as T;
       case "conversation.create":
         return this.createConversation(command.params) as T;
       case "conversation.select":
@@ -230,6 +232,20 @@ export class MockDesktopBackend implements DesktopBackend {
         .flatMap((item) => item.conversations)
         .find((candidate) => !candidate.archived);
       this.scenario.snapshot.current_conversation_id = fallback?.conversation_id ?? "";
+    }
+    return this.snapshotResult<DesktopSnapshot>();
+  }
+
+  private archiveProject(params: Record<string, unknown>): DesktopSnapshot {
+    const projectId = String(
+      params.project_id ?? this.scenario.snapshot.current_project_id,
+    );
+    this.scenario.snapshot.projects = this.scenario.snapshot.projects.filter(
+      (item) => item.project_id !== projectId,
+    );
+    if (projectId === this.scenario.snapshot.current_project_id) {
+      this.scenario.snapshot.current_project_id = "";
+      this.scenario.snapshot.current_conversation_id = "";
     }
     return this.snapshotResult<DesktopSnapshot>();
   }

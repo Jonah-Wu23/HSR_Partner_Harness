@@ -27,3 +27,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## OpenAI Codex
+
+Source: https://github.com/openai/codex
+
+Release builds may include the Windows-native Codex app-server distributed through
+the `@openai/codex` package. Its package metadata identifies it as Apache-2.0;
+the bundled native directory retains the upstream `codex-package.json` metadata.

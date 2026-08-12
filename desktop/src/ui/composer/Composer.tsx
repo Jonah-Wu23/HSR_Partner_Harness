@@ -55,7 +55,8 @@ export function Composer({ composer, voice, mode, actions }: ComposerProps) {
   };
 
   const asrText = voice.asr_partial || composer.asrPartial;
-  const canUseVad = voice.supported && target === "character";
+  const vadUnavailable = voice.vad === "unavailable";
+  const canUseVad = voice.supported && !vadUnavailable && target === "character";
 
   const voiceStatusText = voice.error
     ? `语音异常：${voice.error}`
@@ -66,7 +67,9 @@ export function Composer({ composer, voice, mode, actions }: ComposerProps) {
         : voice.vad_enabled
           ? `VAD ${voice.vad}`
           : voice.supported
-            ? "语音就绪"
+            ? vadUnavailable
+              ? "语音已连接，VAD 不可用"
+              : "语音就绪"
             : "语音不可用";
 
   return (
@@ -171,11 +174,13 @@ export function Composer({ composer, voice, mode, actions }: ComposerProps) {
           title={
             target !== "character"
               ? "VAD 仅用于对角色说"
-              : voice.supported
-                ? voice.vad_enabled
-                  ? "关闭 VAD"
-                  : "开启 VAD"
-                : "语音运行时未启用"
+              : vadUnavailable
+                ? "VAD 模型不可用"
+                : voice.supported
+                  ? voice.vad_enabled
+                    ? "关闭 VAD"
+                    : "开启 VAD"
+                  : "语音运行时未启用"
           }
           aria-label="VAD"
           aria-pressed={voice.vad_enabled}
