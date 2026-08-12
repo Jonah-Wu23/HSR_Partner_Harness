@@ -2,6 +2,11 @@
 
 [English](README.en.md)
 
+[![Website](https://img.shields.io/badge/website-jonah--wu23.github.io-E8B25C)](https://jonah-wu23.github.io/HSR_Partner_Harness/)
+[![GitHub Pages](https://img.shields.io/github/deployments/Jonah-Wu23/HSR_Partner_Harness/github-pages?label=pages)](https://jonah-wu23.github.io/HSR_Partner_Harness/)
+
+介绍网站：<https://jonah-wu23.github.io/HSR_Partner_Harness/>
+
 HSR Partner Harness 是一个 Windows 桌面应用，把角色聊天和本地 AI 编程放在同一段会话里。用户可以先和白厄讨论，再把任务交给神秘的古代机械。执行进度会回到原聊天，角色也会根据结果继续回应。
 
 当前版本为 `v0.1.0`。桌面界面使用 Tauri 2 和 React，Python Sidecar 负责会话状态与模型调用。

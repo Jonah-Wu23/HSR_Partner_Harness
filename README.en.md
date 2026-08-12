@@ -2,6 +2,11 @@
 
 [简体中文](README.md)
 
+[![Website](https://img.shields.io/badge/website-jonah--wu23.github.io-E8B25C)](https://jonah-wu23.github.io/HSR_Partner_Harness/)
+[![GitHub Pages](https://img.shields.io/github/deployments/Jonah-Wu23/HSR_Partner_Harness/github-pages?label=pages)](https://jonah-wu23.github.io/HSR_Partner_Harness/)
+
+Project website: <https://jonah-wu23.github.io/HSR_Partner_Harness/>
+
 HSR Partner Harness is a Windows desktop application that keeps character conversation and local AI coding in one chat. You can discuss a task with Phainon, delegate it to the Mysterious Ancient Machine, watch the coding work as it happens, and continue talking while the task runs.
 
 The current release is `v0.1.0`. The desktop client uses Tauri 2 and React. A Python sidecar owns conversation state and model integration.
