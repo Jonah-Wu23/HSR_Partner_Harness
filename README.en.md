@@ -7,61 +7,59 @@
 
 Project website: <https://jonah-wu23.github.io/HSR_Partner_Harness/>
 
-HSR Partner Harness is a Windows desktop application that keeps character conversation and local AI coding in one chat. You can discuss a task with Phainon, delegate it to the Mysterious Ancient Machine, watch the coding work as it happens, and continue talking while the task runs.
+HSR Partner Harness is a Windows desktop app where character chat and local AI coding happen in the same conversation. You can talk the plan through with Phainon first, hand the task to the Mysterious Ancient Machine once you agree, and the progress and results come back into the same conversation for Phainon to respond to.
 
-The current release is `v0.1.0`. The desktop client uses Tauri 2 and React. A Python sidecar owns conversation state and model integration.
+The current release is `v0.1.0`. The interface is built with Tauri 2 and React, and a Python sidecar manages session state and model calls.
 
 ## Download
 
-The Windows x64 installer is available from [GitHub Releases](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases). The installer is currently unsigned, so Windows SmartScreen may show a warning.
+The Windows x64 installer is published on [GitHub Releases](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases), and it has no code signature, so Windows SmartScreen may show a warning.
 
-When no model configuration is available, the application starts in demo mode. Demo mode shows the interface and interaction flow without calling live models.
+When there is no model configuration, the app starts in demo mode, where the interface and interactions all work but no live models are called.
 
 ## Features
 
-| Feature | Details |
+| Feature | Notes |
 | --- | --- |
-| Chat mode | Full-width character conversation with coding tools disabled. |
-| Collaboration mode | Character chat and the assistant workspace remain visible together. Chat stays responsive during long coding tasks. |
-| Projects | Each project maps to a local folder. Its initial name comes from the folder and can be renamed later. |
-| Chat titles | New conversations begin as “新聊天”. After the first complete reply, the assistant generates a short title from the conversation. A manual rename always wins. |
-| Coding | The assistant uses Codex app-server for file and command work. Tool activity appears as structured cards. |
-| Approvals | Projects support request approval, automatic review, and full-auto execution modes. |
-| Voice | DashScope provides ASR and TTS. Spoken replies are eligible for playback; tool records stay silent. |
-| Desktop UI | Dark and light themes are included. Missing project folders can be selected again. |
+| Chat mode | The whole screen shows the character conversation, with the coding tools closed. |
+| Collaboration mode | The character chat and the assistant workspace share the screen, and you can keep talking while a task runs. |
+| Projects | Each project maps to a local folder. The name defaults to the folder name, and you can change it any time. |
+| Chat titles | A new conversation shows "新聊天" first. After the first complete reply, the assistant generates a title from the content, and a manual rename is never overwritten. |
+| Coding | The assistant handles files and commands through the Codex app-server, and the tool work shows up as cards. |
+| Approvals | Each project picks one of three approval modes: request approval, automatic review, or full auto. |
+| Voice | Voice runs on DashScope ASR and TTS. Character replies can be read aloud, while tool records stay silent. |
+| UI | There are dark and light themes, and you can re-select a project folder if its path stops working. |
 
 The bundled pair is Phainon and the Mysterious Ancient Machine.
 
 ## Live mode
 
-Live coding requires [OpenAI Codex](https://github.com/openai/codex) on the same machine. Confirm that it is available:
+Live coding depends on [OpenAI Codex](https://github.com/openai/codex) installed on this machine. Check that the command works:
 
 ```powershell
 codex --version
 ```
 
-Copy [.env.example](.env.example) and fill in your provider settings. For a source checkout, save it as `.env` in the repository root. The installed application reads:
+Then copy [.env.example](.env.example) and fill in the model settings. Running from source reads `.env` in the repository root, while the installed application reads `%LOCALAPPDATA%\PairHarness\.env`. To keep the config somewhere else, set `PAIR_HARNESS_ENV_FILE` to that path.
 
-```text
-%LOCALAPPDATA%\PairHarness\.env
-```
+When a config file is found, the app starts in live mode by default. `PAIR_HARNESS_REAL=1` forces live mode, and `PAIR_HARNESS_DEMO=1` forces demo mode.
 
-Set `PAIR_HARNESS_ENV_FILE` to use another location.
+The dialogue model works with DeepSeek and OpenAI-compatible endpoints. The variables are:
 
 | Variable | Purpose |
 | --- | --- |
-| `PAIR_HARNESS_DIALOGUE_BASE_URL` | OpenAI-compatible endpoint for character dialogue. |
-| `PAIR_HARNESS_DIALOGUE_API_KEY` | Dialogue provider API key. |
+| `PAIR_HARNESS_DIALOGUE_BASE_URL` | OpenAI-compatible endpoint for the dialogue model. |
+| `PAIR_HARNESS_DIALOGUE_API_KEY` | Dialogue model API key. |
 | `PAIR_HARNESS_DIALOGUE_MODEL` | Dialogue model name. |
 | `PAIR_HARNESS_CODEX_BIN` | Path to the Codex executable. Defaults to `codex`. |
 | `DASHSCOPE_API_KEY` | DashScope API key for voice. |
 | `PAIR_HARNESS_DASHSCOPE_HOST` | DashScope workspace host. |
 
-Voice IDs live in [phainon_ancient_machine.yaml](config/pairs/phainon_ancient_machine.yaml). Replace them with voices available to your DashScope account.
+Voice IDs are set in [phainon_ancient_machine.yaml](config/pairs/phainon_ancient_machine.yaml). If you use your own DashScope account, replace them with voices that account can use.
 
 ## Run from source
 
-Python 3.11 is required. Desktop builds use Node.js 22 and Rust stable.
+Development needs Python 3.11, and desktop builds need Node.js 22 and Rust stable.
 
 ```powershell
 python -m venv .venv
@@ -81,7 +79,7 @@ Python:
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-React:
+Frontend tests and builds, all in `desktop`:
 
 ```powershell
 Set-Location desktop
@@ -105,7 +103,7 @@ npm run build:sidecar
 npm run tauri -- build --bundles nsis
 ```
 
-The installer is written to `desktop/src-tauri/target/release/bundle/nsis/`.
+The finished installer is written to `desktop/src-tauri/target/release/bundle/nsis/`.
 
 ## Repository layout
 
@@ -114,18 +112,18 @@ The installer is written to `desktop/src-tauri/target/release/bundle/nsis/`.
 | `desktop/` | Tauri desktop client and React UI. |
 | `src/pair_harness/` | Python sidecar and application logic. |
 | `config/` | Pair configuration and prompts. |
-| `assets/` | Runtime model assets. |
+| `assets/` | Runtime model files. |
 | `tests/` | Python tests. |
-| `docs/architecture.md` | Current desktop architecture. |
+| `docs/architecture.md` | Desktop architecture notes. |
 
-## Source acknowledgements
+## Third-party code
 
-The provider detection and reasoning-effort semantics in `src/pair_harness/config/providers.py` are adapted from [DeepSeek-Reasonix](https://github.com/esengine/deepseek-reasonix), licensed under the MIT License. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the complete notice.
+The provider detection and reasoning-effort semantics in `src/pair_harness/config/providers.py` are rewritten from [DeepSeek-Reasonix](https://github.com/esengine/deepseek-reasonix), which uses the MIT License. The full notice is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-[OpenAI Codex](https://github.com/openai/codex) is the current coding backend. The application connects to a locally installed Codex app-server. Codex source and binaries are not included in this repository.
+The coding backend is [OpenAI Codex](https://github.com/openai/codex). The app connects to the Codex app-server installed on your machine, and the repository contains no Codex source or binaries.
 
 ## License
 
-Project code is licensed under the [Apache License 2.0](LICENSE). Copyright © 2026 Zonghe Wu.
+The code is under the [Apache License 2.0](LICENSE). Copyright © 2026 Zonghe Wu.
 
-Character names and related fictional settings belong to their respective rights holders. This is an unofficial fan project and is not affiliated with or endorsed by miHoYo or HoYoverse.
+Character names and related fictional settings belong to their rights holders. This is an unofficial fan project, not affiliated with or endorsed by miHoYo or HoYoverse.
