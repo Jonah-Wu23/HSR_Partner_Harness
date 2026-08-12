@@ -462,6 +462,7 @@ class DesktopApplicationService:
                     params.get("approval_mode", ApprovalMode.REQUEST_APPROVAL.value)
                 ),
                 reasoning_effort=str(params.get("reasoning_effort", "low")),
+                account_id=self.current_account_id,
             )
         conversation = self._find_or_create_conversation(
             project.project_id,
@@ -1674,7 +1675,7 @@ class DesktopApplicationService:
 
 def _get_or_create_project(store: SQLiteStore, root_path: Path):
     root_path = root_path.resolve()
-    recent = store.list_projects()
+    recent = store.list_projects_for_account("default-local")
     if recent:
         return store.mark_project_opened(recent[0].project_id)
     existing = store.find_project_by_root_path(str(root_path))
