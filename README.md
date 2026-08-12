@@ -1,61 +1,112 @@
-# HSR Partner Harness
+<p align="center">
+  <img src="desktop/src-tauri/icons/icon.png" alt="HSR Partner Harness" width="112" />
+</p>
 
-[English](README.en.md)
+<h1 align="center">HSR Partner Harness</h1>
 
-[![Website](https://img.shields.io/badge/website-jonah--wu23.github.io-E8B25C)](https://jonah-wu23.github.io/HSR_Partner_Harness/)
-[![GitHub Pages](https://img.shields.io/github/deployments/Jonah-Wu23/HSR_Partner_Harness/github-pages?label=pages)](https://jonah-wu23.github.io/HSR_Partner_Harness/)
+<p align="center">把角色对话和本地 AI 编程放进同一个 Windows 工作台</p>
 
-介绍网站：<https://jonah-wu23.github.io/HSR_Partner_Harness/>
+<p align="center">
+  <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases"><img src="https://img.shields.io/badge/version-v0.2.0-E8B25C" alt="Version 0.2.0" /></a>
+  <img src="https://img.shields.io/badge/platform-Windows%20x64-2F5D50" alt="Windows x64" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-5B6C8F" alt="Apache License 2.0" /></a>
+  <a href="https://jonah-wu23.github.io/HSR_Partner_Harness/"><img src="https://img.shields.io/badge/product%20site-jonah--wu23.github.io-E8B25C" alt="Product site" /></a>
+</p>
 
-HSR Partner Harness 是一个 Windows 桌面应用，角色聊天和本地 AI 编程在同一场会话里进行。你可以先和白厄商量思路，谈妥了把任务交给神秘的古代机械，执行的进度和结果会回到这场对话里，白厄再根据结果接着聊。
+<p align="center">
+  <a href="README.en.md">English</a> ·
+  <a href="https://jonah-wu23.github.io/HSR_Partner_Harness/">项目介绍网站</a> ·
+  <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases">下载 Windows x64</a> ·
+  <a href="docs/architecture.md">架构说明</a>
+</p>
 
-当前版本 `v0.1.0`，界面用 Tauri 2 和 React 实现，Python Sidecar 管理会话状态和模型调用。
+HSR Partner Harness 是一个 Windows 桌面应用。你可以先和白厄讨论项目，确定任务后把它交给神秘的古代机械，执行过程和结果会回到同一条会话里，白厄也能继续根据结果交流。
 
-## 下载
+项目把讨论和任务执行放在一个工作区里，结果也会留在会话中。它适合个人开发，也适合研究原型和角色型产品创作。
 
-Windows x64 安装包发布在 [GitHub Releases](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases)，安装包没有代码签名，Windows SmartScreen 可能会弹出提醒。
+## 产品定位
 
-模型配置没填的时候，应用会进入 demo 模式，界面和交互照常可以体验，只是不会调用真实模型。
+HSR Partner Harness 面向本地项目工作流，适合以下场景：
 
-## 当前功能
-
-| 功能 | 说明 |
+| 使用者 | 适合的工作方式 |
 | --- | --- |
-| 聊天模式 | 整个界面只显示角色对话，编程工具都关闭。 |
-| 协作模式 | 角色对话和助手工作台一起显示，任务跑着的时候也能继续聊天。 |
-| 项目管理 | 一个项目对应一个本地文件夹，名字默认取文件夹名，之后随时能改。 |
-| 聊天标题 | 新会话先显示“新聊天”，第一次完整回复结束后，助手会根据内容生成标题。手动改过的名字不会被自动标题覆盖。 |
-| 编程执行 | 助手通过 Codex app-server 处理文件和命令，工具的执行过程显示为卡片。 |
-| 审批 | 每个项目单独选择审批方式，有请求批准、自动审核、完全允许三档。 |
-| 语音 | 语音用 DashScope 的 ASR 和 TTS，角色回复可以朗读，工具记录保持静音。 |
-| 界面 | 有深色和浅色两套主题，项目文件夹失效之后可以重新选择路径。 |
+| 个人开发者 | 在对话中说明目标，让编程助手进入项目文件夹完成任务。 |
+| 研究与原型团队 | 保留完整任务上下文，方便复盘实验过程。 |
+| 角色型产品创作者 | 用角色对话承接需求，再把明确任务交给可执行的编程助手。 |
 
-内置搭档是白厄和神秘的古代机械。
+当前版本聚焦本地 Windows 工作流，模型请求按你的配置发往相应服务商。
 
-## 运行真实模式
+## 核心特色
 
-从源码运行真实编程功能时，需要本机装好的 [OpenAI Codex](https://github.com/openai/codex)，先确认命令可用：
+| 能力 | 说明 |
+| --- | --- |
+| 一条会话，两条工作轨 | 聊天模式专注角色对话；协作模式打开助手工作台，任务运行期间也能继续聊天。 |
+| GPT-5.6 Sol 编程助手 | 编程任务固定使用 [gpt-5.6-sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol)。Composer 提供五档推理设置，映射关系见下表。 |
+| 任务过程可见 | 文件与命令通过 Codex app-server 执行，工具事件以结构化卡片显示，项目可按需设置审批策略。 |
+| 项目文件夹绑定 | 一个项目对应一个本地文件夹，名称默认取文件夹名，也支持随时重选路径。Python Sidecar 管理会话状态，SQLite 保存本地数据。 |
+| 语音与思考通道 | 角色回复支持 DashScope ASR/TTS；思考内容和工具记录各自显示，工具记录保持静音。 |
+| 可先体验再配置 | demo 模式提供完整界面与交互体验，写入模型配置后即可切换真实运行。 |
+
+| 界面档位 | API effort |
+| --- | --- |
+| 轻度 | `low` |
+| 中 | `medium` |
+| 高 | `high` |
+| 极高 | `xhigh` |
+| 最高 | `max` |
+
+## v0.2.0 更新
+
+- 本地账号和设置中心，按账号保存各项模型与语音设置，并管理 Codex 登录信息。
+- 持久化会话队列支持调整任务内容与顺序，也可撤回任务；当前回合结束后自动派发。
+- DeepSeek 结构化输出分成思考和正文两条流，技术详情保留原始 JSON，消息气泡呈现解析后的内容。
+- Sidecar 提供连接状态和自动重连，断线期间已加载的界面继续可用。
+- Windows NSIS 安装包随带 Python Sidecar，并内置 Codex 与 VAD 资源。
+
+## 工作方式
+
+```mermaid
+flowchart LR
+    A[角色对话] --> B{协作模式}
+    B --> C[结构化任务]
+    C --> D[Codex app-server]
+    D --> E[文件与命令]
+    E --> F[结构化回执]
+    F --> A
+```
+
+角色负责交流和任务委派，助手负责文件操作与命令执行。消息按来源归位，工具记录单独显示。
+
+界面细节和交互走查见[项目介绍网站](https://jonah-wu23.github.io/HSR_Partner_Harness/)。
+
+## 下载与快速体验
+
+Windows x64 安装包在 [GitHub Releases](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases)。首次安装可能触发 Windows SmartScreen 提醒。
+
+安装后可直接进入 demo 模式体验界面和交互。配置模型后即可运行真实编程功能，前提是本机准备好 [OpenAI Codex](https://github.com/openai/codex)：
 
 ```powershell
 codex --version
 ```
 
-再复制一份 [.env.example](.env.example) 填上模型配置。从源码运行的话，把文件存成仓库根目录的 `.env` 就行，安装版读取的是 `%LOCALAPPDATA%\PairHarness\.env`。想把配置文件放在别的位置，就用 `PAIR_HARNESS_ENV_FILE` 指定。
+应用默认使用随包 Codex；从源码运行时，也可以通过 `PAIR_HARNESS_CODEX_BIN` 指定路径。
 
-找到配置文件的时候，应用默认进入真实模式，也可以用 `PAIR_HARNESS_REAL=1` 强制真实模式，或者 `PAIR_HARNESS_DEMO=1` 强制 demo 模式。
+## 真实模式配置
 
-对话模型支持 DeepSeek 和 OpenAI 兼容的地址，相关变量如下。
+复制 [.env.example](.env.example) 到配置文件，再填入模型服务信息。源码运行时默认读取仓库根目录的 `.env`，安装版默认读取 `%LOCALAPPDATA%\PairHarness\.env`。需要使用其他位置时，设置 `PAIR_HARNESS_ENV_FILE`。
 
 | 变量 | 用途 |
 | --- | --- |
 | `PAIR_HARNESS_DIALOGUE_BASE_URL` | 对话模型的 OpenAI 兼容地址。 |
-| `PAIR_HARNESS_DIALOGUE_API_KEY` | 对话模型的密钥。 |
-| `PAIR_HARNESS_DIALOGUE_MODEL` | 对话模型的名称。 |
-| `PAIR_HARNESS_CODEX_BIN` | 覆盖 Codex 可执行文件路径；安装版默认使用随包携带的 Codex。 |
-| `DASHSCOPE_API_KEY` | DashScope 的语音密钥。 |
-| `PAIR_HARNESS_DASHSCOPE_HOST` | DashScope 工作空间的域名。 |
+| `PAIR_HARNESS_DIALOGUE_API_KEY` | 对话模型密钥。 |
+| `PAIR_HARNESS_DIALOGUE_MODEL` | 对话模型名称。 |
+| `PAIR_HARNESS_CODEX_BIN` | 覆盖 Codex 可执行文件路径。 |
+| `DASHSCOPE_API_KEY` | DashScope 语音密钥。 |
+| `PAIR_HARNESS_DASHSCOPE_HOST` | DashScope 工作空间域名。 |
 
-声音 ID 写在 [phainon_ancient_machine.yaml](config/pairs/phainon_ancient_machine.yaml) 里，如果用的是自己的 DashScope 账号，要换成这个账号下能用的声音。
+角色声音 ID 写在 [phainon_ancient_machine.yaml](config/pairs/phainon_ancient_machine.yaml) 中。使用自己的 DashScope 账号时，需要替换成该账号可用的声音。
+
+找到配置文件时，应用默认进入真实模式。也可以用 `PAIR_HARNESS_REAL=1` 强制真实模式，或用 `PAIR_HARNESS_DEMO=1` 强制 demo 模式。
 
 ## 从源码运行
 
@@ -71,9 +122,7 @@ npm run build:sidecar
 npm run tauri:dev
 ```
 
-发布构建会把 Windows 原生 Codex app-server 一起复制进安装包。构建机需要先安装
-`@openai/codex`，或者设置 `PAIR_HARNESS_CODEX_NATIVE_ROOT` 指向包含
-`bin\codex.exe` 的原生发行目录：
+发布构建会把 Windows 原生 Codex app-server 复制进安装包。构建机需要安装 `@openai/codex`，或设置 `PAIR_HARNESS_CODEX_NATIVE_ROOT` 指向包含 `bin\codex.exe` 的原生发行目录：
 
 ```powershell
 npm install -g @openai/codex
@@ -81,63 +130,60 @@ Set-Location desktop
 npm run tauri:build
 ```
 
-安装包在 `desktop/src-tauri/target/release/bundle/nsis/`，可直接运行的 GUI EXE 在
-`desktop/src-tauri/target/release/hsr-partner-harness.exe`。正常启动不会弹出控制台窗口；研发调试时可在命令行使用
-`hsr-partner-harness.exe --debug-console`（`--console` 也是别名）保留黑框并查看 Sidecar 日志。
+安装包位于 `desktop/src-tauri/target/release/bundle/nsis/`。直接运行的 GUI 位于 `desktop/src-tauri/target/release/hsr-partner-harness.exe`。启动时默认隐藏控制台；调试 Sidecar 时可运行 `hsr-partner-harness.exe --debug-console`，`--console` 也可使用。
 
-## 测试
+## 测试与发布验证
 
-Python 测试：
+当前 v0.2.0 已完成以下验证：
+
+| 检查项 | 结果 |
+| --- | --- |
+| Python | `370 passed, 5 skipped` |
+| 前端 Vitest | `71 passed` |
+| TypeScript | `tsc --noEmit` 通过 |
+| Rust | `cargo test`，`7 passed` |
+| 生产构建 | Vite build 通过 |
+| Windows 安装包 | NSIS 安装版启动冒烟通过，Sidecar 与随包资源加载正常 |
+
+常用命令：
 
 ```powershell
+# Python
 .\.venv\Scripts\python.exe -m pytest -q
-```
 
-前端的测试和构建都在 `desktop` 目录下：
-
-```powershell
+# 前端
 Set-Location desktop
 npm test -- --run
 npm run typecheck
 npm run build
-```
 
-Rust 测试：
-
-```powershell
+# Rust
 Set-Location desktop\src-tauri
 cargo test
 ```
 
-## 构建安装包
-
-```powershell
-Set-Location desktop
-npm run build:sidecar
-npm run tauri -- build --bundles nsis
-```
-
-生成的安装包在 `desktop/src-tauri/target/release/bundle/nsis/` 下面。
-
-## 目录结构
+## 仓库结构与文档
 
 | 路径 | 内容 |
 | --- | --- |
-| `desktop/` | Tauri 桌面端和 React 界面。 |
+| `desktop/` | Tauri 2 桌面端和 React 界面。 |
 | `src/pair_harness/` | Python Sidecar 和业务代码。 |
 | `config/` | 搭档配置和提示词。 |
 | `assets/` | 运行时模型文件。 |
 | `tests/` | Python 测试。 |
 | `docs/architecture.md` | 桌面架构说明。 |
+| `docs/design/v0.2.0-release-notes.md` | v0.2.0 发布说明。 |
 
-## 外部代码
+## 参与项目
 
-`src/pair_harness/config/providers.py` 里的供应商识别方式和推理档位语义是从 [DeepSeek-Reasonix](https://github.com/esengine/deepseek-reasonix) 改写来的，原项目用 MIT License，完整声明在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+欢迎通过 [Issues](https://github.com/Jonah-Wu23/HSR_Partner_Harness/issues) 提交问题和使用反馈。修改代码前，请先阅读 [AGENTS.md](AGENTS.md) 以及相关设计文档，优先保持 Python Sidecar 的业务权威和现有桌面架构。
 
-编程后端用的是 [OpenAI Codex](https://github.com/openai/codex)。源码仓库不提交 Codex 二进制；发布脚本会在构建时把构建机上 `@openai/codex` 的 Windows 原生 app-server 复制进安装包。
+## 外部代码与许可
 
-## 许可
+`src/pair_harness/config/providers.py` 中的供应商识别方式和推理档位语义参考了 [DeepSeek-Reasonix](https://github.com/esengine/deepseek-reasonix)，原项目使用 MIT License，完整声明在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+编程助手接入 [OpenAI Codex](https://github.com/openai/codex)，通过本机 Codex app-server 执行文件和命令。
 
 代码采用 [Apache License 2.0](LICENSE)，版权所有 © 2026 Zonghe Wu。
 
-角色名称和世界观相关的内容归原权利人所有，本项目是非官方的同人作品。
+本项目为同人创作，角色名称和世界观相关内容归原权利人所有。

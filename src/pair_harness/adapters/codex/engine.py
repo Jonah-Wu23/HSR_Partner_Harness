@@ -23,12 +23,27 @@ class CodexAppServerEngine(CodingEngine):
     engine_type = "codex-app-server"
     native_preexecution_approval = True
 
-    def __init__(self, transport: JsonlProcessTransport) -> None:
+    def __init__(
+        self,
+        transport: JsonlProcessTransport,
+        *,
+        model: str = "gpt-5.6-sol",
+        reasoning_effort: str = "medium",
+    ) -> None:
         self.transport = transport
+        self.model = model
+        self.reasoning_effort = reasoning_effort
         # B1 联调：app-server 协议要求连接后先发 initialize 握手，
         # 否则 thread/start 返回 {"code": -32600, "message": "Not initialized"}。
         # 每个引擎实例（每次连接）只需一次。
         self._initialized = False
+
+    def configure_reasoning(self, effort: str) -> None:
+        """设置 GPT-5.6 Sol 的真实 reasoning effort。"""
+        normalized = "medium" if effort == "auto" else effort
+        if normalized not in {"low", "medium", "high", "xhigh", "max"}:
+            raise ValueError(f"unsupported Codex reasoning effort: {effort}")
+        self.reasoning_effort = normalized
 
     @staticmethod
     def _encode_ref(thread_id: str) -> EngineSessionRef:
@@ -68,7 +83,7 @@ class CodexAppServerEngine(CodingEngine):
         if not self._initialized:
             await self.transport.request(
                 "initialize",
-                {"clientInfo": {"name": "pair-harness", "version": "0.1.0"}},
+                {"clientInfo": {"name": "pair-harness", "version": "0.2.0"}},
             )
             self._initialized = True
         if stored_ref is not None:
@@ -99,15 +114,24 @@ class CodexAppServerEngine(CodingEngine):
         self, session_ref: EngineSessionRef, request: TaskRequest
     ) -> AsyncIterator[EngineEvent]:
         thread_id = self._decode_ref(session_ref)
-        task_text = request.instructions
-        if request.constraints:
-            constraints = "\n".join(f"- {item}" for item in request.constraints)
-            task_text = f"{task_text}\n\n本次任务约束：\n{constraints}"
+        # 古代机械的 developer instructions 只接受结构化 TaskRequest。
+        # 保留内部任务包络，避免恢复线程后把普通自然语言误判为无效指令。
+        task_text = json.dumps(
+            {
+                "type": "TaskRequest",
+                "task_id": request.task_id,
+                "instructions": request.instructions,
+                "constraints": list(request.constraints),
+            },
+            ensure_ascii=False,
+        )
         result = await self.transport.request(
             "turn/start",
             {
                 "threadId": thread_id,
                 "input": [{"type": "text", "text": task_text}],
+                "model": self.model,
+                "effort": self.reasoning_effort,
             },
         )
         turn = result.get("turn") or {}
@@ -152,12 +176,23 @@ class CodexAppServerEngine(CodingEngine):
         engine_turn_id: str,
         amendment: TaskAmendment,
     ) -> None:
+        amendment_text = json.dumps(
+            {
+                "type": "TaskAmendment",
+                "amendment_id": amendment.amendment_id,
+                "target_task_id": amendment.target_task_id,
+                "revision": amendment.revision,
+                "instructions": amendment.instructions,
+                "origin": amendment.origin,
+            },
+            ensure_ascii=False,
+        )
         await self.transport.request(
             "turn/steer",
             {
                 "threadId": self._decode_ref(session_ref),
                 "expectedTurnId": engine_turn_id,
-                "input": [{"type": "text", "text": amendment.instructions}],
+                "input": [{"type": "text", "text": amendment_text}],
             },
         )
 

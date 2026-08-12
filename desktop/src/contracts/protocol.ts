@@ -55,7 +55,7 @@ export interface ToolRun {
 }
 
 export type ApprovalMode = "request_approval" | "review" | "full_auto";
-export type ReasoningEffort = "auto" | "low" | "medium" | "high" | "max";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export type ConversationMode = "chat" | "collaboration";
 
 export type TurnStatus =

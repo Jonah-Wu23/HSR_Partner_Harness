@@ -9,7 +9,10 @@ from uuid import uuid4
 
 from pair_harness.adapters.codex.auth import CodexAuthService
 from pair_harness.adapters.codex.engine import CodexAppServerEngine
-from pair_harness.adapters.codex.transport import JsonlProcessTransport
+from pair_harness.adapters.codex.transport import (
+    JsonlProcessTransport,
+    SubprocessJsonLineConnection,
+)
 from pair_harness.adapters.demo import ScriptedCodingEngine, ScriptedDialogueModel
 from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDialogueModel
 from pair_harness.adapters.reviewer import DialogueModelReviewer
@@ -535,9 +538,13 @@ class DesktopApplicationService:
             self.orchestrator.set_approval_mode(mode, conversation_id=self.current_conversation_id)
         if "reasoning_effort" in params:
             effort = str(params["reasoning_effort"])
+            if effort not in {"low", "medium", "high", "xhigh", "max"}:
+                raise ServiceError("未知推理档位", code="invalid_reasoning_effort")
             self.store.update_project_reasoning_effort(project_id, effort)
             if isinstance(self.dialogue_model, OpenAICompatibleDialogueModel):
-                self.dialogue_model.reasoning_effort = None if effort == "auto" else effort
+                self.dialogue_model.reasoning_effort = effort
+            if isinstance(self.orchestrator.coding_engine, CodexAppServerEngine):
+                self.orchestrator.coding_engine.configure_reasoning(effort)
         if root_changed and project_id == self.current_project_id:
             # 重建运行时上下文（项目目录变化）但不回推整份快照
             self._select_conversation_context(self.current_conversation_id, emit=False)
@@ -1551,6 +1558,8 @@ class DesktopApplicationService:
             self.dialogue_model.reasoning_effort = (
                 None if project.reasoning_effort == "auto" else project.reasoning_effort
             )
+        if isinstance(self.orchestrator.coding_engine, CodexAppServerEngine):
+            self.orchestrator.coding_engine.configure_reasoning(project.reasoning_effort)
         self._restore_current_conversation()
         if self.voice_runtime is not None:
             self.voice_runtime.set_context(conversation_id, selected_pair)
@@ -1784,7 +1793,22 @@ def _build_service(
             ),
             temperature=1.0,
         )
-        coding_engine = CodexAppServerEngine(JsonlProcessTransport(settings.codex_bin))
+        async def codex_connection() -> SubprocessJsonLineConnection:
+            return await SubprocessJsonLineConnection.create(
+                settings.codex_bin, args=["app-server"]
+            )
+
+        coding_engine = CodexAppServerEngine(
+            JsonlProcessTransport(
+                settings.codex_bin, connection_factory=codex_connection
+            ),
+            model="gpt-5.6-sol",
+            reasoning_effort=(
+                "medium"
+                if project is None or project.reasoning_effort == "auto"
+                else project.reasoning_effort
+            ),
+        )
 
     orchestrator = ConversationOrchestrator(
         pair_id=pair_id,

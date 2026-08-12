@@ -20,10 +20,10 @@ const APPROVAL_LABEL: Record<ApprovalMode, string> = {
 };
 
 const EFFORT_LABEL: Record<ReasoningEffort, string> = {
-  auto: "推理 · 自动",
-  low: "推理 · 低",
+  low: "推理 · 轻度",
   medium: "推理 · 中",
   high: "推理 · 高",
+  xhigh: "推理 · 极高",
   max: "推理 · 最高",
 };
 
@@ -183,7 +183,7 @@ export function Composer({
           selectedId={composer.reasoningEffort}
           trigger={() => (
             <button type="button" className="select-chip" aria-label="推理档位">
-              {EFFORT_LABEL[(composer.reasoningEffort as ReasoningEffort) ?? "auto"] ??
+              {EFFORT_LABEL[(composer.reasoningEffort as ReasoningEffort) ?? "medium"] ??
                 `推理 · ${composer.reasoningEffort}`}
               <CollapseIcon style={{ transform: "rotate(-90deg)" }} />
             </button>

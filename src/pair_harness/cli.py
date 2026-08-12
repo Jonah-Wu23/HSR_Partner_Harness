@@ -7,7 +7,10 @@ import sys
 from pathlib import Path
 
 from pair_harness.adapters.codex.engine import CodexAppServerEngine
-from pair_harness.adapters.codex.transport import JsonlProcessTransport
+from pair_harness.adapters.codex.transport import (
+    JsonlProcessTransport,
+    SubprocessJsonLineConnection,
+)
 from pair_harness.adapters.demo import ScriptedCodingEngine, ScriptedDialogueModel
 from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDialogueModel
 from pair_harness.adapters.reviewer import DialogueModelReviewer
@@ -166,8 +169,23 @@ async def run_real(
         ),
         temperature=1.0,
     )
-    transport = JsonlProcessTransport(settings.codex_bin)
-    engine = CodexAppServerEngine(transport)
+    async def codex_connection() -> SubprocessJsonLineConnection:
+        return await SubprocessJsonLineConnection.create(
+            settings.codex_bin, args=["app-server"]
+        )
+
+    transport = JsonlProcessTransport(
+        settings.codex_bin, connection_factory=codex_connection
+    )
+    engine = CodexAppServerEngine(
+        transport,
+        model="gpt-5.6-sol",
+        reasoning_effort=(
+            "medium"
+            if project_record.reasoning_effort == "auto"
+            else project_record.reasoning_effort
+        ),
+    )
     reviewer = DialogueModelReviewer(dialogue) if approval_mode == ApprovalMode.REVIEW else None
 
     async def approval_callback(op, approval_id: str, reason: str) -> ApprovalDecision:

@@ -453,7 +453,10 @@ fn encode_request_line(request: &Value) -> Result<Vec<u8>, String> {
 }
 
 #[tauri::command]
-async fn desktop_request(request: Value, state: State<'_, Arc<BackendState>>) -> Result<Value, String> {
+async fn desktop_request(
+    request: Value,
+    state: State<'_, Arc<BackendState>>,
+) -> Result<Value, String> {
     let id = request
         .get("id")
         .and_then(Value::as_str)
@@ -579,10 +582,10 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    #[cfg(windows)]
-    use std::os::windows::process::ExitStatusExt;
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
+    #[cfg(windows)]
+    use std::os::windows::process::ExitStatusExt;
 
     #[test]
     fn request_line_is_single_json_line() {

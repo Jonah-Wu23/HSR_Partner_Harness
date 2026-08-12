@@ -132,6 +132,8 @@ function createInitialState(): Omit<
   | "setComposerDraft"
   | "setApprovalResolving"
   | "setReviewStatus"
+  | "dismissToast"
+  | "setConfigSnapshot"
 > {
   return {
     status: "booting",

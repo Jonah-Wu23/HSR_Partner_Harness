@@ -111,7 +111,7 @@ function presentAccountGate(state: DesktopRenderState): AppShellViewModel["accou
 interface ConfigShape {
   engine?: string;
   dialogue?: Record<string, string>;
-  voice?: Record<string, string>;
+  voice?: Record<string, string | boolean>;
   codex?: Record<string, string | null>;
 }
 

@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -6,6 +7,15 @@ from pair_harness.adapters.codex.engine import CodexAppServerEngine
 from pair_harness.adapters.codex.transport import JsonlProcessTransport
 from pair_harness.core.contracts import ProjectRef, TaskRequest
 from tests.fixtures.fake_codex_app_server import FakeCodexAppServer, QueueJsonLineConnection
+
+
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
+def test_codex_reasoning_effort_matches_gpt_56_sol_levels(effort: str) -> None:
+    engine = CodexAppServerEngine(JsonlProcessTransport("unused"))
+
+    engine.configure_reasoning(effort)
+
+    assert engine.reasoning_effort == effort
 
 
 @pytest.mark.asyncio
@@ -68,10 +78,15 @@ async def test_offline_engine_opens_session_and_streams_mapped_events() -> None:
     request = await server.serve_request({"turn": {"id": "turn-1"}})
     assert request["method"] == "turn/start"
     assert request["params"]["threadId"] == "thread-1"
-    assert request["params"]["input"][0]["text"] == (
-        "run tests\n\n本次任务约束：\n"
-        "- only edit tests\n- do not rename files"
-    )
+    assert request["params"]["model"] == "gpt-5.6-sol"
+    assert request["params"]["effort"] == "medium"
+    task_payload = json.loads(request["params"]["input"][0]["text"])
+    assert task_payload == {
+        "type": "TaskRequest",
+        "task_id": task.task_id,
+        "instructions": "run tests",
+        "constraints": ["only edit tests", "do not rename files"],
+    }
     await server.notify("turn/started", {"turn": {"id": "turn-1"}})
     await server.notify(
         "item/completed",
