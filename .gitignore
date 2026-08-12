@@ -20,3 +20,7 @@ desktop/.pyinstaller-config/
 .claude/
 .qwen/
 DeepSeek-Reasonix/
+# 本地工作树、浏览器状态与调试日志
+.playwright-mcp/
+.worktrees/
+debug.log
