@@ -1,6 +1,5 @@
-from pair_harness.ui.app import main
+from pair_harness.cli import main
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
