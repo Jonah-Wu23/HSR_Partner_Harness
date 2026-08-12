@@ -16,6 +16,11 @@ export class TauriDesktopBackend implements DesktopBackend {
 
   constructor() {
     this.unlisten = listen<DesktopEvent>("sidecar://event", (event) => {
+      const payload = event.payload as unknown as {
+        kind?: string;
+        sequence?: unknown;
+      };
+      if (payload.kind !== "event" || !Number.isFinite(payload.sequence)) return;
       for (const listener of this.listeners) listener(event.payload);
     });
   }

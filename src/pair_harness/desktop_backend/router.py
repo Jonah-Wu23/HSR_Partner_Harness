@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 from typing import Any, TextIO
@@ -57,7 +58,15 @@ class SidecarRouter:
             command = parse_request(line)
         except Exception as exc:  # 协议错误必须留在 stdout 的结构化消息中
             code = getattr(exc, "code", "invalid_json")
-            self.writer.write(protocol_error(code, str(exc)))
+            request_id: str | None = None
+            try:
+                payload = json.loads(line)
+                candidate = payload.get("id") if isinstance(payload, dict) else None
+                if isinstance(candidate, str) and candidate:
+                    request_id = candidate
+            except (TypeError, ValueError):
+                pass
+            self.writer.write(protocol_error(code, str(exc), request_id=request_id))
             return
 
         try:

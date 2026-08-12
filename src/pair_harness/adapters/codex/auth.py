@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -32,6 +35,7 @@ class CodexAuthService:
         self.home = self.base_dir / "accounts" / account_id / "codex"
         self._auth_file = self.home / "auth.json"
         self._waiting_file = self.home / "login.waiting"
+        self._login_process: subprocess.Popen[bytes] | None = None
 
     # ---- 路径与状态 ----
 
@@ -46,11 +50,12 @@ class CodexAuthService:
 
     def status(self) -> dict[str, object]:
         """当前认证状态：logged_out / waiting / logged_in / expired。"""
-        if self._waiting_file.exists():
-            return {"status": "waiting", "account_label": None}
         tokens = self._read_tokens()
+        if self._waiting_file.exists() and not tokens:
+            return {"status": "waiting", "account_label": None}
         if not tokens:
             return {"status": "logged_out", "account_label": None}
+        self._waiting_file.unlink(missing_ok=True)
         current = tokens.get("current")
         account_label = None
         if current:
@@ -63,10 +68,28 @@ class CodexAuthService:
 
     # ---- 登录流程 ----
 
-    def start_login(self) -> dict[str, object]:
-        """进入 waiting 态（浏览器 OAuth 由 codex 官方流程完成，服务轮询）。"""
+    def start_login(self, executable: str | None = None) -> dict[str, object]:
+        """启动 Codex 官方浏览器 OAuth；未传可执行文件时只进入等待态。"""
         self.home.mkdir(parents=True, exist_ok=True)
         self._waiting_file.touch()
+        if executable:
+            resolved = shutil.which(executable) or executable
+            command = [resolved, "login"]
+            if resolved.lower().endswith((".cmd", ".bat")):
+                command = [os.environ.get("COMSPEC", "cmd.exe"), "/c", resolved, "login"]
+            env = {**os.environ, **self.env_overrides}
+            creationflags = 0x08000000 if os.name == "nt" else 0
+            try:
+                self._login_process = subprocess.Popen(
+                    command,
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=creationflags,
+                )
+            except OSError as exc:
+                logger.warning("启动 Codex OAuth 浏览器流程失败：%s", exc)
         return {"status": "waiting", "note": "请在浏览器中完成 Codex 登录"}
 
     def api_login(self, api_key: str) -> dict[str, object]:
@@ -88,10 +111,16 @@ class CodexAuthService:
 
     def cancel_login(self) -> None:
         """取消 waiting 态（浏览器流程放弃后回到 logged_out）。"""
+        if self._login_process is not None and self._login_process.poll() is None:
+            self._login_process.terminate()
+        self._login_process = None
         self._waiting_file.unlink(missing_ok=True)
 
     def logout(self) -> dict[str, object]:
         """清空本账号认证数据（不删除会话记录）。"""
+        if self._login_process is not None and self._login_process.poll() is None:
+            self._login_process.terminate()
+        self._login_process = None
         self._waiting_file.unlink(missing_ok=True)
         self._auth_file.unlink(missing_ok=True)
         return {"status": "logged_out"}

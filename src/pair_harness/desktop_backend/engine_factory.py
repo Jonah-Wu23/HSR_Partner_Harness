@@ -23,6 +23,61 @@ from pair_harness.adapters.codex.transport import (
 )
 
 
+def _provider_env(
+    *, base_url: str | None, api_key: str | None, model: str | None
+) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in {
+            "PAIR_HARNESS_DIALOGUE_BASE_URL": base_url,
+            "PAIR_HARNESS_DIALOGUE_API_KEY": api_key,
+            "PAIR_HARNESS_DIALOGUE_MODEL": model,
+            "DEEPSEEK_BASE_URL": base_url,
+            "DEEPSEEK_API_KEY": api_key,
+            "DEEPSEEK_MODEL": model,
+        }.items()
+        if value
+    }
+
+
+def build_codex_transport(
+    *,
+    codex_auth: CodexAuthService,
+    codex_bin: str | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+) -> JsonlProcessTransport:
+    executable = resolve_codex_executable(codex_bin)
+    env = {**codex_auth.env_overrides, **_provider_env(base_url=base_url, api_key=api_key, model=None)}
+    if base_url:
+        env["OPENAI_BASE_URL"] = base_url
+    if api_key:
+        env["OPENAI_API_KEY"] = api_key
+
+    async def connection() -> SubprocessJsonLineConnection:
+        return await SubprocessJsonLineConnection.create(
+            executable, args=["app-server"], env=env
+        )
+
+    return JsonlProcessTransport(
+        executable, connection_factory=connection, request_timeout=3600.0
+    )
+
+
+def build_codex_dialogue_model(
+    *,
+    codex_auth: CodexAuthService,
+    model: str,
+    codex_bin: str | None = None,
+) -> "CodexDialogueModel":
+    from pair_harness.adapters.codex.dialogue import CodexDialogueModel
+
+    return CodexDialogueModel(
+        build_codex_transport(codex_auth=codex_auth, codex_bin=codex_bin),
+        model=model,
+    )
+
+
 def resolve_codex_executable(bundled_bin: str | None = None) -> str:
     """codex 可执行文件：打包内置 > 环境变量 > PATH 默认。"""
     for candidate in (
@@ -52,32 +107,37 @@ def build_coding_engine(
     codex_auth: CodexAuthService,
     codex_bin: str | None = None,
     reasonix_bin: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
 ) -> "CodexAppServerEngine | AcpCodingEngine":
-    """按账号配置构建编程助手引擎；认证数据目录按账号隔离注入。"""
+    """按账号配置构建编程助手引擎；角色与助手共享模型参数。"""
+    shared_env = _provider_env(base_url=base_url, api_key=api_key, model=model)
     if engine_choice == "deepseek":
         from pair_harness.adapters.acp.engine import AcpCodingEngine
 
         executable = resolve_reasonix_executable(reasonix_bin)
 
         async def acp_connection() -> SubprocessJsonLineConnection:
-            return await SubprocessJsonLineConnection.create(executable, args=["acp"])
+            return await SubprocessJsonLineConnection.create(
+                executable, args=["acp"], env=shared_env
+            )
 
         return AcpCodingEngine(
             JsonlProcessTransport(
                 executable, connection_factory=acp_connection, request_timeout=3600.0
-            )
+            ),
+            model=model,
         )
 
-    executable = resolve_codex_executable(codex_bin)
-    env = codex_auth.env_overrides
-
-    async def codex_connection() -> SubprocessJsonLineConnection:
-        return await SubprocessJsonLineConnection.create(
-            executable, args=["app-server"], env=env
-        )
+    transport = build_codex_transport(
+        codex_auth=codex_auth,
+        codex_bin=codex_bin,
+        base_url=base_url,
+        api_key=api_key,
+    )
 
     return CodexAppServerEngine(
-        JsonlProcessTransport(
-            executable, connection_factory=codex_connection, request_timeout=3600.0
-        )
+        transport,
+        model=model or "gpt-5.6-sol",
     )

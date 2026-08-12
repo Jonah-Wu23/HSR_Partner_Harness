@@ -400,10 +400,26 @@ fn start_reader(state: &Arc<BackendState>, stdout: ChildStdout) {
             if let Some(sequence) = value.get("sequence").and_then(Value::as_u64) {
                 let _ = state.last_sequence.fetch_max(sequence, Ordering::SeqCst);
             }
-            if value.get("kind") == Some(&Value::String("response".to_string())) {
+            let routed_to_pending = matches!(
+                value.get("kind").and_then(Value::as_str),
+                Some("response") | Some("error")
+            );
+            if routed_to_pending {
                 if let Some(id) = value.get("id").and_then(Value::as_str) {
                     if let Some(sender) = state.pending.lock().unwrap().remove(id) {
-                        let _ = sender.send(value);
+                        let routed = if value.get("kind")
+                            == Some(&Value::String("error".to_string()))
+                        {
+                            json!({
+                                "kind": "response",
+                                "id": id,
+                                "ok": false,
+                                "error": value.get("error").cloned().unwrap_or_else(|| json!({"code": "protocol_error", "message": "Sidecar 协议错误"}))
+                            })
+                        } else {
+                            value
+                        };
+                        let _ = sender.send(routed);
                     }
                 }
             } else {

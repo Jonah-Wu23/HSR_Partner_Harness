@@ -91,6 +91,31 @@ describe("Onboarding", () => {
     expect(await screen.findByRole("heading", { name: "都准备好了" })).toBeInTheDocument();
     expect(onSaveModelConfig).toHaveBeenCalledWith({ provider: "DeepSeek", apiKey: "sk-test" });
   });
+
+  it("首次引导提供 DeepSeek、OpenAI 兼容 API 与 OpenAI OAuth", () => {
+    render(
+      <Onboarding
+        characterName="白厄"
+        assistantName="机枢"
+        onCreateProject={vi.fn().mockResolvedValue(true)}
+        onSaveModelConfig={vi.fn().mockResolvedValue("连接正常")}
+        onFinish={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "跳过" }));
+    const provider = screen.getByLabelText("模型来源");
+    expect(provider).toHaveValue("DeepSeek");
+    expect(screen.getByRole("option", { name: "OpenAI 兼容 API（包括 OpenAI API）" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "OpenAI OAuth" })).toBeInTheDocument();
+
+    fireEvent.change(provider, { target: { value: "OpenAI 兼容 API（包括 OpenAI API）" } });
+    expect(screen.getByLabelText("Base URL")).toHaveValue("https://api.openai.com/v1");
+    expect(screen.getByLabelText("模型")).toHaveValue("gpt-5.6-sol");
+
+    fireEvent.change(provider, { target: { value: "OpenAI OAuth" } });
+    expect(screen.getByText("使用 OpenAI 账号登录，角色与助手共用 gpt-5.6-sol。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "启动并继续" })).toBeEnabled();
+  });
 });
 
 function renderSettings(overrides: Partial<Parameters<typeof SettingsCenter>[0]> = {}) {

@@ -38,6 +38,7 @@ DESKTOP_COMMANDS = frozenset(
         "account.switch",
         "account.update_profile",
         "account.change_password",
+        "account.onboarding_complete",
         "config.get",
         "config.set",
         "config.test_connection",

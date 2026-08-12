@@ -45,8 +45,9 @@ class AcpCodingEngine(CodingEngine):
 
     engine_type = "acp"
 
-    def __init__(self, transport: Any) -> None:
+    def __init__(self, transport: Any, *, model: str | None = None) -> None:
         self.transport = transport
+        self.model = model or ""
         self._initialized = False
 
     @staticmethod
@@ -94,6 +95,8 @@ class AcpCodingEngine(CodingEngine):
             )
             return self._encode_ref(acp_session_id)
         params: dict[str, Any] = {"cwd": project.root_path}
+        if self.model:
+            params["model"] = self.model
         if developer_instructions:
             params["developerInstructions"] = developer_instructions
         result = await self.transport.request("session/new", params)

@@ -270,6 +270,20 @@ describe("desktopStore event projection", () => {
     expect(desktopStore.getState().needsBootstrap).toBe(false);
   });
 
+  it("没有序号的协议错误不会触发重新引导", () => {
+    desktopStore.getState().hydrate({ ...createMockScenario("onboarding-pending").snapshot, sequence: 2 });
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "error.reported",
+        sequence: undefined as unknown as number,
+        payload: { message: "未知协议错误" },
+      },
+    ]);
+    expect(desktopStore.getState().needsBootstrap).toBe(false);
+    expect(desktopStore.getState().lastSequence).toBe(2);
+  });
+
   it("locks approval actions until the resolved event arrives", () => {
     desktopStore.getState().applyEvents([
       {

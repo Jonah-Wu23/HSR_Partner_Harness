@@ -225,10 +225,40 @@ describe("AppShell V0.2 M4 接口接线", () => {
 
     await waitFor(() => expect(testConnection).toHaveBeenCalledOnce());
     expect(setConfig).toHaveBeenCalledWith({
+      engine: "deepseek",
+      "dialogue.provider": "deepseek",
       "dialogue.base_url": "https://api.deepseek.com",
       "dialogue.model": "deepseek-v4-flash",
       "dialogue.api_key": "sk-test",
     });
+    expect(screen.getByRole("heading", { name: "都准备好了" })).toBeInTheDocument();
+  });
+
+  it("引导页 OpenAI 兼容 API 让角色与助手使用同一模型", async () => {
+    const { controller, rerender, present } = await renderScenario("onboarding-pending");
+    const setConfig = vi.fn().mockResolvedValue(undefined);
+    const codexApiLogin = vi.fn().mockResolvedValue(undefined);
+    const testConnection = vi.fn().mockResolvedValue("连接正常（延迟 12 ms）");
+    const actions = { ...controller.actions, setConfig, codexApiLogin, testConnection };
+    rerender(<AppShell vm={present()} actions={actions} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "跳过" }));
+    fireEvent.change(screen.getByLabelText("模型来源"), {
+      target: { value: "OpenAI 兼容 API（包括 OpenAI API）" },
+    });
+    fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "sk-openai" } });
+    fireEvent.change(screen.getByLabelText("模型"), { target: { value: "gpt-5.6-sol" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
+
+    await waitFor(() => expect(testConnection).toHaveBeenCalledOnce());
+    expect(setConfig).toHaveBeenCalledWith({
+      engine: "codex",
+      "dialogue.provider": "openai_compatible",
+      "dialogue.base_url": "https://api.openai.com/v1",
+      "dialogue.model": "gpt-5.6-sol",
+      "dialogue.api_key": "sk-openai",
+    });
+    expect(codexApiLogin).toHaveBeenCalledWith("sk-openai");
     expect(screen.getByRole("heading", { name: "都准备好了" })).toBeInTheDocument();
   });
 

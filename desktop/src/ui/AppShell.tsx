@@ -110,19 +110,36 @@ export function AppShell({ vm, actions }: AppShellProps) {
           await actions.createProject();
           return true;
         }}
-        onSaveModelConfig={async ({ provider, apiKey }) => {
-          // 首次引导只收集服务商与 Key；DeepSeek 的常用端点与模型随服务商预置。
-          const preset: Record<string, string> =
-            provider === "DeepSeek"
-              ? {
-                  "dialogue.base_url": "https://api.deepseek.com",
-                  "dialogue.model": "deepseek-v4-flash",
-                }
-              : {};
-          await actions.setConfig({
-            ...preset,
-            "dialogue.api_key": apiKey,
-          });
+        onSaveModelConfig={async ({ provider, apiKey, baseUrl, model }) => {
+          if (provider === "OpenAI OAuth") {
+            await actions.setConfig({
+              engine: "codex",
+              "dialogue.provider": "openai_oauth",
+              "dialogue.base_url": "https://api.openai.com/v1",
+              "dialogue.model": "gpt-5.6-sol",
+            });
+            await actions.codexOauthStart();
+            return "已启动 OpenAI OAuth，请在浏览器完成登录后继续";
+          }
+
+          const isDeepSeek = provider === "DeepSeek";
+          const updates: Record<string, string> = isDeepSeek
+            ? {
+                engine: "deepseek",
+                "dialogue.provider": "deepseek",
+                "dialogue.base_url": "https://api.deepseek.com",
+                "dialogue.model": "deepseek-v4-flash",
+                "dialogue.api_key": apiKey,
+              }
+            : {
+                engine: "codex",
+                "dialogue.provider": "openai_compatible",
+                "dialogue.base_url": baseUrl?.trim() || "https://api.openai.com/v1",
+                "dialogue.model": model?.trim() || "gpt-5.6-sol",
+                "dialogue.api_key": apiKey,
+              };
+          await actions.setConfig(updates);
+          if (!isDeepSeek) await actions.codexApiLogin(apiKey);
           return actions.testConnection();
         }}
         onFinish={() => void actions.completeOnboarding()}

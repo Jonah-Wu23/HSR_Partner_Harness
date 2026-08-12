@@ -54,5 +54,14 @@ def response_error(
     }
 
 
-def protocol_error(code: str, message: str) -> dict[str, Any]:
-    return {"kind": "error", "error": {"code": code, "message": message}}
+def protocol_error(
+    code: str, message: str, *, request_id: str | None = None
+) -> dict[str, Any]:
+    """返回协议层错误；能识别请求 id 时让桌面端按请求失败回收。"""
+    payload: dict[str, Any] = {
+        "kind": "error",
+        "error": {"code": code, "message": message},
+    }
+    if request_id:
+        payload["id"] = request_id
+    return payload

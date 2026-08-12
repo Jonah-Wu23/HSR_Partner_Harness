@@ -267,6 +267,8 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
 }
 
 function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
+  // 协议错误、旧插件事件等没有序号的消息不能参与快照序列校验。
+  if (!Number.isFinite(event.sequence)) return state;
   if (event.sequence <= state.lastSequence) return state;
   if (state.lastSequence >= 0 && event.sequence !== state.lastSequence + 1) {
     return { ...state, needsBootstrap: true, lastSequence: event.sequence };

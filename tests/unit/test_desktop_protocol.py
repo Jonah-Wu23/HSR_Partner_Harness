@@ -24,6 +24,13 @@ def test_parse_request_and_encode_jsonl() -> None:
     assert "\n" not in encoded
 
 
+def test_onboarding_complete_is_accepted_by_protocol_whitelist() -> None:
+    command = parse_request(
+        '{"kind":"request","id":"ob-1","method":"account.onboarding_complete","params":{}}'
+    )
+    assert command.method == "account.onboarding_complete"
+
+
 @pytest.mark.parametrize(
     ("line", "code"),
     [

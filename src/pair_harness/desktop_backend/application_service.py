@@ -256,6 +256,7 @@ class DesktopApplicationService:
         account_id = account_id or self.current_account_id
         keys = (
             "engine",
+            "dialogue.provider",
             "dialogue.base_url",
             "dialogue.model",
             "dialogue.api_key",
@@ -1132,6 +1133,7 @@ class DesktopApplicationService:
             else:
                 self.store.set_config(self.current_account_id, key, value)
         self._account_config = None
+        self._rebuild_runtime_for_account(self._load_account_config())
         return {"config": await self._config_get({})}
 
     async def _config_test_connection(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -1141,13 +1143,35 @@ class DesktopApplicationService:
         base_url = config.get("dialogue.base_url") or self._env_dialogue_base()
         api_key = config.get("dialogue.api_key") or self._env_dialogue_key()
         model = config.get("dialogue.model") or self._env_dialogue_model()
+        provider = config.get("dialogue.provider", "")
+        if provider == "openai_oauth":
+            status = self.codex_auth.status().get("status")
+            if status == "logged_in":
+                return {"ok": True, "message": "连接正常（OpenAI OAuth）"}
+            return {"ok": False, "message": "请先完成 OpenAI OAuth 登录"}
         if not (base_url and api_key and model):
             return {"ok": False, "message": "缺少对话服务配置（Base URL / API Key / 模型）"}
         return await self._probe_dialogue_connection(base_url, api_key, model)
 
     async def _codex_oauth_start(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
-        return self.codex_auth.start_login()
+        if self._demo:
+            result = self.codex_auth.start_login()
+        else:
+            from .engine_factory import resolve_codex_executable
+
+            result = self.codex_auth.start_login(
+                resolve_codex_executable(os.getenv("PAIR_HARNESS_BUNDLED_CODEX_BIN"))
+            )
+        self.store.set_config(self.current_account_id, "engine", "codex")
+        self.store.set_config(self.current_account_id, "dialogue.provider", "openai_oauth")
+        self.store.set_config(
+            self.current_account_id, "dialogue.base_url", "https://api.openai.com/v1"
+        )
+        self.store.set_config(self.current_account_id, "dialogue.model", "gpt-5.6-sol")
+        self._account_config = None
+        self._rebuild_runtime_for_account(self._load_account_config())
+        return result
 
     async def _codex_oauth_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
@@ -1192,10 +1216,21 @@ class DesktopApplicationService:
         if self._demo:
             return
         engine_choice = config.get("engine", "codex")
+        provider = config.get("dialogue.provider", "")
         dialogue_base = config.get("dialogue.base_url") or self._env_dialogue_base()
         dialogue_key = config.get("dialogue.api_key") or self._env_dialogue_key()
         dialogue_model_name = config.get("dialogue.model") or self._env_dialogue_model()
-        if dialogue_base and dialogue_key and dialogue_model_name:
+        if provider == "openai_oauth" and dialogue_model_name:
+            from .engine_factory import build_codex_dialogue_model
+
+            self.dialogue_model = build_codex_dialogue_model(
+                codex_auth=self.codex_auth,
+                model=dialogue_model_name,
+                codex_bin=os.getenv("PAIR_HARNESS_BUNDLED_CODEX_BIN"),
+            )
+            self.orchestrator.dialogue_model = self.dialogue_model  # type: ignore[attr-defined]
+            self.orchestrator.reviewer = DialogueModelReviewer(self.dialogue_model)  # type: ignore[attr-defined]
+        elif dialogue_base and dialogue_key and dialogue_model_name:
             preset = load_reasoning_preset(dialogue_base, dialogue_model_name)
             self.dialogue_model = OpenAICompatibleDialogueModel(
                 base_url=dialogue_base,
@@ -1214,6 +1249,9 @@ class DesktopApplicationService:
                 engine_choice=engine_choice,
                 codex_auth=self.codex_auth,
                 codex_bin=os.getenv("PAIR_HARNESS_BUNDLED_CODEX_BIN"),
+                model=dialogue_model_name or "gpt-5.6-sol",
+                base_url=dialogue_base,
+                api_key=dialogue_key,
             )
             self.orchestrator.coding_engine = self.coding_engine  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001 - 引擎构建失败不阻断账号切换
@@ -1221,10 +1259,13 @@ class DesktopApplicationService:
 
     def dialogue_provider_name(self, config: dict[str, str]) -> str:
         """按 base_url 识别服务商（复用供应商探测）。"""
+        configured = config.get("dialogue.provider")
+        if configured:
+            return configured
         base_url = config.get("dialogue.base_url") or self._env_dialogue_base()
         if not base_url:
-            return "openai-compatible"
-        return detect_provider(base_url)
+            return "openai_compatible"
+        return detect_provider(base_url).value
 
     @staticmethod
     def _env_dialogue_base() -> str:
@@ -1774,27 +1815,14 @@ def _build_service(
         coding_engine: Any = ScriptedCodingEngine()
     else:
         settings = Settings.from_environment()
-        missing = [
-            name
-            for name, value in (
-                ("PAIR_HARNESS_DIALOGUE_BASE_URL", settings.dialogue_base_url),
-                ("PAIR_HARNESS_DIALOGUE_API_KEY", settings.dialogue_api_key),
-                ("PAIR_HARNESS_DIALOGUE_MODEL", settings.dialogue_model),
-            )
-            if not value
-        ]
-        if missing:
-            store.close()
-            raise ServiceError(
-                f"真实后端缺少环境变量：{', '.join(missing)}",
-                code="missing_configuration",
-            )
-        assert settings.dialogue_base_url and settings.dialogue_api_key and settings.dialogue_model
-        preset = load_reasoning_preset(settings.dialogue_base_url, settings.dialogue_model)
+        dialogue_base = settings.dialogue_base_url or ""
+        dialogue_key = settings.dialogue_api_key or ""
+        dialogue_model_name = settings.dialogue_model or "gpt-5.6-sol"
+        preset = load_reasoning_preset(dialogue_base, dialogue_model_name)
         dialogue_model = OpenAICompatibleDialogueModel(
-            base_url=settings.dialogue_base_url,
-            api_key=settings.dialogue_api_key,
-            model=settings.dialogue_model,
+            base_url=dialogue_base,
+            api_key=dialogue_key,
+            model=dialogue_model_name,
             thinking=preset.default_thinking,
             reasoning_effort=(
                 None
@@ -1812,7 +1840,7 @@ def _build_service(
             JsonlProcessTransport(
                 settings.codex_bin, connection_factory=codex_connection
             ),
-            model="gpt-5.6-sol",
+            model=dialogue_model_name,
             reasoning_effort=(
                 "medium"
                 if project is None or project.reasoning_effort == "auto"
@@ -1848,6 +1876,9 @@ def _build_service(
         current_project_id=project.project_id if project is not None else "",
         current_conversation_id=conversation.conversation_id if conversation is not None else "",
     )
+    if not demo:
+        # 首次引导可从空配置启动；账号级配置存在时立即接管环境默认值。
+        service._rebuild_runtime_for_account(service._load_account_config())
     if not demo and settings is not None and settings.dashscope_api_key and conversation is not None:
         try:
             runtime = build_real_voice_runtime(

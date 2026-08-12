@@ -64,3 +64,27 @@ async def test_sidecar_router_accepts_cancel_while_chat_request_is_running() -> 
         "chat-1",
         "cancel-1",
     }
+
+
+@pytest.mark.asyncio
+async def test_protocol_whitelist_and_dispatch_reach_onboarding_complete() -> None:
+    class Service:
+        async def handle_command(self, command):
+            assert command.method == "account.onboarding_complete"
+            return {"account": {"onboarding_complete": True}}
+
+    output = io.StringIO()
+    router = SidecarRouter(Service(), JsonlWriter(output))  # type: ignore[arg-type]
+    await router.handle_line(
+        json.dumps(
+            {
+                "kind": "request",
+                "id": "ob-1",
+                "method": "account.onboarding_complete",
+                "params": {},
+            }
+        )
+    )
+    response = json.loads(output.getvalue())
+    assert response["id"] == "ob-1"
+    assert response["ok"] is True
