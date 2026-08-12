@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AppShell } from "../AppShell";
 import type { MockScenarioName } from "../../mocks/scenarios";
@@ -210,6 +210,26 @@ describe("AppShell V0.2 M4 接口接线", () => {
     rerender(<AppShell vm={present()} actions={controller.actions} />);
     expect(screen.queryByText("都准备好了")).not.toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "项目轨道" })).toBeInTheDocument();
+  });
+
+  it("引导页保存 DeepSeek Key 时写入默认端点与模型", async () => {
+    const { controller, rerender, present } = await renderScenario("onboarding-pending");
+    const setConfig = vi.fn().mockResolvedValue(undefined);
+    const testConnection = vi.fn().mockResolvedValue("连接正常（延迟 546 ms）");
+    const actions = { ...controller.actions, setConfig, testConnection };
+    rerender(<AppShell vm={present()} actions={actions} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "跳过" }));
+    fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "sk-test" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
+
+    await waitFor(() => expect(testConnection).toHaveBeenCalledOnce());
+    expect(setConfig).toHaveBeenCalledWith({
+      "dialogue.base_url": "https://api.deepseek.com",
+      "dialogue.model": "deepseek-v4-flash",
+      "dialogue.api_key": "sk-test",
+    });
+    expect(screen.getByRole("heading", { name: "都准备好了" })).toBeInTheDocument();
   });
 
   it("error.reported recoverable：Toast 渲染并可关闭", async () => {

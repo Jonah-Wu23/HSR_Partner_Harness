@@ -110,9 +110,19 @@ export function AppShell({ vm, actions }: AppShellProps) {
           await actions.createProject();
           return true;
         }}
-        onSaveModelConfig={async ({ apiKey }) => {
-          // V0.2 M4：保存角色模型 Key 并测试连接，返回人话结果
-          await actions.setConfig({ "dialogue.api_key": apiKey });
+        onSaveModelConfig={async ({ provider, apiKey }) => {
+          // 首次引导只收集服务商与 Key；DeepSeek 的常用端点与模型随服务商预置。
+          const preset: Record<string, string> =
+            provider === "DeepSeek"
+              ? {
+                  "dialogue.base_url": "https://api.deepseek.com",
+                  "dialogue.model": "deepseek-v4-flash",
+                }
+              : {};
+          await actions.setConfig({
+            ...preset,
+            "dialogue.api_key": apiKey,
+          });
           return actions.testConnection();
         }}
         onFinish={() => void actions.completeOnboarding()}
