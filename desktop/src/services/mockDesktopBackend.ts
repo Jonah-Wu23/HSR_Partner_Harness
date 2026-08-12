@@ -568,7 +568,7 @@ export class MockDesktopBackend implements DesktopBackend {
     return { config: this.configGet() };
   }
 
-  private emitQueueChanged(conversationId: string, items: QueueItem[]): void {
+  emitQueueChanged(conversationId: string, items: QueueItem[]): void {
     this.scenario.snapshot.queue_items = items;
     this.emit("queue.changed", { conversation_id: conversationId, items });
   }
@@ -598,11 +598,14 @@ export class MockDesktopBackend implements DesktopBackend {
 
   private prioritizeQueueItem(params: Record<string, unknown>): { queue_item: QueueItem } {
     const queueItemId = String(params.queue_item_id ?? "");
+    // 与后端一致：其余 queued 项 position + 1，目标项置队首
     const items = this.scenario.snapshot.queue_items
       .map((item) =>
         item.queue_item_id === queueItemId && item.status === "queued"
           ? { ...item, position: 0 }
-          : item,
+          : item.status === "queued"
+            ? { ...item, position: item.position + 1 }
+            : item,
       )
       .sort((a, b) => a.position - b.position);
     const queueItem = items.find((item) => item.queue_item_id === queueItemId)!;

@@ -12,15 +12,18 @@ interface Rendered {
   controller: ActionController;
   rerender: (ui: React.ReactElement) => void;
   present: () => ReturnType<typeof presentAppShell>;
+  backend: MockDesktopBackend;
 }
 
 async function renderScenario(name: MockScenarioName): Promise<Rendered> {
   const backend = new MockDesktopBackend(name);
   const controller = createActionController(backend);
+  // 与 AppController 一致：backend 事件转发进 store（queue.changed 等）
+  backend.subscribe((event) => desktopStore.getState().applyEvents([event]));
   await controller.loadBootstrap();
   const present = () => presentAppShell(desktopStore.getState());
   const { rerender } = render(<AppShell vm={present()} actions={controller.actions} />);
-  return { controller, rerender, present };
+  return { controller, rerender, present, backend };
 }
 
 describe("AppShell 视觉组件（Mock 场景）", () => {
@@ -244,5 +247,92 @@ describe("AppShell V0.2 M4 接口接线", () => {
     await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: "设置" })).not.toBeInTheDocument();
     });
+  });
+});
+
+describe("AppShell QueueStrip 接线（V0.2 M4）", () => {
+  afterEach(() => {
+    cleanup();
+    desktopStore.getState().setStatus("booting");
+  });
+
+  function queueItemsInto(
+    rendered: Rendered,
+    rerender: (ui: React.ReactElement) => void,
+    present: () => ReturnType<typeof presentAppShell>,
+  ) {
+    const state = desktopStore.getState();
+    rendered.backend.emitQueueChanged(state.currentConversationId, [
+      {
+        queue_item_id: "q-1",
+        account_id: "",
+        conversation_id: state.currentConversationId,
+        target: "character",
+        text: "等你忙完再说这个",
+        intent: "followup",
+        position: 0,
+        status: "queued",
+        created_at: "2026-08-12T00:00:00+00:00",
+        source_message_id: null,
+      },
+      {
+        queue_item_id: "q-2",
+        account_id: "",
+        conversation_id: state.currentConversationId,
+        target: "assistant",
+        text: "请检查这个项目的测试",
+        intent: "followup",
+        position: 1,
+        status: "queued",
+        created_at: "2026-08-12T00:00:00+00:00",
+        source_message_id: null,
+      },
+    ]);
+    rerender(<AppShell vm={present()} actions={rendered.controller.actions} />);
+  }
+
+  it("有队列时渲染胶囊条：目标、摘要与数量", async () => {
+    const rendered = await renderScenario("single-project");
+    const { controller, rerender, present } = rendered;
+    expect(screen.queryByRole("region", { name: /排队/ })).not.toBeInTheDocument();
+    queueItemsInto(rendered, rerender, present);
+
+    const strip = screen.getByRole("region", { name: "排队 2 条" });
+    expect(strip).toBeInTheDocument();
+    expect(screen.getByText("给白厄")).toBeInTheDocument();
+    expect(screen.getByText("给神秘的古代机械")).toBeInTheDocument();
+    expect(screen.getByText(/「等你忙完再说这个」/)).toBeInTheDocument();
+    expect(screen.getByText(/「请检查这个项目的测试」/)).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "撤回" })).toHaveLength(2);
+  });
+
+  it("编辑：拉回输入区并撤回该条", async () => {
+    const rendered = await renderScenario("single-project");
+    const { controller, rerender, present } = rendered;
+    queueItemsInto(rendered, rerender, present);
+
+    fireEvent.click(screen.getAllByRole("button", { name: "编辑" })[0]);
+    // 拉回输入区：async 撤回完成后 seed 写入输入框
+    rerender(<AppShell vm={present()} actions={controller.actions} />);
+    const composer = screen.getByTestId("composer");
+    const textarea = composer.querySelector("textarea")!;
+    await waitFor(() => {
+      expect(textarea.value).toContain("等你忙完再说这个");
+    });
+    // 撤回后队列只剩一条
+    rerender(<AppShell vm={present()} actions={controller.actions} />);
+    expect(screen.getByRole("region", { name: "排队 1 条" })).toBeInTheDocument();
+  });
+
+  it("立即插入：优先处理该条", async () => {
+    const rendered = await renderScenario("single-project");
+    const { controller, rerender, present } = rendered;
+    queueItemsInto(rendered, rerender, present);
+
+    fireEvent.click(screen.getAllByRole("button", { name: "立即插入" })[1]);
+    rerender(<AppShell vm={present()} actions={controller.actions} />);
+    const strip = screen.getByRole("region", { name: "排队 2 条" });
+    const capsules = strip.querySelectorAll(".queue-capsule");
+    expect(capsules[0]?.textContent).toContain("请检查这个项目的测试");
   });
 });

@@ -20,6 +20,8 @@ export interface HarnessActions {
   editQueueItem(queueItemId: string, text: string): Promise<void>;
   withdrawQueueItem(queueItemId: string): Promise<void>;
   prioritizeQueueItem(queueItemId: string): Promise<void>;
+  /** 队列条「编辑」：撤回该项并返回原文（拉回输入区用）；不存在返回 null。 */
+  editQueueFromStrip(queueItemId: string): Promise<string | null>;
   cancelTask(): Promise<void>;
   resolveApproval(approvalId: string, decision: string): Promise<void>;
   setApprovalMode(mode: ApprovalMode): Promise<void>;

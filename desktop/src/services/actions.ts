@@ -110,6 +110,16 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async withdrawQueueItem(queueItemId) {
       await request("queue.withdraw", { queue_item_id: queueItemId });
     },
+    async editQueueFromStrip(queueItemId) {
+      // V0.2 M4：QueueStrip「编辑」= 撤回该项并返回原文（拉回输入区）
+      const state = desktopStore.getState();
+      const item = (state.queueItemsByConversation[state.currentConversationId] ?? []).find(
+        (candidate) => candidate.queue_item_id === queueItemId,
+      );
+      if (!item || item.status !== "queued") return null;
+      await this.withdrawQueueItem(queueItemId);
+      return item.text;
+    },
     async prioritizeQueueItem(queueItemId) {
       await request("queue.prioritize", { queue_item_id: queueItemId });
     },

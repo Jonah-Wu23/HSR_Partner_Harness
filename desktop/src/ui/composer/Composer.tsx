@@ -34,13 +34,30 @@ interface ComposerProps {
   actions: HarnessActions;
   /** V0.2 M4：语音迷你播放条视图；tts 播放/合成/失败时非空。 */
   voiceMiniPlayer?: VoiceMiniPlayerView | null;
+  /** V0.2 M4：QueueStrip「编辑」拉回的草稿（nonce 变化时写入输入区）。 */
+  draftSeed?: { text: string; nonce: number } | null;
 }
 
 /** 输入区：目标切换、自动增高文本框、审批/推理档位、语音控制条。 */
-export function Composer({ composer, voice, mode, actions, voiceMiniPlayer }: ComposerProps) {
+export function Composer({
+  composer,
+  voice,
+  mode,
+  actions,
+  voiceMiniPlayer,
+  draftSeed,
+}: ComposerProps) {
   const [target, setTarget] = useState<"character" | "assistant">(composer.target);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const lastSeedNonce = useRef<number | null>(null);
+  // V0.2 M4：QueueStrip「编辑」拉回的草稿——nonce 变化时写入输入区
+  useEffect(() => {
+    if (draftSeed && draftSeed.nonce !== lastSeedNonce.current) {
+      lastSeedNonce.current = draftSeed.nonce;
+      setDraft(draftSeed.text);
+    }
+  }, [draftSeed]);
 
   useEffect(() => {
     const node = inputRef.current;

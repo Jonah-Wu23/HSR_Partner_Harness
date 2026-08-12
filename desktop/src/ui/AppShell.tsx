@@ -7,6 +7,7 @@ import { Navigation } from "./navigation/Navigation";
 import { Workspace } from "./workspace/Workspace";
 import { ApprovalBar } from "./approval/ApprovalBar";
 import { Composer } from "./composer/Composer";
+import { QueueStrip } from "./status/QueueStrip";
 import { TechDetailsDrawer } from "./status/TechDetailsDrawer";
 import { ToastStack } from "./status/ToastStack";
 import { AccountGate } from "./gate/AccountGate";
@@ -58,6 +59,8 @@ export function AppShell({ vm, actions }: AppShellProps) {
   const [settingsPage, setSettingsPage] = useState<SettingsPage>("account");
   // V0.2 M4：设置中心以 key 重挂载——每次打开拉取 config.get 后重新水合表单
   const [settingsRevision, setSettingsRevision] = useState(0);
+  // V0.2 M4：QueueStrip「编辑」拉回输入区的草稿（nonce 驱动 Composer 写入）
+  const [draftSeed, setDraftSeed] = useState<{ text: string; nonce: number } | null>(null);
   // 账号门就地错误（登录/注册失败不清表单）
   const [gateError, setGateError] = useState<string | null>(null);
   // 「保存并测试」/「试听」三态结果（组件只消费 props，初值 idle）
@@ -158,12 +161,27 @@ export function AppShell({ vm, actions }: AppShellProps) {
               </div>
             )}
             <ApprovalBar approval={vm.approval} actions={actions} />
+            {/* V0.2 M4：排队条——忙碌时发送的消息在此可见可操作（空队列不渲染） */}
+            <QueueStrip
+              items={vm.queueItems}
+              names={{
+                character: pair?.character.name ?? "角色",
+                assistant: pair?.assistant.name ?? "助手",
+              }}
+              onEdit={async (queueItemId) => {
+                const text = await actions.editQueueFromStrip(queueItemId);
+                if (text) setDraftSeed({ text, nonce: Date.now() });
+              }}
+              onWithdraw={(queueItemId) => void actions.withdrawQueueItem(queueItemId)}
+              onPrioritize={(queueItemId) => void actions.prioritizeQueueItem(queueItemId)}
+            />
             <Composer
               composer={vm.composer}
               voice={vm.voice}
               mode={workspace?.mode ?? "chat"}
               actions={actions}
               voiceMiniPlayer={vm.voiceMiniPlayer}
+              draftSeed={draftSeed}
             />
           </main>
         </div>
