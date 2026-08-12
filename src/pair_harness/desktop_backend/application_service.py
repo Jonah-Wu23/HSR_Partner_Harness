@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 from typing import Any, Mapping, cast
@@ -21,6 +22,7 @@ from pair_harness.core.contracts import (
     EngineEvent,
     EngineEventType,
     Message,
+    MessageSource,
     ProjectRef,
     PendingOperation,
     ToolRun,
@@ -33,6 +35,9 @@ from pair_harness.storage.sqlite_store import SQLiteStore
 from .commands import DesktopCommand
 from .events import EventEmitter, EventSink, to_jsonable
 from .voice_factory import build_real_voice_runtime
+
+
+logger = logging.getLogger(__name__)
 
 
 class ServiceError(RuntimeError):
@@ -148,6 +153,8 @@ class DesktopApplicationService:
         self._shutdown = False
         self._tool_runs: dict[tuple[str, str], ToolRun] = {}
         self._streaming_message_ids: dict[tuple[str, str], set[str]] = {}
+        self._title_tasks: set[asyncio.Task[None]] = set()
+        self._title_generation_started: set[str] = set()
         self._voice_state: dict[str, Any] = {
             "supported": voice_runtime is not None,
             "vad": "idle",
@@ -171,6 +178,10 @@ class DesktopApplicationService:
             return
         self._shutdown = True
         self.approval_broker.cancel_all()
+        for task in tuple(self._title_tasks):
+            task.cancel()
+        if self._title_tasks:
+            await asyncio.gather(*tuple(self._title_tasks), return_exceptions=True)
         if self.voice_runtime is not None:
             await self.voice_runtime.shutdown()
         close_model = getattr(self.dialogue_model, "aclose", None)
@@ -324,7 +335,28 @@ class DesktopApplicationService:
 
     async def _project_update_settings(self, params: Mapping[str, Any]) -> dict[str, Any]:
         project_id = str(params.get("project_id") or self.current_project_id)
-        self.store.get_project(project_id)
+        project = self.store.get_project(project_id)
+        root_changed = False
+        if "root_path" in params:
+            root_value = params.get("root_path")
+            if not isinstance(root_value, str) or not root_value.strip():
+                raise ServiceError("root_path 必须是非空路径", code="invalid_params")
+            root_path = Path(root_value).expanduser().resolve()
+            root_changed = str(root_path) != project.root_path
+            if root_changed:
+                self.store.update_project_root_path(project_id, str(root_path))
+                default_names = {
+                    Path(project.root_path).name or project.root_path,
+                    project.root_path,
+                }
+                if "name" not in params and project.name in default_names:
+                    self.store.update_project_name(
+                        project_id, root_path.name or str(root_path)
+                    )
+        if "name" in params:
+            self.store.update_project_name(
+                project_id, self._required_string(params, "name")
+            )
         if "approval_mode" in params:
             try:
                 mode = ApprovalMode(str(params["approval_mode"]))
@@ -337,17 +369,19 @@ class DesktopApplicationService:
             self.store.update_project_reasoning_effort(project_id, effort)
             if isinstance(self.dialogue_model, OpenAICompatibleDialogueModel):
                 self.dialogue_model.reasoning_effort = None if effort == "auto" else effort
-        self.emitter.emit(
-            "project.changed",
-            {"project": self._project_payload(self.store.get_project(project_id))},
-        )
+        if root_changed and project_id == self.current_project_id:
+            self._select_conversation_context(self.current_conversation_id, emit=True)
+        else:
+            self.emitter.emit(
+                "project.changed",
+                {"project": self._project_payload(self.store.get_project(project_id))},
+            )
         return self.bootstrap()
 
     async def _conversation_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
         project_id = str(params.get("project_id") or self.current_project_id)
         project = self.store.get_project(project_id)
-        count = len(self.store.list_conversations(project.project_id)) + 1
-        title = str(params.get("title") or f"新聊天 {count}")
+        title = str(params.get("title") or "新聊天")
         conversation = self.store.create_conversation(
             project_id=project.project_id,
             pair_id=str(params.get("pair_id") or self.pair_config.pair_id),
@@ -391,6 +425,10 @@ class DesktopApplicationService:
         conversation_id = str(params.get("conversation_id") or self.current_conversation_id)
         target = str(params.get("target", "character"))
         text = self._required_string(params, "text")
+        had_user_messages = any(
+            message.source == MessageSource.USER
+            for message in self.store.load_conversation(conversation_id)["messages"]
+        )
         if target not in {"character", "assistant"}:
             raise ServiceError("target 必须是 character 或 assistant", code="invalid_target")
         mode = params.get("mode")
@@ -408,6 +446,8 @@ class DesktopApplicationService:
             outcome = await self.orchestrator.handle_character_input(
                 conversation_id=conversation_id, text=text
             )
+        if not had_user_messages:
+            self._schedule_title_generation(conversation_id, target)
         return {
             "conversation_id": conversation_id,
             "task_id": outcome.task.task_id if outcome.task is not None else None,
@@ -628,8 +668,73 @@ class DesktopApplicationService:
         return self.store.create_conversation(
             project_id=project_id,
             pair_id=pair_id,
-            title="白厄与古代机械",
+            title="新聊天",
         )
+
+    def _schedule_title_generation(self, conversation_id: str, target: str) -> None:
+        if conversation_id in self._title_generation_started:
+            return
+        if self.store.get_conversation(conversation_id).title != "新聊天":
+            return
+        context_sources = (
+            {MessageSource.USER, MessageSource.CHARACTER}
+            if target == "character"
+            else {MessageSource.USER, MessageSource.ASSISTANT}
+        )
+        context = tuple(
+            message
+            for message in self.store.load_conversation(conversation_id)["messages"]
+            if message.source in context_sources and message.text.strip()
+        )
+        if not context:
+            return
+        self._title_generation_started.add(conversation_id)
+        pair_id = self.pair_config.pair_id
+        task = asyncio.create_task(
+            self._generate_title(conversation_id, pair_id=pair_id, context=context),
+            name=f"title:{conversation_id}",
+        )
+        self._title_tasks.add(task)
+        task.add_done_callback(self._title_tasks.discard)
+
+    async def _generate_title(
+        self,
+        conversation_id: str,
+        *,
+        pair_id: str,
+        context: tuple[Message, ...],
+    ) -> None:
+        try:
+            title = await self.dialogue_model.generate_title(
+                pair_id=pair_id, context=context
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - 命名失败不影响聊天主链路
+            logger.warning("自动生成聊天标题失败", exc_info=True)
+            return
+        title = self._normalize_title(title)
+        if title is None:
+            return
+        conversation = self.store.get_conversation(conversation_id)
+        if conversation.title != "新聊天":
+            return
+        self.store.rename_conversation(conversation_id, title)
+        self.emitter.emit(
+            "conversation.changed",
+            {
+                "conversation": self._conversation_payload(
+                    self.store.get_conversation(conversation_id)
+                )
+            },
+        )
+
+    @staticmethod
+    def _normalize_title(value: object) -> str | None:
+        title = " ".join(str(value or "").split()).strip("\"'“”‘’")
+        if not title or title == "新聊天":
+            return None
+        return title[:24].strip("。！？!?：:，,") or None
 
     @staticmethod
     def _required_string(params: Mapping[str, Any], key: str) -> str:
@@ -688,7 +793,7 @@ def _get_or_create_conversation(store: SQLiteStore, *, project_id: str, pair_id:
     return store.create_conversation(
         project_id=project_id,
         pair_id=pair_id,
-        title="白厄与古代机械",
+        title="新聊天",
     )
 
 

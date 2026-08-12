@@ -24,6 +24,7 @@ from pair_harness.core.contracts import (
     DelegationDraft,
     DialogueEvent,
     DialogueRequest,
+    Message,
     MessageSource,
     TaskAmendmentDraft,
     TaskRequestDraft,
@@ -272,7 +273,50 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             )
         return None
 
-    # ---- 流式对话 ----
+    # ---- 标题生成与流式对话 ----
+
+    async def generate_title(
+        self, *, pair_id: str, context: tuple[Message, ...]
+    ) -> str | None:
+        """使用助手提示词生成短标题，不经过角色输出协议。"""
+        if not context:
+            return None
+        config = load_pair_config(pair_id, root=self._config_root)
+        assistant_prompt = load_prompt(config.assistant.prompt, root=self._config_root)
+        context_text = "\n".join(
+            f"{_title_source_label(message.source)}：{message.text.strip()}"
+            for message in context
+            if message.text.strip()
+        )
+        if not context_text:
+            return None
+        system = f"""你是{config.assistant.name}，当前只负责一项内部工作：给聊天起一个简短标题。
+你只能做聊天命名，不能回答聊天、不能提出任务、不能调用工具。
+根据真实消息上下文提炼主题，只输出一个中文标题，2 到 16 个字，不加引号、句号、解释或前缀。
+
+以下是你的身份与表达边界：
+{assistant_prompt}
+"""
+        response = await self._client_or_raise().post(
+            "/chat/completions",
+            json={
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": f"聊天上下文：\n{context_text}"},
+                ],
+                "stream": False,
+                "temperature": 0.2,
+                "max_tokens": 24,
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        choices = payload.get("choices") or []
+        if not choices:
+            return None
+        content = (choices[0].get("message") or {}).get("content", "")
+        return _normalize_title(content)
 
     def _request_extras(self) -> dict[str, Any]:
         """B1：按后端识别注入推理请求形态。
@@ -427,6 +471,36 @@ def _first_markdown_section(prompt: str) -> str:
             continue
         content.append(line)
     return "\n".join(content).strip()
+
+
+def _title_source_label(source: MessageSource) -> str:
+    return {
+        MessageSource.USER: "用户",
+        MessageSource.CHARACTER: "角色",
+        MessageSource.ASSISTANT: "助手",
+    }.get(source, "消息")
+
+
+def _normalize_title(value: object) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.startswith("```"):
+        text = text.strip("`").strip()
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            text = str(parsed.get("title") or "").strip()
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = text.splitlines()[0].strip().strip("\"'“”‘’")
+    for prefix in ("标题：", "标题:"):
+        if text.startswith(prefix):
+            text = text[len(prefix) :].strip()
+    text = text.rstrip("。！？!?：:，,")
+    return text[:16].strip() or None
 
 
 def _progress_summary_text(summary: CharacterProgressSummary) -> str:

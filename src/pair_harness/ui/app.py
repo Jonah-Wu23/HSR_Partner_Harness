@@ -75,7 +75,7 @@ def _get_or_create_conversation(
     return store.create_conversation(
         project_id=project_id,
         pair_id=pair_id,
-        title="白厄与古代机械",
+        title="新聊天",
     )
 
 
@@ -368,11 +368,10 @@ def main(argv: list[str] | None = None) -> int:
 
     def create_conversation(project_id: str) -> None:
         project = store.get_project(project_id)
-        count = len(store.list_conversations(project_id)) + 1
         conversation = store.create_conversation(
             project_id=project.project_id,
             pair_id=args.pair,
-            title=f"新聊天 {count}",
+            title="新聊天",
         )
         project_library.refresh()
         switch_conversation(conversation.conversation_id)

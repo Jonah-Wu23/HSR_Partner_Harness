@@ -7,6 +7,8 @@ PairTheme 品牌色（tests/ui/test_theme_and_plain_text.py 锁定）。
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 from PyQt5.QtCore import QSettings
@@ -171,8 +173,39 @@ def tokens_for_mode(mode: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+_SETTINGS_PATH: Path | None = None
+
+
+def _settings_path() -> Path:
+    global _SETTINGS_PATH
+    if _SETTINGS_PATH is not None:
+        return _SETTINGS_PATH
+
+    candidates: list[Path] = []
+    configured = os.environ.get("PAIR_HARNESS_UI_SETTINGS_FILE")
+    if configured:
+        candidates.append(Path(configured))
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        candidates.append(Path(local_app_data) / "HSRPartnerHarness" / "PairHarness.ini")
+    candidates.append(Path(tempfile.gettempdir()) / "HSRPartnerHarness" / "PairHarness.ini")
+
+    for candidate in candidates:
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            candidate.touch(exist_ok=True)
+        except OSError:
+            continue
+        _SETTINGS_PATH = candidate
+        break
+    else:
+        _SETTINGS_PATH = candidates[-1]
+    return _SETTINGS_PATH
+
+
 def _settings() -> QSettings:
-    return QSettings("HSRPartnerHarness", "PairHarness")
+    # Windows 注册表在受限环境下可能静默拒绝写入；使用首个可写的用户级 INI。
+    return QSettings(str(_settings_path()), QSettings.IniFormat)
 
 
 def load_theme_preference() -> str:
@@ -183,7 +216,9 @@ def load_theme_preference() -> str:
 def save_theme_preference(mode: str) -> None:
     if mode not in ("dark", "light"):
         raise ValueError(mode)
-    _settings().setValue("ui/theme", mode)
+    settings = _settings()
+    settings.setValue("ui/theme", mode)
+    settings.sync()
 
 
 # ---------------------------------------------------------------------------

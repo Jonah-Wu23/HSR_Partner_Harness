@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
+import threading
 from typing import Any, TextIO
 
 from .application_service import DesktopApplicationService, ServiceError
@@ -21,11 +22,13 @@ class JsonlWriter:
 
     def __init__(self, stream: TextIO) -> None:
         self.stream = stream
+        self._lock = threading.Lock()
 
     def write(self, message: dict[str, Any]) -> None:
-        self.stream.write(encode_message(message))
-        self.stream.write("\n")
-        self.stream.flush()
+        with self._lock:
+            self.stream.write(encode_message(message))
+            self.stream.write("\n")
+            self.stream.flush()
 
 
 class SidecarRouter:
@@ -33,6 +36,21 @@ class SidecarRouter:
         self.service = service
         self.writer = writer
         self.stop_requested = False
+        self._stop_event = asyncio.Event()
+        self._tasks: set[asyncio.Task[None]] = set()
+
+    def dispatch(self, line: str) -> None:
+        """提交一条请求，不等待它完成，以便后续请求可以继续进入。"""
+        task = asyncio.create_task(self.handle_line(line))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def wait_stopped(self) -> None:
+        await self._stop_event.wait()
+
+    async def wait_for_tasks(self) -> None:
+        while self._tasks:
+            await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
 
     async def handle_line(self, line: str) -> None:
         try:
@@ -57,6 +75,7 @@ class SidecarRouter:
         self.writer.write(response_ok(command.request_id, result))
         if command.method == "app.shutdown":
             self.stop_requested = True
+            self._stop_event.set()
 
 
 async def run_stdin(
@@ -69,8 +88,43 @@ async def run_stdin(
     """
     writer = JsonlWriter(stdout)
     router = SidecarRouter(service, writer)
-    while not router.stop_requested:
-        line = await __import__("asyncio").to_thread(stdin.readline)
-        if not line:
-            break
-        await router.handle_line(line)
+    lines: asyncio.Queue[str] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def read_lines() -> None:
+        while True:
+            line = stdin.readline()
+            try:
+                loop.call_soon_threadsafe(lines.put_nowait, line)
+            except RuntimeError:
+                return
+            if not line:
+                return
+
+    # Windows 控制台 stdin 仍然使用阻塞读取；独立 daemon 线程只负责搬运
+    # 文本，事件循环可以同时调度多个请求和模型/引擎事件。
+    threading.Thread(target=read_lines, name="sidecar-stdin", daemon=True).start()
+    line_task = asyncio.create_task(lines.get())
+    stop_task = asyncio.create_task(router.wait_stopped())
+    try:
+        while True:
+            done, _ = await asyncio.wait(
+                (line_task, stop_task), return_when=asyncio.FIRST_COMPLETED
+            )
+            if stop_task in done:
+                if not line_task.done():
+                    line_task.cancel()
+                    await asyncio.gather(line_task, return_exceptions=True)
+                break
+            line = line_task.result()
+            if not line:
+                break
+            router.dispatch(line)
+            line_task = asyncio.create_task(lines.get())
+    finally:
+        if not stop_task.done():
+            stop_task.cancel()
+        if not line_task.done():
+            line_task.cancel()
+        await asyncio.gather(stop_task, line_task, return_exceptions=True)
+        await router.wait_for_tasks()

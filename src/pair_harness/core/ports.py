@@ -37,6 +37,13 @@ class DialogueModel(ABC):
         """
         return
 
+    async def generate_title(
+        self, *, pair_id: str, context: tuple[Message, ...]
+    ) -> str | None:
+        """用助手身份为首次完整回复后的聊天生成一个短标题。"""
+        del pair_id, context
+        return None
+
 
 class CodingEngine(ABC):
     native_preexecution_approval: bool = False

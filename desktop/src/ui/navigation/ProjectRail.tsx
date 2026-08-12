@@ -7,6 +7,12 @@ interface ProjectRailProps {
   actions: HarnessActions;
 }
 
+function projectBadgeText(name: string): string {
+  const trimmed = name.trim();
+  if (trimmed.length <= 2) return trimmed || "?";
+  return `${trimmed.charAt(0)}${trimmed.charAt(1)}`;
+}
+
 /** 56px 项目轨道：日常聊天入口、项目徽章、新建项目。 */
 export function ProjectRail({ navigation, actions }: ProjectRailProps) {
   return (
@@ -36,7 +42,7 @@ export function ProjectRail({ navigation, actions }: ProjectRailProps) {
           aria-current={project.isCurrent ? "page" : undefined}
         >
           <span className="project-badge">
-            <span className="project-badge-initial">{project.name.trim().charAt(0) || "?"}</span>
+            <span className="project-badge-initial">{projectBadgeText(project.name)}</span>
             {project.isBusy ? <span className="badge-busy-dot" aria-hidden /> : null}
             {!project.path_available ? (
               <span className="badge-alert" aria-label="路径不可用">
@@ -52,9 +58,9 @@ export function ProjectRail({ navigation, actions }: ProjectRailProps) {
       <button
         type="button"
         className="rail-item"
-        disabled
-        title="新建项目需要选择文件夹，待逻辑侧接入文件对话框"
-        aria-label="新建项目（待接入）"
+        title="新建项目"
+        aria-label="新建项目"
+        onClick={() => void actions.createProject()}
       >
         <span className="project-badge">
           <PlusIcon />

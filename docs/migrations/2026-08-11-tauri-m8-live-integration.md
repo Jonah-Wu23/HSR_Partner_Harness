@@ -4,11 +4,11 @@
 
 ## 配置边界
 
-- 配置来源：仓库根目录 `.env`；密钥只注入测试进程环境，不写入日志或文档。
+- 配置来源：开发版优先读取项目根目录 `.env`；安装版可将 `.env` 放到 `%LOCALAPPDATA%\PairHarness\.env`，也可通过 `PAIR_HARNESS_ENV_FILE` 指定文件。密钥只注入测试进程环境，不写入日志或文档。
 - 角色对话端点：DeepSeek 官方端点（`api.deepseek.com`）。
 - 角色对话模型：`deepseek-v4-flash`。
 - 语音：DashScope Qwen 流式 ASR/TTS，使用 pair 配置中已登记的真实 voice id。
-- Tauri 入口：项目根存在 `.env` 时自动启动 sidecar `--real`；无 `.env` 时保持 `--demo`。`PAIR_HARNESS_REAL` 与 `PAIR_HARNESS_DEMO` 可显式覆盖。
+- Tauri 入口：找到上述任一 `.env` 时自动启动 sidecar `--real`；找不到时保持 `--demo`。`PAIR_HARNESS_REAL` 与 `PAIR_HARNESS_DEMO` 可显式覆盖。
 
 ## 验收结果
 
@@ -35,4 +35,4 @@ $env:RUN_LIVE_QWEN = '1'
 
 ## 已知基线
 
-完整 Python 回归为 `341 passed, 5 skipped, 1 failed`；唯一失败仍是既有 PyQt `test_theme_preference_roundtrip`（测试期望 `light`，当前项目默认主题锁定为 `dark`），与本次 Tauri/M8 接线无关。
+完整 Python 回归为 `346 passed, 5 skipped`；PyQt 主题偏好已改为使用可写的用户级 INI 文件，深浅主题持久化测试通过。

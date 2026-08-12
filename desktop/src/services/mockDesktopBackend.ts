@@ -84,6 +84,10 @@ export class MockDesktopBackend implements DesktopBackend {
     }
   }
 
+  async pickFolder(): Promise<string | null> {
+    return null;
+  }
+
   subscribe(listener: (event: DesktopEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -117,9 +121,10 @@ export class MockDesktopBackend implements DesktopBackend {
       projectId,
       String(params.title ?? "新聊天"),
     );
+    const requestedName = String(params.name ?? "").trim();
     const newProject = project(
       projectId,
-      String(params.name ?? `项目 ${this.scenario.snapshot.projects.length + 1}`),
+      requestedName || folderNameFromPath(rootPath) || `项目 ${this.scenario.snapshot.projects.length + 1}`,
       rootPath,
       [firstConversation],
     );
@@ -148,6 +153,9 @@ export class MockDesktopBackend implements DesktopBackend {
       item.project_id === projectId
         ? {
             ...item,
+            name: String(params.name ?? item.name),
+            root_path: String(params.root_path ?? item.root_path),
+            path_available: params.root_path ? true : item.path_available,
             approval_mode: (params.approval_mode as ProjectRecord["approval_mode"]) ?? item.approval_mode,
             reasoning_effort: String(params.reasoning_effort ?? item.reasoning_effort),
           }
@@ -168,7 +176,7 @@ export class MockDesktopBackend implements DesktopBackend {
     const newConversation = conversation(
       conversationId,
       projectId,
-      String(params.title ?? `聊天 ${selectedProject.conversations.length + 1}`),
+      String(params.title ?? "新聊天"),
     );
     this.scenario.snapshot.projects = this.scenario.snapshot.projects.map((item, index) =>
       index === projectIndex
@@ -235,11 +243,30 @@ export class MockDesktopBackend implements DesktopBackend {
       params.conversation_id ?? this.scenario.snapshot.current_conversation_id,
     );
     const target = params.target === "assistant" ? "assistant" : "character";
+    const hadUserMessage = this.scenario.snapshot.messages.some(
+      (item) => item.conversation_id === conversationId && item.source === "user",
+    );
+    const text = String(params.text ?? "");
     const events =
       this.scenario.name === "chat-streaming" && conversationId === "conv-1"
         ? this.scenario.submitEvents
-        : createSubmitEvents(conversationId, String(params.text ?? ""), target);
+        : createSubmitEvents(conversationId, text, target);
     for (const event of events) this.emit(event.event, event.payload);
+    if (!hadUserMessage) {
+      const title = titleFromMessage(text);
+      this.scenario.snapshot.projects = this.scenario.snapshot.projects.map((item) => ({
+        ...item,
+        conversations: item.conversations.map((candidate) =>
+          candidate.conversation_id === conversationId && candidate.title === "新聊天"
+            ? { ...candidate, title, updated_at: new Date().toISOString() }
+            : candidate,
+        ),
+      }));
+      const conversation = this.scenario.snapshot.projects
+        .flatMap((item) => item.conversations)
+        .find((item) => item.conversation_id === conversationId);
+      if (conversation) this.emit("conversation.changed", { conversation });
+    }
     return { conversation_id: conversationId, task_id: null, status: null };
   }
 
@@ -306,6 +333,18 @@ export class MockDesktopBackend implements DesktopBackend {
         ...snapshot.tool_runs.filter((item) => item.tool_call_id !== toolRun.tool_call_id),
         toolRun,
       ];
+    } else if (event.event === "conversation.changed") {
+      const conversation = event.payload.conversation as ConversationRecord | undefined;
+      if (conversation) {
+        snapshot.projects = snapshot.projects.map((item) => ({
+          ...item,
+          conversations: item.conversations.map((candidate) =>
+            candidate.conversation_id === conversation.conversation_id
+              ? conversation
+              : candidate,
+          ),
+        }));
+      }
     } else if (event.event === "task.busy_changed") {
       snapshot.busy = Boolean(event.payload.busy);
       snapshot.active_task = (event.payload.active_task as DesktopSnapshot["active_task"]) ?? null;
@@ -401,6 +440,17 @@ function createSubmitEvents(
       payload: { message_id: messageId, conversation_id: conversationId },
     },
   ];
+}
+
+function titleFromMessage(text: string): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (!compact) return "新聊天";
+  return `关于${compact.slice(0, 14)}`;
+}
+
+function folderNameFromPath(rootPath: string): string | null {
+  const parts = rootPath.split(/[\\/]/).filter(Boolean);
+  return parts.at(-1) ?? null;
 }
 
 export function isDesktopSnapshot(value: unknown): value is DesktopSnapshot {

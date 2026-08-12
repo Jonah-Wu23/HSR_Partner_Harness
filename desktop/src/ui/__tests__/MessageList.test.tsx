@@ -104,4 +104,15 @@ describe("MessageList 流式与身份展示", () => {
     );
     expect(getByText("和角色聊聊…")).toBeInTheDocument();
   });
+
+  it("超过 50 条消息时只挂载虚拟列表视口", () => {
+    const messages = Array.from({ length: 500 }, (_, index) =>
+      makeMessage({ message_id: `m-${index}`, text: `消息 ${index}` }),
+    );
+    const { container } = render(
+      <MessageList timeline={makeTimeline(messages)} pair={pair} emptyText="空" />,
+    );
+    expect(container.querySelector(".message-column-virtual")).not.toBeNull();
+    expect(container.querySelectorAll("[data-message-source]").length).toBeLessThan(500);
+  });
 });

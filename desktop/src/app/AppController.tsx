@@ -1,10 +1,15 @@
 import { useEffect, useRef } from "react";
+import { useShallow } from "zustand/react/shallow";
 
 import type { HarnessActions } from "../contracts/actions";
 import type { DesktopBackend } from "../services/backend";
 import { createEventBatcher } from "../services/eventBatcher";
 import { presentAppShell } from "../presenters/presenters";
-import { desktopStore, useDesktopStore } from "../stores/desktopStore";
+import {
+  desktopStore,
+  selectDesktopRenderState,
+  useDesktopStore,
+} from "../stores/desktopStore";
 import { AppShell } from "../ui/AppShell";
 
 interface AppControllerProps {
@@ -15,7 +20,7 @@ interface AppControllerProps {
 
 export function AppController({ backend, actions, loadBootstrap }: AppControllerProps) {
   const recoveringRef = useRef(false);
-  const storeState = useDesktopStore((state) => state);
+  const storeState = useDesktopStore(useShallow(selectDesktopRenderState));
 
   useEffect(() => {
     const batcher = createEventBatcher((events) => {

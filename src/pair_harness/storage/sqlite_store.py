@@ -147,6 +147,20 @@ class SQLiteStore(StateStore):
         )
         self.connection.commit()
 
+    def update_project_name(self, project_id: str, name: str) -> None:
+        self.connection.execute(
+            "UPDATE projects SET name = ?, last_opened_at = ? WHERE project_id = ?",
+            (name, _now(), project_id),
+        )
+        self.connection.commit()
+
+    def update_project_root_path(self, project_id: str, root_path: str) -> None:
+        self.connection.execute(
+            "UPDATE projects SET root_path = ?, last_opened_at = ? WHERE project_id = ?",
+            (root_path, _now(), project_id),
+        )
+        self.connection.commit()
+
     def mark_project_opened(self, project_id: str) -> Project:
         """记录最近打开项目，并返回更新后的项目对象。"""
         self.connection.execute(

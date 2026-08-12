@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 
-from pair_harness.core.contracts import ApprovalMode
+from pair_harness.core.contracts import ApprovalMode, MessageSource
 from pair_harness.desktop_backend.application_service import build_demo_service
 from pair_harness.desktop_backend.commands import DesktopCommand
 
@@ -116,6 +117,101 @@ async def test_project_and_conversation_commands_return_restorable_snapshot(
         assert snapshot["current_conversation"]["title"] == "已改名"
     finally:
         await restored.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_project_defaults_to_folder_name_and_manual_name_survives_path_repair(
+    tmp_path: Path,
+) -> None:
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    first_root = tmp_path / "folder-a"
+    second_root = tmp_path / "folder-b"
+    first_root.mkdir()
+    second_root.mkdir()
+    try:
+        snapshot = await service.handle_command(
+            command("p-1", "project.create", root_path=str(first_root))
+        )
+        project_id = snapshot["current_project_id"]
+        assert snapshot["current_project"]["name"] == "folder-a"
+
+        snapshot = await service.handle_command(
+            command("rename-1", "project.update_settings", project_id=project_id, name="我的项目")
+        )
+        assert snapshot["current_project"]["name"] == "我的项目"
+
+        snapshot = await service.handle_command(
+            command(
+                "repair-1",
+                "project.update_settings",
+                project_id=project_id,
+                root_path=str(second_root),
+            )
+        )
+        assert snapshot["current_project"]["root_path"] == str(second_root.resolve())
+        assert snapshot["current_project"]["name"] == "我的项目"
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_first_complete_reply_generates_title_from_dialogue_only_and_manual_name_wins(
+    tmp_path: Path,
+) -> None:
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        conversation_id = service.current_conversation_id
+        await service.handle_command(
+            command(
+                "chat-1",
+                "chat.submit",
+                conversation_id=conversation_id,
+                target="character",
+                text="请陪我规划一下今天的工作。",
+            )
+        )
+        await asyncio.sleep(0)
+
+        conversation = service.store.get_conversation(conversation_id)
+        assert conversation.title != "新聊天"
+        title_requests = getattr(service.dialogue_model, "title_requests")
+        assert len(title_requests) == 1
+        _, context = title_requests[0]
+        assert context
+        assert all(message.source in {MessageSource.USER, MessageSource.CHARACTER} for message in context)
+        assert all(message.source not in {MessageSource.SYSTEM, MessageSource.TOOL} for message in context)
+
+        second = await service.handle_command(
+            command("conversation-2", "conversation.create", project_id=service.current_project_id)
+        )
+        second_id = second["current_conversation_id"]
+        await service.handle_command(
+            command(
+                "chat-2",
+                "chat.submit",
+                conversation_id=second_id,
+                target="character",
+                text="这是一个会被手动命名的聊天。",
+            )
+        )
+        await service.handle_command(
+            command(
+                "rename-chat-2",
+                "conversation.rename",
+                conversation_id=second_id,
+                title="手动命名",
+            )
+        )
+        await asyncio.sleep(0)
+        assert service.store.get_conversation(second_id).title == "手动命名"
+    finally:
+        await service.shutdown()
 
 
 @pytest.mark.asyncio

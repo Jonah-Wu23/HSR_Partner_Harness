@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 
 import type {
   DesktopCommand,
@@ -24,6 +25,11 @@ export class TauriDesktopBackend implements DesktopBackend {
       request: command,
     });
     return unwrapResponse(response);
+  }
+
+  async pickFolder(title = "选择项目文件夹"): Promise<string | null> {
+    const selected = await open({ directory: true, multiple: false, title });
+    return typeof selected === "string" ? selected : null;
   }
 
   subscribe(listener: (event: DesktopEvent) => void): () => void {

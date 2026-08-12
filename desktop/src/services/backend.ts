@@ -6,6 +6,7 @@ import type {
 
 export interface DesktopBackend {
   request<T>(command: DesktopCommand): Promise<T>;
+  pickFolder(title?: string): Promise<string | null>;
   subscribe(listener: (event: DesktopEvent) => void): () => void;
 }
 

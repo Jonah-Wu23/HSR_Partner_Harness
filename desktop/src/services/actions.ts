@@ -41,7 +41,20 @@ export function createActionController(backend: DesktopBackend): ActionControlle
 
   const actions: HarnessActions = {
     async createProject(rootPath, name) {
-      await request("project.create", { root_path: rootPath, name });
+      const selectedRoot = rootPath?.trim() || (await backend.pickFolder("选择项目文件夹"));
+      if (!selectedRoot) return;
+      await request("project.create", { root_path: selectedRoot, name });
+    },
+    async renameProject(projectId, name) {
+      await request("project.update_settings", { project_id: projectId, name });
+    },
+    async repairProjectPath(projectId) {
+      const selectedRoot = await backend.pickFolder("重新选择项目文件夹");
+      if (!selectedRoot) return;
+      await request("project.update_settings", {
+        project_id: projectId,
+        root_path: selectedRoot,
+      });
     },
     async selectProject(projectId) {
       await request("project.select", { project_id: projectId });
@@ -97,6 +110,9 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async setReasoningEffort(effort: ReasoningEffort) {
       const projectId = desktopStore.getState().currentProjectId;
       await request("project.update_settings", { project_id: projectId, reasoning_effort: effort });
+    },
+    async setVadEnabled(enabled) {
+      await request("voice.vad_set", { enabled });
     },
     async startPushToTalk(target) {
       await request("voice.ptt_start", { target: target ?? desktopStore.getState().composerTarget });

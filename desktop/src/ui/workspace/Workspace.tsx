@@ -32,12 +32,27 @@ export function Workspace({ workspace, pair }: WorkspaceProps) {
 
   const onHandlePointerUp = useCallback(() => setDragging(false), []);
 
+  const onHandleKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      setWorkbenchPct((value) =>
+        Math.min(60, Math.max(30, value + (event.key === "ArrowLeft" ? 2 : -2))),
+      );
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      setWorkbenchPct(30);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      setWorkbenchPct(60);
+    }
+  }, []);
+
   const characterPane = (
     <section className="pane pane-character" aria-label="角色区">
       <div className="pane-header">
         <span className="pair-dot pair-dot-character" />
         {pair.character.name}
-        <span className="pane-header-tag">
+        <span className="pane-header-tag" aria-live="polite">
           {workspace.character.isStreaming ? "正在回复…" : "角色扮演区"}
         </span>
       </div>
@@ -61,9 +76,14 @@ export function Workspace({ workspace, pair }: WorkspaceProps) {
         role="separator"
         aria-orientation="vertical"
         aria-label="调整工作区宽度"
+        aria-valuemin={30}
+        aria-valuemax={60}
+        aria-valuenow={workbenchPct}
+        tabIndex={0}
         onPointerDown={onHandlePointerDown}
         onPointerMove={onHandlePointerMove}
         onPointerUp={onHandlePointerUp}
+        onKeyDown={onHandleKeyDown}
       />
       <section
         className="pane pane-workbench"
@@ -73,7 +93,7 @@ export function Workspace({ workspace, pair }: WorkspaceProps) {
         <div className="pane-header">
           <span className="pair-dot pair-dot-assistant" />
           {pair.assistant.name}
-          <span className="pane-header-tag">
+          <span className="pane-header-tag" aria-live="polite">
             {workspace.assistant.busy ? "任务运行中" : "工作台"}
           </span>
         </div>

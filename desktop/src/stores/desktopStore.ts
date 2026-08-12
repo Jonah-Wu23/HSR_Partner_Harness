@@ -49,6 +49,30 @@ export interface DesktopState {
   setApprovalResolving(approvalId: string, resolving: boolean): void;
 }
 
+export type DesktopRenderState = Pick<
+  DesktopState,
+  | "status"
+  | "error"
+  | "theme"
+  | "mode"
+  | "composerTarget"
+  | "composerDraft"
+  | "projectsById"
+  | "conversationsById"
+  | "messagesById"
+  | "messageIdsByConversation"
+  | "toolRunsById"
+  | "toolIdsByConversation"
+  | "currentProjectId"
+  | "currentConversationId"
+  | "pair"
+  | "activeTask"
+  | "busy"
+  | "approvals"
+  | "approvalResolvingById"
+  | "voice"
+>;
+
 const emptyVoice: VoiceState = {
   supported: false,
   vad: "idle",
@@ -320,3 +344,26 @@ export const selectCurrentProject = (state: DesktopState) =>
   state.projectsById[state.currentProjectId];
 export const selectCurrentConversation = (state: DesktopState) =>
   state.conversationsById[state.currentConversationId];
+
+export const selectDesktopRenderState = (state: DesktopState): DesktopRenderState => ({
+  status: state.status,
+  error: state.error,
+  theme: state.theme,
+  mode: state.mode,
+  composerTarget: state.composerTarget,
+  composerDraft: state.composerDraft,
+  projectsById: state.projectsById,
+  conversationsById: state.conversationsById,
+  messagesById: state.messagesById,
+  messageIdsByConversation: state.messageIdsByConversation,
+  toolRunsById: state.toolRunsById,
+  toolIdsByConversation: state.toolIdsByConversation,
+  currentProjectId: state.currentProjectId,
+  currentConversationId: state.currentConversationId,
+  pair: state.pair,
+  activeTask: state.activeTask,
+  busy: state.busy,
+  approvals: state.approvals,
+  approvalResolvingById: state.approvalResolvingById,
+  voice: state.voice,
+});

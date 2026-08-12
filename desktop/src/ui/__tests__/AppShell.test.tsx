@@ -40,6 +40,9 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
     expect(screen.getByText("星穹项目")).toBeInTheDocument();
     expect(screen.getByText("奥赫玛的项目聊天")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /新建聊天/ })).toBeEnabled();
+    const conversationButton = screen.getByRole("button", { name: /奥赫玛的项目聊天/ });
+    expect(conversationButton.closest(".conversation-row")?.getAttribute("role")).toBeNull();
+    expect(screen.getAllByRole("button", { name: "更多操作" }).length).toBeGreaterThan(0);
     // 角色气泡与用户气泡
     expect(
       screen.getByText("好，我和你一起看。需要执行的事情交给古代机械。"),
@@ -86,12 +89,12 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
     expect(screen.queryByTestId("approval-bar")).not.toBeInTheDocument();
   });
 
-  it("invalid-path：路径警告横幅且新建聊天禁用", async () => {
+  it("invalid-path：路径警告横幅且支持重新选择文件夹", async () => {
     await renderScenario("invalid-path");
 
     expect(screen.getByRole("alert")).toHaveTextContent("项目文件夹不可用");
     expect(screen.getByRole("button", { name: /新建聊天/ })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "重新选择文件夹" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重新选择文件夹" })).toBeEnabled();
   });
 
   it("light-theme：主题切换反映到根节点", async () => {

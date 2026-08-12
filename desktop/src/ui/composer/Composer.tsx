@@ -55,6 +55,7 @@ export function Composer({ composer, voice, mode, actions }: ComposerProps) {
   };
 
   const asrText = voice.asr_partial || composer.asrPartial;
+  const canUseVad = voice.supported && target === "character";
 
   const voiceStatusText = voice.error
     ? `语音异常：${voice.error}`
@@ -166,9 +167,19 @@ export function Composer({ composer, voice, mode, actions }: ComposerProps) {
         <button
           type="button"
           className="icon-btn"
-          disabled
-          title="VAD 开关待逻辑侧接入（voice.vad_set）"
-          aria-label="VAD（待接入）"
+          disabled={!canUseVad}
+          title={
+            target !== "character"
+              ? "VAD 仅用于对角色说"
+              : voice.supported
+                ? voice.vad_enabled
+                  ? "关闭 VAD"
+                  : "开启 VAD"
+                : "语音运行时未启用"
+          }
+          aria-label="VAD"
+          aria-pressed={voice.vad_enabled}
+          onClick={() => void actions.setVadEnabled(!voice.vad_enabled)}
         >
           <VoiceWaveIcon />
         </button>
@@ -196,7 +207,7 @@ export function Composer({ composer, voice, mode, actions }: ComposerProps) {
         >
           <StopIcon />
         </button>
-        <span className="voice-status">
+        <span className="voice-status" aria-live="polite">
           <span
             className={`pair-dot ${voice.ptt || voice.tts === "playing" ? "pair-dot-running" : "pair-dot-idle"}`}
           />

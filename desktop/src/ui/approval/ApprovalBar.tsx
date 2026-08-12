@@ -22,7 +22,7 @@ export function ApprovalBar({ approval, actions }: ApprovalBarProps) {
 
   if (approval.mode === "review") {
     return (
-      <div className="approval-bar" data-testid="approval-bar">
+      <div className="approval-bar" data-testid="approval-bar" aria-live="polite">
         <div className={`approval-review ${approval.reviewText ? "" : "approval-review-pending"}`}>
           {approval.reviewText ?? "审查智能体正在评估高风险操作…"}
         </div>
@@ -52,7 +52,7 @@ export function ApprovalBar({ approval, actions }: ApprovalBarProps) {
 
   const { operation } = pending;
   return (
-    <div className="approval-bar" data-testid="approval-bar">
+    <div className="approval-bar" data-testid="approval-bar" aria-live="polite">
       <div className="approval-summary">
         {operation.summary || "待审批操作"}
         {operation.command ? <code>{operation.command}</code> : null}

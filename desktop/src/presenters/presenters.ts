@@ -1,20 +1,20 @@
 import type { AppShellViewModel, ConversationViewModel, ProjectViewModel } from "../contracts/view-models";
 import type { Message, ToolRun } from "../contracts/protocol";
-import type { DesktopState } from "../stores/desktopStore";
+import type { DesktopRenderState } from "../stores/desktopStore";
 
-function messagesFor(state: DesktopState, conversationId: string): Message[] {
+function messagesFor(state: DesktopRenderState, conversationId: string): Message[] {
   return (state.messageIdsByConversation[conversationId] ?? [])
     .map((id) => state.messagesById[id])
     .filter((message): message is Message => message !== undefined);
 }
 
-function toolsFor(state: DesktopState, conversationId: string): ToolRun[] {
+function toolsFor(state: DesktopRenderState, conversationId: string): ToolRun[] {
   return (state.toolIdsByConversation[conversationId] ?? [])
     .map((id) => state.toolRunsById[id])
     .filter((tool): tool is ToolRun => tool !== undefined);
 }
 
-export function presentAppShell(state: DesktopState): AppShellViewModel {
+export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
   const currentProject = state.projectsById[state.currentProjectId];
   const currentConversation = state.conversationsById[state.currentConversationId];
   const activeConversationId = state.activeTask?.conversation_id;

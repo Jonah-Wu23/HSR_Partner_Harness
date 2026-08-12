@@ -4,14 +4,12 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager, State};
 
-type PendingMap = Arc<Mutex<HashMap<String, Sender<Value>>>>;
+type PendingMap = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<Value>>>>;
 
 struct BackendState {
     child: Mutex<Option<Child>>,
@@ -61,14 +59,36 @@ fn env_flag(name: &str) -> Option<bool> {
     }
 }
 
-fn use_real_backend(root: &Path) -> bool {
+fn configured_env_file(app: &tauri::AppHandle, root: &Path) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(value) = std::env::var_os("PAIR_HARNESS_ENV_FILE") {
+        candidates.push(PathBuf::from(value));
+    }
+    candidates.push(root.join(".env"));
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        candidates.push(
+            PathBuf::from(local_app_data)
+                .join("PairHarness")
+                .join(".env"),
+        );
+    }
+    if let Ok(config_dir) = app.path().app_config_dir() {
+        candidates.push(config_dir.join(".env"));
+    }
+    if let Ok(data_dir) = app.path().app_data_dir() {
+        candidates.push(data_dir.join(".env"));
+    }
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+fn use_real_backend(env_file: Option<&Path>) -> bool {
     if let Some(value) = env_flag("PAIR_HARNESS_REAL") {
         return value;
     }
     if env_flag("PAIR_HARNESS_DEMO") == Some(true) {
         return false;
     }
-    root.join(".env").is_file()
+    env_file.is_some()
 }
 
 fn spawn_backend(app: &tauri::AppHandle) -> Result<BackendState, String> {
@@ -82,7 +102,8 @@ fn spawn_backend(app: &tauri::AppHandle) -> Result<BackendState, String> {
         })
         .unwrap_or_else(repository_root);
     let program = packaged.clone().unwrap_or_else(|| python_command(&root));
-    let real = use_real_backend(&root);
+    let env_file = configured_env_file(app, &root);
+    let real = use_real_backend(env_file.as_deref());
     let mut command = Command::new(program);
     command.current_dir(&root);
     let mode = if real { "--real" } else { "--demo" };
@@ -91,8 +112,7 @@ fn spawn_backend(app: &tauri::AppHandle) -> Result<BackendState, String> {
     } else {
         command.args(["-m", "pair_harness.desktop_backend", mode, "--project"]);
     }
-    let env_file = root.join(".env");
-    if env_file.is_file() {
+    if let Some(env_file) = env_file {
         command.env("PAIR_HARNESS_ENV_FILE", env_file);
     }
     command
@@ -179,7 +199,7 @@ fn encode_request_line(request: &Value) -> Result<Vec<u8>, String> {
 }
 
 #[tauri::command]
-fn desktop_request(request: Value, state: State<'_, BackendState>) -> Result<Value, String> {
+async fn desktop_request(request: Value, state: State<'_, BackendState>) -> Result<Value, String> {
     let id = request
         .get("id")
         .and_then(Value::as_str)
@@ -187,7 +207,7 @@ fn desktop_request(request: Value, state: State<'_, BackendState>) -> Result<Val
         .ok_or_else(|| "桌面请求缺少 id".to_string())?
         .to_string();
     let line = encode_request_line(&request)?;
-    let (sender, receiver): (Sender<Value>, Receiver<Value>) = mpsc::channel();
+    let (sender, receiver) = tokio::sync::oneshot::channel();
     state.pending.lock().unwrap().insert(id.clone(), sender);
 
     let write_result = {
@@ -206,8 +226,8 @@ fn desktop_request(request: Value, state: State<'_, BackendState>) -> Result<Val
     }
 
     receiver
-        .recv_timeout(Duration::from_secs(60))
-        .map_err(|error| format!("等待 Sidecar 响应失败：{error}"))
+        .await
+        .map_err(|_| "等待 Sidecar 响应失败：响应通道已关闭".to_string())
 }
 
 fn stop_backend(state: &BackendState) {
@@ -231,6 +251,7 @@ fn stop_backend(state: &BackendState) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let state = spawn_backend(app.handle())?;
             app.manage(state);
@@ -257,7 +278,7 @@ mod tests {
     use super::{encode_request_line, fail_pending, PendingMap};
     use serde_json::json;
     use std::collections::HashMap;
-    use std::sync::{mpsc, Arc, Mutex};
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn request_line_is_single_json_line() {
@@ -282,12 +303,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn disconnected_sidecar_releases_pending_request() {
-        let (sender, receiver) = mpsc::channel();
+    #[tokio::test]
+    async fn disconnected_sidecar_releases_pending_request() {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::from([("r1".to_string(), sender)])));
         fail_pending(&pending, "断开");
-        let value = receiver.recv().unwrap();
+        let value = receiver.await.unwrap();
         assert_eq!(value["ok"], false);
         assert_eq!(value["error"]["code"], "backend_disconnected");
     }
