@@ -190,6 +190,8 @@ export interface PendingApproval {
 
 export interface VoiceState {
   supported: boolean;
+  /** 语音功能总开关（账号配置 voice.enabled；Composer 据此隐藏语音按钮）。 */
+  enabled?: boolean;
   vad: string;
   vad_enabled: boolean;
   ptt: boolean;

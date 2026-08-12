@@ -184,6 +184,8 @@ class DesktopApplicationService:
         self._account_config: dict[str, str] | None = None
         self._voice_state: dict[str, Any] = {
             "supported": voice_runtime is not None,
+            # 语音总开关：默认随运行时启用，账号配置 voice.enabled=false 时关闭
+            "enabled": voice_runtime is not None,
             "vad": "idle",
             "vad_enabled": False,
             "ptt": False,
@@ -260,12 +262,7 @@ class DesktopApplicationService:
             "dialogue.base_url",
             "dialogue.model",
             "dialogue.api_key",
-            "voice.base_url",
-            "voice.api_key",
-            "voice.asr_model",
-            "voice.tts_model",
-            "character_voice",
-            "assistant_voice",
+            "voice.enabled",
             "vad_enabled",
         )
         config: dict[str, str] = {}
@@ -373,8 +370,14 @@ class DesktopApplicationService:
     async def start_voice(self) -> None:
         if self.voice_runtime is None:
             return
+        config = self._load_account_config()
+        enabled = config.get("voice.enabled") not in ("false", "0")
+        self._voice_state["enabled"] = enabled
+        if not enabled:
+            return
         try:
-            await self.voice_runtime.start_listening()
+            if config.get("vad_enabled") not in ("false", "0"):
+                await self.voice_runtime.start_listening()
             self.voice_runtime.start_playback()
         except Exception as exc:  # noqa: BLE001 - 语音不可用不阻塞文本主线
             self._on_voice_error(f"语音启动失败：{exc}")
@@ -970,13 +973,21 @@ class DesktopApplicationService:
         return {"voice": self._voice_snapshot()}
 
     async def _voice_preview(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        """语音试听：按指定文本用当前 pair 的角色音色合成入队。"""
+        """语音试听：按指定文本合成入队；voice_id 缺省取角色音色。
+
+        只允许当前 pair 内置的两个音色（角色/助手），其余一律回退角色音色，
+        避免客户端绕过设置页指定任意音色。
+        """
         if self.voice_runtime is None:
             raise ServiceError("语音运行时未启用", code="voice_unavailable")
         text = self._required_string(params, "text")
         if not is_readable_text(text):
             raise ServiceError("试听文本为空或只有标点", code="invalid_text")
-        self.voice_runtime.enqueue_text(text)
+        builtin = (self.pair_config.character.voice_id, self.pair_config.assistant.voice_id)
+        voice_id = params.get("voice_id")
+        if voice_id not in builtin:
+            voice_id = None
+        self.voice_runtime.enqueue_text(text, voice_id=voice_id)
         return {"voice": self._voice_snapshot()}
 
     async def _account_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -1088,6 +1099,7 @@ class DesktopApplicationService:
     async def _config_get(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
         config = self._load_account_config()
+        settings = Settings.from_environment()
         codex = self.codex_auth.status()
         return {
             "engine": config.get("engine", "codex"),
@@ -1101,15 +1113,20 @@ class DesktopApplicationService:
                 "reasoning_effort": "auto",
             },
             "voice": {
-                "enabled": self.voice_runtime is not None,
-                "base_url": config.get("voice.base_url") or "",
-                "api_key_masked": self._masked(
-                    config.get("voice.api_key") or self._env_voice_key()
+                # 语音配置全部由应用内置：API Key / 模型 / 音色 / 服务地址
+                # 来自环境变量与 pair 配置，账号配置只保留 enabled / vad_enabled
+                "enabled": (
+                    config.get("voice.enabled")
+                    or ("true" if self.voice_runtime is not None else "false")
                 ),
-                "asr_model": config.get("voice.asr_model") or "",
-                "tts_model": config.get("voice.tts_model") or "",
-                "character_voice": config.get("character_voice") or "",
-                "assistant_voice": config.get("assistant_voice") or "",
+                "base_url": settings.resolved_http_url,
+                "api_key_masked": self._masked(settings.dashscope_api_key),
+                "asr_model": settings.qwen_asr_model,
+                "tts_model": settings.qwen_tts_model,
+                "character_voice": self.pair_config.character.voice_id,
+                "character_voice_name": self.pair_config.character.name,
+                "assistant_voice": self.pair_config.assistant.voice_id,
+                "assistant_voice_name": self.pair_config.assistant.name,
                 "vad_enabled": config.get("vad_enabled") or "",
             },
             "codex": {
@@ -1119,13 +1136,31 @@ class DesktopApplicationService:
         }
 
     async def _config_set(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        """账号级配置：扁平键写入 provider_configs/secret_refs，立即生效。"""
+        """账号级配置：扁平键写入 provider_configs/secret_refs，立即生效。
+
+        语音的凭据/模型/音色/服务地址由应用内置（环境变量 + pair 配置），
+        客户端一律禁止写入，只允许开关类偏好（voice.enabled / vad_enabled）。
+        """
         updates = params.get("updates")
         if not isinstance(updates, dict):
             raise ServiceError("updates 必须是对象", code="invalid_params")
         for key, value in updates.items():
             if not isinstance(key, str) or not isinstance(value, str):
                 raise ServiceError("配置键与值必须是字符串", code="invalid_params")
+        locked_voice_keys = {
+            "voice.api_key",
+            "voice.base_url",
+            "voice.asr_model",
+            "voice.tts_model",
+            "character_voice",
+            "assistant_voice",
+        }
+        forbidden = sorted(locked_voice_keys & set(updates))
+        if forbidden:
+            raise ServiceError(
+                f"语音配置由应用内置，不可修改：{', '.join(forbidden)}",
+                code="voice_config_locked",
+            )
         secret_keys = {"dialogue.api_key", "voice.api_key"}
         for key, value in updates.items():
             if key in secret_keys:
@@ -1134,6 +1169,21 @@ class DesktopApplicationService:
                 self.store.set_config(self.current_account_id, key, value)
         self._account_config = None
         self._rebuild_runtime_for_account(self._load_account_config())
+        # 开关类偏好立即同步到 voice 快照（前端 Composer 据此隐藏语音按钮）
+        account_config = self._load_account_config()
+        if "voice.enabled" in updates:
+            self._voice_state["enabled"] = (
+                account_config.get("voice.enabled") not in ("false", "0")
+            )
+            # 关闭总开关：停止聆听并清空待播队列，避免后台继续出声
+            if not self._voice_state["enabled"] and self.voice_runtime is not None:
+                await self.voice_runtime.stop_listening()
+                self.voice_runtime.stop_speaking()
+        if "vad_enabled" in updates:
+            self._voice_state["vad_enabled"] = (
+                account_config.get("vad_enabled") not in ("false", "0")
+            )
+        self._emit_voice_changed()
         return {"config": await self._config_get({})}
 
     async def _config_test_connection(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -1381,21 +1431,23 @@ class DesktopApplicationService:
         """V0.2：把角色对话增量转发为 message.delta 的 reasoning/speech 通道。
 
         结构化 JSON 增量只推送干净字段；原始 JSON 进入技术详情（raw），
-        绝不进入消息气泡。message_id 复用用户消息 id 前缀 + 通道，保证
-        与消息 timeline 关联。
+        绝不进入消息气泡。思考与正文共用一个消息 id，前端才能把它们
+        合成一个气泡，正文完成后再由最终消息覆盖临时流。
         """
         event_type = event.type
+        message_id = f"speech:{conversation_id}:{user_message.message_id}"
         if event_type == "reasoning.started":
             self.emitter.emit(
                 "message.delta",
                 {
-                    "message_id": f"reasoning:{conversation_id}:{user_message.message_id}",
+                    "message_id": message_id,
                     "conversation_id": conversation_id,
                     "source": "character",
                     "kind": "character.speech",
                     "channel": "reasoning",
                     "delta": "",
                     "started": True,
+                    "reasoning_streaming": True,
                 },
             )
             return
@@ -1403,12 +1455,13 @@ class DesktopApplicationService:
             self.emitter.emit(
                 "message.delta",
                 {
-                    "message_id": f"reasoning:{conversation_id}:{user_message.message_id}",
+                    "message_id": message_id,
                     "conversation_id": conversation_id,
                     "source": "character",
                     "kind": "character.speech",
                     "channel": "reasoning",
                     "delta": event.delta or "",
+                    "reasoning_streaming": True,
                 },
             )
             return
@@ -1416,13 +1469,14 @@ class DesktopApplicationService:
             self.emitter.emit(
                 "message.delta",
                 {
-                    "message_id": f"reasoning:{conversation_id}:{user_message.message_id}",
+                    "message_id": message_id,
                     "conversation_id": conversation_id,
                     "source": "character",
                     "kind": "character.speech",
                     "channel": "reasoning",
                     "delta": "",
                     "completed": True,
+                    "reasoning_streaming": False,
                 },
             )
             return
@@ -1430,7 +1484,7 @@ class DesktopApplicationService:
             self.emitter.emit(
                 "message.delta",
                 {
-                    "message_id": f"speech:{conversation_id}:{user_message.message_id}",
+                    "message_id": message_id,
                     "conversation_id": conversation_id,
                     "source": "character",
                     "kind": "character.speech",
@@ -1443,7 +1497,7 @@ class DesktopApplicationService:
             self.emitter.emit(
                 "message.delta",
                 {
-                    "message_id": f"speech:{conversation_id}:{user_message.message_id}",
+                    "message_id": message_id,
                     "conversation_id": conversation_id,
                     "source": "character",
                     "kind": "character.speech",
@@ -1455,7 +1509,7 @@ class DesktopApplicationService:
             self.emitter.emit(
                 "message.delta",
                 {
-                    "message_id": f"speech:{conversation_id}:{user_message.message_id}",
+                    "message_id": message_id,
                     "conversation_id": conversation_id,
                     "source": "character",
                     "kind": "character.speech",

@@ -913,7 +913,8 @@ async def test_config_get_set_masks_secrets(tmp_path: Path) -> None:
                     "dialogue.base_url": "https://api.deepseek.com",
                     "dialogue.model": "deepseek-chat",
                     "dialogue.api_key": "sk-super-secret-123456",
-                    "voice.tts_model": "qwen-audio-3.0-tts-flash",
+                    "voice.enabled": "false",
+                    "vad_enabled": "true",
                 },
             )
         )
@@ -926,6 +927,53 @@ async def test_config_get_set_masks_secrets(tmp_path: Path) -> None:
         assert "sk-super-secret" not in config["dialogue"]["api_key_masked"]
         # 明文只存 secret_refs，config.get 不回传
         assert "sk-super-secret" not in str(config)
+        # 语音开关类偏好可读写；凭据/模型/音色由应用内置，不回显账号配置
+        assert config["voice"]["enabled"] == "false"
+        assert config["voice"]["vad_enabled"] == "true"
+        assert config["voice"]["character_voice_name"] == "白厄"
+        assert config["voice"]["assistant_voice_name"] == "神秘的古代机械"
+        assert config["voice"]["character_voice"].startswith("qwen-audio-3.0-tts-flash-phainon-")
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_config_set_rejects_voice_credential_keys(tmp_path: Path) -> None:
+    """V0.2 M5：语音 API Key/模型/音色/服务地址由应用内置，客户端一律禁止写入。"""
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        for key in (
+            "voice.api_key",
+            "voice.base_url",
+            "voice.asr_model",
+            "voice.tts_model",
+            "character_voice",
+            "assistant_voice",
+        ):
+            with pytest.raises(ServiceError) as exc_info:
+                await service.handle_command(
+                    command("set-locked", "config.set", updates={key: "user-value"})
+                )
+            assert exc_info.value.code == "voice_config_locked"
+        # 混合批次也一样整体拒绝
+        with pytest.raises(ServiceError):
+            await service.handle_command(
+                command(
+                    "set-mixed",
+                    "config.set",
+                    updates={
+                        "engine": "deepseek",
+                        "voice.api_key": "sk-evil",
+                        "vad_enabled": "true",
+                    },
+                )
+            )
+        # 拒绝后原有配置不受影响
+        config = await service.handle_command(command("get-1", "config.get"))
+        assert config["voice"]["vad_enabled"] != "true"
     finally:
         await service.shutdown()
 

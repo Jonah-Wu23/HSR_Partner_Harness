@@ -125,12 +125,10 @@ function presentSettings(state: DesktopRenderState): AppShellViewModel["settings
     typeof dialogue.reasoning_effort === "string" ? dialogue.reasoning_effort : "auto";
   const voice: VoicePageView = {
     enabled: Boolean(voiceConfig.enabled === true || voiceConfig.enabled === "true"),
-    baseUrl: String(voiceConfig.base_url ?? ""),
-    apiKeyMasked: String(voiceConfig.api_key_masked ?? ""),
-    asrModel: String(voiceConfig.asr_model ?? ""),
-    ttsModel: String(voiceConfig.tts_model ?? ""),
-    characterVoice: String(voiceConfig.character_voice ?? ""),
-    assistantVoice: String(voiceConfig.assistant_voice ?? ""),
+    characterVoiceId: String(voiceConfig.character_voice ?? ""),
+    characterVoiceName: String(voiceConfig.character_voice_name ?? ""),
+    assistantVoiceId: String(voiceConfig.assistant_voice ?? ""),
+    assistantVoiceName: String(voiceConfig.assistant_voice_name ?? ""),
     vadEnabled: Boolean(voiceConfig.vad_enabled === "true"),
     vadStatus: "ready",
   };

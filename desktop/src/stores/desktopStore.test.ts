@@ -51,6 +51,64 @@ describe("desktopStore event projection", () => {
     expect(state.messageIdsByConversation["conv-1"]).toEqual(["message-1", "message-2"]);
   });
 
+  it("把角色思考与正文合并到同一条流式消息", () => {
+    const messageId = "speech:conv-1:user-1";
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "message.delta",
+        sequence: 1,
+        payload: {
+          message_id: messageId,
+          conversation_id: "conv-1",
+          source: "character",
+          kind: "character.speech",
+          channel: "reasoning",
+          delta: "先看看",
+          started: true,
+          reasoning_streaming: true,
+        },
+      },
+      {
+        kind: "event",
+        event: "message.delta",
+        sequence: 2,
+        payload: {
+          message_id: messageId,
+          conversation_id: "conv-1",
+          source: "character",
+          kind: "character.speech",
+          delta: "你好。",
+        },
+      },
+      {
+        kind: "event",
+        event: "message.created",
+        sequence: 3,
+        payload: {
+          message: {
+            message_id: messageId,
+            conversation_id: "conv-1",
+            pair_id: "pair-1",
+            engine_turn_id: null,
+            source: "character",
+            kind: "character.speech",
+            text: "你好。",
+            payload: { reasoning: "先看看" },
+            tts_eligible: true,
+            created_at: "2026-08-11T00:00:00Z",
+          },
+        },
+      },
+    ]);
+
+    const state = desktopStore.getState();
+    expect(state.messageIdsByConversation["conv-1"]?.filter((id) => id === messageId)).toHaveLength(1);
+    expect(state.messagesById[messageId]?.text).toBe("你好。");
+    expect(state.messagesById[messageId]?.payload.reasoning).toBe("先看看");
+    expect(state.messagesById[messageId]?.streaming).toBeUndefined();
+  });
+
   it("connection.status 断线切换状态但保留已加载内容", () => {
     desktopStore.getState().applyEvents([
       {

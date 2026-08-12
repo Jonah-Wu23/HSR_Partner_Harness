@@ -219,8 +219,8 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async codexLogout() {
       await request("codex.logout");
     },
-    async voicePreview(text) {
-      await request("voice.preview", { text });
+    async voicePreview(text, voiceId) {
+      await request("voice.preview", { text, ...(voiceId ? { voice_id: voiceId } : {}) });
     },
     dismissToast(id) {
       // V0.2 M4：Toast 是本地 UI 状态，不经过后端

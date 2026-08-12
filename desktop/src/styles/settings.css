@@ -342,3 +342,111 @@
 .voice-vad-ready { background: var(--accent-soft); color: var(--accent); }
 .voice-vad-running { background: var(--accent-soft); color: var(--running); }
 .voice-vad-unavailable { background: var(--fill-hover); color: var(--text-muted); }
+
+/* ========== 语音页赞助卡（V0.2 M5：内置语音 + 自愿赞助） ========== */
+
+.settings-sponsor {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-4, 16px) var(--space-3);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-xl);
+  background: var(--bg-card);
+  text-align: center;
+}
+.settings-sponsor-head {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.settings-sponsor-title {
+  font-size: var(--text-b1-size, 14px);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.settings-sponsor-copy {
+  margin: 0;
+  max-width: 320px;
+  font-size: var(--text-c1-size);
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+.settings-sponsor-qr {
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-lg);
+  background: #ffffff;
+  box-shadow: 0 1px 6px rgb(0 0 0 / 0.16);
+}
+.settings-sponsor-qr img {
+  display: block;
+  width: 148px;
+  height: auto;
+  border-radius: var(--radius-sm);
+}
+.settings-sponsor-meta {
+  font-size: var(--text-b2-size);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.settings-sponsor-payee {
+  font-size: var(--text-c1-size);
+  color: var(--accent);
+  font-weight: 600;
+}
+.settings-sponsor-amount {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-c1-size);
+  color: var(--text-secondary);
+}
+.settings-sponsor-amount strong {
+  font-size: 22px;
+  line-height: 1;
+  color: var(--accent);
+}
+.settings-sponsor-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: stretch;
+  width: 100%;
+  max-width: 280px;
+  margin-top: var(--space-2);
+}
+.settings-sponsor-actions .btn { width: 100%; }
+.settings-sponsor-note {
+  margin: 0;
+  font-size: var(--text-c1-size);
+  color: var(--text-muted);
+}
+
+/* 内置音色只读展示行（试听按钮回传 voice_id） */
+.settings-voice-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  font-size: var(--text-b2-size);
+}
+.settings-voice-info .btn { height: 30px; flex: none; }
+.settings-voice-info-name { font-weight: 600; color: var(--text-primary); }
+.settings-voice-info-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-c1-size);
+  color: var(--text-muted);
+}

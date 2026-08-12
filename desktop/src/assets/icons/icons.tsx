@@ -165,6 +165,14 @@ export function StopIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function HeartIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden={props["aria-label"] ? undefined : true} {...props}>
+      <path fillRule="evenodd" clipRule="evenodd" d="M12 20.8999C11.4652 20.8999 10.9444 20.7006 10.529 20.3361L3.1532 13.953C0.859133 11.923 0.695785 8.34227 2.80786 6.10368C5.04539 3.72965 8.62085 3.87428 10.6588 6.33597L12 7.90311L13.3412 6.33597C15.3792 3.87428 18.9546 3.72965 21.1922 6.10368C23.3042 8.34227 23.1409 11.923 20.8468 13.953L13.471 20.3361C13.0556 20.7006 12.5348 20.8999 12 20.8999ZM4.44818 7.38811C2.98784 8.92105 3.11156 11.3365 4.72425 12.726L12.0001 19.0196L19.2758 12.726C20.8884 11.3365 21.0122 8.92105 19.5518 7.38811C17.982 5.74283 15.4067 5.86072 13.9996 7.61469L12 9.85779L10.0004 7.61469C8.59331 5.86072 6.01801 5.74283 4.44818 7.38811Z" fill="currentColor"/>
+    </svg>
+  );
+}
+
 export function WarningIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden={props["aria-label"] ? undefined : true} {...props}>

@@ -98,6 +98,20 @@ describe("MessageList 流式与身份展示", () => {
     expect(container.querySelector(".reasoning-ribbon-body")?.textContent).toContain("先分析项目结构");
   });
 
+  it("思考与正文共用一个气泡，正文未到达时显示三个点", () => {
+    const message = makeMessage({
+      text: "",
+      streaming: true,
+      payload: { reasoning: "先看看当前对话。", reasoning_streaming: true },
+    });
+    const { container, getByText } = render(
+      <MessageList timeline={makeTimeline([message])} pair={pair} emptyText="空" />,
+    );
+    expect(container.querySelectorAll('[data-message-source="character"]').length).toBe(1);
+    expect(getByText("...")).toBeInTheDocument();
+    expect(container.querySelector(".reasoning-ribbon-body")?.textContent).toContain("先看看当前对话");
+  });
+
   it("空时间线展示占位文案", () => {
     const { getByText } = render(
       <MessageList timeline={makeTimeline([])} pair={pair} emptyText="和角色聊聊…" />,

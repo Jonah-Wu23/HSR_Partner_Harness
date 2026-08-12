@@ -197,6 +197,9 @@ export function Composer({
 
         <div className="composer-toolbar-spacer" />
 
+        {/* 语音按钮组：语音功能关闭时整体隐藏（设置页 voice.enabled=false） */}
+        {voice.enabled !== false ? (
+          <>
         <button
           type="button"
           className="icon-btn"
@@ -248,6 +251,8 @@ export function Composer({
           />
           {voiceStatusText}
         </span>
+          </>
+        ) : null}
       </div>
     </div>
   );

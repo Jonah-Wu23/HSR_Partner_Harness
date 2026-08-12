@@ -205,6 +205,7 @@ function baseSnapshot(
     approvals: [],
     voice: {
       supported: true,
+      enabled: true,
       vad: "idle",
       vad_enabled: false,
       ptt: false,

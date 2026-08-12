@@ -251,12 +251,14 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
       },
       voice: {
         enabled: "true",
-        base_url: "wss://dashscope.aliyuncs.com",
+        base_url: "https://dashscope.aliyuncs.com/api/v1",
         api_key_masked: "sk-v…5678",
         asr_model: "qwen-audio-3.0-asr-flash-streaming",
         tts_model: "qwen-audio-3.0-tts-flash",
         character_voice: "longxiaoyu",
+        character_voice_name: "白厄",
         assistant_voice: "longxiaoyu",
+        assistant_voice_name: "神秘的古代机械",
         vad_enabled: "true",
       },
       codex: { status: "logged_in", account_label: "mock@openai" },
@@ -270,7 +272,10 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
     });
     expect(mapped.settings.voice).toMatchObject({
       enabled: true,
-      characterVoice: "longxiaoyu",
+      characterVoiceId: "longxiaoyu",
+      characterVoiceName: "白厄",
+      assistantVoiceId: "longxiaoyu",
+      assistantVoiceName: "神秘的古代机械",
       vadEnabled: true,
     });
     expect(mapped.settings.coding).toEqual({

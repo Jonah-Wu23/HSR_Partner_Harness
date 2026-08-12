@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { CloseIcon } from "../../assets/icons/icons";
+import sponsorQr from "../../assets/sponsor/qrcode.png";
+import { CloseIcon, HeartIcon } from "../../assets/icons/icons";
 import type {
   AccountPageView,
   CharacterModelPageView,
@@ -30,8 +31,9 @@ interface SettingsCenterProps {
   onCodexApiLogin: (apiKey: string) => void;
   onSaveModel: (config: CharacterModelPageView & { apiKey?: string }) => void;
   onTestModel: () => void;
-  onSaveVoice: (config: VoicePageView & { apiKey?: string }) => void;
-  onPreviewVoice: (voiceId: string) => void;
+  /** 语音页只有两个开关可改（总开关 / VAD），改动即保存，无独立保存按钮。 */
+  onSaveVoice: (config: { enabled: boolean; vadEnabled: boolean }) => void;
+  onPreviewVoice: (voiceId: string, voiceName: string) => void;
 }
 
 const NAV: Array<{ id: SettingsPage; label: string }> = [
@@ -327,61 +329,102 @@ function CharacterModelPage(props: SettingsCenterProps) {
 }
 
 function VoicePage(props: SettingsCenterProps) {
-  const [form, setForm] = useState(props.voice);
-  const [apiKey, setApiKey] = useState("");
-
+  const { voice } = props;
   return (
     <section className="settings-page">
+      {/* 语音总开关：与赞助无关，跳过赞助可直接开启；关闭后输入区语音按钮整体隐藏 */}
       <label className="settings-switch">
         <input
           type="checkbox"
-          checked={form.enabled}
-          onChange={(event) => setForm({ ...form, enabled: event.target.checked })}
+          checked={voice.enabled}
+          onChange={(event) =>
+            props.onSaveVoice({ enabled: event.target.checked, vadEnabled: voice.vadEnabled })
+          }
         />
         语音功能
         <span className="field-note">关闭后输入区的语音按钮整体隐藏</span>
       </label>
 
-      {form.enabled ? (
+      {/* 自愿赞助卡：语音服务由作者自费提供，二维码为微信收款码 */}
+      <div className="settings-sponsor">
+        <span className="settings-sponsor-head" aria-hidden="true">
+          <HeartIcon />
+        </span>
+        <p className="settings-sponsor-title">喜欢这个语音功能的话，请给作者一点支持</p>
+        <p className="settings-sponsor-copy">
+          语音服务由作者自费提供，服务器与模型费用需要持续投入。一杯咖啡的赞助能让它继续运转。
+        </p>
+        <div className="settings-sponsor-qr">
+          <img src={sponsorQr} alt="微信收款二维码" width={148} />
+        </div>
+        <span className="settings-sponsor-meta">微信支付 · 扫码打赏</span>
+        <span className="settings-sponsor-payee">请认准收款人：天小可</span>
+        <span className="settings-sponsor-amount">
+          <strong>6元</strong>一杯咖啡的价格
+        </span>
+        <div className="settings-sponsor-actions">
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={voice.enabled}
+            onClick={() => props.onSaveVoice({ enabled: true, vadEnabled: voice.vadEnabled })}
+          >
+            我已打赏，开启语音
+          </button>
+          <p className="settings-sponsor-note">
+            无论是否打赏，都可以直接开启语音。打赏完全自愿，感谢每一份心意。
+          </p>
+        </div>
+      </div>
+
+      {voice.enabled ? (
         <>
-          <label className="field">
-            <span className="field-label">
-              API Key{props.voice.apiKeyMasked ? <span className="field-note">当前已保存 {props.voice.apiKeyMasked}</span> : null}
-            </span>
-            <input
-              type="password"
-              value={apiKey}
-              placeholder="留空表示不修改"
-              onChange={(event) => setApiKey(event.target.value)}
-            />
-          </label>
+          {/* 内置音色只读展示：音色由作者预先复刻/设计，随应用分发 */}
           <div className="settings-grid">
-            <label className="field">
-              <span className="field-label">ASR 模型</span>
-              <input value={form.asrModel} onChange={(event) => setForm({ ...form, asrModel: event.target.value })} />
-            </label>
-            <label className="field">
-              <span className="field-label">TTS 模型</span>
-              <input value={form.ttsModel} onChange={(event) => setForm({ ...form, ttsModel: event.target.value })} />
-            </label>
-            <label className="field">
+            <div className="field">
               <span className="field-label">角色音色</span>
-              <span className="settings-voice-row">
-                <input value={form.characterVoice} onChange={(event) => setForm({ ...form, characterVoice: event.target.value })} />
-                <button type="button" className="btn btn-outline" onClick={() => props.onPreviewVoice(form.characterVoice)}>
+              <span className="settings-voice-info">
+                <span>
+                  <span className="settings-voice-info-name">
+                    {voice.characterVoiceName || "白厄"}
+                  </span>
+                  {voice.characterVoiceId ? (
+                    <div className="settings-voice-info-id">{voice.characterVoiceId}</div>
+                  ) : null}
+                </span>
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  onClick={() =>
+                    props.onPreviewVoice(voice.characterVoiceId, voice.characterVoiceName)
+                  }
+                >
                   试听
                 </button>
               </span>
-            </label>
-            <label className="field">
+            </div>
+            <div className="field">
               <span className="field-label">助手音色</span>
-              <span className="settings-voice-row">
-                <input value={form.assistantVoice} onChange={(event) => setForm({ ...form, assistantVoice: event.target.value })} />
-                <button type="button" className="btn btn-outline" onClick={() => props.onPreviewVoice(form.assistantVoice)}>
+              <span className="settings-voice-info">
+                <span>
+                  <span className="settings-voice-info-name">
+                    {voice.assistantVoiceName || "神秘的古代机械"}
+                  </span>
+                  {voice.assistantVoiceId ? (
+                    <div className="settings-voice-info-id">{voice.assistantVoiceId}</div>
+                  ) : null}
+                </span>
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  onClick={() =>
+                    props.onPreviewVoice(voice.assistantVoiceId, voice.assistantVoiceName)
+                  }
+                >
                   试听
                 </button>
               </span>
-            </label>
+            </div>
           </div>
 
           {props.voicePreview.state !== "idle" ? (
@@ -396,36 +439,18 @@ function VoicePage(props: SettingsCenterProps) {
           <label className="settings-switch">
             <input
               type="checkbox"
-              checked={form.vadEnabled}
-              onChange={(event) => setForm({ ...form, vadEnabled: event.target.checked })}
+              checked={voice.vadEnabled}
+              onChange={(event) =>
+                props.onSaveVoice({ enabled: voice.enabled, vadEnabled: event.target.checked })
+              }
             />
             语音自动聆听（VAD）
-            <span className={`voice-vad-pill voice-vad-${form.vadStatus}`}>
-              {form.vadStatus === "ready" ? "就绪" : form.vadStatus === "running" ? "运行中" : "不可用"}
+            <span className={`voice-vad-pill voice-vad-${voice.vadStatus}`}>
+              {voice.vadStatus === "ready" ? "就绪" : voice.vadStatus === "running" ? "运行中" : "不可用"}
             </span>
           </label>
-
-          <details className="settings-advanced">
-            <summary>高级设置</summary>
-            <label className="field">
-              <span className="field-label">
-                服务地址<span className="field-note">DashScope Base URL，一般不用改</span>
-              </span>
-              <input value={form.baseUrl} onChange={(event) => setForm({ ...form, baseUrl: event.target.value })} />
-            </label>
-          </details>
         </>
       ) : null}
-
-      <div className="settings-row">
-        <button
-          type="button"
-          className="btn btn-primary"
-          onClick={() => props.onSaveVoice({ ...form, apiKey: apiKey || undefined })}
-        >
-          保存
-        </button>
-      </div>
     </section>
   );
 }

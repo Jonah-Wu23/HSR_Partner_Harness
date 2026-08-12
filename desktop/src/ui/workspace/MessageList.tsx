@@ -21,6 +21,7 @@ function Bubble({ message, pair }: { message: Message; pair: PairRecord }) {
   const label = sourceLabel(message, pair);
   const reasoning =
     typeof message.payload?.reasoning === "string" ? (message.payload.reasoning as string) : null;
+  const reasoningStreaming = message.payload?.reasoning_streaming === true;
   const reasoningSeconds =
     typeof message.payload?.reasoning_seconds === "number"
       ? (message.payload.reasoning_seconds as number)
@@ -36,19 +37,20 @@ function Bubble({ message, pair }: { message: Message; pair: PairRecord }) {
       ? "msg-bubble msg-character"
       : message.source === "assistant"
         ? "msg-bubble msg-assistant"
-        : message.source === "user"
+      : message.source === "user"
           ? "msg-bubble msg-user"
           : "msg-bubble msg-system";
+  const displayText = message.text || (message.streaming ? "..." : "");
 
   return (
     <div className={rowClass} data-message-source={message.source}>
       <div className={bubbleClass}>
-        {reasoning ? (
-          <ReasoningRibbon text={reasoning} streaming={message.streaming ?? false} elapsedSeconds={reasoningSeconds} />
+        {reasoning !== null || reasoningStreaming ? (
+          <ReasoningRibbon text={reasoning ?? ""} streaming={reasoningStreaming} elapsedSeconds={reasoningSeconds} />
         ) : null}
         {label ? <span className="msg-source">{label}</span> : null}
-        {message.text}
-        {message.streaming ? <span className="msg-streaming-caret" aria-hidden /> : null}
+        {displayText}
+        {message.streaming && message.text ? <span className="msg-streaming-caret" aria-hidden /> : null}
       </div>
     </div>
   );

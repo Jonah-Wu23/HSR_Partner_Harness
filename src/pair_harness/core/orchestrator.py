@@ -484,6 +484,9 @@ class ConversationOrchestrator:
                 source=MessageSource.CHARACTER,
                 kind=MessageKind.CHARACTER_SPEECH,
                 text=character_turn.speech,
+                # 桌面端的思考流和正文流共用这个 id；最终消息会覆盖临时流，
+                # 时间线里只保留一个角色气泡。
+                message_id=f"speech:{conversation_id}:{user_message.message_id}",
                 payload=(
                     {"reasoning": character_turn.reasoning}
                     if character_turn.reasoning

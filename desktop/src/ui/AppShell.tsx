@@ -277,21 +277,19 @@ export function AppShell({ vm, actions }: AppShellProps) {
             );
         }}
         onSaveVoice={(config) => {
+          // 语音页只有开关类偏好可存；API Key/模型/音色由应用内置
           void actions.setConfig({
-            "voice.base_url": config.baseUrl,
-            "voice.asr_model": config.asrModel,
-            "voice.tts_model": config.ttsModel,
-            "character_voice": config.characterVoice,
-            "assistant_voice": config.assistantVoice,
+            "voice.enabled": String(config.enabled),
             "vad_enabled": String(config.vadEnabled),
-            ...(config.apiKey ? { "voice.api_key": config.apiKey } : {}),
           });
+          // VAD 开关立即作用于运行时；语音关闭时停止聆听
+          void actions.setVadEnabled(config.enabled ? config.vadEnabled : false);
         }}
-        onPreviewVoice={(voiceId) => {
+        onPreviewVoice={(voiceId, voiceName) => {
           // V0.2 M4：试听入队即返回成功（合成结果由 voice 状态机接管）
           setVoicePreview({ state: "testing" });
           void actions
-            .voicePreview(voiceId)
+            .voicePreview(`你好，我是${voiceName || "角色"}。这是语音试听。`, voiceId)
             .then(() => setVoicePreview({ state: "ok", text: "已加入播放队列" }))
             .catch((error: unknown) =>
               setVoicePreview({

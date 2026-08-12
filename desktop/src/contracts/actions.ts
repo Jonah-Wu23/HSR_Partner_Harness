@@ -51,5 +51,6 @@ export interface HarnessActions {
   codexOauthStart(): Promise<void>;
   codexApiLogin(apiKey: string): Promise<void>;
   codexLogout(): Promise<void>;
-  voicePreview(text: string): Promise<void>;
+  /** 试听内置音色：text 试听文本，voiceId 缺省/非内置时用角色音色。 */
+  voicePreview(text: string, voiceId?: string): Promise<void>;
 }

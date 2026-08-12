@@ -308,11 +308,30 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
         conversation_id: string;
         source: Message["source"];
         kind: Message["kind"];
-        delta: string;
+        delta?: string;
+        channel?: string;
+        started?: boolean;
+        completed?: boolean;
+        reasoning_streaming?: boolean;
       };
       const current = next.messagesById[payload.message_id];
+      const delta = String(payload.delta ?? "");
+      const characterReasoning = payload.source === "character" && payload.channel === "reasoning";
+      const messagePayload: Record<string, unknown> = { ...(current?.payload ?? {}) };
+      let text = current?.text ?? "";
+      if (characterReasoning) {
+        const reasoning = typeof messagePayload.reasoning === "string" ? messagePayload.reasoning : "";
+        messagePayload.reasoning = reasoning + delta;
+        if (payload.reasoning_streaming !== undefined) {
+          messagePayload.reasoning_streaming = payload.reasoning_streaming;
+        } else if (payload.started || payload.completed !== undefined) {
+          messagePayload.reasoning_streaming = !payload.completed;
+        }
+      } else {
+        text += delta;
+      }
       const message: Message = current
-        ? { ...current, text: current.text + payload.delta, streaming: true }
+        ? { ...current, text, payload: messagePayload, streaming: true }
         : {
             message_id: payload.message_id,
             conversation_id: payload.conversation_id,
@@ -320,8 +339,8 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
             engine_turn_id: null,
             source: payload.source,
             kind: payload.kind,
-            text: payload.delta,
-            payload: {},
+            text,
+            payload: messagePayload,
             tts_eligible: payload.source === "character" || payload.source === "assistant",
             created_at: new Date().toISOString(),
             streaming: true,

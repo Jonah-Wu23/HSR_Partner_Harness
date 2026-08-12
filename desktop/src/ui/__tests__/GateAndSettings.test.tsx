@@ -135,12 +135,10 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsCenter>[0]>
     },
     voice: {
       enabled: true,
-      baseUrl: "https://dashscope.aliyuncs.com",
-      apiKeyMasked: "sk-····",
-      asrModel: "paraformer",
-      ttsModel: "cosyvoice",
-      characterVoice: "longxiaochun",
-      assistantVoice: "longwan",
+      characterVoiceId: "qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32",
+      characterVoiceName: "白厄",
+      assistantVoiceId: "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19",
+      assistantVoiceName: "神秘的古代机械",
       vadEnabled: false,
       vadStatus: "ready",
     },
@@ -196,22 +194,56 @@ describe("SettingsCenter", () => {
     expect(props.onCodexOAuthStart).toHaveBeenCalled();
   });
 
-  it("语音页关闭总开关后隐藏细项", () => {
+  it("语音页常驻赞助卡：微信收款码 + 收款人 + 跳过说明", () => {
+    renderSettings({ page: "voice" });
+    expect(screen.getByText("语音功能")).toBeInTheDocument();
+    expect(screen.getByText("喜欢这个语音功能的话，请给作者一点支持")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "微信收款二维码" })).toBeInTheDocument();
+    expect(screen.getByText("请认准收款人：天小可")).toBeInTheDocument();
+    expect(screen.getByText("无论是否打赏，都可以直接开启语音。打赏完全自愿，感谢每一份心意。")).toBeInTheDocument();
+    // 内置音色只读展示，不再有可编辑输入框
+    expect(screen.getByText("白厄")).toBeInTheDocument();
+    expect(screen.getByText("神秘的古代机械")).toBeInTheDocument();
+    expect(screen.queryByLabelText("API Key")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("ASR 模型")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("TTS 模型")).not.toBeInTheDocument();
+  });
+
+  it("语音页关闭总开关后隐藏音色与 VAD 细项，赞助卡保留", () => {
     renderSettings({
       page: "voice",
       voice: {
         enabled: false,
-        baseUrl: "",
-        apiKeyMasked: "",
-        asrModel: "",
-        ttsModel: "",
-        characterVoice: "",
-        assistantVoice: "",
+        characterVoiceId: "",
+        characterVoiceName: "",
+        assistantVoiceId: "",
+        assistantVoiceName: "",
         vadEnabled: false,
         vadStatus: "unavailable",
       },
     });
     expect(screen.getByText("语音功能")).toBeInTheDocument();
+    expect(screen.getByText("喜欢这个语音功能的话，请给作者一点支持")).toBeInTheDocument();
     expect(screen.queryByText("试听")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/语音自动聆听/)).not.toBeInTheDocument();
+  });
+
+  it("语音页开关改动即保存；已开启时赞助按钮禁用", () => {
+    const props = renderSettings({ page: "voice" });
+    expect(screen.getByRole("button", { name: "我已打赏，开启语音" })).toBeDisabled();
+    fireEvent.click(screen.getByLabelText(/语音功能/));
+    expect(props.onSaveVoice).toHaveBeenCalledWith({ enabled: false, vadEnabled: false });
+    fireEvent.click(screen.getByLabelText(/语音自动聆听（VAD）/));
+    expect(props.onSaveVoice).toHaveBeenLastCalledWith({ enabled: true, vadEnabled: true });
+  });
+
+  it("语音页试听按钮按音色回传 voice_id 与名称", () => {
+    const props = renderSettings({ page: "voice" });
+    const previewButtons = screen.getAllByRole("button", { name: "试听" });
+    fireEvent.click(previewButtons[1]);
+    expect(props.onPreviewVoice).toHaveBeenCalledWith(
+      "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19",
+      "神秘的古代机械",
+    );
   });
 });

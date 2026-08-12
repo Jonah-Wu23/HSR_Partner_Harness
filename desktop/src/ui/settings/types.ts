@@ -25,13 +25,13 @@ export interface CharacterModelPageView {
 }
 
 export interface VoicePageView {
+  /** 语音功能总开关（与赞助无关，不赞助也可开启）。 */
   enabled: boolean;
-  baseUrl: string;
-  apiKeyMasked: string;
-  asrModel: string;
-  ttsModel: string;
-  characterVoice: string;
-  assistantVoice: string;
+  /** 内置角色/助手音色展示（试听按钮回传 voice_id）。 */
+  characterVoiceId: string;
+  characterVoiceName: string;
+  assistantVoiceId: string;
+  assistantVoiceName: string;
   vadEnabled: boolean;
   vadStatus: "ready" | "running" | "unavailable";
 }

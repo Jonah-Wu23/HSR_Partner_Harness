@@ -550,12 +550,14 @@ export class MockDesktopBackend implements DesktopBackend {
       },
       voice: {
         enabled: "true",
-        base_url: "wss://dashscope.aliyuncs.com",
+        base_url: "https://dashscope.aliyuncs.com/api/v1",
         api_key_masked: "sk-v…5678",
         asr_model: "qwen-audio-3.0-asr-flash-streaming",
         tts_model: "qwen-audio-3.0-tts-flash",
-        character_voice: "longxiaoyu",
-        assistant_voice: "longxiaoyu",
+        character_voice: "qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32",
+        character_voice_name: "白厄",
+        assistant_voice: "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19",
+        assistant_voice_name: "神秘的古代机械",
         vad_enabled: "true",
       },
       codex: { status: "logged_in", account_label: "mock@openai" },
@@ -644,10 +646,35 @@ export class MockDesktopBackend implements DesktopBackend {
         message,
       ];
     } else if (event.event === "message.delta") {
-      const payload = event.payload as { message_id: string; conversation_id: string; source: Message["source"]; kind: Message["kind"]; delta: string };
+      const payload = event.payload as {
+        message_id: string;
+        conversation_id: string;
+        source: Message["source"];
+        kind: Message["kind"];
+        delta?: string;
+        channel?: string;
+        started?: boolean;
+        completed?: boolean;
+        reasoning_streaming?: boolean;
+      };
       const current = snapshot.messages.find((item) => item.message_id === payload.message_id);
+      const delta = String(payload.delta ?? "");
+      const characterReasoning = payload.source === "character" && payload.channel === "reasoning";
+      const messagePayload: Record<string, unknown> = { ...(current?.payload ?? {}) };
+      let text = current?.text ?? "";
+      if (characterReasoning) {
+        const reasoning = typeof messagePayload.reasoning === "string" ? messagePayload.reasoning : "";
+        messagePayload.reasoning = reasoning + delta;
+        if (payload.reasoning_streaming !== undefined) {
+          messagePayload.reasoning_streaming = payload.reasoning_streaming;
+        } else if (payload.started || payload.completed !== undefined) {
+          messagePayload.reasoning_streaming = !payload.completed;
+        }
+      } else {
+        text += delta;
+      }
       const nextMessage: Message = current
-        ? { ...current, text: current.text + payload.delta, streaming: true }
+        ? { ...current, text, payload: messagePayload, streaming: true }
         : {
             message_id: payload.message_id,
             conversation_id: payload.conversation_id,
@@ -655,8 +682,8 @@ export class MockDesktopBackend implements DesktopBackend {
             engine_turn_id: null,
             source: payload.source,
             kind: payload.kind,
-            text: payload.delta,
-            payload: {},
+            text,
+            payload: messagePayload,
             tts_eligible: payload.source === "character" || payload.source === "assistant",
             created_at: new Date().toISOString(),
             streaming: true,
