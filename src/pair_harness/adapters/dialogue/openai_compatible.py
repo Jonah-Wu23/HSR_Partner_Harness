@@ -178,15 +178,10 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             and request.runtime_context.conversation_mode == "collaboration"
             and _is_current_project_query(request.user_message.text)
         )
-        if delegation is None:
-            pending_instructions = _pending_delegation_instructions(request)
-            if pending_instructions is not None:
-                # 典型委派对话会出现两步：角色先答应“交给搭档”，用户再用
-                # “好的，那就这样”确认。模型第二步有时只返回台词，不能因此
-                # 把已经明确的本地任务丢掉。
-                delegation = TaskRequestDraft(instructions=pending_instructions)
-            elif _is_explicit_local_task(request.user_message.text) or needs_project_inspection:
-                delegation = TaskRequestDraft(instructions=request.user_message.text.strip())
+        if delegation is None and (
+            _is_explicit_local_task(request.user_message.text) or needs_project_inspection
+        ):
+            delegation = TaskRequestDraft(instructions=request.user_message.text.strip())
 
         speech = turn.speech
         if delegation is not None and _is_placeholder_speech(speech):
@@ -499,15 +494,6 @@ _SELF_EXECUTION_RE = re.compile(
     r"(?:创建|新建|删除|移除|重命名|移动|复制|修改|编辑|写入|追加|保存|运行|执行|安装|构建|编译|测试|检查|读取|打开|处理)"
 )
 _FAILURE_CUES = ("没做成", "失败", "未执行", "没有完成", "已取消", "取消了")
-_DELEGATION_CONFIRMATION_CUES = ("好的", "好吧", "那就", "就这样", "可以", "去吧", "麻烦你")
-_DELEGATION_HANDOFF_CUES = ("交给", "让古代机械", "让搭档", "等结果", "麻烦你")
-_DELEGATION_RESULT_CUES = _FAILURE_CUES + (
-    "做完",
-    "完成了",
-    "结果已经",
-    "已经把结果",
-    "已返回",
-)
 
 
 def _is_explicit_local_task(text: str) -> bool:
@@ -531,45 +517,6 @@ def _is_current_project_query(text: str) -> bool:
     return any(ref in normalized for ref in _CURRENT_PROJECT_REFERENCES) and any(
         cue in normalized for cue in _PROJECT_QUERY_CUES
     )
-
-
-def _pending_delegation_instructions(request: DialogueRequest) -> str | None:
-    """Recover a confirmed handoff when the model omitted the JSON task field."""
-    current_text = str(request.user_message.text or "").strip()
-    if not current_text or not any(cue in current_text for cue in _DELEGATION_CONFIRMATION_CUES):
-        return None
-    if (
-        request.runtime_context is None
-        or request.runtime_context.conversation_mode != "collaboration"
-    ):
-        return None
-
-    messages = request.recent_messages
-    handoff_index = -1
-    for index, message in enumerate(messages):
-        if message.source == MessageSource.CHARACTER and any(
-            cue in message.text for cue in _DELEGATION_HANDOFF_CUES
-        ):
-            handoff_index = index
-    if handoff_index < 0:
-        return None
-
-    # 如果交接之后已经出现任务结果，就不能因为用户继续聊天而重复执行。
-    if any(
-        message.source == MessageSource.CHARACTER
-        and any(cue in message.text for cue in _DELEGATION_RESULT_CUES)
-        for message in messages[handoff_index + 1 :]
-    ):
-        return None
-
-    for message in reversed(messages[:handoff_index]):
-        if message.source != MessageSource.USER:
-            continue
-        text = message.text.strip()
-        if _is_current_project_query(text) or _is_explicit_local_task(text):
-            return text
-        return None
-    return None
 
 
 def _is_placeholder_speech(speech: str) -> bool:

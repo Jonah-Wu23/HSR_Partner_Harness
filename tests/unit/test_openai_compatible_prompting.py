@@ -251,40 +251,6 @@ async def test_current_project_query_recovers_missing_delegation_in_collaboratio
 
 
 @pytest.mark.asyncio
-async def test_confirmation_after_character_handoff_recovers_pending_delegation(
-    fake_chat_server: str,
-) -> None:
-    """典型两轮委派：角色先答应交接，用户确认时仍必须创建 task。"""
-    _FakeChatHandler.scripts.append(
-        {"stream": True, "chunks": ['{"speech":"好的好的，那我们就——。"}']}
-    )
-    model = make_model(fake_chat_server)
-    original_request = Message(
-        conversation_id="c",
-        pair_id=PAIR_ID,
-        source=MessageSource.USER,
-        kind=MessageKind.USER_TEXT,
-        text="要不你帮我看看这个项目是做什么的吧。",
-    )
-    handoff = Message(
-        conversation_id="c",
-        pair_id=PAIR_ID,
-        source=MessageSource.CHARACTER,
-        kind=MessageKind.CHARACTER_SPEECH,
-        text="这事交给神秘的古代机械查看，等结果回来我再和你说。",
-    )
-    confirmation = make_request(
-        text="好的好的，那我们就——。",
-        runtime_mode="collaboration",
-    ).model_copy(update={"recent_messages": (original_request, handoff)})
-
-    turn = await run_turn(model, confirmation)
-
-    assert isinstance(turn.delegation, TaskRequestDraft)
-    assert turn.delegation.instructions == original_request.text
-
-
-@pytest.mark.asyncio
 async def test_failed_result_cannot_be_described_as_completed(fake_chat_server: str) -> None:
     _FakeChatHandler.scripts.append(
         {"stream": True, "chunks": ['{"speech":"我已经把文件删掉了。"}']}

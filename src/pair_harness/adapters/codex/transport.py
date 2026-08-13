@@ -11,6 +11,11 @@ from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
+# app-server 的 JSONL 单条通知可能携带完整工具输出；Python asyncio 默认
+# 64 KiB 行上限会在 readline() 处直接截断协议。这里调整协议读取上限，
+# 不捕获或改写读取异常，让真实传输错误继续暴露。
+_SUBPROCESS_STREAM_LIMIT = 16 * 1024 * 1024
+
 
 class TransportClosed(RuntimeError):
     pass
@@ -75,6 +80,7 @@ class SubprocessJsonLineConnection:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=merged_env,
+            limit=_SUBPROCESS_STREAM_LIMIT,
         )
         connection = cls(process)
         connection._stderr_task = asyncio.create_task(

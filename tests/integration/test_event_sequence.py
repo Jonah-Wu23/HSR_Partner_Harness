@@ -85,9 +85,9 @@ async def test_native_approval_flow_sequence_contiguous(tmp_path) -> None:
     step = await drive_approval_turn(orchestrator, server)
     assert step["reply"]["result"] == {"decision": "accept"}
 
-    await server.notify("item/started", {"turnId": "turn-1", "item": {"id": "tool-1", "type": "command_execution", "command": "pytest"}})
-    await server.notify("item/completed", {"turnId": "turn-1", "item": {"id": "tool-1", "type": "command_execution", "command": "pytest", "status": "completed", "aggregatedOutput": "2 passed"}})
-    await server.notify("item/completed", {"turnId": "turn-1", "item": {"id": "msg", "type": "agent_message", "text": "完成"}})
+    await server.notify("item/started", {"turnId": "turn-1", "item": {"id": "tool-1", "type": "commandExecution", "command": "pytest"}})
+    await server.notify("item/completed", {"turnId": "turn-1", "item": {"id": "tool-1", "type": "commandExecution", "command": "pytest", "status": "completed", "aggregatedOutput": "2 passed"}})
+    await server.notify("item/completed", {"turnId": "turn-1", "item": {"id": "msg", "type": "agentMessage", "text": "完成"}})
     await server.notify("turn/completed", {"turn": {"id": "turn-1", "status": "completed"}})
     outcome = await step["run_task"]
 

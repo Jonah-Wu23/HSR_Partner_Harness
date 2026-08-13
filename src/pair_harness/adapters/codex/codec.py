@@ -21,6 +21,13 @@ class CodexCodec:
     避免“codec 自编号 + 编排器合成事件本地编号”双源头碰撞。
     """
 
+    _TOOL_ITEM_TYPES = {
+        "commandExecution",
+        "mcpToolCall",
+    }
+    _AGENT_MESSAGE_ITEM_TYPES = {"agentMessage"}
+    _FILE_CHANGE_ITEM_TYPES = {"fileChange"}
+
     def _event(
         self,
         binding: EventBinding,
@@ -85,7 +92,7 @@ class CodexCodec:
                 tool_call_id=item_id,
                 payload={"summary": params.get("delta", "")},
             )
-        if method == "item/started" and item_type in {"command_execution", "mcp_tool_call"}:
+        if method == "item/started" and item_type in self._TOOL_ITEM_TYPES:
             return self._event(
                 binding,
                 EngineEventType.TOOL_STARTED,
@@ -95,13 +102,13 @@ class CodexCodec:
                     "details": item.get("command") or "",
                 },
             )
-        if method == "item/completed" and item_type == "agent_message":
+        if method == "item/completed" and item_type in self._AGENT_MESSAGE_ITEM_TYPES:
             return self._event(
                 binding,
                 EngineEventType.ASSISTANT_FINAL,
                 payload={"text": item.get("text", "")},
             )
-        if method == "item/completed" and item_type in {"command_execution", "mcp_tool_call"}:
+        if method == "item/completed" and item_type in self._TOOL_ITEM_TYPES:
             # 原生状态 "completed" 映射为协议内的 "succeeded"，与 ToolRun.status 对齐
             status = "succeeded" if item.get("status") == "completed" else "failed"
             return self._event(
@@ -116,7 +123,7 @@ class CodexCodec:
                     "error": item.get("error"),
                 },
             )
-        if method == "item/completed" and item_type == "file_change":
+        if method == "item/completed" and item_type in self._FILE_CHANGE_ITEM_TYPES:
             return self._event(
                 binding,
                 EngineEventType.FILE_PATCH,

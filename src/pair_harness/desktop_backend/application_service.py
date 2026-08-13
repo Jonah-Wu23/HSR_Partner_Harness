@@ -842,33 +842,13 @@ class DesktopApplicationService:
         terminal_status = "completed"
         try:
             if target == "assistant":
-                outcome = await self.orchestrator.process_direct_input(
+                await self.orchestrator.process_direct_input(
                     conversation_id=conversation_id, user_message=user_message
                 )
             else:
-                outcome = await self.orchestrator.process_character_turn(
+                await self.orchestrator.process_character_turn(
                     conversation_id=conversation_id, user_message=user_message
                 )
-            if outcome.receipt is not None and outcome.receipt.status != "completed":
-                result = outcome.receipt.status
-                terminal_status = outcome.receipt.status
-                error_text = (
-                    outcome.receipt.errors[0]
-                    if outcome.receipt.errors
-                    else outcome.receipt.summary
-                )
-                if outcome.receipt.status == "failed":
-                    logger.error(
-                        "后台任务失败：%s，conversation=%s",
-                        error_text,
-                        conversation_id,
-                    )
-                    self.orchestrator.mark_message_failed(
-                        conversation_id, user_message.message_id, error_text
-                    )
-                    self.orchestrator.report_system_status(
-                        conversation_id, f"本次回复失败：{error_text}"
-                    )
         except asyncio.CancelledError:
             result = "cancelled"
             terminal_status = "cancelled"

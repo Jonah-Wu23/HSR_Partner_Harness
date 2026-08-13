@@ -774,9 +774,9 @@ class ConversationOrchestrator:
         # O3.3：执行期间的活动任务进度（事件驱动更新，结束时清理）
         progress = self._progress.setdefault(task.conversation_id, _TaskProgress())
         if origin == MessageOrigin.CHARACTER_DELEGATION:
-            # 委派任务本身也要成为工作台消息。之前只有 assistant/tool
-            # 消息带 delegation_id，导致 Codex 在启动阶段失败时右侧完全空白，
-            # 前端也找不到可展示的委派卡。
+            # 角色委派被接受时，先写入正式的工作台任务消息。它不是异常兜底，
+            # 而是委派协议本身的起始事件；后续 Codex 成功或抛错都能关联到
+            # 同一个 delegation_id。
             self._message(
                 conversation_id=task.conversation_id,
                 source=MessageSource.USER,
@@ -787,64 +787,25 @@ class ConversationOrchestrator:
                 origin=origin,
                 delegation_id=task_delegation_id,
                 message_id=f"delegation:{task.conversation_id}:{task.task_id}",
-                payload={"delegation_status": "running"},
             )
-
-        session: EngineSessionRef | None = None
-        engine_error: str | None = None
-
-        async def run_turn_or_empty(session_ref: EngineSessionRef | None):
-            if session_ref is None:
-                if engine_error is not None:
-                    yield EngineEvent(
-                        conversation_id=task.conversation_id,
-                        task_id=task.task_id,
-                        engine_turn_id="unavailable",
-                        sequence=0,
-                        type=EngineEventType.TURN_FAILED,
-                        payload={"error": engine_error},
-                    )
-                return
-            try:
-                async for raw_event in self.coding_engine.run_turn(session_ref, task):
-                    yield raw_event
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - convert engine exit to a receipt
-                yield EngineEvent(
-                    conversation_id=task.conversation_id,
-                    task_id=task.task_id,
-                    engine_turn_id="unavailable",
-                    sequence=0,
-                    type=EngineEventType.TURN_FAILED,
-                    payload={"error": str(exc)},
-                )
-
         try:
             session = self._sessions.get(task.conversation_id)
             # B1：按审批模式映射 app-server 策略（设计 §14.6）。
             # 仅新开线程时生效；恢复线程沿用线程既有设置。
             policy = self._engine_policy(task_approval_mode)
-            try:
-                session = await self.coding_engine.open_session(
-                    task_project,
-                    session,
-                    approval_policy=policy["approvalPolicy"],
-                    sandbox=policy["sandbox"],
-                    approvals_reviewer=policy["approvalsReviewer"],
-                    developer_instructions=task_assistant_instructions or None,
-                )
-                self._sessions[task.conversation_id] = session
-                if self.store is not None:
-                    self.store.save_engine_session(task.conversation_id, session)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - preserve a visible failed receipt
-                failed = True
-                engine_error = str(exc)
-                session = None
+            session = await self.coding_engine.open_session(
+                task_project,
+                session,
+                approval_policy=policy["approvalPolicy"],
+                sandbox=policy["sandbox"],
+                approvals_reviewer=policy["approvalsReviewer"],
+                developer_instructions=task_assistant_instructions or None,
+            )
+            self._sessions[task.conversation_id] = session
+            if self.store is not None:
+                self.store.save_engine_session(task.conversation_id, session)
 
-            async for raw_event in run_turn_or_empty(session):
+            async for raw_event in self.coding_engine.run_turn(session, task):
                 # O4.1：事件序号单一源头——到达事件在循环入口统一分配；
                 # 合成事件（审批 gate/否决/resolved）经同一计数器分配，
                 # 出口事件流序号连续无碰撞，不再信任适配器自带序号。
@@ -1186,9 +1147,6 @@ class ConversationOrchestrator:
                 if dialogue_event.type == "character.final":
                     result_turn = dialogue_event.turn
             if result_turn is not None:
-                result_payload = {"result_status": receipt.status}
-                if result_turn.reasoning:
-                    result_payload["reasoning"] = result_turn.reasoning
                 self._message(
                     conversation_id=task.conversation_id,
                     source=MessageSource.CHARACTER,
@@ -1198,7 +1156,11 @@ class ConversationOrchestrator:
                     pair_id=task_pair_id,
                     delegation_id=task_delegation_id,
                     origin=origin or MessageOrigin.USER,
-                    payload=result_payload,
+                    payload=(
+                        {"reasoning": result_turn.reasoning}
+                        if result_turn.reasoning
+                        else None
+                    ),
                 )
             # 本次执行的全部新消息：审批 system 卡片、助手说明与角色回应
             messages = self._history.get(task.conversation_id, [])[history_start:]

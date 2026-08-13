@@ -126,9 +126,9 @@ async def test_request_approval_forwards_decision_via_resolve_approval(tmp_path)
     assert step["reply"]["result"] == {"decision": "accept"}
 
     # 引擎继续执行并正常收尾
-    await server.notify("item/started", {"turnId": "turn-1", "item": {"id": "tool-1", "type": "command_execution", "command": "pytest"}})
-    await server.notify("item/completed", {"turnId": "turn-1", "item": {"id": "tool-1", "type": "command_execution", "command": "pytest", "status": "completed", "aggregatedOutput": "2 passed"}})
-    await server.notify("item/completed", {"turnId": "turn-1", "item": {"id": "msg", "type": "agent_message", "text": "完成"}})
+    await server.notify("item/started", {"turnId": "turn-1", "item": {"id": "tool-1", "type": "commandExecution", "command": "pytest"}})
+    await server.notify("item/completed", {"turnId": "turn-1", "item": {"id": "tool-1", "type": "commandExecution", "command": "pytest", "status": "completed", "aggregatedOutput": "2 passed"}})
+    await server.notify("item/completed", {"turnId": "turn-1", "item": {"id": "msg", "type": "agentMessage", "text": "完成"}})
     await server.notify("turn/completed", {"turn": {"id": "turn-1", "status": "completed"}})
     outcome = await step["run_task"]
 
@@ -167,9 +167,9 @@ async def test_full_auto_replies_accept_without_callback(tmp_path) -> None:
     assert step["reply"]["id"] == 100
     assert step["reply"]["result"] == {"decision": "accept"}
 
-    await server.notify("item/started", {"turnId": "turn-1", "item": {"id": "tool-1", "type": "command_execution", "command": "pytest"}})
-    await server.notify("item/completed", {"turnId": "turn-1", "item": {"id": "tool-1", "type": "command_execution", "command": "pytest", "status": "completed"}})
-    await server.notify("item/completed", {"turnId": "turn-1", "item": {"id": "msg", "type": "agent_message", "text": "完成"}})
+    await server.notify("item/started", {"turnId": "turn-1", "item": {"id": "tool-1", "type": "commandExecution", "command": "pytest"}})
+    await server.notify("item/completed", {"turnId": "turn-1", "item": {"id": "tool-1", "type": "commandExecution", "command": "pytest", "status": "completed"}})
+    await server.notify("item/completed", {"turnId": "turn-1", "item": {"id": "msg", "type": "agentMessage", "text": "完成"}})
     await server.notify("turn/completed", {"turn": {"id": "turn-1", "status": "completed"}})
     outcome = await step["run_task"]
 
@@ -213,7 +213,7 @@ async def test_review_mode_high_risk_reviewer_denies_and_replies_decline(tmp_pat
     assert step["reply"]["result"] == {"decision": "decline"}
 
     # 被否决后引擎继续 turn，任务成败由终态决定
-    await server.notify("item/completed", {"turnId": "turn-1", "item": {"id": "msg", "type": "agent_message", "text": "已更换方案"}})
+    await server.notify("item/completed", {"turnId": "turn-1", "item": {"id": "msg", "type": "agentMessage", "text": "已更换方案"}})
     await server.notify("turn/completed", {"turn": {"id": "turn-1", "status": "completed"}})
     outcome = await step["run_task"]
 

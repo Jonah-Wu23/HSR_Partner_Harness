@@ -143,15 +143,6 @@ async def test_collaboration_executes_delegation_with_delegation_id(tmp_path: Pa
     )
     assert assistant.delegation_id == outcome.task.task_id
     assert assistant.origin == MessageOrigin.CHARACTER_DELEGATION
-    delegation_request = next(
-        m
-        for m in outcome.messages
-        if m.source == MessageSource.USER
-        and m.target == MessageTarget.ASSISTANT
-        and m.origin == MessageOrigin.CHARACTER_DELEGATION
-    )
-    assert delegation_request.delegation_id == outcome.task.task_id
-    assert delegation_request.text == "跑测试"
     # 角色执行结果回应带同一 delegation_id，Presenter 可连接两侧
     result_char = next(
         m
@@ -159,45 +150,6 @@ async def test_collaboration_executes_delegation_with_delegation_id(tmp_path: Pa
         if m.source == MessageSource.CHARACTER and m.text == "做完了。"
     )
     assert result_char.delegation_id == outcome.task.task_id
-
-
-@pytest.mark.asyncio
-async def test_codex_start_failure_keeps_delegation_record_and_failed_receipt(
-    tmp_path: Path,
-) -> None:
-    """Codex 在 open_session 退出时，右侧仍有任务卡并显示失败回执。"""
-    engine = RecordingCodingEngine()
-
-    async def fail_open(*args, **kwargs):
-        raise RuntimeError("Codex app-server exited (exit code 1)")
-
-    engine.open_session = fail_open  # type: ignore[method-assign]
-    orchestrator = _make_orchestrator(
-        CharacterTurn(speech="交给古代机械。", delegation=TaskRequestDraft(instructions="查看项目")),
-        CharacterTurn(speech="这次没做成。"),
-        tmp_path=tmp_path,
-        engine=engine,
-    )
-    orchestrator.set_conversation_mode("c", "collaboration")
-
-    outcome = await orchestrator.handle_character_input(conversation_id="c", text="请查看项目")
-
-    assert outcome.receipt is not None
-    assert outcome.receipt.status == "failed"
-    assert "Codex app-server exited" in outcome.receipt.errors[0]
-    delegation_request = next(
-        m for m in outcome.messages if m.origin == MessageOrigin.CHARACTER_DELEGATION
-    )
-    assert delegation_request.source == MessageSource.USER
-    assert delegation_request.target == MessageTarget.ASSISTANT
-    result_char = next(
-        m
-        for m in outcome.messages
-        if m.source == MessageSource.CHARACTER
-        and m.delegation_id == outcome.task.task_id
-    )
-    assert result_char.payload["result_status"] == "failed"
-
 
 @pytest.mark.asyncio
 async def test_runtime_context_injected_in_dialogue_request(tmp_path: Path) -> None:

@@ -48,37 +48,28 @@ function presentQueueItems(state: DesktopRenderState): QueueItemView[] {
 }
 
 /** V0.2 M4：委派卡——当前会话中角色发起的委派（origin=character_delegation
-    且 delegation_id 非空），取任务请求消息；状态由活动任务和结果回执共同决定。 */
+    且 delegation_id 非空），取最新一条 user 消息；状态随 activeTask 推进。 */
 function presentDelegation(state: DesktopRenderState): DelegationCardView | null {
   if (!state.pair) return null;
   const ids = state.messageIdsByConversation[state.currentConversationId] ?? [];
-  const messages = ids
-    .map((id) => state.messagesById[id])
-    .filter((message): message is Message => message !== undefined);
-  const delegationMessage = [...messages].reverse().find(
-    (message) =>
+  let delegationMessage: Message | undefined;
+  for (const id of ids) {
+    const message = state.messagesById[id];
+    if (
+      message &&
       message.source === "user" &&
       message.origin === "character_delegation" &&
-      Boolean(message.delegation_id),
-  );
-  if (!delegationMessage) return null;
-  const resultMessage = [...messages].reverse().find(
-    (message) =>
-      message.delegation_id === delegationMessage.delegation_id &&
-      ["completed", "failed", "cancelled"].includes(String(message.payload.result_status)),
-  );
-  const resultStatus = String(resultMessage?.payload.result_status ?? "");
-  let status: DelegationCardView["status"] = "completed";
-  if (resultStatus === "failed" || resultStatus === "cancelled") {
-    status = resultStatus;
-  } else if (state.activeTask?.task_id === delegationMessage.delegation_id) {
-    status = "running";
+      message.delegation_id
+    ) {
+      delegationMessage = message;
+    }
   }
+  if (!delegationMessage) return null;
   return {
     delegationId: delegationMessage.delegation_id ?? "",
     fromName: state.pair.character.name,
     summary: delegationMessage.text,
-    status,
+    status: state.activeTask ? "running" : "completed",
   };
 }
 

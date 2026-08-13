@@ -12,7 +12,7 @@ def test_maps_assistant_and_tool_notifications() -> None:
             "method": "item/started",
             "params": {
                 "turnId": "turn",
-                "item": {"id": "tool-1", "type": "command_execution", "command": "pytest"},
+                "item": {"id": "tool-1", "type": "commandExecution", "command": "pytest"},
             },
         },
         binding(),
@@ -24,7 +24,7 @@ def test_maps_assistant_and_tool_notifications() -> None:
                 "turnId": "turn",
                 "item": {
                     "id": "tool-1",
-                    "type": "command_execution",
+                    "type": "commandExecution",
                     "command": "pytest",
                     "status": "completed",
                     "aggregatedOutput": "2 passed",
@@ -38,7 +38,7 @@ def test_maps_assistant_and_tool_notifications() -> None:
             "method": "item/completed",
             "params": {
                 "turnId": "turn",
-                "item": {"id": "msg", "type": "agent_message", "text": "完成"},
+                "item": {"id": "msg", "type": "agentMessage", "text": "完成"},
             },
         },
         binding(),

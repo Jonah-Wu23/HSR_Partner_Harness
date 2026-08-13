@@ -16,7 +16,7 @@ from pair_harness.core.contracts import (
 from pair_harness.core.ports import CodingEngine
 
 from .codec import CodexCodec, EventBinding
-from .transport import JsonlProcessTransport, TransportClosed
+from .transport import JsonlProcessTransport
 
 
 class CodexAppServerEngine(CodingEngine):
@@ -145,25 +145,14 @@ class CodexAppServerEngine(CodingEngine):
             engine_turn_id=turn_id,
         )
         codec = CodexCodec()
-        try:
-            while True:
-                notification = await self.transport.next_notification()
-                event = codec.map_notification(notification, binding)
-                if event is None:
-                    continue
-                yield event
-                if event.type in (EngineEventType.TURN_COMPLETED, EngineEventType.TURN_FAILED):
-                    return
-        except TransportClosed as exc:
-            # O4.1：序号统一由 orchestrator 出口重排，这里不再用 10**9 魔法值
-            yield EngineEvent(
-                conversation_id=request.conversation_id,
-                task_id=request.task_id,
-                engine_turn_id=turn_id,
-                sequence=0,
-                type=EngineEventType.TURN_FAILED,
-                payload={"error": str(exc)},
-            )
+        while True:
+            notification = await self.transport.next_notification()
+            event = codec.map_notification(notification, binding)
+            if event is None:
+                continue
+            yield event
+            if event.type in (EngineEventType.TURN_COMPLETED, EngineEventType.TURN_FAILED):
+                return
 
     async def cancel_turn(self, session_ref: EngineSessionRef, turn_id: str) -> None:
         await self.transport.request(

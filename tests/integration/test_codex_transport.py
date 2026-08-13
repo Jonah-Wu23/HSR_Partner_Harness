@@ -156,7 +156,7 @@ async def test_offline_engine_opens_session_and_streams_mapped_events() -> None:
         "item/completed",
         {
             "turnId": "turn-1",
-            "item": {"id": "msg-1", "type": "agent_message", "text": "done"},
+            "item": {"id": "msg-1", "type": "agentMessage", "text": "done"},
         },
     )
     await server.notify(
