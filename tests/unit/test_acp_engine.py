@@ -74,16 +74,21 @@ class FakeTransport(JsonlProcessTransport):
         assert self.server is not None
         await self.server.handle_response(request_id, result)
 
+    async def notify(self, method: str, params: dict | None = None) -> None:
+        assert self.server is not None
+        await self.server.handle_notify(method, params or {})
+
     async def close(self) -> None:
         return
 
 
 class FakeAcpServer:
-    """ACP 服务端脚本。"""
+    """ACP 服务端脚本（reasonix v1.24 实测形状：session/update 封装）。"""
 
     def __init__(self, transport: FakeTransport) -> None:
         self.transport = transport
         self.requests: list[tuple[str, dict]] = []
+        self.notifications: list[tuple[str, dict]] = []
         self.responses: list[tuple[int, dict]] = []
         self.sessions: dict[str, str] = {}
 
@@ -101,37 +106,54 @@ class FakeAcpServer:
             return {"configOptions": []}
         if method == "session/prompt":
             session_id = str(params.get("sessionId") or "")
-            # 脚本：先推消息与工具事件，再返回 stop reason
-            await self.transport._notifications.put(
-                {"method": "agent_message_chunk", "params": {"text": "我先看一下项目结构。"}}
-            )
+            # 脚本：先推消息与工具事件（session/update 形状），再返回 stop reason
             await self.transport._notifications.put(
                 {
-                    "method": "tool_call_started",
+                    "method": "session/update",
                     "params": {
-                        "toolCallId": "tool-1",
-                        "toolName": "list",
-                        "arguments": "{\"path\": \".\"}",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": "我先看一下项目结构。"},
+                        }
                     },
                 }
             )
             await self.transport._notifications.put(
                 {
-                    "method": "tool_call_completed",
+                    "method": "session/update",
                     "params": {
-                        "toolCallId": "tool-1",
-                        "toolName": "list",
-                        "status": "succeeded",
-                        "summary": "列出 3 个文件",
+                        "update": {
+                            "sessionUpdate": "tool_call",
+                            "toolCallId": "tool-1",
+                            "title": "list",
+                            "kind": "read",
+                            "rawInput": {"path": "."},
+                        }
+                    },
+                }
+            )
+            await self.transport._notifications.put(
+                {
+                    "method": "session/update",
+                    "params": {
+                        "update": {
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": "tool-1",
+                            "status": "completed",
+                            "content": [
+                                {"type": "content", "content": {"type": "text", "text": "列出 3 个文件"}}
+                            ],
+                        }
                     },
                 }
             )
             return {"stopReason": "end_turn", "sessionId": session_id}
-        if method == "session/cancel":
-            return {"ok": True}
         if method == "_reasonix.io/session/steer":
             return {"itemId": "inbox-1", "disposition": "steer_accepted"}
         raise RuntimeError(f"unknown method: {method}")
+
+    async def handle_notify(self, method: str, params: dict) -> None:
+        self.notifications.append((method, params))
 
     async def handle_response(self, request_id: int, result: dict) -> None:
         self.responses.append((request_id, result))
@@ -206,9 +228,27 @@ async def test_run_turn_maps_permission_request(engine_and_server) -> None:
                 "id": 42,
                 "method": "session/request_permission",
                 "params": {
-                    "toolCallId": "tool-9",
-                    "summary": "运行命令 rm -rf",
-                    "reason": "高风险删除",
+                    "sessionId": "acp-session-1",
+                    "toolCall": {
+                        "toolCallId": "gate-9",
+                        "title": "bash",
+                        "kind": "execute",
+                        "status": "pending",
+                        "rawInput": {"command": "rm -rf"},
+                        "_meta": {
+                            "reasonix.io": {
+                                "approvalId": "a1",
+                                "tool": "bash",
+                                "subject": "rm -rf",
+                                "fresh": True,
+                                "reason": "高风险删除",
+                            }
+                        },
+                    },
+                    "options": [
+                        {"optionId": "allow_once", "name": "Allow", "kind": "allow_once"},
+                        {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"},
+                    ],
                 },
             }
         )
@@ -222,7 +262,9 @@ async def test_run_turn_maps_permission_request(engine_and_server) -> None:
     approval_events = [e for e in events if e.type == EngineEventType.APPROVAL_REQUESTED]
     assert len(approval_events) == 1
     assert approval_events[0].payload["approval_id"] == "42"
-    assert approval_events[0].payload["summary"] == "运行命令 rm -rf"
+    assert approval_events[0].payload["command"] == "rm -rf"
+    assert approval_events[0].payload["tool_kind"] == "shell"
+    assert approval_events[0].payload["reason"] == "高风险删除"
 
 
 @pytest.mark.asyncio
@@ -232,7 +274,29 @@ async def test_approval_resolve_responds_to_acp_request(engine_and_server) -> No
         ProjectRef(project_id="p1", name="项目", root_path="C:/project")
     )
     await engine.resolve_approval(ref, "42", ApprovalDecision.ALLOW)
-    assert server.responses == [(42, {"approved": True})]
+    assert server.responses == [
+        (42, {"outcome": {"outcome": "selected", "optionId": "allow_once"}})
+    ]
+    await engine.resolve_approval(ref, "43", ApprovalDecision.ALLOW_FOR_CONVERSATION)
+    assert server.responses[-1] == (
+        43,
+        {"outcome": {"outcome": "selected", "optionId": "allow_always"}},
+    )
+    await engine.resolve_approval(ref, "44", ApprovalDecision.DENY)
+    assert server.responses[-1] == (
+        44,
+        {"outcome": {"outcome": "selected", "optionId": "reject_once"}},
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_turn_sends_notification(engine_and_server) -> None:
+    engine, _transport, server = engine_and_server
+    ref = await engine.open_session(
+        ProjectRef(project_id="p1", name="项目", root_path="C:/project")
+    )
+    await engine.cancel_turn(ref, "engine-turn-1")
+    assert server.notifications == [("session/cancel", {"sessionId": "acp-session-1"})]
 
 
 @pytest.mark.asyncio

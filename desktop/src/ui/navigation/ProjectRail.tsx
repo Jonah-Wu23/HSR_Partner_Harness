@@ -31,6 +31,8 @@ export function ProjectRail({ navigation, actions }: ProjectRailProps) {
 
       <div className="rail-divider" />
 
+      <div className="rail-caption">项目</div>
+
       {navigation.projects.map((project) => (
         <button
           key={project.project_id}
@@ -57,7 +59,7 @@ export function ProjectRail({ navigation, actions }: ProjectRailProps) {
 
       <button
         type="button"
-        className="rail-item"
+        className="rail-item rail-item-new"
         title="新建项目"
         aria-label="新建项目"
         onClick={() => void actions.createProject()}
@@ -65,6 +67,7 @@ export function ProjectRail({ navigation, actions }: ProjectRailProps) {
         <span className="project-badge">
           <PlusIcon />
         </span>
+        <span className="rail-new-label">新建项目</span>
       </button>
     </div>
   );

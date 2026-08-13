@@ -7,26 +7,29 @@ import type {
   ToolRun,
 } from "../contracts/protocol";
 
-export type MockScenarioName =
-  | "empty"
-  | "single-project"
-  | "many-projects"
-  | "invalid-path"
-  | "chat-streaming"
-  | "collaboration-running"
-  | "task-succeeded"
-  | "task-failed"
-  | "task-cancelled"
-  | "approval-request"
-  | "approval-review"
-  | "approval-full-auto"
-  | "voice-listening"
-  | "voice-playing"
-  | "performance-500"
-  | "light-theme"
-  | "dark-theme"
-  | "gate-default"
-  | "onboarding-pending";
+export const MOCK_SCENARIO_NAMES = [
+  "empty",
+  "single-project",
+  "many-projects",
+  "invalid-path",
+  "chat-streaming",
+  "collaboration-running",
+  "task-succeeded",
+  "task-failed",
+  "task-cancelled",
+  "approval-request",
+  "approval-review",
+  "approval-full-auto",
+  "voice-listening",
+  "voice-playing",
+  "performance-500",
+  "light-theme",
+  "dark-theme",
+  "gate-default",
+  "onboarding-pending",
+] as const;
+
+export type MockScenarioName = (typeof MOCK_SCENARIO_NAMES)[number];
 
 export interface MockScenario {
   name: MockScenarioName;
@@ -268,28 +271,6 @@ function submitEvents(conversationId: string): DesktopEvent[] {
     },
   ];
 }
-
-export const MOCK_SCENARIO_NAMES: MockScenarioName[] = [
-  "empty",
-  "single-project",
-  "many-projects",
-  "invalid-path",
-  "chat-streaming",
-  "collaboration-running",
-  "task-succeeded",
-  "task-failed",
-  "task-cancelled",
-  "approval-request",
-  "approval-review",
-  "approval-full-auto",
-  "voice-listening",
-  "voice-playing",
-  "performance-500",
-  "light-theme",
-  "dark-theme",
-  "gate-default",
-  "onboarding-pending",
-];
 
 export function createMockScenario(name: MockScenarioName): MockScenario {
   const firstConversation = conversation("conv-1", "project-1", "奥赫玛的项目聊天");

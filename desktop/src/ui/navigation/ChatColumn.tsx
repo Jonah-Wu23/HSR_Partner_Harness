@@ -29,6 +29,67 @@ interface ChatColumnProps {
   onCollapse: () => void;
 }
 
+interface InlineRenameInputProps {
+  className: string;
+  name: string;
+  value: string;
+  ariaLabel: string;
+  onChange: (value: string) => void;
+  onCommit: () => void;
+  onCancel: () => void;
+}
+
+function InlineRenameInput({
+  className,
+  name,
+  value,
+  ariaLabel,
+  onChange,
+  onCommit,
+  onCancel,
+}: InlineRenameInputProps) {
+  return (
+    <input
+      className={className}
+      value={value}
+      name={name}
+      autoComplete="off"
+      autoFocus
+      onChange={(event) => onChange(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") onCommit();
+        if (event.key === "Escape") onCancel();
+      }}
+      onBlur={onCommit}
+      aria-label={ariaLabel}
+    />
+  );
+}
+
+interface ArchiveConfirmProps {
+  label: string;
+  message: string;
+  confirmLabel: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+
+function ArchiveConfirm({ label, message, confirmLabel, onConfirm, onCancel }: ArchiveConfirmProps) {
+  return (
+    <div className="archive-confirm" role="alertdialog" aria-label={label}>
+      <span>{message}</span>
+      <div className="archive-confirm-actions">
+        <button type="button" className="btn btn-danger-outline" onClick={onConfirm}>
+          {confirmLabel}
+        </button>
+        <button type="button" className="btn btn-secondary" onClick={onCancel}>
+          取消
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** 224px 聊天栏：项目头、新建、搜索、分组会话列表、失效路径提醒、底栏。 */
 export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColumnProps) {
   const [query, setQuery] = useState("");
@@ -101,19 +162,14 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
         {editing ? (
           <div className="conversation-row-main conversation-row-editing">
             <div className="conv-title-row">
-              <input
+              <InlineRenameInput
                 className="conv-rename-input"
-                value={editingTitle}
                 name="conversation-title"
-                autoComplete="off"
-                autoFocus
-                onChange={(event) => setEditingTitle(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") commitRename(conversation.conversation_id);
-                  if (event.key === "Escape") setEditingId(null);
-                }}
-                onBlur={() => commitRename(conversation.conversation_id)}
-                aria-label="重命名聊天"
+                value={editingTitle}
+                ariaLabel="重命名聊天"
+                onChange={setEditingTitle}
+                onCommit={() => commitRename(conversation.conversation_id)}
+                onCancel={() => setEditingId(null)}
               />
             </div>
             {meta}
@@ -164,19 +220,14 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
     <div className="chat-column-inner">
       <div className="chat-header">
         {editingProject && currentProject ? (
-          <input
+          <InlineRenameInput
             className="project-rename-input"
-            value={editingProjectTitle}
             name="project-title"
-            autoComplete="off"
-            autoFocus
-            onChange={(event) => setEditingProjectTitle(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") commitProjectRename();
-              if (event.key === "Escape") setEditingProject(false);
-            }}
-            onBlur={commitProjectRename}
-            aria-label="重命名项目"
+            value={editingProjectTitle}
+            ariaLabel="重命名项目"
+            onChange={setEditingProjectTitle}
+            onCommit={commitProjectRename}
+            onCancel={() => setEditingProject(false)}
           />
         ) : (
           <span className="chat-project-name" title={currentProject?.name ?? ""}>
@@ -270,58 +321,43 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
       ) : null}
 
       {pendingArchive ? (
-        <div className="archive-confirm" role="alertdialog" aria-label="确认归档聊天">
-          <span>
-            确定归档“{pendingArchive.title}”吗？
-          </span>
-          <div className="archive-confirm-actions">
-            <button
-              type="button"
-              className="btn btn-danger-outline"
-              onClick={() => {
-                void actions.archiveConversation(pendingArchive.conversation_id);
-                setPendingArchive(null);
-              }}
-            >
-              归档
-            </button>
-            <button type="button" className="btn btn-secondary" onClick={() => setPendingArchive(null)}>
-              取消
-            </button>
-          </div>
-        </div>
+        <ArchiveConfirm
+          label="确认归档聊天"
+          message={`确定归档“${pendingArchive.title}”吗？`}
+          confirmLabel="归档"
+          onConfirm={() => {
+            void actions.archiveConversation(pendingArchive.conversation_id);
+            setPendingArchive(null);
+          }}
+          onCancel={() => setPendingArchive(null)}
+        />
       ) : null}
 
       {pendingArchiveProject ? (
-        <div className="archive-confirm" role="alertdialog" aria-label="确认归档项目">
-          <span>
-            确定归档项目“{pendingArchiveProject.name}”吗？其中的聊天会一起归档。
-          </span>
-          <div className="archive-confirm-actions">
-            <button
-              type="button"
-              className="btn btn-danger-outline"
-              onClick={() => {
-                void actions.archiveProject(pendingArchiveProject.project_id);
-                setPendingArchiveProject(null);
-              }}
-            >
-              归档项目
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => setPendingArchiveProject(null)}
-            >
-              取消
-            </button>
-          </div>
-        </div>
+        <ArchiveConfirm
+          label="确认归档项目"
+          message={`确定归档项目“${pendingArchiveProject.name}”吗？其中的聊天会一起归档。`}
+          confirmLabel="归档项目"
+          onConfirm={() => {
+            void actions.archiveProject(pendingArchiveProject.project_id);
+            setPendingArchiveProject(null);
+          }}
+          onCancel={() => setPendingArchiveProject(null)}
+        />
       ) : null}
 
       <div className="chat-groups">
         {!currentProject ? (
-          <div className="nav-empty">还没有项目</div>
+          <div className="nav-empty">
+            <span>还没有项目</span>
+            <button
+              type="button"
+              className="btn btn-outline"
+              onClick={() => void actions.createProject()}
+            >
+              新建项目
+            </button>
+          </div>
         ) : conversations.length === 0 ? (
           <div className="nav-empty">还没有聊天，点击上方新建</div>
         ) : groups.length === 0 ? (

@@ -121,6 +121,17 @@ fn packaged_codex(app: &tauri::AppHandle) -> Option<PathBuf> {
     None
 }
 
+fn packaged_reasonix(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let resource_root = app.path().resource_dir().ok()?;
+    for root in [resource_root.clone(), resource_root.join("resources")] {
+        let candidate = root.join("reasonix").join("bin").join("reasonix.exe");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 fn debug_console_requested<I>(args: I) -> bool
 where
     I: IntoIterator<Item = String>,
@@ -205,6 +216,7 @@ fn launch_sidecar(
 ) -> Result<(Child, ChildStdin, ChildStdout), String> {
     let packaged = packaged_sidecar(app);
     let bundled_codex = packaged_codex(app);
+    let bundled_reasonix = packaged_reasonix(app);
     let root = std::env::var_os("PAIR_HARNESS_ROOT")
         .map(PathBuf::from)
         .or_else(|| {
@@ -229,6 +241,9 @@ fn launch_sidecar(
     }
     if let Some(codex) = bundled_codex {
         command.env("PAIR_HARNESS_BUNDLED_CODEX_BIN", codex);
+    }
+    if let Some(reasonix) = bundled_reasonix {
+        command.env("PAIR_HARNESS_BUNDLED_REASONIX_BIN", reasonix);
     }
     command
         .arg(&root)

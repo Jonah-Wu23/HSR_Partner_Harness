@@ -35,7 +35,7 @@ class SubprocessJsonLineConnection:
         批处理 shim，``create_subprocess_exec("codex", ...)`` 直接
         FileNotFoundError；这里按 PATHEXT 解析出 .cmd/.bat 脚本路径。
         """
-        if os.path.sep in executable or os.path.altsep and os.path.altsep in executable:
+        if os.path.sep in executable or (os.path.altsep and os.path.altsep in executable):
             return executable
         if executable.lower().endswith((".exe", ".cmd", ".bat", ".ps1")):
             return executable
@@ -83,8 +83,11 @@ class SubprocessJsonLineConnection:
     async def write_line(self, data: bytes) -> None:
         if self.process.stdin is None:
             raise TransportClosed("app-server stdin is unavailable")
-        self.process.stdin.write(data)
-        await self.process.stdin.drain()
+        try:
+            self.process.stdin.write(data)
+            await self.process.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, ValueError) as exc:
+            raise TransportClosed("Codex app-server connection lost") from exc
 
     async def close(self) -> None:
         if self.process.stdin is not None:
@@ -125,6 +128,9 @@ class JsonlProcessTransport:
     async def start(self) -> None:
         if self.is_running:
             return
+        # 读循环已经结束时，先收掉旧管道，再创建新的 app-server 连接。
+        if self._connection is not None:
+            await self._close_connection()
         if self.connection_factory is not None:
             self._connection = await self.connection_factory()
         else:
@@ -149,8 +155,12 @@ class JsonlProcessTransport:
         encoded = json.dumps(message, ensure_ascii=False).encode("utf-8") + b"\n"
         try:
             await self._connection.write_line(encoded)
-        except BaseException:
+        except BaseException as exc:
             self._pending.pop(request_id, None)
+            if isinstance(exc, (TransportClosed, ConnectionError, ValueError)):
+                await self._close_connection()
+                if not isinstance(exc, TransportClosed):
+                    raise TransportClosed("Codex app-server connection lost") from exc
             raise
         effective_timeout = self.request_timeout if timeout is None else timeout
         if effective_timeout is None:
@@ -168,16 +178,32 @@ class JsonlProcessTransport:
             raise item
         return item
 
+    async def _write_message(self, message: dict[str, Any]) -> None:
+        if self._connection is None:
+            raise TransportClosed("transport is not started")
+        encoded = json.dumps(message, ensure_ascii=False).encode("utf-8") + b"\n"
+        try:
+            await self._connection.write_line(encoded)
+        except (TransportClosed, ConnectionError, ValueError) as exc:
+            await self._close_connection()
+            if not isinstance(exc, TransportClosed):
+                raise TransportClosed("Codex app-server connection lost") from exc
+            raise
+
     async def respond(self, request_id: int, result: dict[str, Any]) -> None:
         """O3.1：回复服务端发起的请求（如审批裁决结果）。
 
         请求带 JSON-RPC id 与方法名进入通知队列，调用方识别后在此回复。
         """
-        if self._connection is None:
-            raise TransportClosed("transport is not started")
-        message = {"id": request_id, "result": result}
-        encoded = json.dumps(message, ensure_ascii=False).encode("utf-8") + b"\n"
-        await self._connection.write_line(encoded)
+        await self._write_message({"id": request_id, "result": result})
+
+    async def notify(self, method: str, params: dict[str, Any] | None = None) -> None:
+        """发送 JSON-RPC notification（无 id，服务端不回复）。
+
+        ACP 的 ``session/cancel`` 是 notification：按 request 发送会挂在
+        pending 直到超时，服务端不会回响应。
+        """
+        await self._write_message({"method": method, "params": params or {}})
 
     async def _read_loop(self) -> None:
         assert self._connection is not None
@@ -221,12 +247,16 @@ class JsonlProcessTransport:
             self._pending.clear()
             await self._notifications.put(exc)
 
-    async def close(self) -> None:
-        if self._reader_task is not None:
-            self._reader_task.cancel()
-            await asyncio.gather(self._reader_task, return_exceptions=True)
-            self._reader_task = None
-        if self._connection is not None:
-            await self._connection.close()
-            self._connection = None
+    async def _close_connection(self) -> None:
+        reader_task = self._reader_task
+        self._reader_task = None
+        if reader_task is not None and reader_task is not asyncio.current_task():
+            reader_task.cancel()
+            await asyncio.gather(reader_task, return_exceptions=True)
+        connection = self._connection
+        self._connection = None
+        if connection is not None:
+            await connection.close()
 
+    async def close(self) -> None:
+        await self._close_connection()

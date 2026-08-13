@@ -215,36 +215,38 @@ class SQLiteStore(StateStore):
         self.connection.commit()
         return self.get_project(project_id)
 
+    def _update_project_column(
+        self, column: str, value: str, project_id: str, *, touch_opened: bool
+    ) -> None:
+        if touch_opened:
+            sql = f"UPDATE projects SET {column} = ?, last_opened_at = ? WHERE project_id = ?"
+            params = (value, _now(), project_id)
+        else:
+            sql = f"UPDATE projects SET {column} = ? WHERE project_id = ?"
+            params = (value, project_id)
+        self.connection.execute(sql, params)
+        self.connection.commit()
+
     def update_project_approval_mode(self, project_id: str, approval_mode: str) -> None:
         """保存输入区下拉框选择的审批模式（计划 A6）。"""
-        self.connection.execute(
-            "UPDATE projects SET approval_mode = ? WHERE project_id = ?",
-            (approval_mode, project_id),
+        self._update_project_column(
+            "approval_mode", approval_mode, project_id, touch_opened=False
         )
-        self.connection.commit()
 
     def update_project_reasoning_effort(
         self, project_id: str, reasoning_effort: str
     ) -> None:
-        self.connection.execute(
-            "UPDATE projects SET reasoning_effort = ? WHERE project_id = ?",
-            (reasoning_effort, project_id),
+        self._update_project_column(
+            "reasoning_effort", reasoning_effort, project_id, touch_opened=False
         )
-        self.connection.commit()
 
     def update_project_name(self, project_id: str, name: str) -> None:
-        self.connection.execute(
-            "UPDATE projects SET name = ?, last_opened_at = ? WHERE project_id = ?",
-            (name, _now(), project_id),
-        )
-        self.connection.commit()
+        self._update_project_column("name", name, project_id, touch_opened=True)
 
     def update_project_root_path(self, project_id: str, root_path: str) -> None:
-        self.connection.execute(
-            "UPDATE projects SET root_path = ?, last_opened_at = ? WHERE project_id = ?",
-            (root_path, _now(), project_id),
+        self._update_project_column(
+            "root_path", root_path, project_id, touch_opened=True
         )
-        self.connection.commit()
 
     def mark_project_opened(self, project_id: str) -> Project:
         """记录最近打开项目，并返回更新后的项目对象。"""
@@ -261,17 +263,7 @@ class SQLiteStore(StateStore):
         ).fetchone()
         if row is None:
             raise KeyError(project_id)
-        return Project(
-            project_id=row["project_id"],
-            account_id=row["account_id"] or "",
-            name=row["name"],
-            root_path=row["root_path"],
-            approval_mode=row["approval_mode"],
-            reasoning_effort=row["reasoning_effort"],
-            archived=bool(row["archived"]),
-            created_at=_dt(row["created_at"]),
-            last_opened_at=_dt(row["last_opened_at"]),
-        )
+        return self._project_from_row(row)
 
     def list_projects(self, *, include_archived: bool = False) -> list[Project]:
         where = "" if include_archived else "WHERE archived = 0"
@@ -783,39 +775,40 @@ class SQLiteStore(StateStore):
 
     # ------------------------------------------------------------------ V0.2 M3 账号级配置
 
-    def get_config(self, account_id: str, key: str) -> str | None:
+    def _get_account_config(
+        self, table: str, column: str, account_id: str, key: str
+    ) -> str | None:
         row = self.connection.execute(
-            "SELECT value FROM provider_configs WHERE account_id = ? AND key = ?",
+            f"SELECT {column} FROM {table} WHERE account_id = ? AND key = ?",
             (account_id, key),
         ).fetchone()
-        return row["value"] if row is not None else None
+        return row[column] if row is not None else None
 
-    def set_config(self, account_id: str, key: str, value: str) -> None:
+    def _set_account_config(
+        self, table: str, column: str, account_id: str, key: str, value: str
+    ) -> None:
         self.connection.execute(
-            "INSERT INTO provider_configs(account_id, key, value) VALUES (?, ?, ?) "
-            "ON CONFLICT(account_id, key) DO UPDATE SET value = excluded.value",
+            f"INSERT INTO {table}(account_id, key, {column}) VALUES (?, ?, ?) "
+            f"ON CONFLICT(account_id, key) DO UPDATE SET {column} = excluded.{column}",
             (account_id, key, value),
         )
         self.connection.commit()
+
+    def get_config(self, account_id: str, key: str) -> str | None:
+        return self._get_account_config("provider_configs", "value", account_id, key)
+
+    def set_config(self, account_id: str, key: str, value: str) -> None:
+        self._set_account_config("provider_configs", "value", account_id, key, value)
 
     def set_configs(self, account_id: str, updates: dict[str, str]) -> None:
         for key, value in updates.items():
             self.set_config(account_id, key, value)
 
     def get_secret(self, account_id: str, key: str) -> str | None:
-        row = self.connection.execute(
-            "SELECT secret FROM secret_refs WHERE account_id = ? AND key = ?",
-            (account_id, key),
-        ).fetchone()
-        return row["secret"] if row is not None else None
+        return self._get_account_config("secret_refs", "secret", account_id, key)
 
     def set_secret(self, account_id: str, key: str, secret: str) -> None:
-        self.connection.execute(
-            "INSERT INTO secret_refs(account_id, key, secret) VALUES (?, ?, ?) "
-            "ON CONFLICT(account_id, key) DO UPDATE SET secret = excluded.secret",
-            (account_id, key, secret),
-        )
-        self.connection.commit()
+        self._set_account_config("secret_refs", "secret", account_id, key, secret)
 
     def get_preference(self, account_id: str, key: str) -> str | None:
         row = self.connection.execute(

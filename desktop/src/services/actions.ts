@@ -11,10 +11,6 @@ import { RequestIdFactory } from "./backend";
 import { isDesktopSnapshot } from "./mockDesktopBackend";
 import { desktopStore } from "../stores/desktopStore";
 
-function isSnapshot(value: unknown): value is DesktopSnapshot {
-  return isDesktopSnapshot(value);
-}
-
 export interface ActionController {
   actions: HarnessActions;
   loadBootstrap(): Promise<void>;
@@ -26,7 +22,7 @@ export function createActionController(backend: DesktopBackend): ActionControlle
   async function request<T>(method: DesktopCommandMethod, params: Record<string, unknown> = {}): Promise<T> {
     const command: DesktopCommand = { kind: "request", id: ids.next(), method, params };
     const result = await backend.request<T>(command);
-    if (isSnapshot(result)) desktopStore.getState().hydrate(result);
+    if (isDesktopSnapshot(result)) desktopStore.getState().hydrate(result);
     return result;
   }
 

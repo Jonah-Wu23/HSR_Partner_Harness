@@ -4,9 +4,15 @@ import json
 import pytest
 
 from pair_harness.adapters.codex.engine import CodexAppServerEngine
-from pair_harness.adapters.codex.transport import JsonlProcessTransport
+from pair_harness.adapters.codex.transport import JsonlProcessTransport, TransportClosed
 from pair_harness.core.contracts import ProjectRef, TaskRequest
 from tests.fixtures.fake_codex_app_server import FakeCodexAppServer, QueueJsonLineConnection
+
+
+class ResetOnWriteConnection(QueueJsonLineConnection):
+    async def write_line(self, data: bytes) -> None:
+        del data
+        raise ConnectionResetError("连接已重置")
 
 
 @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
@@ -37,6 +43,24 @@ async def test_transport_correlates_requests_with_single_reader() -> None:
     assert await first == {"value": 1}
     assert await second == {"value": 2}
     assert server.requests == []
+    await transport.close()
+
+
+@pytest.mark.asyncio
+async def test_transport_normalizes_connection_reset_and_releases_connection() -> None:
+    connection = ResetOnWriteConnection()
+
+    async def factory():
+        return connection
+
+    transport = JsonlProcessTransport("unused", connection_factory=factory)
+
+    with pytest.raises(TransportClosed) as raised:
+        await transport.request("initialize")
+
+    assert str(raised.value) == "Codex app-server connection lost"
+    assert not transport.is_running
+    assert transport._connection is None
     await transport.close()
 
 
@@ -206,4 +230,39 @@ async def test_open_session_sends_initialize_handshake_before_thread_start() -> 
     await resume_task
     handshakes = [r for r in server.requests if r["method"] == "initialize"]
     assert len(handshakes) == 1
+    await transport.close()
+
+
+@pytest.mark.asyncio
+async def test_engine_repeats_initialize_after_transport_reconnect() -> None:
+    connections: list[QueueJsonLineConnection] = []
+
+    async def factory():
+        connection = QueueJsonLineConnection()
+        connections.append(connection)
+        return connection
+
+    transport = JsonlProcessTransport("unused", connection_factory=factory)
+    engine = CodexAppServerEngine(transport)
+    project = ProjectRef(project_id="p", name="p", root_path="C:\\project")
+
+    first_open = asyncio.create_task(engine.open_session(project))
+    while len(connections) < 1:
+        await asyncio.sleep(0)
+    first_server = FakeCodexAppServer(connections[0])
+    await first_server.serve_request({"thread": {"id": "thread-1"}})
+    await first_open
+    await transport.close()
+
+    second_open = asyncio.create_task(engine.open_session(project))
+    while len(connections) < 2:
+        await asyncio.sleep(0)
+    second_server = FakeCodexAppServer(connections[1])
+    await second_server.serve_request({"thread": {"id": "thread-2"}})
+    await second_open
+
+    assert [request["method"] for request in second_server.requests] == [
+        "initialize",
+        "thread/start",
+    ]
     await transport.close()

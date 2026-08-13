@@ -27,6 +27,24 @@ const EFFORT_LABEL: Record<ReasoningEffort, string> = {
   max: "推理 · 最高",
 };
 
+const COLLAPSE_ROTATED_STYLE = { transform: "rotate(-90deg)" };
+
+function voiceStatusText(voice: VoiceViewModel): string {
+  if (voice.error) return `语音异常：${voice.error}`;
+  if (voice.ptt) return "聆听中（按键说话）";
+  if (voice.tts === "playing") return "语音播放中";
+  if (voice.vad_enabled) return `VAD ${voice.vad}`;
+  if (!voice.supported) return "语音不可用";
+  return voice.vad === "unavailable" ? "语音已连接，VAD 不可用" : "语音就绪";
+}
+
+function vadButtonTitle(voice: VoiceViewModel, target: "character" | "assistant"): string {
+  if (target !== "character") return "VAD 仅用于对角色说";
+  if (voice.vad === "unavailable") return "VAD 模型不可用";
+  if (!voice.supported) return "语音运行时未启用";
+  return voice.vad_enabled ? "关闭 VAD" : "开启 VAD";
+}
+
 interface ComposerProps {
   composer: ComposerViewModel;
   voice: VoiceViewModel;
@@ -78,20 +96,7 @@ export function Composer({
   const asrText = voice.asr_partial || composer.asrPartial;
   const vadUnavailable = voice.vad === "unavailable";
   const canUseVad = voice.supported && !vadUnavailable && target === "character";
-
-  const voiceStatusText = voice.error
-    ? `语音异常：${voice.error}`
-    : voice.ptt
-      ? "聆听中（按键说话）"
-      : voice.tts === "playing"
-        ? "语音播放中"
-        : voice.vad_enabled
-          ? `VAD ${voice.vad}`
-          : voice.supported
-            ? vadUnavailable
-              ? "语音已连接，VAD 不可用"
-              : "语音就绪"
-            : "语音不可用";
+  const voiceStatus = voiceStatusText(voice);
 
   return (
     <div className={`composer${composer.enabled ? "" : " is-disabled"}`} data-testid="composer">
@@ -167,7 +172,7 @@ export function Composer({
           trigger={() => (
             <button type="button" className="select-chip" aria-label="审批模式">
               {APPROVAL_LABEL[composer.approvalMode]}
-              <CollapseIcon style={{ transform: "rotate(-90deg)" }} />
+              <CollapseIcon style={COLLAPSE_ROTATED_STYLE} />
             </button>
           )}
           items={(Object.keys(APPROVAL_LABEL) as ApprovalMode[]).map((value) => ({
@@ -185,7 +190,7 @@ export function Composer({
             <button type="button" className="select-chip" aria-label="推理档位">
               {EFFORT_LABEL[(composer.reasoningEffort as ReasoningEffort) ?? "medium"] ??
                 `推理 · ${composer.reasoningEffort}`}
-              <CollapseIcon style={{ transform: "rotate(-90deg)" }} />
+              <CollapseIcon style={COLLAPSE_ROTATED_STYLE} />
             </button>
           )}
           items={(Object.keys(EFFORT_LABEL) as ReasoningEffort[]).map((value) => ({
@@ -204,17 +209,7 @@ export function Composer({
           type="button"
           className="icon-btn"
           disabled={!canUseVad}
-          title={
-            target !== "character"
-              ? "VAD 仅用于对角色说"
-              : vadUnavailable
-                ? "VAD 模型不可用"
-                : voice.supported
-                  ? voice.vad_enabled
-                    ? "关闭 VAD"
-                    : "开启 VAD"
-                  : "语音运行时未启用"
-          }
+          title={vadButtonTitle(voice, target)}
           aria-label="VAD"
           aria-pressed={voice.vad_enabled}
           onClick={() => void actions.setVadEnabled(!voice.vad_enabled)}
@@ -249,7 +244,7 @@ export function Composer({
           <span
             className={`pair-dot ${voice.ptt || voice.tts === "playing" ? "pair-dot-running" : "pair-dot-idle"}`}
           />
-          {voiceStatusText}
+          {voiceStatus}
         </span>
           </>
         ) : null}

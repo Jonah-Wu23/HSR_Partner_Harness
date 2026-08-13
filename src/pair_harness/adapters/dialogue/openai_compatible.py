@@ -287,7 +287,12 @@ class OpenAICompatibleDialogueModel(DialogueModel):
     async def generate_title(
         self, *, pair_id: str, context: tuple[Message, ...]
     ) -> str | None:
-        """使用助手提示词生成短标题，不经过角色输出协议。"""
+        """使用助手提示词生成短标题，不经过角色输出协议。
+
+        DeepSeek 等推理模型默认开启思考，会把 max_tokens 全部耗在思考上
+        （finish_reason=length、content 为空）——标题请求显式关闭思考并
+        保留足够 token 预算；仍为空时带更大预算重试一次。
+        """
         if not context:
             return None
         config = load_pair_config(pair_id, root=self._config_root)
@@ -306,26 +311,32 @@ class OpenAICompatibleDialogueModel(DialogueModel):
 以下是你的身份与表达边界：
 {assistant_prompt}
 """
-        response = await self._client_or_raise().post(
-            "/chat/completions",
-            json={
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"聊天上下文：\n{context_text}"},
+        ]
+        for thinking, max_tokens in ((False, 128), (True, 512)):
+            body: dict[str, Any] = {
                 "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": f"聊天上下文：\n{context_text}"},
-                ],
+                "messages": messages,
                 "stream": False,
                 "temperature": 0.2,
-                "max_tokens": 24,
-            },
-        )
-        response.raise_for_status()
-        payload = response.json()
-        choices = payload.get("choices") or []
-        if not choices:
-            return None
-        content = (choices[0].get("message") or {}).get("content", "")
-        return _normalize_title(content)
+                "max_tokens": max_tokens,
+            }
+            body.update(deepseek_request_extras(thinking=thinking, model=self.model))
+            response = await self._client_or_raise().post(
+                "/chat/completions", json=body
+            )
+            response.raise_for_status()
+            payload = response.json()
+            choices = payload.get("choices") or []
+            if not choices:
+                return None
+            content = (choices[0].get("message") or {}).get("content", "")
+            title = _normalize_title(content)
+            if title:
+                return title
+        return None
 
     def _request_extras(self) -> dict[str, Any]:
         """B1：按后端识别注入推理请求形态。

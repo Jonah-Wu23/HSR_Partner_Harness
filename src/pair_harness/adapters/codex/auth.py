@@ -109,19 +109,19 @@ class CodexAuthService:
         logger.info("Codex API 登录完成（账号 %s）", self.account_id)
         return {"status": "logged_in", "account_label": "OpenAI API Key"}
 
-    def cancel_login(self) -> None:
-        """取消 waiting 态（浏览器流程放弃后回到 logged_out）。"""
+    def _terminate_login_process(self) -> None:
         if self._login_process is not None and self._login_process.poll() is None:
             self._login_process.terminate()
         self._login_process = None
         self._waiting_file.unlink(missing_ok=True)
 
+    def cancel_login(self) -> None:
+        """取消 waiting 态（浏览器流程放弃后回到 logged_out）。"""
+        self._terminate_login_process()
+
     def logout(self) -> dict[str, object]:
         """清空本账号认证数据（不删除会话记录）。"""
-        if self._login_process is not None and self._login_process.poll() is None:
-            self._login_process.terminate()
-        self._login_process = None
-        self._waiting_file.unlink(missing_ok=True)
+        self._terminate_login_process()
         self._auth_file.unlink(missing_ok=True)
         return {"status": "logged_out"}
 

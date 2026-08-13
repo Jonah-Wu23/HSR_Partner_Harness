@@ -102,3 +102,37 @@ if (-not (Test-Path -LiteralPath $bundledCodex -PathType Leaf)) {
     throw "Copying the Codex native distribution failed: $bundledCodex"
 }
 Write-Host "Bundled Codex prepared: $bundledCodex"
+
+# 把 Reasonix CLI 的 Windows 原生二进制（reasonix.exe，DeepSeek 编程助手）
+# 放进 Tauri resources，供 DeepSeek 引擎的 reasonix acp 子进程使用。
+# 来源：显式指定 > npm 全局安装（npm i -g reasonix）。
+$reasonixCandidates = @()
+if ($env:PAIR_HARNESS_REASONIX_NATIVE_ROOT) {
+    $reasonixCandidates += ,(Join-Path $env:PAIR_HARNESS_REASONIX_NATIVE_ROOT "reasonix.exe")
+}
+if ($npmRoot) {
+    # npm i -g reasonix 的平台二进制位于嵌套 node_modules（optionalDependencies）
+    $reasonixCandidates += ,(Join-Path $npmRoot "reasonix\node_modules\@reasonix\cli-win32-x64\bin\reasonix.exe")
+}
+$reasonixShim = Get-Command reasonix.cmd -ErrorAction SilentlyContinue
+if ($reasonixShim) {
+    $shimRoot = Split-Path -Parent $reasonixShim.Source
+    if ($shimRoot) {
+        $reasonixCandidates += ,(Join-Path $shimRoot "node_modules\reasonix\node_modules\@reasonix\cli-win32-x64\bin\reasonix.exe")
+    }
+}
+$reasonixBin = $null
+foreach ($candidate in $reasonixCandidates) {
+    if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+        $reasonixBin = $candidate
+        break
+    }
+}
+if (-not $reasonixBin) {
+    throw "Reasonix Windows native binary not found. Install it with 'npm i -g reasonix' or set PAIR_HARNESS_REASONIX_NATIVE_ROOT."
+}
+$reasonixResourceRoot = Join-Path $resourceRoot "reasonix\bin"
+New-Item -ItemType Directory -Path $reasonixResourceRoot -Force | Out-Null
+$bundledReasonix = Join-Path $reasonixResourceRoot "reasonix.exe"
+Copy-Item -LiteralPath $reasonixBin -Destination $bundledReasonix -Force
+Write-Host "Bundled Reasonix prepared: $bundledReasonix"

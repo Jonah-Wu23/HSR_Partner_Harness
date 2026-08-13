@@ -79,8 +79,9 @@ class CodexAppServerEngine(CodingEngine):
         B1 联调时由编排器按审批模式（request_approval → "untrusted" 等）
         与沙箱配置传入真实参数。
         """
+        was_running = self.transport.is_running
         await self.transport.start()
-        if not self._initialized:
+        if not self._initialized or not was_running:
             await self.transport.request(
                 "initialize",
                 {"clientInfo": {"name": "pair-harness", "version": "0.2.0"}},

@@ -11,6 +11,8 @@ import type { VoiceMiniPlayerView } from "../ui/composer/VoiceMiniPlayer";
 import type { AccountListItem } from "../ui/gate/types";
 import type { TestResult, VoicePageView } from "../ui/settings/types";
 
+type CodingAssistantCodexStatus = "logged_out" | "waiting" | "logged_in" | "expired";
+
 function messagesFor(state: DesktopRenderState, conversationId: string): Message[] {
   return (state.messageIdsByConversation[conversationId] ?? [])
     .map((id) => state.messagesById[id])
@@ -161,8 +163,6 @@ function presentSettings(state: DesktopRenderState): AppShellViewModel["settings
   };
 }
 
-type CodingAssistantCodexStatus = "logged_out" | "waiting" | "logged_in" | "expired";
-
 export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
   const currentProject = state.projectsById[state.currentProjectId];
   const currentConversation = state.conversationsById[state.currentConversationId];
@@ -171,7 +171,7 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
     ...project,
     isCurrent: project.project_id === state.currentProjectId,
     isBusy: project.project_id === state.activeTask?.project_id,
-    conversations: project.conversations.map((conversation): ConversationViewModel => ({
+    conversations: (project.conversations ?? []).map((conversation): ConversationViewModel => ({
       ...conversation,
       isCurrent: conversation.conversation_id === state.currentConversationId,
       isTaskOrigin: conversation.conversation_id === activeConversationId,

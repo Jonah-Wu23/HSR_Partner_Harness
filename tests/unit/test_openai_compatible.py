@@ -104,6 +104,63 @@ async def test_generate_title_uses_assistant_only_non_streaming_request() -> Non
     await client.aclose()
 
 
+@pytest.mark.asyncio
+async def test_generate_title_retries_when_content_empty() -> None:
+    """推理模型把 token 预算耗在思考上（finish_reason=length、content 空）时
+    必须用更大预算重试，而不是静默放弃标题。"""
+    captured: list[dict] = []
+
+    def handler(request: Request) -> Response:
+        body = json.loads(request.content)
+        captured.append(body)
+        if len(captured) == 1:
+            # 首次：思考耗尽 token，content 为空（真实 DeepSeek 故障形状）
+            return Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {"content": ""},
+                            "finish_reason": "length",
+                        }
+                    ],
+                    "usage": {"completion_tokens_details": {"reasoning_tokens": 128}},
+                },
+            )
+        return Response(
+            200,
+            json={"choices": [{"message": {"content": "整理今天的工作"}}]},
+        )
+
+    client = AsyncClient(base_url="https://api.deepseek.com", transport=MockTransport(handler))
+    model = OpenAICompatibleDialogueModel(
+        base_url="https://api.deepseek.com",
+        api_key="test-key",
+        model="deepseek-v4-flash",
+        client=client,
+    )
+    context = (
+        Message(
+            conversation_id="c",
+            pair_id="phainon_ancient_machine",
+            source=MessageSource.USER,
+            kind=MessageKind.USER_TEXT,
+            text="请帮我整理今天的工作",
+        ),
+    )
+
+    title = await model.generate_title(pair_id="phainon_ancient_machine", context=context)
+
+    assert title == "整理今天的工作"
+    assert len(captured) == 2
+    # 首次请求关闭思考（标题不需要推理）并给足够 token 预算
+    assert captured[0]["max_tokens"] == 128
+    assert captured[0]["thinking"] == {"type": "disabled"}
+    # 重试放开思考并加大预算
+    assert captured[1]["max_tokens"] == 512
+    await client.aclose()
+
+
 @pytest.mark.parametrize(
     "raw, expected_instructions",
     [

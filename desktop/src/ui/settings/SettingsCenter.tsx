@@ -43,6 +43,61 @@ const NAV: Array<{ id: SettingsPage; label: string }> = [
   { id: "voice", label: "语音" },
 ];
 
+interface TestResultNoteProps {
+  result: TestResult;
+  okClass: string;
+  testingLabel: string;
+}
+
+function TestResultNote({ result, okClass, testingLabel }: TestResultNoteProps) {
+  if (result.state === "idle") return null;
+  let className = "settings-hint";
+  if (result.state === "ok") className = okClass;
+  if (result.state === "failed") className = "field-error";
+  return (
+    <p className={className} role="status">
+      {result.state === "testing" ? testingLabel : result.text}
+    </p>
+  );
+}
+
+interface VoicePreviewFieldProps {
+  label: string;
+  voiceId: string;
+  voiceName: string;
+  fallbackName: string;
+  onPreview: () => void;
+}
+
+function VoicePreviewField({
+  label,
+  voiceId,
+  voiceName,
+  fallbackName,
+  onPreview,
+}: VoicePreviewFieldProps) {
+  return (
+    <div className="field">
+      <span className="field-label">{label}</span>
+      <span className="settings-voice-info">
+        <span>
+          <span className="settings-voice-info-name">{voiceName || fallbackName}</span>
+          {voiceId ? <div className="settings-voice-info-id">{voiceId}</div> : null}
+        </span>
+        <button type="button" className="btn btn-outline" onClick={onPreview}>
+          试听
+        </button>
+      </span>
+    </div>
+  );
+}
+
+function vadStatusLabel(status: VoicePageView["vadStatus"]): string {
+  if (status === "ready") return "就绪";
+  if (status === "running") return "运行中";
+  return "不可用";
+}
+
 /**
  * 设置中心：模态全屏遮罩，左栏目导航 + 右内容卡，Esc 关闭。
  * 技术参数统一收进每页底部「高级设置」折叠区；危险操作二次确认。
@@ -60,6 +115,8 @@ export function SettingsCenter(props: SettingsCenterProps) {
   }, [open, onClose]);
 
   if (!open) return null;
+
+  const Page = PAGES[props.page];
 
   return (
     <div className="settings-backdrop" onClick={onClose}>
@@ -90,10 +147,7 @@ export function SettingsCenter(props: SettingsCenterProps) {
             </button>
           </header>
 
-          {props.page === "account" ? <AccountPage {...props} /> : null}
-          {props.page === "coding" ? <CodingAssistantPage {...props} /> : null}
-          {props.page === "model" ? <CharacterModelPage {...props} /> : null}
-          {props.page === "voice" ? <VoicePage {...props} /> : null}
+          <Page {...props} />
         </div>
       </div>
     </div>
@@ -302,14 +356,7 @@ function CharacterModelPage(props: SettingsCenterProps) {
         </label>
       </details>
 
-      {props.modelTest.state !== "idle" ? (
-        <p
-          className={props.modelTest.state === "ok" ? "field-ok" : props.modelTest.state === "failed" ? "field-error" : "settings-hint"}
-          role="status"
-        >
-          {props.modelTest.state === "testing" ? "正在测试连接…" : props.modelTest.text}
-        </p>
-      ) : null}
+      <TestResultNote result={props.modelTest} okClass="field-ok" testingLabel="正在测试连接…" />
 
       <div className="settings-row">
         <button
@@ -381,60 +428,31 @@ function VoicePage(props: SettingsCenterProps) {
         <>
           {/* 内置音色只读展示：音色由作者预先复刻/设计，随应用分发 */}
           <div className="settings-grid">
-            <div className="field">
-              <span className="field-label">角色音色</span>
-              <span className="settings-voice-info">
-                <span>
-                  <span className="settings-voice-info-name">
-                    {voice.characterVoiceName || "白厄"}
-                  </span>
-                  {voice.characterVoiceId ? (
-                    <div className="settings-voice-info-id">{voice.characterVoiceId}</div>
-                  ) : null}
-                </span>
-                <button
-                  type="button"
-                  className="btn btn-outline"
-                  onClick={() =>
-                    props.onPreviewVoice(voice.characterVoiceId, voice.characterVoiceName)
-                  }
-                >
-                  试听
-                </button>
-              </span>
-            </div>
-            <div className="field">
-              <span className="field-label">助手音色</span>
-              <span className="settings-voice-info">
-                <span>
-                  <span className="settings-voice-info-name">
-                    {voice.assistantVoiceName || "神秘的古代机械"}
-                  </span>
-                  {voice.assistantVoiceId ? (
-                    <div className="settings-voice-info-id">{voice.assistantVoiceId}</div>
-                  ) : null}
-                </span>
-                <button
-                  type="button"
-                  className="btn btn-outline"
-                  onClick={() =>
-                    props.onPreviewVoice(voice.assistantVoiceId, voice.assistantVoiceName)
-                  }
-                >
-                  试听
-                </button>
-              </span>
-            </div>
+            <VoicePreviewField
+              label="角色音色"
+              voiceId={voice.characterVoiceId}
+              voiceName={voice.characterVoiceName}
+              fallbackName="白厄"
+              onPreview={() =>
+                props.onPreviewVoice(voice.characterVoiceId, voice.characterVoiceName)
+              }
+            />
+            <VoicePreviewField
+              label="助手音色"
+              voiceId={voice.assistantVoiceId}
+              voiceName={voice.assistantVoiceName}
+              fallbackName="神秘的古代机械"
+              onPreview={() =>
+                props.onPreviewVoice(voice.assistantVoiceId, voice.assistantVoiceName)
+              }
+            />
           </div>
 
-          {props.voicePreview.state !== "idle" ? (
-            <p
-              className={props.voicePreview.state === "failed" ? "field-error" : "settings-hint"}
-              role="status"
-            >
-              {props.voicePreview.state === "testing" ? "正在合成试听…" : props.voicePreview.text}
-            </p>
-          ) : null}
+          <TestResultNote
+            result={props.voicePreview}
+            okClass="settings-hint"
+            testingLabel="正在合成试听…"
+          />
 
           <label className="settings-switch">
             <input
@@ -446,7 +464,7 @@ function VoicePage(props: SettingsCenterProps) {
             />
             语音自动聆听（VAD）
             <span className={`voice-vad-pill voice-vad-${voice.vadStatus}`}>
-              {voice.vadStatus === "ready" ? "就绪" : voice.vadStatus === "running" ? "运行中" : "不可用"}
+              {vadStatusLabel(voice.vadStatus)}
             </span>
           </label>
         </>
@@ -454,3 +472,10 @@ function VoicePage(props: SettingsCenterProps) {
     </section>
   );
 }
+
+const PAGES = {
+  account: AccountPage,
+  coding: CodingAssistantPage,
+  model: CharacterModelPage,
+  voice: VoicePage,
+};

@@ -173,10 +173,7 @@ class VoiceRuntime:
         if self._asr_active:
             await self._end_asr(commit=False, target=self._ptt_target)
         await self.stop_listening()
-        if self._playback_task is not None and not self._playback_task.done():
-            self._playback_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._playback_task
+        await self._cancel_task(self._playback_task)
         self._playback_task = None
         self._player.close()
 
@@ -196,12 +193,13 @@ class VoiceRuntime:
                 continue
             if self._vad_input is not None:
                 self._vad_input.put_nowait(chunk)
-            # pre-roll 只在静默期累积；语音段开始后不再更新，
-            # 避免把上一段语音尾部补发给下一段 ASR
-            if not self._asr_active:
+            if self._asr_active:
+                if self._asr_input is not None:
+                    self._asr_input.put_nowait(chunk)
+            else:
+                # pre-roll 只在静默期累积；语音段开始后不再更新，
+                # 避免把上一段语音尾部补发给下一段 ASR
                 self._pre_roll.append(chunk)
-            if self._asr_active and self._asr_input is not None:
-                self._asr_input.put_nowait(chunk)
 
     # ------------------------------------------------------------ 上行：VAD 事件
 
@@ -456,16 +454,17 @@ class VoiceRuntime:
         finally:
             await agen.aclose()
 
+    async def _cancel_task(self, task: asyncio.Task | None) -> None:
+        if task is not None and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
     async def _restart_vad(self) -> None:
         """播放结束后重开 VAD 会话，避免把扬声器尾音误判为说话。"""
         if self._vad is None or not self._started:
             return
-        if self._vad_task is not None and not self._vad_task.done():
-            self._vad_task.cancel()
-            try:
-                await self._vad_task
-            except asyncio.CancelledError:
-                pass
+        await self._cancel_task(self._vad_task)
         assert self._vad_input is not None
         # 丢弃播放期间可能残留的帧
         while not self._vad_input.empty():

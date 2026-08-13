@@ -17,7 +17,6 @@ asyncio 队列；适配器的异步迭代器从队列取出并映射为 :class:`
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -54,16 +53,8 @@ class _BridgeEvent:
 # ---------------------------------------------------------------------------
 
 
-def merge_asr_segments(events: list[_RawSentence]) -> str:
-    """stable 段 + 当前 partial 合并为最终转写。
-
-    规则（与旧项目一致）：
-
-    - ``sentence_end`` 的文本沉淀为 stable 段；
-    - 新段与上一段做包含判断与最长后缀-前缀重叠去重；
-    - partial 之间取信息更全者（前缀包含关系取长者，否则按重叠拼接）；
-    - 全部为空时返回空串（调用方据此抑制 final）。
-    """
+def _fold_events(events: list[_RawSentence]) -> tuple[list[str], str, str]:
+    """扫描事件，返回 (stable_segments, current_partial, last_non_empty)。"""
     stable_segments: list[str] = []
     current_partial = ""
     last_non_empty = ""
@@ -81,6 +72,21 @@ def merge_asr_segments(events: list[_RawSentence]) -> str:
         else:
             current_partial = _prefer_more_complete(current_partial, text)
 
+    return stable_segments, current_partial, last_non_empty
+
+
+def merge_asr_segments(events: list[_RawSentence]) -> str:
+    """stable 段 + 当前 partial 合并为最终转写。
+
+    规则（与旧项目一致）：
+
+    - ``sentence_end`` 的文本沉淀为 stable 段；
+    - 新段与上一段做包含判断与最长后缀-前缀重叠去重；
+    - partial 之间取信息更全者（前缀包含关系取长者，否则按重叠拼接）；
+    - 全部为空时返回空串（调用方据此抑制 final）。
+    """
+    stable_segments, current_partial, last_non_empty = _fold_events(events)
+
     if current_partial:
         _append_stable_segment(stable_segments, current_partial)
 
@@ -92,19 +98,7 @@ def merge_asr_segments(events: list[_RawSentence]) -> str:
 
 def merge_asr_partial(events: list[_RawSentence]) -> str:
     """stable 段 + 当前 partial 合并为“当前显示文本”（partial 事件用）。"""
-    stable_segments: list[str] = []
-    current_partial = ""
-
-    for event in events:
-        text = str(event.text or "").strip()
-        if not text:
-            continue
-        if event.sentence_end:
-            candidate = _prefer_more_complete(current_partial, text)
-            _append_stable_segment(stable_segments, candidate)
-            current_partial = ""
-        else:
-            current_partial = _prefer_more_complete(current_partial, text)
+    stable_segments, current_partial, _ = _fold_events(events)
 
     merged = "".join(stable_segments).strip()
     if current_partial:

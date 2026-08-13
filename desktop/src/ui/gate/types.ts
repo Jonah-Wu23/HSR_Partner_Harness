@@ -8,13 +8,3 @@ export interface AccountListItem {
   avatarUrl?: string | null;
   isLastLogin: boolean;
 }
-
-export interface LoginFormState {
-  password: string;
-}
-
-export interface RegisterFormState {
-  displayName: string;
-  password: string;
-  confirmPassword: string;
-}

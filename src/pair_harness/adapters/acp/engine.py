@@ -7,13 +7,17 @@ JSON-RPC 2.0 暴露于 stdin/stdout（``reasonix acp``）。本适配器复用
 ``agent_message_chunk``/``thought_chunk``/``tool_call_*``/``request_permission``
 映射为统一的工具、审批和消息事件。账号、项目与引擎会话仍由编排器管理。
 
-协议要点（docs/ACP.md）：
+协议要点（DeepSeek-Reasonix/docs/ACP.zh-CN.md，v1.24 实测）：
 - ``initialize`` → ``session/new {cwd}`` 打开会话，返回 sessionId；
 - ``session/prompt`` 运行一轮并持续推送更新，直到返回 stop reason；
-- ``request_permission`` 是服务端请求（带 JSON-RPC id），须经
-  ``transport.respond(id, result)`` 回复 allow/deny；
-- 取消走 ``session/cancel``（notification）；steer 走厂商扩展
-  ``_reasonix.io/session/steer``（动态方法名，缺省用官方名回退）。
+- 回合内事件统一经 ``session/update`` 通知（``params.update.sessionUpdate``
+  区分 ``agent_message_chunk`` / ``agent_thought_chunk`` / ``tool_call`` /
+  ``tool_call_update`` / ``plan``）；
+- ``session/request_permission`` 是服务端请求（带 JSON-RPC id），须经
+  ``transport.respond(id, {"outcome": {"outcome": "selected", "optionId": ...}})``
+  回复（allow_once / allow_always / reject_once）；
+- 取消走 ``session/cancel``（notification，无 id）；steer 走厂商扩展
+  ``_reasonix.io/session/steer``。
 """
 
 from __future__ import annotations
@@ -44,6 +48,10 @@ class AcpCodingEngine(CodingEngine):
     """
 
     engine_type = "acp"
+    # reasonix 在工具执行前经 session/request_permission 挂起请求（原生
+    # 执行前审批），编排器裁决后 resolve_approval 回复；TOOL_STARTED 事件
+    # 不需要再走本地兜底门控（否则双重审批）。
+    native_preexecution_approval = True
 
     def __init__(self, transport: Any, *, model: str | None = None) -> None:
         self.transport = transport
@@ -103,12 +111,17 @@ class AcpCodingEngine(CodingEngine):
         session_id = result.get("sessionId") or result.get("session", {}).get("id")
         if not session_id:
             raise RuntimeError("session/new returned no session id")
-        # 工具审批策略：编排器按审批模式传入（ask/auto/yolo 语义由宿主映射）
+        # 工具审批策略：编排器按审批模式传入（untrusted/never）→ reasonix
+        # 的 ask/yolo（reasonix 不接受未知值，unknown 会按 ask 归一）
         if approval_policy is not None:
             try:
                 await self.transport.request(
                     "session/set_config_option",
-                    {"sessionId": session_id, "configId": "tool_approval", "value": approval_policy},
+                    {
+                        "sessionId": session_id,
+                        "configId": "tool_approval",
+                        "value": "yolo" if approval_policy == "never" else "ask",
+                    },
                 )
             except RuntimeError:
                 # 会话不支持该配置项时忽略（Reasonix 与 ACP 官方形状差异）
@@ -205,7 +218,9 @@ class AcpCodingEngine(CodingEngine):
 
     async def cancel_turn(self, session_ref: EngineSessionRef, turn_id: str) -> None:
         del turn_id
-        await self.transport.request(
+        # ACP 的 session/cancel 是 notification（无 id，服务端不回复）；
+        # 按 request 发送会挂在 pending 直到超时。
+        await self.transport.notify(
             "session/cancel", {"sessionId": self._decode_ref(session_ref)}
         )
 
@@ -232,23 +247,105 @@ class AcpCodingEngine(CodingEngine):
         approval_id: str,
         decision: ApprovalDecision,
     ) -> None:
-        """回复 ACP request_permission 请求（allow/deny）。"""
-        session_id = self._decode_ref(session_ref)
-        result = {"approved": decision == ApprovalDecision.ALLOW}
+        """回复 ACP request_permission 请求（outcome.selected + optionId）。
+
+        reasonix 按 PermissionRequestResult 解析：``selected`` + optionId
+        才会生效（allow_once / allow_always / reject_once）；旧形状
+        ``{"approved": bool}`` 一律视为未选择（等于否决）。
+        """
+        # 解码只做类型校验：engine_type 不符会抛 ValueError
+        self._decode_ref(session_ref)
+        option_id = {
+            ApprovalDecision.ALLOW: "allow_once",
+            ApprovalDecision.ALLOW_FOR_CONVERSATION: "allow_always",
+            ApprovalDecision.DENY: "reject_once",
+        }[decision]
+        result = {"outcome": {"outcome": "selected", "optionId": option_id}}
         await self.transport.respond(int(approval_id), result)
-        del session_id
 
 
 class AcpCodec:
-    """ACP 通知 → EngineEvent 映射（与 codex CodexCodec 同构）。"""
+    """ACP 通知 → EngineEvent 映射（reasonix v1.24 实测形状）。
+
+    reasonix 把消息/思考/工具/计划统一封装为 ``session/update`` 通知，
+    类型在 ``params.update.sessionUpdate``；``session/request_permission``
+    是服务端发起的 JSON-RPC 请求（带 id），经 ``transport.respond`` 回复
+    ``outcome``。仍保留直接 method 形状的兼容分支（旧版/其他 ACP 服务器）。
+    """
 
     def __init__(self) -> None:
-        self._current_tool: dict[str, str] = {}
         self._sequence = 0
 
     def _next(self) -> int:
         self._sequence += 1
         return self._sequence
+
+    @staticmethod
+    def _text_of(content: Any) -> str:
+        """message/thought chunk 的纯文本。"""
+        if isinstance(content, dict):
+            return str(content.get("text") or "")
+        return ""
+
+    @staticmethod
+    def _tool_text(content: Any) -> str:
+        """tool_call_update 的 content 数组（结果文本）提取。"""
+        if not isinstance(content, list):
+            return ""
+        parts: list[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            nested = item.get("content")
+            if isinstance(nested, dict) and nested.get("text"):
+                parts.append(str(nested["text"]))
+            elif item.get("text"):
+                parts.append(str(item["text"]))
+        return "\n".join(parts)
+
+    @staticmethod
+    def _op_fields(update: dict[str, Any]) -> dict[str, Any]:
+        """从 tool_call / request_permission 的 rawInput 提取门控字段。
+
+        映射到编排器 PendingOperation 的有限枚举：execute→shell（命令），
+        edit→file_write，read/search→file_write（只读路径按写路径做沙箱
+        校验，越界读取照常拦截）。kind 缺省按 rawInput 字段启发。
+        """
+        kind = str(update.get("kind") or "").lower()
+        raw = update.get("rawInput")
+        args: dict[str, Any] = {}
+        if isinstance(raw, dict):
+            args = raw
+        elif isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    args = parsed
+            except (ValueError, TypeError):
+                pass
+        if kind == "execute":
+            tool_kind = "shell"
+        elif kind == "edit":
+            tool_kind = "file_write"
+        elif kind in ("read", "search"):
+            tool_kind = "file_write"
+        elif "command" in args or "cmd" in args or "script" in args:
+            tool_kind = "shell"
+        elif "file_path" in args or "filePath" in args or "path" in args or "paths" in args:
+            tool_kind = "file_write"
+        else:
+            tool_kind = "shell"
+        command = args.get("command") or args.get("cmd") or args.get("script")
+        path = args.get("file_path") or args.get("filePath") or args.get("path")
+        paths = args.get("paths")
+        if not paths and path:
+            paths = [path]
+        return {
+            "tool_kind": tool_kind,
+            "command": str(command) if isinstance(command, str) else None,
+            "paths": [str(p) for p in paths] if isinstance(paths, (list, tuple)) else [],
+            "summary": str(update.get("title") or "") or (str(command) if command else ""),
+        }
 
     def map_notification(self, notification: dict[str, Any], binding: dict[str, str]) -> EngineEvent | None:
         method = notification.get("method")
@@ -258,6 +355,103 @@ class AcpCodec:
             "task_id": binding["task_id"],
             "engine_turn_id": binding["engine_turn_id"],
         }
+
+        if method == "session/update":
+            update = params.get("update")
+            if not isinstance(update, dict):
+                return None
+            kind = str(update.get("sessionUpdate") or "")
+            if kind == "agent_message_chunk":
+                text = self._text_of(update.get("content"))
+                if not text:
+                    return None
+                return EngineEvent(
+                    sequence=self._next(), type=EngineEventType.ASSISTANT_DELTA,
+                    payload={"text": text}, **common,
+                )
+            if kind == "agent_thought_chunk":
+                text = self._text_of(update.get("content"))
+                if not text:
+                    return None
+                return EngineEvent(
+                    sequence=self._next(), type=EngineEventType.ASSISTANT_REASONING_DELTA,
+                    payload={"text": text, "channel": "summary"}, **common,
+                )
+            if kind == "tool_call":
+                tool_call_id = str(update.get("toolCallId") or "")
+                op = self._op_fields(update)
+                return EngineEvent(
+                    sequence=self._next(), type=EngineEventType.TOOL_STARTED,
+                    tool_call_id=tool_call_id or None,
+                    payload={
+                        "title": str(update.get("title") or "工具调用"),
+                        "details": str(update.get("rawInput") or ""),
+                        **op,
+                    },
+                    **common,
+                )
+            if kind == "tool_call_update":
+                tool_call_id = str(update.get("toolCallId") or "")
+                status = str(update.get("status") or "completed")
+                succeeded = status not in {"failed", "error", "denied"}
+                text = self._tool_text(update.get("content"))
+                return EngineEvent(
+                    sequence=self._next(), type=EngineEventType.TOOL_FINISHED,
+                    tool_call_id=tool_call_id or None,
+                    payload={
+                        "status": "succeeded" if succeeded else "failed",
+                        "title": str(update.get("title") or "工具调用"),
+                        "summary": text,
+                        "details": text,
+                        "error": None if succeeded else text or status,
+                    },
+                    **common,
+                )
+            if kind == "plan":
+                entries = update.get("entries")
+                summary = "计划："
+                if isinstance(entries, list):
+                    titles = [
+                        str(entry.get("content") or entry.get("title") or "")
+                        for entry in entries
+                        if isinstance(entry, dict)
+                    ]
+                    summary += "；".join(t for t in titles if t)[:200]
+                return EngineEvent(
+                    sequence=self._next(), type=EngineEventType.TOOL_PROGRESS,
+                    tool_call_id=None,
+                    payload={"summary": summary}, **common,
+                )
+            # available_commands_update / usage_update / model_update 等
+            # 界面辅助更新不映射为事件
+            return None
+
+        if method == "session/request_permission":
+            request_id = notification.get("id")
+            tool = params.get("toolCall")
+            tool_update = tool if isinstance(tool, dict) else {}
+            tool_call_id = str(tool_update.get("toolCallId") or "")
+            meta = tool_update.get("_meta")
+            reason = ""
+            if isinstance(meta, dict):
+                reasonix_meta = meta.get("reasonix.io")
+                if isinstance(reasonix_meta, dict):
+                    reason = str(reasonix_meta.get("reason") or "")
+            op = self._op_fields(tool_update)
+            return EngineEvent(
+                sequence=self._next(), type=EngineEventType.APPROVAL_REQUESTED,
+                tool_call_id=tool_call_id or None,
+                payload={
+                    "approval_id": str(request_id) if request_id is not None else tool_call_id,
+                    "summary": op["summary"] or "需要审批的工具操作",
+                    "reason": reason,
+                    "actor": "engine",
+                    **op,
+                },
+                **common,
+            )
+
+        # ---- 直接 method 形状的兼容分支（旧版 ACP 服务器） ----
         if method == "agent_message_chunk":
             text = str(params.get("text") or "")
             if not text:
@@ -274,23 +468,6 @@ class AcpCodec:
                 sequence=self._next(), type=EngineEventType.ASSISTANT_REASONING_DELTA,
                 payload={"text": text, "channel": "summary"}, **common,
             )
-        if method == "tool_call_started":
-            tool_call_id = str(params.get("toolCallId") or params.get("tool_call_id") or "")
-            self._current_tool[tool_call_id] = tool_call_id
-            title = str(params.get("toolName") or params.get("tool_name") or "工具调用")
-            return EngineEvent(
-                sequence=self._next(), type=EngineEventType.TOOL_STARTED,
-                tool_call_id=tool_call_id,
-                payload={"title": title, "details": str(params.get("arguments") or "")},
-                **common,
-            )
-        if method == "tool_call_progress":
-            tool_call_id = str(params.get("toolCallId") or "")
-            return EngineEvent(
-                sequence=self._next(), type=EngineEventType.TOOL_PROGRESS,
-                tool_call_id=tool_call_id or None,
-                payload={"summary": str(params.get("summary") or "执行中")}, **common,
-            )
         if method == "tool_call_completed":
             tool_call_id = str(params.get("toolCallId") or "")
             status = str(params.get("status") or "succeeded")
@@ -306,25 +483,5 @@ class AcpCodec:
                     "error": None if succeeded else str(params.get("error") or ""),
                 },
                 **common,
-            )
-        if method == "session/request_permission":
-            request_id = notification.get("id")
-            tool_call_id = str(params.get("toolCallId") or "")
-            return EngineEvent(
-                sequence=self._next(), type=EngineEventType.APPROVAL_REQUESTED,
-                tool_call_id=tool_call_id or None,
-                payload={
-                    "approval_id": str(request_id) if request_id is not None else tool_call_id,
-                    "summary": str(params.get("summary") or "需要审批的工具操作"),
-                    "reason": str(params.get("reason") or ""),
-                    "actor": "engine",
-                },
-                **common,
-            )
-        if method == "plan_update":
-            return EngineEvent(
-                sequence=self._next(), type=EngineEventType.TOOL_PROGRESS,
-                tool_call_id=None,
-                payload={"summary": f"计划：{params.get('state') or '更新'}"}, **common,
             )
         return None

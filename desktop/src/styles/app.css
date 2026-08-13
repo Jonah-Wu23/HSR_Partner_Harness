@@ -291,6 +291,25 @@
 
 .rail-spacer { flex: 1; }
 
+.rail-caption {
+  font-size: var(--text-c1-size);
+  line-height: var(--text-c1-line);
+  color: var(--text-muted);
+  flex: none;
+}
+
+.rail-item-new {
+  flex-direction: column;
+  width: 56px;
+  height: auto;
+  gap: 2px;
+  padding: var(--space-1) 0;
+}
+.rail-new-label {
+  font-size: var(--text-c1-size);
+  line-height: var(--text-c1-line);
+}
+
 .rail-divider {
   width: 24px;
   height: 1px;
@@ -545,7 +564,7 @@
   color: var(--text-muted);
   font-size: var(--text-c1-size);
 }
-.nav-empty .btn { margin-top: var(--space-3); }
+.nav-empty .btn { display: block; margin: var(--space-3) auto 0; }
 
 .path-warning-banner {
   margin: 0 var(--space-3) var(--space-2);

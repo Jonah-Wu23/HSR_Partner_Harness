@@ -36,6 +36,20 @@ function StatePage({ title, detail }: { title: string; detail?: string | null })
   );
 }
 
+/** 试连接/试听的三态推进：testing → 结果映射 → 失败兜底。 */
+function runTest(
+  setResult: (result: TestResult) => void,
+  task: () => Promise<unknown>,
+  toResult: (value: unknown) => TestResult,
+): void {
+  setResult({ state: "testing" });
+  void task()
+    .then((value) => setResult(toResult(value)))
+    .catch((error: unknown) =>
+      setResult({ state: "failed", text: error instanceof Error ? error.message : String(error) }),
+    );
+}
+
 /** 把后端连接状态翻译成界面的三态药丸。 */
 function toConnectionStatus(status: AppShellViewModel["status"]): ConnectionViewStatus {
   if (status === "ready") return "connected";
@@ -262,20 +276,12 @@ export function AppShell({ vm, actions }: AppShellProps) {
           if (config.apiKey) updates["dialogue.api_key"] = config.apiKey;
           void actions.setConfig(updates);
         }}
-        onTestModel={() => {
-          setModelTest({ state: "testing" });
-          void actions
-            .testConnection()
-            .then((text) =>
-              setModelTest({ state: text.startsWith("连接正常") ? "ok" : "failed", text }),
-            )
-            .catch((error: unknown) =>
-              setModelTest({
-                state: "failed",
-                text: error instanceof Error ? error.message : String(error),
-              }),
-            );
-        }}
+        onTestModel={() =>
+          runTest(setModelTest, () => actions.testConnection(), (value) => {
+            const text = String(value ?? "");
+            return { state: text.startsWith("连接正常") ? "ok" : "failed", text };
+          })
+        }
         onSaveVoice={(config) => {
           // 语音页只有开关类偏好可存；API Key/模型/音色由应用内置
           void actions.setConfig({
@@ -285,19 +291,14 @@ export function AppShell({ vm, actions }: AppShellProps) {
           // VAD 开关立即作用于运行时；语音关闭时停止聆听
           void actions.setVadEnabled(config.enabled ? config.vadEnabled : false);
         }}
-        onPreviewVoice={(voiceId, voiceName) => {
+        onPreviewVoice={(voiceId, voiceName) =>
           // V0.2 M4：试听入队即返回成功（合成结果由 voice 状态机接管）
-          setVoicePreview({ state: "testing" });
-          void actions
-            .voicePreview(`你好，我是${voiceName || "角色"}。这是语音试听。`, voiceId)
-            .then(() => setVoicePreview({ state: "ok", text: "已加入播放队列" }))
-            .catch((error: unknown) =>
-              setVoicePreview({
-                state: "failed",
-                text: error instanceof Error ? error.message : String(error),
-              }),
-            );
-        }}
+          runTest(
+            setVoicePreview,
+            () => actions.voicePreview(`你好，我是${voiceName || "角色"}。这是语音试听。`, voiceId),
+            () => ({ state: "ok", text: "已加入播放队列" }),
+          )
+        }
       />
     </div>
   );

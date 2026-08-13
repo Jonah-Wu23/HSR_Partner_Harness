@@ -16,7 +16,7 @@ import { desktopStore } from "../../stores/desktopStore";
  */
 const params = new URLSearchParams(window.location.search);
 const requested = params.get("scenario") ?? "single-project";
-const scenario: MockScenarioName = (MOCK_SCENARIO_NAMES as string[]).includes(requested)
+const scenario: MockScenarioName = (MOCK_SCENARIO_NAMES as readonly string[]).includes(requested)
   ? (requested as MockScenarioName)
   : "single-project";
 const modeOverride = params.get("mode");

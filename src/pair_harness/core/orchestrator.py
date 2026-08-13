@@ -813,22 +813,18 @@ class ConversationOrchestrator:
                         await self.coding_engine.resolve_approval(
                             session, approval_id, ApprovalDecision.DENY
                         )
-                        denied_event = self._deny_tool_event(
-                            event, f"沙箱拦截：{exc}", sequence
-                        )
-                        sequence += 1
-                        events.append(denied_event)
-                        self._emit_event(denied_event)
-                        failed = True
-                        errors.append(str(exc))
-                        self._message(
+                        sequence = self._deny_tool_and_notify(
+                            events,
+                            event,
+                            deny_reason=f"沙箱拦截：{exc}",
+                            message_text=f"沙箱拦截：{exc}",
+                            sequence=sequence,
                             conversation_id=task.conversation_id,
-                            source=MessageSource.SYSTEM,
-                            kind=MessageKind.SYSTEM_STATUS,
-                            text=f"沙箱拦截：{exc}",
                             engine_turn_id=engine_turn_id,
                             pair_id=task_pair_id,
                         )
+                        failed = True
+                        errors.append(str(exc))
                         continue
                     outcome = await approval.adjudicate(
                         op,
@@ -840,22 +836,14 @@ class ConversationOrchestrator:
                         context=self._recent_user_messages(task.conversation_id),
                         request_decision=self._request_approval,
                     )
-                    for gate_event in outcome.events:
-                        gate_event = gate_event.model_copy(update={"sequence": sequence})
-                        sequence += 1
-                        events.append(gate_event)
-                        self._emit_event(gate_event)
-                    # 设计 §4.3：裁决结果以 system 卡片留在消息时间线
-                    notice = self._approval_notice(outcome)
-                    if notice is not None:
-                        self._message(
-                            conversation_id=task.conversation_id,
-                            source=MessageSource.SYSTEM,
-                            kind=MessageKind.APPROVAL,
-                            text=notice,
-                            engine_turn_id=engine_turn_id,
-                            pair_id=task_pair_id,
-                        )
+                    sequence = self._emit_gate_outcome(
+                        outcome,
+                        events,
+                        sequence,
+                        conversation_id=task.conversation_id,
+                        engine_turn_id=engine_turn_id,
+                        pair_id=task_pair_id,
+                    )
                     # O3.1：统一经 resolve_approval 转发裁决；被否决时
                     # 不中断执行循环——引擎把拒绝反馈给模型后继续 turn，
                     # 任务成败由 turn 终态决定。
@@ -873,22 +861,18 @@ class ConversationOrchestrator:
                     try:
                         self._check_sandbox(sandbox, op)
                     except SandboxViolation as exc:
-                        denied_event = self._deny_tool_event(
-                            event, str(exc), sequence
-                        )
-                        sequence += 1
-                        events.append(denied_event)
-                        self._emit_event(denied_event)
-                        failed = True
-                        errors.append(str(exc))
-                        self._message(
+                        sequence = self._deny_tool_and_notify(
+                            events,
+                            event,
+                            deny_reason=str(exc),
+                            message_text=f"沙箱拦截：{exc}",
+                            sequence=sequence,
                             conversation_id=task.conversation_id,
-                            source=MessageSource.SYSTEM,
-                            kind=MessageKind.SYSTEM_STATUS,
-                            text=f"沙箱拦截：{exc}",
                             engine_turn_id=engine_turn_id,
                             pair_id=task_pair_id,
                         )
+                        failed = True
+                        errors.append(str(exc))
                         break
 
                     # Codex 的 item/started 已表示操作开始。真实适配器只接受
@@ -917,31 +901,25 @@ class ConversationOrchestrator:
                                     task.conversation_id
                                 ),
                             )
-                            for gate_event in outcome.events:
-                                gate_event = gate_event.model_copy(
-                                    update={"sequence": sequence}
-                                )
-                                sequence += 1
-                                events.append(gate_event)
-                                self._emit_event(gate_event)
-                            # 设计 §4.3：裁决结果以 system 卡片留在消息时间线
-                            notice = self._approval_notice(outcome)
-                            if notice is not None:
-                                self._message(
+                            sequence = self._emit_gate_outcome(
+                                outcome,
+                                events,
+                                sequence,
+                                conversation_id=task.conversation_id,
+                                engine_turn_id=engine_turn_id,
+                                pair_id=task_pair_id,
+                            )
+                            if outcome.decision == ApprovalDecision.DENY:
+                                sequence = self._deny_tool_and_notify(
+                                    events,
+                                    event,
+                                    deny_reason="审批否决",
+                                    message_text="审批否决",
+                                    sequence=sequence,
                                     conversation_id=task.conversation_id,
-                                    source=MessageSource.SYSTEM,
-                                    kind=MessageKind.APPROVAL,
-                                    text=notice,
                                     engine_turn_id=engine_turn_id,
                                     pair_id=task_pair_id,
                                 )
-                            if outcome.decision == ApprovalDecision.DENY:
-                                denied_event = self._deny_tool_event(
-                                    event, "审批否决", sequence
-                                )
-                                sequence += 1
-                                events.append(denied_event)
-                                self._emit_event(denied_event)
                                 failed = True
                                 errors.append("审批否决")
                                 break
@@ -977,12 +955,16 @@ class ConversationOrchestrator:
                                 pair_id=task_pair_id,
                             )
                             if decision == ApprovalDecision.DENY:
-                                denied_event = self._deny_tool_event(
-                                    event, "用户否决", sequence
+                                sequence = self._deny_tool_and_notify(
+                                    events,
+                                    event,
+                                    deny_reason="用户否决",
+                                    message_text="用户否决",
+                                    sequence=sequence,
+                                    conversation_id=task.conversation_id,
+                                    engine_turn_id=engine_turn_id,
+                                    pair_id=task_pair_id,
                                 )
-                                sequence += 1
-                                events.append(denied_event)
-                                self._emit_event(denied_event)
                                 failed = True
                                 errors.append("用户否决")
                                 break
@@ -1243,6 +1225,66 @@ class ConversationOrchestrator:
                 "error": reason,
             },
         )
+
+    def _emit_gate_outcome(
+        self,
+        outcome: GateOutcome,
+        events: list[EngineEvent],
+        sequence: int,
+        *,
+        conversation_id: str,
+        engine_turn_id: str | None,
+        pair_id: str,
+    ) -> int:
+        """裁决事件统一计数入列并推送；返回递增后的序号。
+
+        设计 §4.3：裁决结果以 system 卡片留在消息时间线。
+        """
+        for gate_event in outcome.events:
+            gate_event = gate_event.model_copy(update={"sequence": sequence})
+            sequence += 1
+            events.append(gate_event)
+            self._emit_event(gate_event)
+        notice = self._approval_notice(outcome)
+        if notice is not None:
+            self._message(
+                conversation_id=conversation_id,
+                source=MessageSource.SYSTEM,
+                kind=MessageKind.APPROVAL,
+                text=notice,
+                engine_turn_id=engine_turn_id,
+                pair_id=pair_id,
+            )
+        return sequence
+
+    def _deny_tool_and_notify(
+        self,
+        events: list[EngineEvent],
+        event: EngineEvent,
+        *,
+        deny_reason: str,
+        message_text: str,
+        sequence: int,
+        conversation_id: str,
+        engine_turn_id: str | None,
+        pair_id: str,
+    ) -> int:
+        """合成 denied 工具事件入列推送并落 system 状态卡，返回新序号。
+
+        failed / errors 由调用方按各自循环语义处理（continue 或 break）。
+        """
+        denied_event = self._deny_tool_event(event, deny_reason, sequence)
+        events.append(denied_event)
+        self._emit_event(denied_event)
+        self._message(
+            conversation_id=conversation_id,
+            source=MessageSource.SYSTEM,
+            kind=MessageKind.SYSTEM_STATUS,
+            text=message_text,
+            engine_turn_id=engine_turn_id,
+            pair_id=pair_id,
+        )
+        return sequence + 1
 
     @staticmethod
     def _approval_resolved_event(
