@@ -222,6 +222,9 @@ async def test_run_turn_maps_acp_events_to_engine_events(engine_and_server) -> N
     assert tool_finished.tool_call_id == "tool-1"
     assert tool_finished.payload["status"] == "succeeded"
     assert events[0].payload["text"] == "我先看一下项目结构。"
+    finals = [event for event in events if event.type == EngineEventType.ASSISTANT_FINAL]
+    assert len(finals) == 1
+    assert finals[0].payload["text"] == "我先看一下项目结构。"
 
 
 @pytest.mark.asyncio
@@ -240,7 +243,17 @@ async def test_run_turn_drains_tool_completion_after_prompt_response(engine_and_
         )
     ]
     assert [event.type for event in events].count(EngineEventType.TOOL_FINISHED) == 1
-    assert events[-2].type == EngineEventType.TOOL_FINISHED
+    tool_finished_index = next(
+        index
+        for index, event in enumerate(events)
+        if event.type == EngineEventType.TOOL_FINISHED
+    )
+    assert tool_finished_index < next(
+        index
+        for index, event in enumerate(events)
+        if event.type == EngineEventType.ASSISTANT_FINAL
+    )
+    assert events[-1].type == EngineEventType.TURN_COMPLETED
     if server.delayed_completion_task is not None:
         await server.delayed_completion_task
 

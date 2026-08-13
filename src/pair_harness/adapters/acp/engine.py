@@ -118,18 +118,14 @@ class AcpCodingEngine(CodingEngine):
         # 工具审批策略：编排器按审批模式传入（untrusted/never）→ reasonix
         # 的 ask/yolo（reasonix 不接受未知值，unknown 会按 ask 归一）
         if approval_policy is not None:
-            try:
-                await self.transport.request(
-                    "session/set_config_option",
-                    {
-                        "sessionId": session_id,
-                        "configId": "tool_approval",
-                        "value": "yolo" if approval_policy == "never" else "ask",
-                    },
-                )
-            except RuntimeError:
-                # 会话不支持该配置项时忽略（Reasonix 与 ACP 官方形状差异）
-                pass
+            await self.transport.request(
+                "session/set_config_option",
+                {
+                    "sessionId": session_id,
+                    "configId": "tool_approval",
+                    "value": "yolo" if approval_policy == "never" else "ask",
+                },
+            )
         return self._encode_ref(str(session_id))
 
     async def run_turn(
@@ -155,6 +151,7 @@ class AcpCodingEngine(CodingEngine):
             "engine_turn_id": f"acp-{request.task_id}",
         }
         codec = AcpCodec()
+        assistant_chunks: list[str] = []
         try:
             while True:
                 if prompt_task.done():
@@ -177,6 +174,8 @@ class AcpCodingEngine(CodingEngine):
                         event = codec.map_notification(notification, binding)
                         if event is None:
                             continue
+                        if event.type == EngineEventType.ASSISTANT_DELTA:
+                            assistant_chunks.append(str(event.payload.get("text") or ""))
                         yield event
                         # 收到事件后再留一个短窗口，覆盖同一回合的后续更新。
                         deadline = min(
@@ -194,6 +193,10 @@ class AcpCodingEngine(CodingEngine):
                         # 通知与 prompt 同时到达：先消费通知，不丢事件
                         event = codec.map_notification(notification_task.result(), binding)
                         if event is not None:
+                            if event.type == EngineEventType.ASSISTANT_DELTA:
+                                assistant_chunks.append(
+                                    str(event.payload.get("text") or "")
+                                )
                             yield event
                     else:
                         notification_task.cancel()
@@ -202,6 +205,8 @@ class AcpCodingEngine(CodingEngine):
                 event = codec.map_notification(notification, binding)
                 if event is None:
                     continue
+                if event.type == EngineEventType.ASSISTANT_DELTA:
+                    assistant_chunks.append(str(event.payload.get("text") or ""))
                 yield event
         except asyncio.CancelledError:
             prompt_task.cancel()
@@ -220,6 +225,15 @@ class AcpCodingEngine(CodingEngine):
         stop = await prompt_task
         stop_reason = str(stop.get("stopReason") or stop.get("stop_reason") or "")
         status = "failed" if "error" in stop_reason.lower() or not stop_reason else "completed"
+        if assistant_chunks:
+            yield EngineEvent(
+                conversation_id=request.conversation_id,
+                task_id=request.task_id,
+                engine_turn_id=binding["engine_turn_id"],
+                sequence=0,
+                type=EngineEventType.ASSISTANT_FINAL,
+                payload={"text": "".join(assistant_chunks)},
+            )
         yield EngineEvent(
             conversation_id=request.conversation_id,
             task_id=request.task_id,

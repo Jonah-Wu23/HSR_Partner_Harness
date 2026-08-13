@@ -37,7 +37,7 @@ from pair_harness.settings import Settings
 from pair_harness.storage.sqlite_store import SQLiteStore
 
 from .commands import DesktopCommand
-from .engine_factory import build_codex_transport
+from .engine_factory import build_coding_engine
 from .events import EventEmitter, EventSink, to_jsonable
 from .voice_factory import build_real_voice_runtime
 
@@ -1155,15 +1155,17 @@ class DesktopApplicationService:
         config = self._load_account_config()
         settings = Settings.from_environment()
         codex = self.codex_auth.status()
+        provider, dialogue_base, dialogue_key, dialogue_model_name = (
+            self._dialogue_runtime_settings(config)
+        )
         return {
-            "engine": config.get("engine", "codex"),
+            # engine 由统一的 dialogue.provider 推导，不能与角色模型配置分叉。
+            "engine": self._engine_for_provider(provider),
             "dialogue": {
-                "provider": self.dialogue_provider_name(config),
-                "model": config.get("dialogue.model") or self._env_dialogue_model(),
-                "base_url": config.get("dialogue.base_url") or "",
-                "api_key_masked": self._masked(
-                    config.get("dialogue.api_key") or self._env_dialogue_key()
-                ),
+                "provider": provider,
+                "model": dialogue_model_name,
+                "base_url": dialogue_base,
+                "api_key_masked": self._masked(dialogue_key),
                 "reasoning_effort": "auto",
             },
             "voice": {
@@ -1215,6 +1217,7 @@ class DesktopApplicationService:
                 f"语音配置由应用内置，不可修改：{', '.join(forbidden)}",
                 code="voice_config_locked",
             )
+        updates = self._canonicalize_provider_updates(dict(updates))
         secret_keys = {"dialogue.api_key", "voice.api_key"}
         for key, value in updates.items():
             if key in secret_keys:
@@ -1244,10 +1247,7 @@ class DesktopApplicationService:
         """探测对话服务连接：短请求验证 base_url/model/api_key。"""
         del params
         config = self._load_account_config()
-        base_url = config.get("dialogue.base_url") or self._env_dialogue_base()
-        api_key = config.get("dialogue.api_key") or self._env_dialogue_key()
-        model = config.get("dialogue.model") or self._env_dialogue_model()
-        provider = config.get("dialogue.provider", "")
+        provider, base_url, api_key, model = self._dialogue_runtime_settings(config)
         if provider == "openai_oauth":
             status = self.codex_auth.status().get("status")
             if status == "logged_in":
@@ -1290,9 +1290,23 @@ class DesktopApplicationService:
     async def _codex_api_login(self, params: Mapping[str, Any]) -> dict[str, Any]:
         api_key = self._required_string(params, "api_key")
         try:
-            return self.codex_auth.api_login(api_key)
+            result = self.codex_auth.api_login(api_key)
         except ValueError as exc:
             raise ServiceError(str(exc), code="invalid_api_key") from exc
+        # OpenAI API Key 是统一供应商选择：角色和古代机械都切到
+        # OpenAI-compatible + gpt-5.6-sol，不能只给 Codex 登录态。
+        self.store.set_config(self.current_account_id, "engine", "codex")
+        self.store.set_config(
+            self.current_account_id, "dialogue.provider", "openai_compatible"
+        )
+        self.store.set_config(
+            self.current_account_id, "dialogue.base_url", "https://api.openai.com/v1"
+        )
+        self.store.set_config(self.current_account_id, "dialogue.model", "gpt-5.6-sol")
+        self.store.set_secret(self.current_account_id, "dialogue.api_key", api_key)
+        self._account_config = None
+        self._rebuild_runtime_for_account(self._load_account_config())
+        return result
 
     # ---- M3 辅助 ----
 
@@ -1319,11 +1333,17 @@ class DesktopApplicationService:
         """
         if self._demo:
             return
-        engine_choice = config.get("engine", "codex")
-        provider = config.get("dialogue.provider", "")
-        dialogue_base = config.get("dialogue.base_url") or self._env_dialogue_base()
-        dialogue_key = config.get("dialogue.api_key") or self._env_dialogue_key()
-        dialogue_model_name = config.get("dialogue.model") or self._env_dialogue_model()
+        provider, dialogue_base, dialogue_key, dialogue_model_name = (
+            self._dialogue_runtime_settings(config)
+        )
+        engine_choice = self._engine_for_provider(provider)
+        if provider != "openai_oauth" and dialogue_base:
+            endpoint_provider = detect_provider(dialogue_base).value
+            if (provider == "deepseek") != (endpoint_provider == "deepseek"):
+                raise ServiceError(
+                    "dialogue.provider 与 Base URL 不一致；请同时选择同一供应商的配置",
+                    code="provider_endpoint_mismatch",
+                )
         if provider == "openai_oauth" and dialogue_model_name:
             from .engine_factory import build_codex_dialogue_model
 
@@ -1334,7 +1354,7 @@ class DesktopApplicationService:
             )
             self.orchestrator.dialogue_model = self.dialogue_model  # type: ignore[attr-defined]
             self.orchestrator.reviewer = DialogueModelReviewer(self.dialogue_model)  # type: ignore[attr-defined]
-        elif dialogue_base and dialogue_key and dialogue_model_name:
+        elif dialogue_base and dialogue_model_name:
             preset = load_reasoning_preset(dialogue_base, dialogue_model_name)
             self.dialogue_model = OpenAICompatibleDialogueModel(
                 base_url=dialogue_base,
@@ -1346,26 +1366,155 @@ class DesktopApplicationService:
             )
             self.orchestrator.dialogue_model = self.dialogue_model  # type: ignore[attr-defined]
             self.orchestrator.reviewer = DialogueModelReviewer(self.dialogue_model)  # type: ignore[attr-defined]
-        try:
-            from .engine_factory import build_coding_engine
+        self.coding_engine = build_coding_engine(
+            engine_choice=engine_choice,
+            codex_auth=self.codex_auth,
+            codex_bin=os.getenv("PAIR_HARNESS_BUNDLED_CODEX_BIN"),
+            model=dialogue_model_name or "gpt-5.6-sol",
+            base_url=dialogue_base,
+            api_key=dialogue_key,
+        )
+        self.orchestrator.coding_engine = self.coding_engine  # type: ignore[attr-defined]
 
-            self.coding_engine = build_coding_engine(
-                engine_choice=engine_choice,
-                codex_auth=self.codex_auth,
-                codex_bin=os.getenv("PAIR_HARNESS_BUNDLED_CODEX_BIN"),
-                model=dialogue_model_name or "gpt-5.6-sol",
-                base_url=dialogue_base,
-                api_key=dialogue_key,
+    @staticmethod
+    def _engine_for_provider(provider: str) -> str:
+        return "deepseek" if provider == "deepseek" else "codex"
+
+    @staticmethod
+    def _provider_defaults(provider: str) -> tuple[str, str]:
+        if provider == "deepseek":
+            return "https://api.deepseek.com", "deepseek-v4-flash"
+        return "https://api.openai.com/v1", "gpt-5.6-sol"
+
+    def _dialogue_runtime_settings(
+        self, config: dict[str, str]
+    ) -> tuple[str, str, str, str]:
+        """返回同一供应商要给角色和古代机械共用的端点、密钥和模型。"""
+        provider = self.dialogue_provider_name(config)
+        default_base, default_model = self._provider_defaults(provider)
+        configured_provider = bool(config.get("dialogue.provider"))
+        env_base = self._env_dialogue_base()
+        env_provider = (
+            detect_provider(env_base).value if env_base else "openai_compatible"
+        )
+        can_use_env = not configured_provider or (
+            provider != "openai_oauth" and env_provider == provider
+        )
+        base_url = config.get("dialogue.base_url") or (
+            env_base if can_use_env and env_base else default_base
+        )
+        api_key = config.get("dialogue.api_key") or (
+            self._env_dialogue_key() if can_use_env and provider != "openai_oauth" else ""
+        )
+        model = config.get("dialogue.model") or (
+            self._env_dialogue_model()
+            if can_use_env and self._env_dialogue_model()
+            else default_model
+        )
+        return provider, base_url, api_key, model
+
+    @staticmethod
+    def _normalize_dialogue_provider(value: str) -> str:
+        normalized = " ".join(value.strip().casefold().replace("_", " ").split())
+        aliases = {
+            "deepseek": "deepseek",
+            "openai oauth": "openai_oauth",
+            "openai api": "openai_compatible",
+            "openai": "openai_compatible",
+            "openai compatible": "openai_compatible",
+            "openai 兼容 api": "openai_compatible",
+            "openai 兼容 api（包括 openai api）": "openai_compatible",
+        }
+        try:
+            return aliases[normalized]
+        except KeyError as exc:
+            raise ServiceError(
+                f"不支持的对话服务商：{value}", code="invalid_dialogue_provider"
+            ) from exc
+
+    def _canonicalize_provider_updates(self, updates: dict[str, str]) -> dict[str, str]:
+        """把一次配置写入收敛为一个供应商，拒绝孤立切换执行引擎。"""
+        provider_keys = {
+            "engine",
+            "dialogue.provider",
+            "dialogue.base_url",
+            "dialogue.model",
+            "dialogue.api_key",
+        }
+        if not provider_keys.intersection(updates):
+            return updates
+        current = self._load_account_config()
+        current_provider = self.dialogue_provider_name(current)
+        explicit_provider = "dialogue.provider" in updates
+        explicit_engine = "engine" in updates
+
+        if explicit_provider:
+            provider = self._normalize_dialogue_provider(updates["dialogue.provider"])
+            updates["dialogue.provider"] = provider
+        elif explicit_engine:
+            requested_engine = updates["engine"].strip().casefold()
+            if requested_engine not in {"codex", "deepseek"}:
+                raise ServiceError(
+                    f"不支持的编程助手引擎：{updates['engine']}",
+                    code="invalid_engine",
+                )
+            provider = (
+                "deepseek"
+                if requested_engine == "deepseek"
+                else (
+                    current_provider
+                    if current_provider in {"openai_oauth", "openai_compatible"}
+                    else "openai_compatible"
+                )
             )
-            self.orchestrator.coding_engine = self.coding_engine  # type: ignore[attr-defined]
-        except Exception as exc:  # noqa: BLE001 - 引擎构建失败不阻断账号切换
-            logger.warning("重建编程助手引擎失败：%s", exc)
+        elif "dialogue.base_url" in updates:
+            base_url = updates["dialogue.base_url"].strip()
+            provider = detect_provider(base_url).value if base_url else "openai_compatible"
+            updates["dialogue.provider"] = provider
+        else:
+            provider = current_provider
+
+        if provider != current_provider and not explicit_provider:
+            updates["dialogue.provider"] = provider
+        if provider != current_provider:
+            default_base, default_model = self._provider_defaults(provider)
+            updates.setdefault("dialogue.base_url", default_base)
+            updates.setdefault("dialogue.model", default_model)
+            # 不把上一家供应商的密钥静默带到新供应商；若用户没有在本次
+            # 选择中提供新 Key，真实连接会按缺少凭据失败并暴露出来。
+            updates.setdefault("dialogue.api_key", "")
+
+        if explicit_engine:
+            requested_engine = updates["engine"].strip().casefold()
+            if requested_engine not in {"codex", "deepseek"}:
+                raise ServiceError(
+                    f"不支持的编程助手引擎：{updates['engine']}",
+                    code="invalid_engine",
+                )
+            if requested_engine != self._engine_for_provider(provider):
+                raise ServiceError(
+                    "engine 与 dialogue.provider 不一致；角色和古代机械必须使用同一供应商",
+                    code="provider_engine_mismatch",
+                )
+        updates["engine"] = self._engine_for_provider(provider)
+
+        effective_base = updates.get("dialogue.base_url") or current.get(
+            "dialogue.base_url"
+        ) or self._env_dialogue_base()
+        if effective_base:
+            endpoint_provider = detect_provider(effective_base).value
+            if (provider == "deepseek") != (endpoint_provider == "deepseek"):
+                raise ServiceError(
+                    "dialogue.provider 与 Base URL 不一致；请同时选择同一供应商的配置",
+                    code="provider_endpoint_mismatch",
+                )
+        return updates
 
     def dialogue_provider_name(self, config: dict[str, str]) -> str:
         """按 base_url 识别服务商（复用供应商探测）。"""
         configured = config.get("dialogue.provider")
         if configured:
-            return configured
+            return self._normalize_dialogue_provider(configured)
         base_url = config.get("dialogue.base_url") or self._env_dialogue_base()
         if not base_url:
             return "openai_compatible"
@@ -2039,19 +2188,17 @@ def _build_service(
             temperature=1.0,
         )
         initial_codex_auth = CodexAuthService(store.database.parent, account_id)
-        coding_engine = CodexAppServerEngine(
-            build_codex_transport(
-                codex_auth=initial_codex_auth,
-                codex_bin=settings.codex_bin,
-                base_url=dialogue_base,
-                api_key=dialogue_key,
+        coding_engine = build_coding_engine(
+            engine_choice=(
+                "deepseek"
+                if detect_provider(dialogue_base).value == "deepseek"
+                else "codex"
             ),
+            codex_auth=initial_codex_auth,
+            codex_bin=settings.codex_bin,
             model=dialogue_model_name,
-            reasoning_effort=(
-                "medium"
-                if project is None or project.reasoning_effort == "auto"
-                else project.reasoning_effort
-            ),
+            base_url=dialogue_base,
+            api_key=dialogue_key,
         )
 
     orchestrator = ConversationOrchestrator(

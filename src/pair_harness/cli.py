@@ -6,17 +6,13 @@ import os
 import sys
 from pathlib import Path
 
-from pair_harness.adapters.codex.engine import CodexAppServerEngine
-from pair_harness.adapters.codex.transport import (
-    JsonlProcessTransport,
-    SubprocessJsonLineConnection,
-)
+from pair_harness.adapters.codex.auth import CodexAuthService
 from pair_harness.adapters.demo import ScriptedCodingEngine, ScriptedDialogueModel
 from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDialogueModel
 from pair_harness.adapters.reviewer import DialogueModelReviewer
 from pair_harness.app_paths import AppPaths
 from pair_harness.config.pairs import load_pair_config, load_prompt
-from pair_harness.config.providers import load_reasoning_preset
+from pair_harness.config.providers import detect_provider, load_reasoning_preset
 from pair_harness.core.contracts import ApprovalDecision, ApprovalMode, MessageSource, ProjectRef
 from pair_harness.core.orchestrator import ConversationOrchestrator
 from pair_harness.settings import Settings
@@ -119,8 +115,9 @@ async def run_real(
 ) -> int:
     """B1：真实后端单轮冒烟。
 
-    - 对话模型走 DeepSeek（或任意 OpenAI 兼容端点，三个环境变量切换）；
-    - 编程引擎走 codex app-server（``PAIR_HARNESS_CODEX_BIN``）；
+    - 角色和古代机械共用同一供应商配置：DeepSeek 走 DeepSeek，OpenAI
+      配置走 GPT/Codex；
+    - 编程引擎由 ``PAIR_HARNESS_DIALOGUE_BASE_URL`` 识别并构建；
     - 状态库持久化：同一 ``--conversation`` 二次运行恢复旧聊天与编程线程
       （thread/resume），新会话 id 另开新线程（不继承旧会话）；
     - 审批策略按 ``_engine_policy`` 映射（§14.6），三种模式逐一可验。
@@ -139,6 +136,7 @@ async def run_real(
     if missing:
         raise SystemExit(f"--real 缺少环境变量: {', '.join(missing)}（.env 或进程环境）")
     assert settings.dialogue_base_url and settings.dialogue_api_key and settings.dialogue_model
+    from pair_harness.desktop_backend.engine_factory import build_coding_engine
 
     paths = AppPaths(Path(data_dir)).ensure() if data_dir else AppPaths.default().ensure()
     store = SQLiteStore(paths.database)
@@ -169,22 +167,17 @@ async def run_real(
         ),
         temperature=1.0,
     )
-    async def codex_connection() -> SubprocessJsonLineConnection:
-        return await SubprocessJsonLineConnection.create(
-            settings.codex_bin, args=["app-server"]
-        )
-
-    transport = JsonlProcessTransport(
-        settings.codex_bin, connection_factory=codex_connection
-    )
-    engine = CodexAppServerEngine(
-        transport,
-        model="gpt-5.6-sol",
-        reasoning_effort=(
-            "medium"
-            if project_record.reasoning_effort == "auto"
-            else project_record.reasoning_effort
+    engine = build_coding_engine(
+        engine_choice=(
+            "deepseek"
+            if detect_provider(settings.dialogue_base_url).value == "deepseek"
+            else "codex"
         ),
+        codex_auth=CodexAuthService(paths.database.parent, "default-local"),
+        codex_bin=settings.codex_bin,
+        model=settings.dialogue_model,
+        base_url=settings.dialogue_base_url,
+        api_key=settings.dialogue_api_key,
     )
     reviewer = DialogueModelReviewer(dialogue) if approval_mode == ApprovalMode.REVIEW else None
 
@@ -241,7 +234,7 @@ async def run_real(
                 print(f"  error → {error}")
         return 0 if receipt is not None and receipt.status == "completed" else 1
     finally:
-        await transport.close()
+        await engine.transport.close()
         await dialogue.aclose()
         store.close()
 

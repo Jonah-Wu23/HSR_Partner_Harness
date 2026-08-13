@@ -1,6 +1,6 @@
 """编程助手引擎工厂——V0.2 M3（方案 §M3-4/§M3-5）。
 
-按账号配置（``engine``：codex / deepseek）构建 CodingEngine：
+按统一供应商配置（``engine`` 由 ``dialogue.provider`` 推导）构建 CodingEngine：
 - codex → CodexAppServerEngine（app-server JSONL）；
 - deepseek → AcpCodingEngine（本地 DeepSeek-Reasonix 的 ``reasonix acp``，
   ACP v1，出处见 THIRD_PARTY_NOTICES）。
@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-import logging
 import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -23,7 +22,25 @@ from pair_harness.adapters.codex.transport import (
     SubprocessJsonLineConnection,
 )
 
-logger = logging.getLogger(__name__)
+
+# 古代机械只需要项目文件和命令执行工具。工作流控制工具属于宿主会话，
+# 不应进入委派任务，否则模型会在没有 Goal 的 ACP 会话里调用它。
+REASONIX_EXECUTION_TOOLS = (
+    "bash",
+    "code_index",
+    "delete_range",
+    "delete_symbol",
+    "edit_file",
+    "glob",
+    "grep",
+    "ls",
+    "move_file",
+    "multi_edit",
+    "notebook_edit",
+    "read_file",
+    "web_fetch",
+    "write_file",
+)
 
 
 def _provider_env(
@@ -110,17 +127,16 @@ def ensure_reasonix_home(
         'api_key_env = "DEEPSEEK_API_KEY"\n'
         "context_window = 1000000\n"
         'effort = "high"\n'
+        "\n[tools]\n"
+        f"enabled = [{', '.join(repr(name) for name in REASONIX_EXECUTION_TOOLS)}]\n"
     )
     env_body = f"DEEPSEEK_API_KEY={api_key}\n" if api_key else ""
-    try:
-        config_path = home / "config.toml"
-        if not config_path.exists() or config_path.read_text(encoding="utf-8") != toml:
-            config_path.write_text(toml, encoding="utf-8")
-        env_path = home / ".env"
-        if not env_path.exists() or env_path.read_text(encoding="utf-8") != env_body:
-            env_path.write_text(env_body, encoding="utf-8")
-    except OSError as exc:
-        logger.warning("写入 reasonix 配置失败（%s），DeepSeek 编程助手可能无法启动：%s", home, exc)
+    config_path = home / "config.toml"
+    if not config_path.exists() or config_path.read_text(encoding="utf-8") != toml:
+        config_path.write_text(toml, encoding="utf-8")
+    env_path = home / ".env"
+    if not env_path.exists() or env_path.read_text(encoding="utf-8") != env_body:
+        env_path.write_text(env_body, encoding="utf-8")
     return home
 
 
@@ -166,7 +182,7 @@ def build_coding_engine(
     base_url: str | None = None,
     api_key: str | None = None,
 ) -> "CodexAppServerEngine | AcpCodingEngine":
-    """按账号配置构建编程助手引擎；角色与助手共享模型参数。"""
+    """按统一供应商构建编程助手引擎；角色与助手共享模型参数。"""
     shared_env = _provider_env(base_url=base_url, api_key=api_key, model=model)
     if engine_choice == "deepseek":
         from pair_harness.adapters.acp.engine import AcpCodingEngine

@@ -25,7 +25,6 @@ interface SettingsCenterProps {
   onSaveProfile: (displayName: string) => void;
   onChangePassword: (oldPassword: string, newPassword: string) => void;
   onLogout: () => void;
-  onSelectEngine: (engine: "codex" | "deepseek") => void;
   onCodexOAuthStart: () => void;
   onCodexLogout: () => void;
   onCodexApiLogin: (apiKey: string) => void;
@@ -225,26 +224,9 @@ function CodingAssistantPage(props: SettingsCenterProps) {
 
   return (
     <section className="settings-page">
-      <div className="segmented" role="radiogroup" aria-label="选择编程助手">
-        <button
-          type="button"
-          role="radio"
-          aria-checked={props.coding.engine === "codex"}
-          className={`segmented-item${props.coding.engine === "codex" ? " is-selected" : ""}`}
-          onClick={() => props.onSelectEngine("codex")}
-        >
-          使用 Codex
-        </button>
-        <button
-          type="button"
-          role="radio"
-          aria-checked={props.coding.engine === "deepseek"}
-          className={`segmented-item${props.coding.engine === "deepseek" ? " is-selected" : ""}`}
-          onClick={() => props.onSelectEngine("deepseek")}
-        >
-          使用 DeepSeek
-        </button>
-      </div>
+      <p className="settings-hint">
+        供应商在「角色对话模型」页统一选择，角色和古代机械始终使用同一家：OpenAI OAuth/API 使用 GPT，DeepSeek 使用 DeepSeek。
+      </p>
 
       {props.coding.engine === "codex" ? (
         <div className={`settings-status-card settings-status-${codex.status}`}>
@@ -304,10 +286,24 @@ function CodingAssistantPage(props: SettingsCenterProps) {
 }
 
 function CharacterModelPage(props: SettingsCenterProps) {
-  const [form, setForm] = useState(props.model);
+  const normalizeProvider = (value: string) => {
+    const normalized = value.trim().toLowerCase().replaceAll("_", " ");
+    if (normalized.includes("deepseek")) return "deepseek";
+    if (normalized.includes("oauth")) return "openai_oauth";
+    return "openai_compatible";
+  };
+  const defaultsForProvider = (provider: string) =>
+    provider === "deepseek"
+      ? { baseUrl: "https://api.deepseek.com", model: "deepseek-v4-flash" }
+      : { baseUrl: "https://api.openai.com/v1", model: "gpt-5.6-sol" };
+  const [form, setForm] = useState({
+    ...props.model,
+    provider: normalizeProvider(props.model.provider),
+  });
+  const initialProvider = normalizeProvider(props.model.provider);
   const [apiKey, setApiKey] = useState("");
   const dirty =
-    form.provider !== props.model.provider ||
+    form.provider !== initialProvider ||
     form.model !== props.model.model ||
     form.baseUrl !== props.model.baseUrl ||
     form.reasoningEffort !== props.model.reasoningEffort ||
@@ -317,7 +313,17 @@ function CharacterModelPage(props: SettingsCenterProps) {
     <section className="settings-page">
       <label className="field">
         <span className="field-label">服务商</span>
-        <input value={form.provider} onChange={(event) => setForm({ ...form, provider: event.target.value })} />
+        <select
+          value={form.provider}
+          onChange={(event) => {
+            const provider = event.target.value;
+            setForm({ ...form, provider, ...defaultsForProvider(provider) });
+          }}
+        >
+          <option value="deepseek">DeepSeek</option>
+          <option value="openai_compatible">OpenAI API</option>
+          <option value="openai_oauth">OpenAI OAuth</option>
+        </select>
       </label>
       <label className="field">
         <span className="field-label">模型</span>

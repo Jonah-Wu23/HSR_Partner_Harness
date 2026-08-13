@@ -295,7 +295,7 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
     expect(vm.settings.voicePreview).toEqual({ state: "idle" });
 
     desktopStore.getState().setConfigSnapshot({
-      engine: "codex",
+      engine: "deepseek",
       dialogue: {
         provider: "deepseek",
         model: "deepseek-chat",
@@ -333,7 +333,7 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
       vadEnabled: true,
     });
     expect(mapped.settings.coding).toEqual({
-      engine: "codex",
+      engine: "deepseek",
       codex: { status: "logged_in", accountLabel: "mock@openai" },
     });
     expect(mapped.settings.account.displayName).toBe("演示账号");

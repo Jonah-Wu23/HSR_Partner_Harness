@@ -510,7 +510,7 @@ export class MockDesktopBackend implements DesktopBackend {
     codex: Record<string, string | null>;
   } {
     return {
-      engine: "codex",
+      engine: "deepseek",
       dialogue: {
         provider: "deepseek",
         model: "deepseek-chat",
@@ -528,7 +528,7 @@ export class MockDesktopBackend implements DesktopBackend {
         character_voice_name: "白厄",
         assistant_voice: "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19",
         assistant_voice_name: "神秘的古代机械",
-        vad_enabled: "true",
+        vad_enabled: "false",
       },
       codex: { status: "logged_in", account_label: "mock@openai" },
     };

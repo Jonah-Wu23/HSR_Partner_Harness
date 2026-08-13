@@ -147,7 +147,6 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsCenter>[0]>
     onSaveProfile: vi.fn(),
     onChangePassword: vi.fn(),
     onLogout: vi.fn(),
-    onSelectEngine: vi.fn(),
     onCodexOAuthStart: vi.fn(),
     onCodexLogout: vi.fn(),
     onCodexApiLogin: vi.fn(),

@@ -46,8 +46,8 @@ GitHub Actions 在 Windows runner 执行 Python 测试、前端测试与构建�
 | 能力 | 说明 |
 | --- | --- |
 | 一条会话，两条工作轨 | 聊天模式专注角色对话；协作模式打开助手工作台，任务运行期间也能继续聊天。 |
-| GPT-5.6 Sol 编程助手 | 编程任务固定使用 [gpt-5.6-sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol)。Composer 提供五档推理设置，映射关系见下表。 |
-| 任务过程可见 | 文件与命令通过 Codex app-server 执行，工具事件以结构化卡片显示，项目可按需设置审批策略。 |
+| 统一模型供应商 | 引导页或设置选择 OpenAI OAuth/API 时，角色和古代机械都使用 GPT；选择 DeepSeek 时，两者都使用 DeepSeek。 |
+| 任务过程可见 | OpenAI 配置通过 Codex app-server 执行，DeepSeek 配置通过随包的 DeepSeek-Reasonix ACP 执行；工具事件以结构化卡片显示。 |
 | 项目文件夹绑定 | 一个项目对应一个本地文件夹，名称默认取文件夹名，也支持随时重选路径。Python Sidecar 管理会话状态，SQLite 保存本地数据。 |
 | 语音与思考通道 | 角色回复支持 DashScope ASR/TTS；思考内容和工具记录各自显示，工具记录保持静音。 |
 | 可先体验再配置 | demo 模式提供完整界面与交互体验，写入模型配置后即可切换真实运行。 |
@@ -64,7 +64,7 @@ GitHub Actions 在 Windows runner 执行 Python 测试、前端测试与构建�
 
 - 本地账号和设置中心，按账号保存各项模型与语音设置，并管理 Codex 登录信息。
 - 持久化会话队列支持调整任务内容与顺序，也可撤回任务；当前回合结束后自动派发。
-- DeepSeek 结构化输出分成思考和正文两条流，技术详情保留原始 JSON，消息气泡呈现解析后的内容。
+- DeepSeek 角色与古代机械共用同一供应商配置；结构化输出分成思考和正文两条流，技术详情保留原始 JSON。
 - Sidecar 提供连接状态和自动重连，断线期间已加载的界面继续可用。
 - Windows NSIS 安装包随带 Python Sidecar，并内置 Codex 与 VAD 资源。
 
@@ -74,10 +74,13 @@ GitHub Actions 在 Windows runner 执行 Python 测试、前端测试与构建�
 flowchart LR
     A[角色对话] --> B{协作模式}
     B --> C[结构化任务]
-    C --> D[Codex app-server]
-    D --> E[文件与命令]
-    E --> F[结构化回执]
-    F --> A
+    C --> D{所选供应商}
+    D -->|OpenAI OAuth/API| E[Codex app-server]
+    D -->|DeepSeek| F[DeepSeek-Reasonix ACP]
+    E --> G[文件与命令]
+    F --> G
+    G --> H[结构化回执]
+    H --> A
 ```
 
 角色负责交流和任务委派，助手负责文件操作与命令执行。消息按来源归位，工具记录单独显示。
@@ -88,13 +91,13 @@ flowchart LR
 
 Windows x64 安装包在 [GitHub Releases](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases)。首次安装可能触发 Windows SmartScreen 提醒。
 
-安装后可直接进入 demo 模式体验界面和交互。配置模型后即可运行真实编程功能，前提是本机准备好 [OpenAI Codex](https://github.com/openai/codex)：
+安装后可直接进入 demo 模式体验界面和交互。配置模型后即可运行真实编程功能：OpenAI 配置使用随包 Codex，DeepSeek 配置使用随包 DeepSeek-Reasonix。
 
 ```powershell
 codex --version
 ```
 
-应用默认使用随包 Codex；从源码运行时，也可以通过 `PAIR_HARNESS_CODEX_BIN` 指定路径。
+OpenAI 配置默认使用随包 Codex，DeepSeek 配置默认使用随包 Reasonix；从源码运行时，也可以通过 `PAIR_HARNESS_CODEX_BIN` 和 `PAIR_HARNESS_REASONIX_BIN` 指定路径。
 
 ## 真实模式配置
 
@@ -127,10 +130,11 @@ npm run build:sidecar
 npm run tauri:dev
 ```
 
-发布构建会把 Windows 原生 Codex app-server 复制进安装包。构建机需要安装 `@openai/codex`，或设置 `PAIR_HARNESS_CODEX_NATIVE_ROOT` 指向包含 `bin\codex.exe` 的原生发行目录：
+发布构建会把 Windows 原生 Codex app-server 和 DeepSeek-Reasonix 复制进安装包。构建机需要准备 `@openai/codex` 与 `reasonix`，或分别设置 `PAIR_HARNESS_CODEX_NATIVE_ROOT`、`PAIR_HARNESS_REASONIX_NATIVE_ROOT`：
 
 ```powershell
 npm install -g @openai/codex
+npm install -g reasonix
 Set-Location desktop
 npm run tauri:build
 ```

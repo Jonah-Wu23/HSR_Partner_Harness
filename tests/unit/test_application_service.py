@@ -1365,9 +1365,18 @@ async def test_rebuild_runtime_for_account_switches_engine_immediately(tmp_path:
         assert isinstance(service.dialogue_model, OpenAICompatibleDialogueModel)
         assert isinstance(service.orchestrator.dialogue_model, OpenAICompatibleDialogueModel)
 
-        service._rebuild_runtime_for_account({**base_config, "engine": "deepseek"})
+        deepseek_config = {
+            "engine": "deepseek",
+            "dialogue.provider": "deepseek",
+            "dialogue.base_url": "https://api.deepseek.com",
+            "dialogue.api_key": "sk-deepseek-test",
+            "dialogue.model": "deepseek-v4-flash",
+        }
+        service._rebuild_runtime_for_account(deepseek_config)
         assert isinstance(service.coding_engine, AcpCodingEngine)
         assert isinstance(service.orchestrator.coding_engine, AcpCodingEngine)
+        assert service.coding_engine.model == "deepseek-v4-flash"
+        assert service.dialogue_model.model == "deepseek-v4-flash"
         # 审查智能体跟随新对话模型重建
         assert service.orchestrator.reviewer is not None
         assert service.orchestrator.reviewer._model is service.dialogue_model

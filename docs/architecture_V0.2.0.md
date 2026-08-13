@@ -470,9 +470,9 @@ app_state（应用级单值：当前账号等）
 
 - 认证：本地账号密码 PBKDF2 派生存储；登录/切换账号重建模型与引擎
   运行时（`_rebuild_runtime_for_account`），账号级配置覆盖环境默认；
-- 引擎选择：`engine` = `codex`（默认）或 `deepseek`；
-  对话服务商 = `openai_oauth`（Codex 认证）或 OpenAI 兼容 API
-  （DeepSeek 等，provider 自动识别）；
+- 供应商选择统一决定角色和古代机械：`openai_oauth` / OpenAI API 使用
+  `gpt-5.6-sol` 与 Codex app-server；`deepseek` 使用 DeepSeek 模型与
+  DeepSeek-Reasonix ACP；两者不能分叉配置；
 - 环境变量 → 账号配置的覆盖顺序：显式传入 > 账号配置 > 环境变量 >
   内置默认；
 - 推理档位：项目级 `reasoning_effort`（low/medium/high/xhigh/max），

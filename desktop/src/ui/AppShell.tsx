@@ -264,12 +264,12 @@ export function AppShell({ vm, actions }: AppShellProps) {
           void actions.changePassword(oldPassword, newPassword)
         }
         onLogout={() => void actions.logoutAccount()}
-        onSelectEngine={(engine) => void actions.setConfig({ engine })}
         onCodexOAuthStart={() => void actions.codexOauthStart()}
         onCodexLogout={() => void actions.codexLogout()}
         onCodexApiLogin={(apiKey) => void actions.codexApiLogin(apiKey)}
         onSaveModel={(config) => {
           const updates: Record<string, string> = {
+            "dialogue.provider": config.provider,
             "dialogue.base_url": config.baseUrl,
             "dialogue.model": config.model,
           };
