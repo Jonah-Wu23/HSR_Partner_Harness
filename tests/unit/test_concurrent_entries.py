@@ -62,14 +62,39 @@ def _chat_round_indices(history, texts) -> list[int]:
     return [i for i, m in enumerate(history) if m.text in texts]
 
 
+class AwaitingDialogueModel(FixedDialogueModel):
+    """stream_reply 内部让出事件循环——制造锁内挂起点。
+
+    没有这个挂起点时两条协程顺序跑完，``_conversation_lock`` 从未发生
+    竞争，测试对"锁被删除"这一回归是断臂的；有了挂起点，第二条协程
+    会在锁外被阻塞，锁的互斥才被真实验证。
+    """
+
+    async def stream_reply(self, request):
+        await asyncio.sleep(0)
+        async for event in super().stream_reply(request):
+            await asyncio.sleep(0)
+            yield event
+
+
 @pytest.mark.asyncio
 async def test_concurrent_chat_rounds_serialized_in_arrival_order() -> None:
-    """O2.5：并发纯聊天——聊天轮按到达顺序整体落库，互不交错。"""
+    """O2.5：并发纯聊天——聊天轮按到达顺序整体落库，互不交错。
+
+    对话模型在锁内让出事件循环：若会话锁被删除，乙轮的用户消息会插进
+    甲轮的用户/角色台词之间（甲、乙、我在、我也在），本测试随即变红。
+    """
     engine = ScriptedCodingEngine()
-    orchestrator = _make_orchestrator(
-        engine,
-        CharacterTurn(speech="我在，慢慢说。", delegation=None),
-        CharacterTurn(speech="我也在，慢慢说。", delegation=None),
+    orchestrator = ConversationOrchestrator(
+        pair_id="phainon_ancient_machine",
+        project=ProjectRef(project_id="p", name="p", root_path="C:\\project"),
+        dialogue_model=AwaitingDialogueModel(
+            CharacterTurn(speech="我在，慢慢说。", delegation=None),
+            CharacterTurn(speech="我也在，慢慢说。", delegation=None),
+        ),
+        coding_engine=engine,
+        store=None,
+        approval_mode=ApprovalMode.FULL_AUTO,
     )
 
     round_a = asyncio.create_task(

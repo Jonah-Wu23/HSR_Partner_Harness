@@ -52,9 +52,37 @@ describe("Menu 键盘与弹层行为", () => {
     fireEvent.keyDown(menu, { key: "ArrowUp" });
     expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "选项丙" }));
 
+    // Enter 激活当前聚焦项并关闭弹层（不依赖后续 click）
     fireEvent.keyDown(document.activeElement as Element, { key: "Enter" });
-    fireEvent.click(screen.getByRole("menuitem", { name: "选项丙" }));
     expect(onSelect).toHaveBeenCalledWith("c");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("Enter 不激活禁用项", async () => {
+    const onSelect = vi.fn();
+    render(
+      <Menu
+        ariaLabel="测试菜单"
+        trigger={() => <button type="button">打开菜单</button>}
+        items={[
+          { id: "x", label: "普通项" },
+          { id: "y", label: "禁用项", disabled: true },
+        ]}
+        onSelect={onSelect}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "打开菜单" }));
+    await screen.findByRole("menu");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "普通项" })),
+    );
+
+    // 禁用项不可聚焦（浏览器语义），activeIndex 仍指向禁用项：
+    // 此时按 Enter 不得触发 onSelect，弹层保持打开
+    fireEvent.keyDown(document.activeElement as Element, { key: "ArrowDown" });
+    fireEvent.keyDown(document.activeElement as Element, { key: "Enter" });
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.getByRole("menu")).toBeInTheDocument();
   });
 
   it("Esc 关闭弹层并把焦点还给触发器", async () => {

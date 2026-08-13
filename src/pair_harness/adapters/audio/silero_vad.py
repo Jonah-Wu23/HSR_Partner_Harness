@@ -8,7 +8,7 @@
   不进线程池——避免过度设计）；
 - 状态机产出 ``VadEvent``：``listening`` / ``speech_started`` /
   ``speech_ended`` / ``false_trigger``，参数语义沿用旧项目
-  ``vad-config.ts``（阈值 0.45、开口前保留 8 帧、结束等待 18 帧、
+  ``vad-config.ts``（阈值 0.45、开口前保留 8 帧、结束等待约 1 秒、
   最短语音 4 帧）。
 
 模型文件缺失或 onnxruntime 不可用时，构造阶段抛
@@ -26,6 +26,7 @@ from pair_harness.core.ports import VoiceActivityDetector
 
 FRAME_SAMPLES = 512  # Silero v5 在 16 kHz 下的帧长（32 ms）
 FRAME_BYTES = FRAME_SAMPLES * 2  # int16 单声道
+DEFAULT_REDEMPTION_FRAMES = 30  # 约 960 ms 连续静音后结束语音段
 
 
 class VadUnavailableError(RuntimeError):
@@ -45,7 +46,7 @@ class SileroVoiceActivityDetector(VoiceActivityDetector):
         *,
         threshold: float = 0.45,
         pre_speech_pad_frames: int = 8,
-        redemption_frames: int = 18,
+        redemption_frames: int = DEFAULT_REDEMPTION_FRAMES,
         min_speech_frames: int = 4,
     ) -> None:
         self.model_path = Path(model_path)

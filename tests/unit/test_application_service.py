@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import traceback
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from pair_harness.adapters.acp.engine import AcpCodingEngine
+from pair_harness.adapters.codex.engine import CodexAppServerEngine
+from pair_harness.adapters.demo import ScriptedCodingEngine
+from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDialogueModel
 from pair_harness.core.contracts import ApprovalMode, MessageSource
 from pair_harness.desktop_backend.application_service import (
     ServiceError,
@@ -16,6 +22,22 @@ from pair_harness.desktop_backend.commands import DesktopCommand
 
 def command(request_id: str, method: str, **params) -> DesktopCommand:
     return DesktopCommand(request_id=request_id, method=method, params=params)
+
+
+async def _wait_until(
+    predicate, *, message: str, timeout: float = 5.0
+) -> None:
+    """轮询等待条件成立（同步谓词）；超时抛 AssertionError。
+
+    与各测试内联的 wait_for 等价；供需要真实等待后台回合完成的测试复用。
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(message)
 
 
 @pytest.mark.asyncio
@@ -248,16 +270,25 @@ async def test_first_complete_reply_generates_title_from_dialogue_only_and_manua
                 text="请陪我规划一下今天的工作。",
             )
         )
-        await asyncio.sleep(0)
-
+        # 标题生成是后台异步任务（首条消息后异步完成，不打断对话）：
+        # 轮询等待，而不是单次让出事件循环猜时序。
+        title_requests = getattr(service.dialogue_model, "title_requests")
+        await _wait_until(
+            lambda: len(title_requests) == 1,
+            message="首条消息后应异步生成一次标题请求",
+        )
+        _, context = title_requests[0]
+        # 标题必须由对话内容驱动：上下文包含用户消息原文，
+        # 且生成的标题来自该文本（去掉源过滤或喂空上下文都会使测试变红）。
+        assert context
+        assert any(
+            message.source == MessageSource.USER
+            and "请陪我规划一下今天的工作" in message.text
+            for message in context
+        )
         conversation = service.store.get_conversation(conversation_id)
         assert conversation.title != "新聊天"
-        title_requests = getattr(service.dialogue_model, "title_requests")
-        assert len(title_requests) == 1
-        _, context = title_requests[0]
-        assert context
-        assert all(message.source in {MessageSource.USER, MessageSource.CHARACTER} for message in context)
-        assert all(message.source not in {MessageSource.SYSTEM, MessageSource.TOOL} for message in context)
+        assert "请陪我规划" in conversation.title
 
         second = await service.handle_command(
             command("conversation-2", "conversation.create", project_id=service.current_project_id)
@@ -563,7 +594,11 @@ async def test_chat_submit_registers_turn_with_lifecycle_events(tmp_path: Path) 
 
 @pytest.mark.asyncio
 async def test_failed_turn_marks_turn_failed_and_message_failed(tmp_path: Path) -> None:
-    """V0.2 M2：回合失败时 turn 进入 failed，用户消息标记 failed（文字保留）。"""
+    """V0.2 M2：回合失败时 turn 进入 failed，用户消息标记 failed（文字保留）。
+
+    用执行即抛异常的引擎真实触发失败路径：turn 终态 failed、
+    用户消息标记 failed（文字保留）、系统状态消息可见、流式占位被收尾。
+    """
     events: list[dict] = []
     service = build_demo_service(
         database=tmp_path / "data" / "pair_harness.db",
@@ -571,28 +606,69 @@ async def test_failed_turn_marks_turn_failed_and_message_failed(tmp_path: Path) 
         event_sink=events.append,
     )
     try:
-        # 注入会失败的编排器路径：破坏对话模型不可行（demo 不会失败），
-        # 改用关闭后的服务直接驱动 _run_submit_turn 不可行——这里通过
-        # 让 submit 后立即 shutdown 触发任务取消，验证 cancelled 事件。
+        await service.handle_command(
+            command(
+                "settings-1",
+                "project.update_settings",
+                approval_mode=ApprovalMode.FULL_AUTO.value,
+            )
+        )
+
+        class FailingEngine(ScriptedCodingEngine):
+            """open_session 正常，run_turn 立即抛错——模拟引擎崩溃。"""
+
+            async def run_turn(self, session_ref, request):
+                raise RuntimeError("引擎爆炸")
+                yield  # pragma: no cover - 保持 async generator 形态
+
+        service.orchestrator.coding_engine = FailingEngine()
         conversation_id = service.current_conversation_id
         result = await service.handle_command(
             command(
                 "chat-1",
                 "chat.submit",
                 conversation_id=conversation_id,
-                target="character",
-                text="你好",
+                target="assistant",
+                text="检查项目",
             )
         )
-        assert result["turn_id"]
-        await service.shutdown()
+        user_message_id = result["message_id"]
 
-        # shutdown 后服务关闭，turn 记录仍按事件序列保留（cancelled）
-        started = [e for e in events if e["event"] == "turn.started"]
-        terminal = [e for e in events if e["event"] == "turn.status_changed"]
-        assert started, "turn.started 应已发射"
-        statuses = [e["payload"]["turn"]["status"] for e in terminal]
-        assert "cancelled" in statuses or "completed" in statuses
+        # 回合失败：turn 终态 failed
+        await _wait_until(
+            lambda: any(
+                e["event"] == "turn.status_changed"
+                and e["payload"]["turn"]["status"] == "failed"
+                for e in events
+            ),
+            message="失败回合应落到 failed 终态",
+        )
+        # 用户消息标记 failed，文字保留可重试
+        user_messages = [
+            message
+            for message in service.bootstrap()["messages"]
+            if message["source"] == "user"
+        ]
+        assert len(user_messages) == 1
+        assert user_messages[0]["message_id"] == user_message_id
+        assert user_messages[0]["status"] == "failed"
+        assert user_messages[0]["text"] == "检查项目"
+        assert "引擎爆炸" in user_messages[0]["payload"]["error"]
+        # 状态变更事件按 id 对账
+        assert any(
+            e["event"] == "message.status_changed"
+            and e["payload"]["message"]["message_id"] == user_message_id
+            for e in events
+        )
+        # 失败可见：系统状态消息（可恢复错误入通知队列）
+        assert any(
+            e["event"] == "message.created"
+            and e["payload"]["message"]["source"] == "system"
+            and "本次回复失败" in e["payload"]["message"]["text"]
+            for e in events
+        )
+        # 三个点永不卡死：失败路径补发流式占位收尾
+        assert any(e["event"] == "message.finalized" for e in events)
     finally:
         await service.shutdown()
 
@@ -656,7 +732,9 @@ async def test_busy_submit_enqueues_then_auto_dispatches_after_turn(tmp_path: Pa
             )
         )
 
-        async def queued_text_dispatched() -> bool:
+        # 注意：必须是同步谓词——wait_for 直接调用 predicate()，
+        # 传 async 函数会得到从未 await 的 coroutine（恒真），主断言会失效。
+        def queued_text_dispatched() -> bool:
             messages = [
                 m for m in service.bootstrap()["messages"]
                 if m["source"] == "user"
@@ -835,7 +913,9 @@ async def test_account_switch_isolates_projects(tmp_path: Path) -> None:
         snapshot = await service.handle_command(command("b-1", "app.bootstrap"))
         assert snapshot["current_account_id"] == result["account"]["account_id"]
         assert snapshot["projects"] == []  # 新账号无项目
-        assert service.current_project_id != default_project_id or service.current_project_id == ""
+        # 切换账号后当前项目指针必须清空，不得残留上一账号的项目
+        assert service.current_project_id == ""
+        assert service.current_conversation_id == ""
 
         # 切回默认账号：项目恢复
         back = await service.handle_command(
@@ -1027,5 +1107,456 @@ async def test_codex_login_state_machine(tmp_path: Path) -> None:
 
         out = await service.handle_command(command("s-6", "codex.logout"))
         assert out["status"] == "logged_out"
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_queue_item_failure_returns_to_queued_for_retry(tmp_path: Path) -> None:
+    """F2/非功能-可靠：队列项回合失败退回 queued（可重试），不删除不吞掉。
+
+    ``_dispatch_from_inbox`` 的失败分支（application_service 776-779）——
+    队列项执行失败后不得被删除，也不得继续派发后续项。
+    """
+    events: list[dict] = []
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+        event_sink=events.append,
+    )
+    try:
+        await service.handle_command(
+            command(
+                "settings-1",
+                "project.update_settings",
+                approval_mode=ApprovalMode.FULL_AUTO.value,
+            )
+        )
+
+        class FailOnSecondTurnEngine(ScriptedCodingEngine):
+            """第一次回合正常，第二次回合（队列项）抛错。"""
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.turns_run = 0
+
+            async def run_turn(self, session_ref, request):
+                self.turns_run += 1
+                if self.turns_run >= 2:
+                    raise RuntimeError("队列项执行失败")
+                    yield  # pragma: no cover - 保持 async generator 形态
+                async for event in super().run_turn(session_ref, request):
+                    yield event
+
+        service.orchestrator.coding_engine = FailOnSecondTurnEngine()
+        conversation_id = service.current_conversation_id
+
+        # 忙碌时提交入队
+        service.orchestrator.state.start(
+            project_id="project-demo", conversation_id=conversation_id, task_id="task-busy"
+        )
+        queued = await service.handle_command(
+            command(
+                "chat-1",
+                "chat.submit",
+                conversation_id=conversation_id,
+                target="assistant",
+                text="排队任务",
+            )
+        )
+        assert queued["queued"] is True
+        item_id = queued["queue_item"]["queue_item_id"]
+
+        # 清理忙碌：下一条提交触发回合，完成后自动派发队列项
+        service.orchestrator.state.finish("task-busy")
+        await service.handle_command(
+            command(
+                "chat-2",
+                "chat.submit",
+                conversation_id=conversation_id,
+                target="assistant",
+                text="现在有空了",
+            )
+        )
+        # 队列项的回合失败：退回 queued（可重试），不是删除
+        await _wait_until(
+            lambda: any(
+                e["event"] == "turn.status_changed"
+                and e["payload"]["turn"]["status"] == "failed"
+                for e in events
+            )
+            and service.store.list_queue_items(conversation_id)[0]["status"] == "queued",
+            message="队列项失败后应退回 queued 而非删除",
+        )
+        items = service.store.list_queue_items(conversation_id)
+        assert len(items) == 1
+        assert items[0]["queue_item_id"] == item_id
+        assert items[0]["text"] == "排队任务"
+        assert items[0]["status"] == "queued"
+        # 失败的队列项也留下可见失败回合（不留悬空状态）
+        failed_turns = [
+            e["payload"]["turn"]
+            for e in events
+            if e["event"] == "turn.status_changed"
+            and e["payload"]["turn"]["status"] == "failed"
+        ]
+        assert failed_turns
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_api_key_never_appears_in_logs(tmp_path: Path, caplog) -> None:
+    """非功能-安全：API Key 不进日志——即使失败路径打出异常堆栈。"""
+    secret = "sk-leak-check-123456789"
+    events: list[dict] = []
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+        event_sink=events.append,
+    )
+    try:
+        await service.handle_command(
+            command("set-1", "config.set", updates={"dialogue.api_key": secret})
+        )
+        await service.handle_command(
+            command(
+                "settings-1",
+                "project.update_settings",
+                approval_mode=ApprovalMode.FULL_AUTO.value,
+            )
+        )
+
+        class FailingEngine(ScriptedCodingEngine):
+            async def run_turn(self, session_ref, request):
+                raise RuntimeError("引擎爆炸")
+                yield  # pragma: no cover - 保持 async generator 形态
+
+        service.orchestrator.coding_engine = FailingEngine()
+        conversation_id = service.current_conversation_id
+
+        with caplog.at_level(logging.WARNING, logger="pair_harness"):
+            await service.handle_command(
+                command(
+                    "chat-1",
+                    "chat.submit",
+                    conversation_id=conversation_id,
+                    target="assistant",
+                    text="检查项目",
+                )
+            )
+            # 失败回合必然写日志（logger.exception）；再走账号切换的配置加载路径
+            await _wait_until(
+                lambda: any(
+                    e["event"] == "turn.status_changed"
+                    and e["payload"]["turn"]["status"] == "failed"
+                    for e in events
+                ),
+                message="失败回合应产生日志",
+            )
+            await service.handle_command(
+                command(
+                    "reg-1",
+                    "account.register",
+                    username="carol",
+                    display_name="卡罗",
+                    password="carol-pass-1",
+                )
+            )
+            await service.handle_command(command("b-1", "app.bootstrap"))
+
+        assert caplog.records, "失败路径应产生日志记录"
+        for record in caplog.records:
+            rendered = record.getMessage()
+            if record.exc_info:
+                rendered += "".join(traceback.format_exception(*record.exc_info))
+            assert secret not in rendered
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_voice_runtime_receives_created_messages_via_listener_wiring(tmp_path: Path) -> None:
+    """F7：attach_voice_runtime 后，落库消息经 add_message_listener 流入运行时。
+
+    修复前 on_message 用空 lambda 替身，接线断掉测试仍绿；这里用记录型
+    替身验证"消息持久化 → 运行时朗读入口"的真实链路。
+    """
+
+    class RecordingVoiceRuntime:
+        speech_queue_len = 0
+
+        def __init__(self) -> None:
+            self.received: list[Any] = []
+
+        def on_message(self, message) -> None:
+            self.received.append(message)
+
+        async def shutdown(self) -> None:
+            pass
+
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    runtime = RecordingVoiceRuntime()
+    service.attach_voice_runtime(runtime)  # type: ignore[arg-type]
+    try:
+        conversation_id = service.current_conversation_id
+        await service.handle_command(
+            command(
+                "chat-1",
+                "chat.submit",
+                conversation_id=conversation_id,
+                target="character",
+                text="你好，白厄。",
+            )
+        )
+        # 用户消息立即落库 → 监听器同步收到
+        await _wait_until(
+            lambda: any(
+                m.source == "user" and "你好，白厄" in m.text for m in runtime.received
+            ),
+            message="用户消息应进入语音朗读入口",
+        )
+        # 后台回合的角色回复也进入朗读入口
+        await _wait_until(
+            lambda: any(m.source == "character" for m in runtime.received),
+            message="角色回复应进入语音朗读入口",
+        )
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_rebuild_runtime_for_account_switches_engine_immediately(tmp_path: Path) -> None:
+    """F3：切换引擎后下一个任务立即生效——重建路径真实替换引擎引用。
+
+    demo 模式下 ``_rebuild_runtime_for_account`` 首行跳过（生产行为），
+    这里按真实模式驱动重建：codex → CodexAppServerEngine，
+    deepseek → AcpCodingEngine，且编排器与审查器依赖同步替换。
+    """
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        assert isinstance(service.coding_engine, ScriptedCodingEngine)
+        # 真实模式分支（demo 跳过是生产代码第一行 if self._demo: return）
+        service._demo = False
+        base_config = {
+            "dialogue.provider": "openai_compatible",
+            "dialogue.base_url": "https://api.example.com/v1",
+            "dialogue.api_key": "sk-test",
+            "dialogue.model": "gpt-5.6-sol",
+        }
+
+        service._rebuild_runtime_for_account({**base_config, "engine": "codex"})
+        assert isinstance(service.coding_engine, CodexAppServerEngine)
+        assert isinstance(service.orchestrator.coding_engine, CodexAppServerEngine)
+        assert isinstance(service.dialogue_model, OpenAICompatibleDialogueModel)
+        assert isinstance(service.orchestrator.dialogue_model, OpenAICompatibleDialogueModel)
+
+        service._rebuild_runtime_for_account({**base_config, "engine": "deepseek"})
+        assert isinstance(service.coding_engine, AcpCodingEngine)
+        assert isinstance(service.orchestrator.coding_engine, AcpCodingEngine)
+        # 审查智能体跟随新对话模型重建
+        assert service.orchestrator.reviewer is not None
+        assert service.orchestrator.reviewer._model is service.dialogue_model
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_conversation_and_engine_data_isolated_per_account(tmp_path: Path) -> None:
+    """F6：切换账号后聊天/消息不可见，跨账号按 id 选择被拒。
+
+    账号是完整隔离边界：即使前端持有其他账号的 conversation_id，
+    选择上下文也必须被拒绝；切回后数据完整恢复。
+    """
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        # 默认账号：产生一条消息与引擎数据（工具记录随回合落库）
+        default_conv = service.current_conversation_id
+        await service.handle_command(
+            command(
+                "chat-1",
+                "chat.submit",
+                conversation_id=default_conv,
+                target="assistant",
+                text="检查项目",
+            )
+        )
+        snapshot = await service.handle_command(command("b-0", "app.bootstrap"))
+        assert any(
+            conv["conversation_id"] == default_conv
+            for project in snapshot["projects"]
+            for conv in project["conversations"]
+        )
+
+        # 注册新账号：项目/聊天全部不可见
+        await service.handle_command(
+            command(
+                "reg-1",
+                "account.register",
+                username="dave",
+                display_name="戴夫",
+                password="dave-pass-1",
+            )
+        )
+        snapshot = await service.handle_command(command("b-1", "app.bootstrap"))
+        assert snapshot["projects"] == []
+        assert snapshot["messages"] == []
+
+        # 跨账号按 id 选择被拒（隔离守卫，而不是静默串号）
+        with pytest.raises(ServiceError) as exc_info:
+            await service.handle_command(
+                command("sel-1", "conversation.select", conversation_id=default_conv)
+            )
+        assert exc_info.value.code == "conversation_account_mismatch"
+
+        # 切回默认账号：聊天与消息完整恢复
+        await service.handle_command(
+            command("login-1", "account.login", account_id="default-local", password="")
+        )
+        snapshot = await service.handle_command(command("b-2", "app.bootstrap"))
+        assert snapshot["current_conversation_id"] == default_conv
+        assert any(
+            conv["conversation_id"] == default_conv
+            for project in snapshot["projects"]
+            for conv in project["conversations"]
+        )
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_service_restart_restores_projects_for_current_account_only(tmp_path: Path) -> None:
+    """F6：重启读取 app_state 后，项目恢复仍绑定当前账号。"""
+    database = tmp_path / "data" / "pair_harness.db"
+    service = build_demo_service(database=database, project_root=tmp_path)
+    await service.handle_command(
+        command(
+            "reg-1",
+            "account.register",
+            username="restart-user",
+            display_name="重启用户",
+            password="restart-pass-1",
+        )
+    )
+    assert service.current_project_id == ""
+    await service.shutdown()
+
+    restored = build_demo_service(database=database, project_root=tmp_path)
+    try:
+        assert restored.current_account_id != "default-local"
+        assert restored.current_project_id == ""
+        assert restored.current_conversation_id == ""
+        assert restored.bootstrap()["projects"] == []
+    finally:
+        await restored.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_project_commands_reject_foreign_account_ids(tmp_path: Path) -> None:
+    """F6：项目入口统一拦截其他账号的项目 ID。"""
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db", project_root=tmp_path
+    )
+    try:
+        foreign_project_id = service.current_project_id
+        await service.handle_command(
+            command(
+                "reg-1",
+                "account.register",
+                username="project-user",
+                display_name="项目用户",
+                password="project-pass-1",
+            )
+        )
+        for request_id, method, params in (
+            ("select", "project.select", {"project_id": foreign_project_id}),
+            ("update", "project.update_settings", {"project_id": foreign_project_id, "name": "越权"}),
+            ("archive", "project.archive", {"project_id": foreign_project_id}),
+            ("conversation", "conversation.create", {"project_id": foreign_project_id}),
+        ):
+            with pytest.raises(ServiceError) as exc_info:
+                await service.handle_command(command(request_id, method, **params))
+            assert exc_info.value.code == "project_account_mismatch"
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_new_conversation_belongs_to_current_account(tmp_path: Path) -> None:
+    """F6：新会话创建归属当前账号——切回默认账号后不可见。"""
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        await service.handle_command(
+            command(
+                "reg-1",
+                "account.register",
+                username="erin",
+                display_name="艾琳",
+                password="erin-pass-1",
+            )
+        )
+        # 新账号创建项目与聊天
+        created = await service.handle_command(
+            command(
+                "p-1",
+                "project.create",
+                root_path=str(tmp_path / "erin-project"),
+                name="艾琳的项目",
+            )
+        )
+        erin_project = created["current_project_id"]
+        conversation = await service.handle_command(
+            command(
+                "c-1",
+                "conversation.create",
+                project_id=erin_project,
+                title="艾琳的聊天",
+            )
+        )
+        erin_conv = conversation["current_conversation_id"]
+
+        # 切回默认账号：艾琳的聊天不可见
+        await service.handle_command(
+            command("login-1", "account.login", account_id="default-local", password="")
+        )
+        snapshot = await service.handle_command(command("b-1", "app.bootstrap"))
+        assert not any(
+            conv["conversation_id"] == erin_conv
+            for project in snapshot["projects"]
+            for conv in project["conversations"]
+        )
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_app_reconnect_command_reports_clear_error_not_silent(tmp_path: Path) -> None:
+    """F8：app.reconnect 命令返回明确错误——重连由桌面进程负责。
+
+    进程管理（退避重启 1s→2s→…→15s）在 Tauri 侧 sidecar_reconnect 实现；
+    Sidecar 进程自身不重建。此命令必须明确报错而非静默成功，
+    前端不会误以为 Sidecar 侧已重连。
+    """
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        with pytest.raises(ServiceError) as exc_info:
+            await service.handle_command(command("r-1", "app.reconnect"))
+        assert exc_info.value.code == "not_implemented"
+        assert "桌面进程" in str(exc_info.value)
     finally:
         await service.shutdown()

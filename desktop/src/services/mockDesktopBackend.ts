@@ -26,6 +26,8 @@ export class MockDesktopBackend implements DesktopBackend {
   private readonly requestIds = new RequestIdFactory();
   private scenario: MockScenario;
   private sequence: number;
+  /** 记录全部 request 命令（供测试断言接线与参数，不参与 mock 行为）。 */
+  readonly recordedRequests: DesktopCommand[] = [];
 
   constructor(scenarioName: MockScenarioName = "single-project") {
     this.scenario = createMockScenario(scenarioName);
@@ -42,6 +44,7 @@ export class MockDesktopBackend implements DesktopBackend {
   }
 
   async request<T>(command: DesktopCommand): Promise<T> {
+    this.recordedRequests.push(command);
     switch (command.method) {
       case "app.bootstrap":
         return this.snapshotResult<T>();

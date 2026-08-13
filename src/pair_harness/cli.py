@@ -203,6 +203,8 @@ async def run_real(
             project_id=project.project_id,
             pair_id=pair_id,
             title="CLI 真实联调",
+            # CLI 单账号运行：归属默认本地账号
+            account_id=store.get_app_state("current_account_id") or "default-local",
         )
         orchestrator = ConversationOrchestrator(
             pair_id=pair_id,

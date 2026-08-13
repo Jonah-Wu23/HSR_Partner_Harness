@@ -28,7 +28,7 @@ def _dt(value: str) -> datetime:
 # O4.3：数据库结构版本。新库由 schema.sql 一次建全，直接标记为该版本；
 # 旧库（user_version=0）按 MIGRATIONS 逐级升级。每次结构变更 +1，
 # 并在 MIGRATIONS 里补对应迁移步骤。
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # 索引 i 对应“从版本 i 升到 i+1”的迁移步骤（每级一条或多条 SQL）。
 MIGRATIONS: tuple[tuple[str, ...], ...] = (
@@ -101,12 +101,21 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         "'', '', datetime('now'))",
         "INSERT OR IGNORE INTO account_preferences(account_id) VALUES ('default-local')",
         "UPDATE projects SET account_id = 'default-local' WHERE account_id = ''",
+        "UPDATE conversation_inbox SET account_id = 'default-local' WHERE account_id = ''",
     ),
     # 版本 6：应用级单值状态（当前登录账号等）
     (
         "CREATE TABLE IF NOT EXISTS app_state ("
         "key TEXT PRIMARY KEY,"
         "value TEXT NOT NULL)",
+    ),
+    # 版本 7：聊天归属账号——聊天/引擎数据（工具记录、引擎会话随会话
+    # 级联）成为账号隔离边界的一部分。旧库按项目归属回填。
+    (
+        "ALTER TABLE conversations ADD COLUMN account_id TEXT NOT NULL DEFAULT ''",
+        "UPDATE conversations SET account_id = COALESCE("
+        "(SELECT account_id FROM projects WHERE projects.project_id = conversations.project_id), "
+        "'default-local') WHERE account_id = ''",
     ),
 )
 
@@ -292,18 +301,19 @@ class SQLiteStore(StateStore):
         title: str = "新聊天",
         last_mode: str = "chat",
         conversation_id: str | None = None,
+        account_id: str = "",
     ) -> Conversation:
         conversation_id = conversation_id or str(uuid4())
         now = _now()
         self.connection.execute(
             """
             INSERT INTO conversations(
-                conversation_id, project_id, pair_id, title, last_mode, archived, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+                conversation_id, account_id, project_id, pair_id, title, last_mode, archived, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
             ON CONFLICT(conversation_id) DO UPDATE SET
                 updated_at=excluded.updated_at
             """,
-            (conversation_id, project_id, pair_id, title, last_mode, now, now),
+            (conversation_id, account_id, project_id, pair_id, title, last_mode, now, now),
         )
         self.connection.commit()
         return self.get_conversation(conversation_id)
@@ -316,6 +326,7 @@ class SQLiteStore(StateStore):
             raise KeyError(conversation_id)
         return Conversation(
             conversation_id=row["conversation_id"],
+            account_id=row["account_id"] or "",
             project_id=row["project_id"],
             pair_id=row["pair_id"],
             title=row["title"],
@@ -326,20 +337,45 @@ class SQLiteStore(StateStore):
         )
 
     def list_conversations(
-        self, project_id: str | None, *, include_archived: bool = False
+        self,
+        project_id: str | None,
+        *,
+        include_archived: bool = False,
+        account_id: str | None = None,
     ) -> list[Conversation]:
+        """列出项目下的会话；``account_id`` 给定时按账号过滤。
+
+        账号是完整隔离边界：即使会话挂到了不属于当前账号的项目，
+        带账号过滤的列表也不会泄露。
+        """
         archived_clause = "" if include_archived else "AND archived = 0"
         if project_id is None:
-            rows = self.connection.execute(
-                f"""SELECT conversation_id FROM conversations
-                WHERE project_id IS NULL {archived_clause} ORDER BY updated_at DESC"""
-            ).fetchall()
+            if account_id:
+                rows = self.connection.execute(
+                    f"""SELECT conversation_id FROM conversations
+                    WHERE project_id IS NULL AND account_id = ? {archived_clause}
+                    ORDER BY updated_at DESC""",
+                    (account_id,),
+                ).fetchall()
+            else:
+                rows = self.connection.execute(
+                    f"""SELECT conversation_id FROM conversations
+                    WHERE project_id IS NULL {archived_clause} ORDER BY updated_at DESC"""
+                ).fetchall()
         else:
-            rows = self.connection.execute(
-                f"""SELECT conversation_id FROM conversations
-                WHERE project_id = ? {archived_clause} ORDER BY updated_at DESC""",
-                (project_id,),
-            ).fetchall()
+            if account_id:
+                rows = self.connection.execute(
+                    f"""SELECT conversation_id FROM conversations
+                    WHERE project_id = ? AND account_id = ? {archived_clause}
+                    ORDER BY updated_at DESC""",
+                    (project_id, account_id),
+                ).fetchall()
+            else:
+                rows = self.connection.execute(
+                    f"""SELECT conversation_id FROM conversations
+                    WHERE project_id = ? {archived_clause} ORDER BY updated_at DESC""",
+                    (project_id,),
+                ).fetchall()
         return [self.get_conversation(row["conversation_id"]) for row in rows]
 
     def save_message(self, message: Message) -> None:

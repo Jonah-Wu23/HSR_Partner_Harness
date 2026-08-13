@@ -144,3 +144,32 @@ async def test_returned_reasoning_is_attached_to_final_messages() -> None:
     assert character_messages[0].payload["reasoning"] == "需要交给搭档。"
     assert character_messages[-1].payload["reasoning"] == "回执状态是 completed。"
     assert assistant_messages[0].payload["reasoning"] == "先检查再执行。"
+
+
+@pytest.mark.asyncio
+async def test_dialogue_delta_events_forwarded_to_ui_bridge() -> None:
+    """F1：角色对话增量经 on_dialogue_event 桥接转发（流式上屏链路）。
+
+    orchestrator → 桌面桥的对话事件通道（orchestrator 396-408）此前
+    无任何测试；这里验证 delta 文本与 final 事件按产生顺序到达。
+    """
+    engine = ScriptedCodingEngine()
+    orchestrator = _make_orchestrator(engine)
+    forwarded: list[tuple[str, str, object]] = []
+
+    def on_dialogue_event(conversation_id, user_message, event) -> None:
+        forwarded.append((conversation_id, user_message.message_id, event))
+
+    orchestrator.on_dialogue_event = on_dialogue_event
+
+    outcome = await orchestrator.handle_character_input(
+        conversation_id="c", text="请古代机械跑一下测试"
+    )
+    assert outcome.messages
+    assert forwarded, "on_dialogue_event 必须收到角色对话增量"
+    assert [item[0] for item in forwarded] == ["c", "c"]
+    assert forwarded[0][1] == outcome.messages[0].message_id
+    # 事件按产生顺序：speech.delta（带流式文本）→ character.final
+    assert [item[2].type for item in forwarded] == ["speech.delta", "character.final"]
+    assert forwarded[0][2].delta == "古代机械，交给你了。"
+    assert forwarded[1][2].turn.speech == "古代机械，交给你了。"

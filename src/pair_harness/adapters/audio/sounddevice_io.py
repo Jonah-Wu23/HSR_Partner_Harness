@@ -179,6 +179,7 @@ class AudioPlayer:
         self._running = False
         self._closed = False
         self._stopped = False
+        self._active_playback = False
 
     # ------------------------------------------------------------ 生命周期
 
@@ -216,6 +217,12 @@ class AudioPlayer:
             self._cond.notify_all()
         self._close_stream()
 
+    def wait_until_idle(self) -> None:
+        """等待输出缓冲与当前声块都排空。"""
+        with self._cond:
+            while self._running and (self._buffer or self._active_playback):
+                self._cond.wait(timeout=0.05)
+
     # ------------------------------------------------------------ 生产者
 
     def play_blocking(self, pcm: bytes) -> None:
@@ -242,12 +249,19 @@ class AudioPlayer:
                     if not self._running:
                         return
                     pcm = self._buffer.popleft()
+                    self._active_playback = True
                     # 腾出空间：唤醒等待入队的生产者（防止满缓冲死锁）
                     self._cond.notify_all()
-                self._play(pcm)
+                try:
+                    self._play(pcm)
+                finally:
+                    with self._cond:
+                        self._active_playback = False
+                        self._cond.notify_all()
             except Exception:  # noqa: BLE001 - 单块失败不影响播放线程存活
                 with self._cond:
                     self._buffer.clear()
+                    self._active_playback = False
                     self._cond.notify_all()
 
     def _play(self, pcm: bytes) -> None:

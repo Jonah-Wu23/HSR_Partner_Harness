@@ -59,6 +59,19 @@ export function Menu({ trigger, items, onSelect, ariaLabel, align = "right", sel
       const next = (activeIndex - 1 + items.length) % items.length;
       setActiveIndex(next);
       itemRefs.current[next]?.focus();
+    } else if (event.key === "Enter") {
+      // 激活当前聚焦项（禁用项不激活）；与点击行为一致。
+      // 仅响应菜单项内的 Enter——焦点在触发器时按钮自身回车开合，
+      // 不得冒泡到这里误激活首项。
+      const target = event.target as HTMLElement;
+      if (!target.closest('[role="menuitem"]')) return;
+      const item = items[activeIndex];
+      if (item && !item.disabled) {
+        event.preventDefault();
+        event.stopPropagation();
+        setOpen(false);
+        onSelect(item.id);
+      }
     }
   };
 

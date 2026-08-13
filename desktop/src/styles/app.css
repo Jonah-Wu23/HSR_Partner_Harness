@@ -1035,6 +1035,29 @@
   white-space: nowrap;
 }
 .voice-status .pair-dot { width: 8px; height: 8px; }
+.voice-status-listening { color: var(--accent); }
+.voice-status-listening .voice-status-dot {
+  background: var(--accent);
+  animation: ph-pulse 1.6s ease-in-out infinite;
+}
+.voice-status-speaking { color: var(--running); }
+.voice-status-speaking .voice-status-dot {
+  background: var(--running);
+  animation: ph-pulse 1s ease-in-out infinite;
+}
+.voice-status-ended { color: var(--success); }
+.voice-status-ended .voice-status-dot { background: var(--success); }
+.voice-status-playing { color: var(--pair-assistant); }
+.voice-status-playing .voice-status-dot {
+  background: var(--pair-assistant);
+  animation: ph-pulse 1.2s ease-in-out infinite;
+}
+.voice-status-error { color: var(--warning); }
+.voice-status-error .voice-status-dot { background: var(--warning); }
+.voice-status-unavailable,
+.voice-status-idle { color: var(--text-muted); }
+.voice-status-unavailable .voice-status-dot,
+.voice-status-idle .voice-status-dot { background: var(--text-muted); }
 
 /* ========== 启动 / 断开页 ========== */
 

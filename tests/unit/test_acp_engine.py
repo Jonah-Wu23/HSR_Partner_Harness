@@ -91,6 +91,27 @@ class FakeAcpServer:
         self.notifications: list[tuple[str, dict]] = []
         self.responses: list[tuple[int, dict]] = []
         self.sessions: dict[str, str] = {}
+        self.delayed_completion_task: asyncio.Task | None = None
+        self.completion_delay = 0.0
+
+    async def _put_completion(self) -> None:
+        if self.completion_delay:
+            await asyncio.sleep(self.completion_delay)
+        await self.transport._notifications.put(
+            {
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": "tool-1",
+                        "status": "completed",
+                        "content": [
+                            {"type": "content", "content": {"type": "text", "text": "列出 3 个文件"}}
+                        ],
+                    }
+                },
+            }
+        )
 
     async def handle_request(self, method: str, params: dict) -> dict:
         self.requests.append((method, params))
@@ -132,21 +153,10 @@ class FakeAcpServer:
                     },
                 }
             )
-            await self.transport._notifications.put(
-                {
-                    "method": "session/update",
-                    "params": {
-                        "update": {
-                            "sessionUpdate": "tool_call_update",
-                            "toolCallId": "tool-1",
-                            "status": "completed",
-                            "content": [
-                                {"type": "content", "content": {"type": "text", "text": "列出 3 个文件"}}
-                            ],
-                        }
-                    },
-                }
-            )
+            if self.completion_delay:
+                self.delayed_completion_task = asyncio.create_task(self._put_completion())
+            else:
+                await self._put_completion()
             return {"stopReason": "end_turn", "sessionId": session_id}
         if method == "_reasonix.io/session/steer":
             return {"itemId": "inbox-1", "disposition": "steer_accepted"}
@@ -212,6 +222,94 @@ async def test_run_turn_maps_acp_events_to_engine_events(engine_and_server) -> N
     assert tool_finished.tool_call_id == "tool-1"
     assert tool_finished.payload["status"] == "succeeded"
     assert events[0].payload["text"] == "我先看一下项目结构。"
+
+
+@pytest.mark.asyncio
+async def test_run_turn_drains_tool_completion_after_prompt_response(engine_and_server) -> None:
+    """prompt 响应先到时，短暂延后的工具回执仍进入事件流。"""
+    engine, _transport, server = engine_and_server
+    server.completion_delay = 0.08
+    ref = await engine.open_session(
+        ProjectRef(project_id="p1", name="项目", root_path="C:/project")
+    )
+    events = [
+        event
+        async for event in engine.run_turn(
+            ref,
+            TaskRequest(conversation_id="c1", origin_message_id="m1", instructions="检查项目文件"),
+        )
+    ]
+    assert [event.type for event in events].count(EngineEventType.TOOL_FINISHED) == 1
+    assert events[-2].type == EngineEventType.TOOL_FINISHED
+    if server.delayed_completion_task is not None:
+        await server.delayed_completion_task
+
+
+class LegacyShapedServer(FakeAcpServer):
+    """真实联调出现的兼容形状：snake_case 字段、dict 结果文本、rejected 状态。"""
+
+    async def handle_request(self, method: str, params: dict) -> dict:
+        if method == "session/prompt":
+            session_id = str(params.get("sessionId") or "")
+            await self.transport._notifications.put(
+                {
+                    "method": "session/update",
+                    "params": {
+                        "update": {
+                            "sessionUpdate": "tool_call",
+                            "tool_call_id": "tool-legacy-1",
+                            "title": "list",
+                            "kind": "read",
+                            "rawInput": {"path": "."},
+                        }
+                    },
+                }
+            )
+            await self.transport._notifications.put(
+                {
+                    "method": "session/update",
+                    "params": {
+                        "update": {
+                            "sessionUpdate": "tool_call_update",
+                            "tool_call_id": "tool-legacy-1",
+                            "state": "rejected",
+                            "result": {"text": "权限不足"},
+                        }
+                    },
+                }
+            )
+            return {"stopReason": "end_turn", "sessionId": session_id}
+        return await super().handle_request(method, params)
+
+
+@pytest.mark.asyncio
+async def test_run_turn_accepts_snake_case_fields_and_rejected_status(
+    engine_and_server,
+) -> None:
+    """codec 兼容分支：snake_case 字段、dict 结果文本、rejected → failed。"""
+    engine, transport, _server = engine_and_server
+    transport.server = LegacyShapedServer(transport)
+    ref = await engine.open_session(
+        ProjectRef(project_id="p1", name="项目", root_path="C:/project")
+    )
+    events = [
+        event
+        async for event in engine.run_turn(
+            ref,
+            TaskRequest(conversation_id="c1", origin_message_id="m1", instructions="检查项目文件"),
+        )
+    ]
+    started = [event for event in events if event.type == EngineEventType.TOOL_STARTED]
+    finished = [event for event in events if event.type == EngineEventType.TOOL_FINISHED]
+    assert started and started[0].tool_call_id == "tool-legacy-1"
+    assert finished
+    assert finished[0].tool_call_id == "tool-legacy-1"
+    # rejected 状态归一为 failed；dict 形态结果文本进入 summary
+    assert finished[0].payload["status"] == "failed"
+    assert finished[0].payload["summary"] == "权限不足"
+    # 终态由 stopReason 决定（end_turn → completed）；工具失败经
+    # TOOL_FINISHED status=failed 表达，编排器据此计算失败回执
+    assert events[-1].type == EngineEventType.TURN_COMPLETED
 
 
 @pytest.mark.asyncio

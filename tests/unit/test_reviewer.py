@@ -60,7 +60,7 @@ async def test_default_reviewer_allows_when_no_verdicts_configured() -> None:
 
 @pytest.mark.asyncio
 async def test_deny_verdict_requires_reason_and_suggestion() -> None:
-    rules = default_risk_rules()
+    default_risk_rules()
     reviewer = ScriptedReviewer([ReviewerVerdict(allow=False, reason="", suggestion="")])
     op = PendingOperation(tool_kind="shell", command="rm x", summary="删除")
     with pytest.raises(AssertionError):

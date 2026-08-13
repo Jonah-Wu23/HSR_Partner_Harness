@@ -52,6 +52,10 @@ class AcpCodingEngine(CodingEngine):
     # 执行前审批），编排器裁决后 resolve_approval 回复；TOOL_STARTED 事件
     # 不需要再走本地兜底门控（否则双重审批）。
     native_preexecution_approval = True
+    # Reasonix 的 prompt 响应与最后一批 session/update 偶尔不在同一
+    # 事件循环 tick 到达。给通知队列留一个短暂静默窗口，收齐工具回执。
+    _POST_PROMPT_DRAIN_IDLE_SECONDS = 0.25
+    _POST_PROMPT_DRAIN_MAX_SECONDS = 2.0
 
     def __init__(self, transport: Any, *, model: str | None = None) -> None:
         self.transport = transport
@@ -154,19 +158,32 @@ class AcpCodingEngine(CodingEngine):
         try:
             while True:
                 if prompt_task.done():
-                    # prompt 已返回：回合结束，但通知可能还在队列中
-                    # （ACP 语义保证结束前事件已推送）；短超时消费剩余。
-                    try:
-                        notification = await asyncio.wait_for(
-                            self.transport.next_notification(), timeout=0.05
+                    # prompt 已返回：回合结束，但通知可能在稍后的事件循环
+                    # tick 到达。消费一个有上限的静默窗口，保留最后的工具回执。
+                    loop = asyncio.get_running_loop()
+                    max_deadline = loop.time() + self._POST_PROMPT_DRAIN_MAX_SECONDS
+                    deadline = max_deadline
+                    while loop.time() < deadline:
+                        timeout = min(
+                            self._POST_PROMPT_DRAIN_IDLE_SECONDS,
+                            max(0.0, deadline - loop.time()),
                         )
-                    except asyncio.TimeoutError:
-                        break
-                    event = codec.map_notification(notification, binding)
-                    if event is None:
-                        continue
-                    yield event
-                    continue
+                        try:
+                            notification = await asyncio.wait_for(
+                                self.transport.next_notification(), timeout=timeout
+                            )
+                        except asyncio.TimeoutError:
+                            break
+                        event = codec.map_notification(notification, binding)
+                        if event is None:
+                            continue
+                        yield event
+                        # 收到事件后再留一个短窗口，覆盖同一回合的后续更新。
+                        deadline = min(
+                            loop.time() + self._POST_PROMPT_DRAIN_IDLE_SECONDS,
+                            max_deadline,
+                        )
+                    break
                 # 事件通知与 prompt 响应并发等待：逐条消费映射
                 notification_task = asyncio.create_task(self.transport.next_notification())
                 done, _ = await asyncio.wait(
@@ -290,6 +307,10 @@ class AcpCodec:
     @staticmethod
     def _tool_text(content: Any) -> str:
         """tool_call_update 的 content 数组（结果文本）提取。"""
+        if isinstance(content, dict):
+            return str(content.get("text") or content.get("output") or content.get("result") or "")
+        if isinstance(content, str):
+            return content
         if not isinstance(content, list):
             return ""
         parts: list[str] = []
@@ -378,7 +399,12 @@ class AcpCodec:
                     payload={"text": text, "channel": "summary"}, **common,
                 )
             if kind == "tool_call":
-                tool_call_id = str(update.get("toolCallId") or "")
+                tool_call_id = str(
+                    update.get("toolCallId")
+                    or update.get("tool_call_id")
+                    or update.get("id")
+                    or ""
+                )
                 op = self._op_fields(update)
                 return EngineEvent(
                     sequence=self._next(), type=EngineEventType.TOOL_STARTED,
@@ -391,10 +417,19 @@ class AcpCodec:
                     **common,
                 )
             if kind == "tool_call_update":
-                tool_call_id = str(update.get("toolCallId") or "")
-                status = str(update.get("status") or "completed")
-                succeeded = status not in {"failed", "error", "denied"}
-                text = self._tool_text(update.get("content"))
+                tool_call_id = str(
+                    update.get("toolCallId")
+                    or update.get("tool_call_id")
+                    or update.get("id")
+                    or ""
+                )
+                status = str(update.get("status") or update.get("state") or "completed").lower()
+                succeeded = status not in {"failed", "error", "denied", "rejected"}
+                text = self._tool_text(
+                    update.get("content")
+                    or update.get("result")
+                    or update.get("output")
+                )
                 return EngineEvent(
                     sequence=self._next(), type=EngineEventType.TOOL_FINISHED,
                     tool_call_id=tool_call_id or None,
@@ -469,9 +504,14 @@ class AcpCodec:
                 payload={"text": text, "channel": "summary"}, **common,
             )
         if method == "tool_call_completed":
-            tool_call_id = str(params.get("toolCallId") or "")
-            status = str(params.get("status") or "succeeded")
-            succeeded = status not in {"failed", "error", "denied"}
+            tool_call_id = str(
+                params.get("toolCallId")
+                or params.get("tool_call_id")
+                or params.get("id")
+                or ""
+            )
+            status = str(params.get("status") or "succeeded").lower()
+            succeeded = status not in {"failed", "error", "denied", "rejected"}
             return EngineEvent(
                 sequence=self._next(), type=EngineEventType.TOOL_FINISHED,
                 tool_call_id=tool_call_id or None,

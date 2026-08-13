@@ -1,7 +1,5 @@
 import pytest
-
 from pair_harness.config.pairs import (
-    PLACEHOLDER_VOICE_PREFIX,
     PairConfigError,
     adopt_voice_id,
     load_pair_config,
@@ -141,8 +139,4 @@ def test_adopt_voice_id_missing_section_raises(tmp_path) -> None:
     pair.write_text("pair_id: demo_pair\ncharacter:\n  id: phainon\n", encoding="utf-8")
     with pytest.raises(PairConfigError, match="未找到"):
         adopt_voice_id(pair, "assistant", "qwen-any-id")
-
-
-def test_placeholder_prefix_constant_is_demo() -> None:
-    assert PLACEHOLDER_VOICE_PREFIX == "demo-"
 

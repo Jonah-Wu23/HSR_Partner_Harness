@@ -24,6 +24,7 @@ import asyncio
 from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
+from inspect import isawaitable
 from typing import TYPE_CHECKING
 
 from pair_harness.core.audio import SpeechQueue
@@ -112,6 +113,10 @@ class VoiceRuntime:
         self._skip = False
         # V0.2 M4：当前句合成失败标记——失败后 tts 保持 failed，直到下次播放成功
         self._tts_failed = False
+        # 古代机械的阶段性说明会先于最终执行回执到达。记录已提前入队的
+        # 文本，最终消息再次落库时只保留一份语音。
+        self._preannounced_assistant_texts: set[str] = set()
+        self._progress_message_index = 0
 
     @property
     def speech_queue_len(self) -> int:
@@ -362,15 +367,41 @@ class VoiceRuntime:
             # 降级文本不创建可朗读请求（DashScope 会报 input text is invalid）
             if not is_readable_text(text):
                 continue
+            if message.source == MessageSource.ASSISTANT:
+                key = self._speech_key(text)
+                if key in self._preannounced_assistant_texts:
+                    self._preannounced_assistant_texts.discard(key)
+                    continue
             self._queue.enqueue(
                 SpeechRequest(
                     text=text, voice_id=voice_id, message_id=message.message_id
                 )
             )
 
+    @staticmethod
+    def _speech_key(text: str) -> str:
+        return " ".join(str(text).split())
+
+    def enqueue_assistant_progress(self, text: str) -> None:
+        """把古代机械的阶段性说明立即送入语音队列。"""
+        text = str(text or "").strip()
+        if not is_readable_text(text):
+            return
+        key = self._speech_key(text)
+        self._preannounced_assistant_texts.add(key)
+        self._progress_message_index += 1
+        self._queue.enqueue(
+            SpeechRequest(
+                text=text,
+                voice_id=self._pair_config.assistant.voice_id,
+                message_id=f"assistant-progress:{self._progress_message_index}",
+            )
+        )
+
     def set_context(self, conversation_id: str, pair_config: PairConfig) -> None:
         """切换语音所属聊天与搭档，并停止旧聊天的待播语音。"""
         self.stop_speaking()
+        self._preannounced_assistant_texts.clear()
         self._conversation_id = conversation_id
         self._pair_config = pair_config
 
@@ -383,6 +414,9 @@ class VoiceRuntime:
         self._player.stop()
         self._queue.stop()
         self._skip = False
+        # 阶段性说明可能已被丢弃（未播报）：最终消息落库时不得再被
+        # 去重跳过，否则助手最终回复将彻底无声。
+        self._preannounced_assistant_texts.clear()
 
     def skip_playing(self) -> None:
         """跳过当前句：立即停声并放弃当前合成，继续播队列下一句。
@@ -410,6 +444,10 @@ class VoiceRuntime:
             self._on_tts_state("synthesizing")
             try:
                 await self._play_request(request)
+                # 合成迭代器结束时，播放器输出缓冲可能仍有音频。等实际
+                # 输出排空后再回到 idle，停止按钮覆盖真实播报阶段。
+                if self._queue.playing and not self._skip:
+                    await self._wait_for_player_drain()
             except Exception as exc:  # noqa: BLE001 - TTS 失败降级为静音提示
                 self._tts_failed = True
                 self._on_tts_state("failed")
@@ -429,6 +467,14 @@ class VoiceRuntime:
             # _restart_vad 已发出 "listening"；仅无 VAD/未启动时置 "idle"
             if self._vad is None or not self._started:
                 self._on_vad_state("idle")
+
+    async def _wait_for_player_drain(self) -> None:
+        waiter = getattr(self._player, "wait_until_idle", None)
+        if waiter is None:
+            return
+        result = await asyncio.to_thread(waiter)
+        if isawaitable(result):
+            await result
 
     async def _play_request(self, request: SpeechRequest) -> None:
         """合成一条请求并把 PCM 写入播放器；stop/skip 由块循环检查。"""

@@ -54,4 +54,13 @@ def test_event_emitter_assigns_monotonic_sequence() -> None:
     emitter.emit("message.created", {"message": {"message_id": "m1"}})
     assert [event["sequence"] for event in events] == [0, 1]
     assert emitter.next_sequence == 2
-    assert response_error("req-1", "bad", "失败")["ok"] is False
+
+
+def test_response_error_keeps_request_id_and_error_shape() -> None:
+    payload = response_error("req-1", "invalid_params", "缺少参数")
+    assert payload == {
+        "kind": "response",
+        "id": "req-1",
+        "ok": False,
+        "error": {"code": "invalid_params", "message": "缺少参数"},
+    }

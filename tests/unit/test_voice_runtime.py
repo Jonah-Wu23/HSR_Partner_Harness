@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
@@ -182,6 +183,17 @@ class FakePlayer:
         pass
 
 
+class DrainPlayer(FakePlayer):
+    """等待真实输出设备排空后再允许播放状态收尾。"""
+
+    def __init__(self, drain: threading.Event) -> None:
+        super().__init__()
+        self._drain = drain
+
+    def wait_until_idle(self) -> None:
+        self._drain.wait(timeout=2.0)
+
+
 class FakeOrchestrator:
     def __init__(self) -> None:
         self.character_inputs: list[tuple[str, str]] = []
@@ -203,12 +215,13 @@ def make_runtime(
     recognizer: FakeRecognizer | None = None,
     synthesizer: FakeSynthesizer | None = None,
     queue: SpeechQueue | None = None,
+    player: FakePlayer | None = None,
 ) -> tuple[VoiceRuntime, SimpleNamespace]:
     recognizer = recognizer or FakeRecognizer()
     synthesizer = synthesizer or FakeSynthesizer()
     queue = queue or SpeechQueue()
     capture = FakeCapture()
-    player = FakePlayer()
+    player = player or FakePlayer()
     orch = FakeOrchestrator()
     states: list[str] = []
     partials_seen: list[str] = []
@@ -526,6 +539,31 @@ async def test_tts_state_follows_playback_lifecycle() -> None:
             pass
 
 
+async def test_tts_playing_waits_for_audio_output_to_drain() -> None:
+    """合成完成时仍有设备缓冲，tts 保持 playing 直到实际输出排空。"""
+    drain = threading.Event()
+    runtime, ctx = make_runtime(
+        vad=None,
+        synthesizer=FakeSynthesizer(chunks=1),
+        player=DrainPlayer(drain),
+    )
+    playback = asyncio.create_task(runtime.run_playback_loop())
+    try:
+        ctx.queue.enqueue(SpeechRequest(text="你好", voice_id="demo", message_id="m1"))
+        await wait_until(lambda: ctx.tts_states and ctx.tts_states[-1] == "playing")
+        await asyncio.sleep(0.05)
+        assert ctx.tts_states[-1] == "playing"
+        drain.set()
+        await wait_until(lambda: ctx.tts_states and ctx.tts_states[-1] == "idle")
+    finally:
+        drain.set()
+        playback.cancel()
+        try:
+            await playback
+        except asyncio.CancelledError:
+            pass
+
+
 async def test_tts_failure_reports_failed_then_recovers() -> None:
     """V0.2 M4：合成失败 → tts 置 failed、待播队列清空并保持失败态；
     下一条新消息入队后 synthesizing → playing 恢复。"""
@@ -691,6 +729,27 @@ def test_replay_message_ignores_tts_eligibility() -> None:
     # 其他会话的消息不入队
     runtime.replay_message(
         user.model_copy(update={"conversation_id": "conv-other"})
+    )
+    assert ctx.queue.pop_next() is None
+
+
+def test_assistant_progress_is_spoken_once_when_final_message_arrives() -> None:
+    """工具前的助手阶段性说明先播报，最终消息落库时不重复入队。"""
+    runtime, ctx = make_runtime(vad=None)
+    runtime.enqueue_assistant_progress("我来读取项目目录。")
+    progress = ctx.queue.pop_next()
+    assert progress is not None
+    assert progress.voice_id == load_pair_config(PAIR_ID).assistant.voice_id
+
+    runtime.on_message(
+        Message(
+            conversation_id="conv-1",
+            pair_id=PAIR_ID,
+            source=MessageSource.ASSISTANT,
+            kind=MessageKind.ASSISTANT_NATURAL_LANGUAGE,
+            text="我来读取项目目录。",
+            message_id="assistant:conv-1:task-1",
+        )
     )
     assert ctx.queue.pop_next() is None
 

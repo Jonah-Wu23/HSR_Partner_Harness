@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ReasoningRibbon } from "../workspace/ReasoningRibbon";
@@ -102,5 +102,32 @@ describe("ToolCard", () => {
     expect(screen.getByText("Get-ChildItem -Force")).toBeInTheDocument();
     expect(screen.getByText("执行结果")).toBeInTheDocument();
     expect(screen.getByText(/desktop/)).toBeInTheDocument();
+  });
+
+  it.each([
+    ["running", "运行中"],
+    ["succeeded", "已完成"],
+    ["failed", "失败"],
+    ["denied", "已否决"],
+  ] as const)("工具卡片 %s 态显示「%s」与对应状态类名", (status, label) => {
+    const { container } = render(
+      <ToolCard
+        run={{
+          tool_call_id: `tool-${status}`,
+          conversation_id: "conv-1",
+          task_id: "task-1",
+          engine_turn_id: "turn-1",
+          sequence: 1,
+          status,
+          title: "命令占位",
+          summary: "摘要",
+          details: "明细",
+        }}
+      />,
+    );
+    expect(screen.getByText(label)).toBeInTheDocument();
+    const card = container.querySelector(`.tool-card-status-${status}`);
+    expect(card).not.toBeNull();
+    expect(card?.getAttribute("data-tool-status")).toBe(status);
   });
 });

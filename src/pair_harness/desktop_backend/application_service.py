@@ -163,6 +163,9 @@ class DesktopApplicationService:
         self._shutdown = False
         self._tool_runs: dict[tuple[str, str], ToolRun] = {}
         self._streaming_message_ids: dict[tuple[str, str], set[str]] = {}
+        # 编程助手在工具调用前发出的阶段性说明先走增量事件；在工具开始
+        # 时送入语音队列，等最终回执落库时由常规消息监听接手。
+        self._assistant_stream_text: dict[tuple[str, str], str] = {}
         self._title_tasks: set[asyncio.Task[None]] = set()
         # V0.2：后台回合任务集合（快速接受后立即返回，回合在后台推进）
         self._turn_tasks: set[asyncio.Task[None]] = set()
@@ -300,7 +303,9 @@ class DesktopApplicationService:
             project_payload["path_available"] = project.path_available
             project_payload["conversations"] = [
                 self._conversation_payload(conversation)
-                for conversation in self.store.list_conversations(project.project_id)
+                for conversation in self.store.list_conversations(
+                    project.project_id, account_id=self.current_account_id
+                )
             ]
             projects.append(project_payload)
 
@@ -316,6 +321,17 @@ class DesktopApplicationService:
         if self.current_conversation_id:
             try:
                 conversation = self.store.get_conversation(self.current_conversation_id)
+                if (
+                    conversation.account_id
+                    and conversation.account_id != self.current_account_id
+                ):
+                    raise ServiceError(
+                        "聊天不属于当前账号", code="conversation_account_mismatch"
+                    )
+                if conversation.project_id is not None:
+                    self._current_account_project(
+                        conversation.project_id, conversation_mismatch=True
+                    )
                 snapshot = self.store.load_conversation(self.current_conversation_id)
             except KeyError:
                 self.current_conversation_id = ""
@@ -474,7 +490,7 @@ class DesktopApplicationService:
             raise ServiceError("project.create 需要 root_path", code="invalid_params")
         root_path = Path(root_value).expanduser().resolve()
         project = self.store.find_project_by_root_path(str(root_path))
-        if project is None:
+        if project is None or project.account_id != self.current_account_id:
             project = self.store.create_project(
                 project_id=str(params.get("project_id") or uuid4()),
                 name=str(params.get("name") or root_path.name or root_path),
@@ -494,14 +510,16 @@ class DesktopApplicationService:
 
     async def _project_select(self, params: Mapping[str, Any]) -> dict[str, Any]:
         project_id = self._required_string(params, "project_id")
-        project = self.store.get_project(project_id)
+        project = self._current_account_project(project_id)
         conversation_id = params.get("conversation_id")
         if isinstance(conversation_id, str):
             conversation = self.store.get_conversation(conversation_id)
             if conversation.project_id != project.project_id:
                 raise ServiceError("聊天不属于指定项目", code="conversation_project_mismatch")
         else:
-            conversations = self.store.list_conversations(project.project_id)
+            conversations = self.store.list_conversations(
+                project.project_id, account_id=self.current_account_id
+            )
             conversation = conversations[0] if conversations else self._find_or_create_conversation(
                 project.project_id, pair_id=self.pair_config.pair_id
             )
@@ -510,7 +528,7 @@ class DesktopApplicationService:
 
     async def _project_update_settings(self, params: Mapping[str, Any]) -> dict[str, Any]:
         project_id = str(params.get("project_id") or self.current_project_id)
-        project = self.store.get_project(project_id)
+        project = self._current_account_project(project_id)
         root_changed = False
         if "root_path" in params:
             root_value = params.get("root_path")
@@ -564,13 +582,13 @@ class DesktopApplicationService:
         if active is not None and getattr(active, "project_id", None) == project_id:
             raise ServiceError("项目正在执行任务，暂时不能归档", code="project_busy")
 
-        self.store.get_project(project_id)
+        self._current_account_project(project_id)
         was_current = project_id == self.current_project_id
         previous_conversation_id = self.current_conversation_id
         self.store.archive_project(project_id)
 
         if was_current:
-            remaining = self.store.list_projects()
+            remaining = self.store.list_projects_for_account(self.current_account_id)
             if remaining:
                 conversation = self._find_or_create_conversation(
                     remaining[0].project_id,
@@ -586,25 +604,27 @@ class DesktopApplicationService:
 
     async def _conversation_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
         project_id = str(params.get("project_id") or self.current_project_id)
-        project = self.store.get_project(project_id)
+        project = self._current_account_project(project_id)
         title = str(params.get("title") or "新聊天")
         conversation = self.store.create_conversation(
             project_id=project.project_id,
             pair_id=str(params.get("pair_id") or self.pair_config.pair_id),
             title=title,
+            account_id=self.current_account_id,
         )
         self._select_conversation_context(conversation.conversation_id, emit=True)
         return self.bootstrap()
 
     async def _conversation_select(self, params: Mapping[str, Any]) -> dict[str, Any]:
         conversation_id = self._required_string(params, "conversation_id")
-        self.store.get_conversation(conversation_id)
+        self._current_account_conversation(conversation_id)
         self._select_conversation_context(conversation_id, emit=True)
         return self.bootstrap()
 
     async def _conversation_rename(self, params: Mapping[str, Any]) -> dict[str, Any]:
         conversation_id = str(params.get("conversation_id") or self.current_conversation_id)
         title = self._required_string(params, "title")
+        self._current_account_conversation(conversation_id)
         self.store.rename_conversation(conversation_id, title)
         self.emitter.emit(
             "conversation.changed",
@@ -614,8 +634,11 @@ class DesktopApplicationService:
 
     async def _conversation_archive(self, params: Mapping[str, Any]) -> dict[str, Any]:
         conversation_id = str(params.get("conversation_id") or self.current_conversation_id)
+        self._current_account_conversation(conversation_id)
         self.store.archive_conversation(conversation_id)
-        remaining = self.store.list_conversations(self.current_project_id)
+        remaining = self.store.list_conversations(
+            self.current_project_id, account_id=self.current_account_id
+        )
         if not remaining:
             created = self._find_or_create_conversation(
                 self.current_project_id, pair_id=self.pair_config.pair_id
@@ -636,6 +659,7 @@ class DesktopApplicationService:
         conversation_id = str(params.get("conversation_id") or self.current_conversation_id)
         if not conversation_id:
             raise ServiceError("请先创建或选择项目", code="no_active_conversation")
+        self._current_account_conversation(conversation_id)
         target = str(params.get("target", "character"))
         text = self._required_string(params, "text")
         had_user_messages = any(
@@ -664,6 +688,7 @@ class DesktopApplicationService:
                 target=target,
                 text=text,
                 intent=intent,
+                account_id=self.current_account_id,
             )
             self._emit_queue_changed(conversation_id)
             return {
@@ -844,7 +869,8 @@ class DesktopApplicationService:
         mode = self._required_string(params, "mode")
         if mode not in {"chat", "collaboration"}:
             raise ServiceError("mode 必须是 chat 或 collaboration", code="invalid_mode")
-        self._set_conversation_mode(conversation_id, mode)
+        conversation = self._current_account_conversation(conversation_id)
+        self._set_conversation_mode(conversation.conversation_id, mode)
         self.emitter.emit(
             "conversation.changed",
             {
@@ -919,6 +945,7 @@ class DesktopApplicationService:
         if not text.strip():
             raise ServiceError("队列项文本不能为空", code="invalid_text")
         try:
+            self._current_account_queue_item(queue_item_id)
             item = self.store.edit_queue_item(queue_item_id, text)
         except KeyError as exc:
             raise ServiceError("队列项不存在或已派发", code="queue_item_not_found") from exc
@@ -929,6 +956,7 @@ class DesktopApplicationService:
         """撤回队列项（不再自动派发，状态置 withdrawn）。"""
         queue_item_id = self._required_string(params, "queue_item_id")
         try:
+            self._current_account_queue_item(queue_item_id)
             item = self.store.withdraw_queue_item(queue_item_id)
         except KeyError as exc:
             raise ServiceError("队列项不存在", code="queue_item_not_found") from exc
@@ -939,12 +967,19 @@ class DesktopApplicationService:
         """把队列项置队首（steer）。"""
         queue_item_id = self._required_string(params, "queue_item_id")
         try:
+            self._current_account_queue_item(queue_item_id)
             self.store.prioritize_queue_item(queue_item_id)
         except KeyError as exc:
             raise ServiceError("队列项不存在或已派发", code="queue_item_not_found") from exc
         item = self.store.get_queue_item(queue_item_id)
         self._emit_queue_changed(item["conversation_id"])
         return {"queue_item": item}
+
+    def _current_account_queue_item(self, queue_item_id: str) -> dict[str, Any]:
+        item = self.store.get_queue_item(queue_item_id)
+        if item["account_id"] != self.current_account_id:
+            raise ServiceError("队列项不属于当前账号", code="queue_account_mismatch")
+        return item
 
     async def _voice_tts_play(self, params: Mapping[str, Any]) -> dict[str, Any]:
         """逐条朗读：按 message_id 从会话取消息文本，重新合成入队（可重播）。"""
@@ -1378,7 +1413,9 @@ class DesktopApplicationService:
         projects = self.store.list_projects_for_account(account_id)
         if projects:
             self.current_project_id = projects[0].project_id
-            conversations = self.store.list_conversations(self.current_project_id)
+            conversations = self.store.list_conversations(
+                self.current_project_id, account_id=account_id
+            )
             self.current_conversation_id = (
                 conversations[0].conversation_id if conversations else ""
             )
@@ -1516,6 +1553,11 @@ class DesktopApplicationService:
     def _on_engine_event(self, event: EngineEvent) -> None:
         event_type = event.type
         if event_type == EngineEventType.ASSISTANT_DELTA:
+            stream_key = (event.conversation_id, event.task_id)
+            self._assistant_stream_text[stream_key] = (
+                self._assistant_stream_text.get(stream_key, "")
+                + str(event.payload.get("text", ""))
+            )
             message_id = f"assistant:{event.conversation_id}:{event.task_id}"
             self._streaming_message_ids.setdefault(
                 (event.conversation_id, event.task_id), set()
@@ -1556,6 +1598,8 @@ class DesktopApplicationService:
             EngineEventType.TOOL_PROGRESS,
             EngineEventType.TOOL_FINISHED,
         ):
+            if event_type == EngineEventType.TOOL_STARTED:
+                self._enqueue_assistant_progress(event)
             self._emit_tool_run(event)
         elif event_type == EngineEventType.APPROVAL_RESOLVED:
             self.emitter.emit(
@@ -1605,6 +1649,22 @@ class DesktopApplicationService:
         self._tool_runs[key] = run
         self.emitter.emit("tool_run.upserted", {"tool_run": run})
 
+    def _enqueue_assistant_progress(self, event: EngineEvent) -> None:
+        """工具开始前朗读助手已经输出的阶段性说明。"""
+        text = self._assistant_stream_text.pop(
+            (event.conversation_id, event.task_id), ""
+        ).strip()
+        runtime = self.voice_runtime
+        if not text or runtime is None or self._voice_state.get("enabled") is False:
+            return
+        enqueue = getattr(runtime, "enqueue_assistant_progress", None)
+        if not callable(enqueue):
+            return
+        try:
+            enqueue(text)
+        except Exception:  # noqa: BLE001 - 语音提示不影响工具执行
+            logger.exception("编程助手阶段性语音入队失败")
+
     def _on_execution_started(self) -> None:
         self.emitter.emit(
             "task.busy_changed",
@@ -1621,6 +1681,7 @@ class DesktopApplicationService:
                     {"conversation_id": conversation_id, "message_id": message_id},
                 )
         self._streaming_message_ids.clear()
+        self._assistant_stream_text.clear()
         self.emitter.emit("task.busy_changed", {"busy": False, "active_task": None})
 
     def _finalize_streaming_for_conversation(
@@ -1642,6 +1703,9 @@ class DesktopApplicationService:
                 "message.finalized",
                 {"conversation_id": conversation_id, "message_id": message_id},
             )
+        for key in tuple(self._assistant_stream_text):
+            if key[0] == conversation_id:
+                self._assistant_stream_text.pop(key, None)
 
     # ------------------------------------------------------------------ 上下文工具
 
@@ -1657,7 +1721,13 @@ class DesktopApplicationService:
         conversation = self.store.get_conversation(conversation_id)
         if conversation.project_id is None:
             raise ServiceError("日常聊天尚未接入桌面迁移", code="daily_chat_unavailable")
-        project = self.store.mark_project_opened(conversation.project_id)
+        if conversation.account_id and conversation.account_id != self.current_account_id:
+            raise ServiceError("聊天不属于当前账号", code="conversation_account_mismatch")
+        # 账号是完整隔离边界：先校验项目归属，再更新最近打开时间。
+        project = self._current_account_project(
+            conversation.project_id, conversation_mismatch=True
+        )
+        project = self.store.mark_project_opened(project.project_id)
         selected_pair = load_pair_config(conversation.pair_id)
         if conversation_id != self.current_conversation_id:
             self.orchestrator.close_conversation(self.current_conversation_id)
@@ -1693,14 +1763,38 @@ class DesktopApplicationService:
             )
             self._emit_state_snapshot()
 
+    def _current_account_project(
+        self, project_id: str, *, conversation_mismatch: bool = False
+    ):
+        """取当前账号的项目；外部账号 ID 在业务入口统一拒绝。"""
+        project = self.store.get_project(project_id)
+        if project.account_id != self.current_account_id:
+            code = "conversation_account_mismatch" if conversation_mismatch else "project_account_mismatch"
+            message = "聊天不属于当前账号" if conversation_mismatch else "项目不属于当前账号"
+            raise ServiceError(message, code=code)
+        return project
+
+    def _current_account_conversation(self, conversation_id: str):
+        """取当前账号的会话；会话归属沿项目链校验。"""
+        conversation = self.store.get_conversation(conversation_id)
+        if conversation.project_id is None:
+            raise ServiceError("日常聊天尚未接入桌面迁移", code="daily_chat_unavailable")
+        if conversation.account_id and conversation.account_id != self.current_account_id:
+            raise ServiceError("聊天不属于当前账号", code="conversation_account_mismatch")
+        self._current_account_project(conversation.project_id, conversation_mismatch=True)
+        return conversation
+
     def _find_or_create_conversation(self, project_id: str, *, pair_id: str):
-        conversations = self.store.list_conversations(project_id)
+        conversations = self.store.list_conversations(
+            project_id, account_id=self.current_account_id
+        )
         if conversations:
             return conversations[0]
         return self.store.create_conversation(
             project_id=project_id,
             pair_id=pair_id,
             title="新聊天",
+            account_id=self.current_account_id,
         )
 
     def _schedule_title_generation(self, conversation_id: str, target: str) -> None:
@@ -1797,6 +1891,7 @@ class DesktopApplicationService:
     def _empty_conversation_payload() -> dict[str, Any]:
         return {
             "conversation_id": "",
+            "account_id": "",
             "project_id": None,
             "pair_id": "",
             "title": "",
@@ -1830,13 +1925,15 @@ class DesktopApplicationService:
         }
 
 
-def _get_or_create_project(store: SQLiteStore, root_path: Path):
+def _get_or_create_project(
+    store: SQLiteStore, root_path: Path, *, account_id: str = "default-local"
+):
     root_path = root_path.resolve()
-    recent = store.list_projects_for_account("default-local")
+    recent = store.list_projects_for_account(account_id)
     if recent:
         return store.mark_project_opened(recent[0].project_id)
     existing = store.find_project_by_root_path(str(root_path))
-    if existing is not None:
+    if existing is not None and existing.account_id == account_id:
         return store.mark_project_opened(existing.project_id)
     if store.list_projects(include_archived=True):
         # 用户已经把全部项目归档时，重启仍保持“暂无项目”，等待用户主动新建。
@@ -1845,17 +1942,21 @@ def _get_or_create_project(store: SQLiteStore, root_path: Path):
         project_id=str(uuid4()),
         name=root_path.name or str(root_path),
         root_path=str(root_path),
+        account_id=account_id,
     )
 
 
-def _get_or_create_conversation(store: SQLiteStore, *, project_id: str, pair_id: str):
-    conversations = store.list_conversations(project_id)
+def _get_or_create_conversation(
+    store: SQLiteStore, *, project_id: str, pair_id: str, account_id: str = ""
+):
+    conversations = store.list_conversations(project_id, account_id=account_id or None)
     if conversations:
         return conversations[0]
     return store.create_conversation(
         project_id=project_id,
         pair_id=pair_id,
         title="新聊天",
+        account_id=account_id,
     )
 
 
@@ -1869,10 +1970,19 @@ def _build_service(
 ) -> DesktopApplicationService:
     pair_config = load_pair_config(pair_id)
     store = SQLiteStore(database)
-    project = _get_or_create_project(store, project_root)
+    account_id = store.get_app_state("current_account_id") or "default-local"
+    try:
+        store.get_account(account_id)
+    except KeyError:
+        account_id = "default-local"
+        store.set_app_state("current_account_id", account_id)
+    project = _get_or_create_project(store, project_root, account_id=account_id)
     conversation = (
         _get_or_create_conversation(
-            store, project_id=project.project_id, pair_id=pair_id
+            store,
+            project_id=project.project_id,
+            pair_id=pair_id,
+            account_id=account_id,
         )
         if project is not None
         else None

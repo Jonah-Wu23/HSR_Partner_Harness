@@ -63,6 +63,9 @@ CREATE TABLE IF NOT EXISTS projects (
 
 CREATE TABLE IF NOT EXISTS conversations (
     conversation_id TEXT PRIMARY KEY,
+    -- V0.2 M3：聊天归属账号（账号是完整隔离边界：项目/聊天/配置/密钥
+    -- 互不串扰）。旧库由版本 7 迁移按项目归属回填。
+    account_id TEXT NOT NULL DEFAULT '',
     project_id TEXT REFERENCES projects(project_id),
     pair_id TEXT NOT NULL,
     title TEXT NOT NULL,

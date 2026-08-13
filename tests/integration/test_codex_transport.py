@@ -16,12 +16,29 @@ class ResetOnWriteConnection(QueueJsonLineConnection):
 
 
 @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
-def test_codex_reasoning_effort_matches_gpt_56_sol_levels(effort: str) -> None:
+def test_codex_reasoning_effort_accepts_gpt_56_sol_levels(effort: str) -> None:
     engine = CodexAppServerEngine(JsonlProcessTransport("unused"))
 
     engine.configure_reasoning(effort)
 
     assert engine.reasoning_effort == effort
+
+
+def test_codex_reasoning_effort_normalizes_auto_to_medium() -> None:
+    """configure_reasoning 的真实归一化：auto → medium（F5 档位语义）。"""
+    engine = CodexAppServerEngine(JsonlProcessTransport("unused"), reasoning_effort="auto")
+
+    engine.configure_reasoning("auto")
+
+    assert engine.reasoning_effort == "medium"
+
+
+def test_codex_reasoning_effort_rejects_invalid_values() -> None:
+    """非法档位必须报错，而不是静默接受后带着错误档位发请求。"""
+    engine = CodexAppServerEngine(JsonlProcessTransport("unused"))
+
+    with pytest.raises(ValueError, match="unsupported"):
+        engine.configure_reasoning("ultra")
 
 
 @pytest.mark.asyncio
@@ -211,7 +228,7 @@ async def test_open_session_sends_initialize_handshake_before_thread_start() -> 
     transport = JsonlProcessTransport("unused", connection_factory=factory)
     engine = CodexAppServerEngine(transport)
     server = FakeCodexAppServer(connection)
-    project = ProjectRef(project_id="p", name="p", root_path="C:\project")
+    project = ProjectRef(project_id="p", name="p", root_path=r"C:\project")
 
     open_task = asyncio.create_task(engine.open_session(project))
     request = await server.serve_request({"thread": {"id": "thread-1"}})

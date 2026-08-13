@@ -34,6 +34,8 @@ class Conversation:
     archived: bool
     created_at: datetime
     updated_at: datetime
+    # V0.2 M3：会话归属账号；旧库迁移按项目归属回填。
+    account_id: str = ""
 
 
 @dataclass(frozen=True)

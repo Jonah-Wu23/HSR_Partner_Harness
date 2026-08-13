@@ -159,7 +159,7 @@ async def test_live_asr_transcribes_reference_clip(
             source,
         )
         pcm = data.astype("<i2").tobytes()
-    assert len(pcm) % ASR_CHUNK_BYTES == 0 or len(pcm) > ASR_CHUNK_BYTES
+    # 严格下限：参考素材或 TTS 合成音频都必须足够长（原恒真 OR 断言已删除）
     assert len(pcm) / 2 / 16_000 > 0.5, "ASR 冒烟音频过短，无法验证流式识别"
 
     recognizer = QwenStreamingRecognizer(

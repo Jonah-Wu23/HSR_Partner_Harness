@@ -246,4 +246,30 @@ describe("SettingsCenter", () => {
       "神秘的古代机械",
     );
   });
+
+  it("账号页保存资料、修改密码（含禁用校验）与退出登录二次确认", () => {
+    const props = renderSettings({ page: "account" });
+
+    // 显示名称未修改时保存禁用；修改后保存并回传
+    const save = screen.getByRole("button", { name: "保存资料" });
+    expect(save).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("显示名称"), { target: { value: "吴新名" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存资料" }));
+    expect(props.onSaveProfile).toHaveBeenCalledWith("吴新名");
+
+    // 当前密码为空或新密码不足 4 位时改密禁用
+    const change = screen.getByRole("button", { name: "修改密码" });
+    expect(change).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("当前密码"), { target: { value: "old-pass" } });
+    expect(change).toBeDisabled(); // 新密码仍为空
+    fireEvent.change(screen.getByLabelText(/新密码/), { target: { value: "new-pass" } });
+    fireEvent.click(change);
+    expect(props.onChangePassword).toHaveBeenCalledWith("old-pass", "new-pass");
+
+    // 退出登录：先出现二次确认，确定后才调用 onLogout
+    fireEvent.click(screen.getByRole("button", { name: "退出登录" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("确定退出");
+    fireEvent.click(screen.getByRole("button", { name: "确定退出" }));
+    expect(props.onLogout).toHaveBeenCalled();
+  });
 });

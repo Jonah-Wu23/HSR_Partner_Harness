@@ -127,6 +127,11 @@ def test_live_cli_creates_file_and_resumes_thread(
         conversation="live-smoke-fresh",
     )
     assert fresh.returncode == 0, fresh.stdout + fresh.stderr
+    # 新会话没有历史快照：CLI 不得打印「恢复旧聊天」——
+    # 若新会话误复用旧线程（resume），此断言随即变红。
+    assert "恢复旧聊天" not in fresh.stdout, (
+        f"新会话不应恢复旧聊天\n{fresh.stdout}\n{fresh.stderr}"
+    )
 
 
 @pytest.mark.asyncio

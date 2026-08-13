@@ -83,16 +83,27 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
     expect(screen.getByText("运行中", { selector: ".chat-group-label" })).toBeInTheDocument();
   });
 
-  it("approval-request：审批条三按钮可点击", async () => {
-    await renderScenario("approval-request");
+  it("approval-request：三个按钮分别发出正确决策", async () => {
+    // mock 在 resolve 时同步广播 approval.resolved（审批被移除），
+    // 每个决策用全新场景渲染验证接线与参数
+    const clickAndExpect = async (buttonName: string, decision: string) => {
+      const { backend } = await renderScenario("approval-request");
+      expect(screen.getByTestId("approval-bar")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: buttonName }));
+      await waitFor(() => {
+        const resolve = backend.recordedRequests.find(
+          (request) => request.method === "approval.resolve",
+        );
+        expect(resolve?.params.decision).toBe(decision);
+      });
+      // 本地收敛：已裁决的审批不再展示待审批操作
+      expect(screen.queryByRole("button", { name: buttonName })).not.toBeInTheDocument();
+      cleanup();
+    };
 
-    expect(screen.getByTestId("approval-bar")).toBeInTheDocument();
-    const allow = screen.getByRole("button", { name: "允许" });
-    expect(screen.getByRole("button", { name: "本对话内允许" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "否决" })).toBeInTheDocument();
-    fireEvent.click(allow);
-    // 点击后本地收敛，不再展示待审批操作
-    expect(screen.queryByRole("button", { name: "允许" })).not.toBeInTheDocument();
+    await clickAndExpect("允许", "allow");
+    await clickAndExpect("本对话内允许", "allow_for_conversation");
+    await clickAndExpect("否决", "deny");
   });
 
   it("approval-full-auto：不渲染审批条", async () => {
@@ -117,17 +128,22 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
   });
 
   it("disconnected：技术详情抽屉提供立即重连", async () => {
-    const { controller, rerender, present } = await renderScenario("single-project");
+    const { controller, rerender, present, backend } = await renderScenario("single-project");
     desktopStore.getState().setStatus("disconnected");
     rerender(<AppShell vm={present()} actions={controller.actions} />);
 
     // 断线横幅 + 连接药丸均指向技术详情抽屉
     expect(screen.getByRole("alert")).toHaveTextContent("与本地服务失去连接");
     fireEvent.click(screen.getByRole("button", { name: /连接状态/ }));
-    // 逻辑线接入 app.reconnect 后，抽屉提供「立即重连」按钮
     const reconnectButton = screen.getByRole("button", { name: "立即重连" });
     expect(reconnectButton).toBeInTheDocument();
+
+    // 点击真实触发 backend.reconnectSidecar（断线-恢复状态机），
+    // 恢复事件驱动 store 进入 booting 等待重新水合
+    const reconnectSpy = vi.spyOn(backend, "reconnectSidecar");
     fireEvent.click(reconnectButton);
+    expect(reconnectSpy).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(desktopStore.getState().status).toBe("booting"));
   });
 
   it("booting：只渲染状态页", async () => {
@@ -361,7 +377,7 @@ describe("AppShell QueueStrip 接线（V0.2 M4）", () => {
 
   it("有队列时渲染胶囊条：目标、摘要与数量", async () => {
     const rendered = await renderScenario("single-project");
-    const { controller, rerender, present } = rendered;
+    const { rerender, present } = rendered;
     expect(screen.queryByRole("region", { name: /排队/ })).not.toBeInTheDocument();
     queueItemsInto(rendered, rerender, present);
 

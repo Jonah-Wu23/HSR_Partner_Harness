@@ -48,7 +48,11 @@ class FakeOutputStream:
 fake_sd.OutputStream = FakeOutputStream
 
 with mock.patch.dict(sys.modules, {"sounddevice": fake_sd}):
-    from pair_harness.adapters.audio.sounddevice_io import AudioPlayer
+    from pair_harness.adapters.audio.sounddevice_io import (
+        AudioPlayer,
+        _input_device_candidates,
+        _resample_input,
+    )
 
 
 def _chunk(ms: int = 20) -> bytes:
@@ -207,3 +211,58 @@ def test_empty_pcm_blocks_are_ignored() -> None:
         assert len(stream.writes) == 1
     finally:
         player.close()
+
+
+def test_input_device_candidates_prefers_wdm_ks_microphone() -> None:
+    """F7/兼容：输入设备候选——默认设备居首、WDM-KS 麦克风优先。
+
+    覆盖 ``_input_device_candidates``（Windows 输入侧核心路径，
+    MME 拒绝 16kHz 时回退、WDM-KS 麦克风优先）。
+    """
+    devices = [
+        {"name": "扬声器 (Realtek)", "max_input_channels": 0, "hostapi": 3},
+        {"name": "麦克风 (Realtek)", "max_input_channels": 2, "hostapi": 3},
+        {"name": "默认设备", "max_input_channels": 2, "hostapi": 0},
+        {"name": "外部 Mic", "max_input_channels": 1, "hostapi": 1},
+    ]
+    fake_sd.default = types.SimpleNamespace(device=(2, 2))  # 默认输入设备 index 2
+    fake_sd.query_devices = lambda: devices
+
+    result = _input_device_candidates()
+
+    # 扬声器（max_input_channels=0）被跳过；默认设备在前；
+    # 随后是 WDM-KS 麦克风（hostapi=3 + 名称含"麦克风"），再是其余
+    assert result == (2, 1, 3)
+
+
+def test_input_device_candidates_defaults_to_none_when_no_default() -> None:
+    """默认输入不可用时回退 None（只列候选），不抛错。"""
+    fake_sd.default = types.SimpleNamespace(device=(None, None))
+    fake_sd.query_devices = lambda: [
+        {"name": "Mic", "max_input_channels": 1, "hostapi": 1},
+    ]
+
+    result = _input_device_candidates()
+
+    assert result == (0,)
+
+
+def test_resample_input_downmixes_stereo_and_resamples() -> None:
+    """F7/兼容：int16 帧降混 + 重采样（``_resample_input`` 核心路径）。"""
+    # 16 kHz 立体声 → 8 kHz 单声道
+    raw = np.zeros(1600, dtype=np.int16)
+    raw[::2] = 1000  # 左声道 1000、右声道 0 → 降混后每帧 500
+    mono = _resample_input(raw.tobytes(), channels=2, source_rate=16000, target_rate=8000)
+    samples = np.frombuffer(mono, dtype=np.int16)
+    assert len(samples) == 400  # 800 帧 × 0.5 采样率
+    assert np.abs(samples.astype(int) - 500).max() <= 1  # 插值保持常量
+
+    # 同速率不重采样
+    same = _resample_input(
+        raw[::2].tobytes(), channels=1, source_rate=16000, target_rate=16000
+    )
+    assert len(np.frombuffer(same, dtype=np.int16)) == 800
+
+    # 空帧与不足一帧（1 个 int16 采样、立体声时降混后为空）
+    assert _resample_input(b"", channels=1, source_rate=16000, target_rate=8000) == b""
+    assert _resample_input(b"\x01\x00", channels=2, source_rate=16000, target_rate=8000) == b""

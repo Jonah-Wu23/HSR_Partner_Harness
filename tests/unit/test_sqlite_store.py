@@ -399,3 +399,63 @@ def test_desktop_conversation_mode_and_archive_preserve_project(tmp_path: Path) 
             second.conversation_id
         ]
         assert store.get_project(project.project_id).archived is False
+
+
+def test_conversation_account_id_is_written_and_filters(tmp_path: Path) -> None:
+    """F6：聊天归属账号——创建写入 account_id，列表按账号过滤。"""
+    with SQLiteStore(tmp_path / "db.sqlite") as store:
+        project = store.create_project(project_id="p", name="Repo", root_path=str(tmp_path))
+        account_a = store.create_conversation(
+            project_id=project.project_id,
+            pair_id="phainon_ancient_machine",
+            title="账号A聊天",
+            account_id="account-a",
+        )
+        account_b = store.create_conversation(
+            project_id=project.project_id,
+            pair_id="phainon_ancient_machine",
+            title="账号B聊天",
+            account_id="account-b",
+        )
+        # 按账号过滤互不可见（即使挂在同一项目下）
+        assert [
+            item.conversation_id
+            for item in store.list_conversations(project.project_id, account_id="account-a")
+        ] == [account_a.conversation_id]
+        assert [
+            item.conversation_id
+            for item in store.list_conversations(project.project_id, account_id="account-b")
+        ] == [account_b.conversation_id]
+        # 不传账号时不过滤（兼容旧调用）
+        assert len(store.list_conversations(project.project_id)) == 2
+
+
+def test_migration_v7_backfills_conversation_account_from_project(tmp_path: Path) -> None:
+    """F6：迁移 7——旧库聊天按项目归属回填账号（项目已归入 default-local）。"""
+    database = tmp_path / "old.sqlite"
+    old = _old_schema_connection(database)
+    now = "2026-01-01T00:00:00+00:00"
+    old.execute(
+        """INSERT INTO projects(
+            project_id, name, root_path, archived, created_at, last_opened_at
+        ) VALUES (?, ?, ?, 0, ?, ?)""",
+        ("p", "Repo", str(tmp_path), now, now),
+    )
+    old.execute(
+        """INSERT INTO conversations(
+            conversation_id, project_id, pair_id, title, last_mode, archived,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)""",
+        ("c", "p", "phainon_ancient_machine", "旧聊天", "chat", now, now),
+    )
+    old.commit()
+    old.close()
+
+    with SQLiteStore(database) as store:
+        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert "account_id" in _table_columns(store.connection, "conversations")
+        row = store.connection.execute(
+            "SELECT account_id FROM conversations WHERE conversation_id = ?", ("c",)
+        ).fetchone()
+        # 项目经迁移 5 归入 default-local；聊天经迁移 7 跟随项目归属
+        assert row is not None and row[0] == "default-local"

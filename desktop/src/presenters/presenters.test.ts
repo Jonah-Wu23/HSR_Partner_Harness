@@ -139,6 +139,59 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
     expect(vm.workspace?.delegation).toBeNull();
   });
 
+  it("双空间归属：user+target=assistant 与 assistant/tool 归工作台，其余归角色区", () => {
+    const event = (sequence: number, payload: Record<string, unknown>): DesktopEvent => ({
+      kind: "event",
+      event: "message.created",
+      sequence,
+      payload,
+    });
+    const message = (id: string, source: string, target: string | null): Record<string, unknown> => ({
+      message_id: id,
+      conversation_id: "conv-1",
+      pair_id: "phainon_ancient_machine",
+      engine_turn_id: null,
+      source,
+      kind:
+        source === "user"
+          ? "user.text"
+          : source === "character"
+            ? "character.speech"
+            : "assistant.natural_language",
+      text: `内容 ${id}`,
+      payload: {},
+      tts_eligible: false,
+      created_at: "2026-08-11T00:00:00+00:00",
+      target,
+      origin: "user",
+      delegation_id: null,
+    });
+    desktopStore.getState().applyEvents([
+      event(1, { message: message("m-user-chat", "user", "character") }),
+      event(2, { message: message("m-user-work", "user", "assistant") }),
+      event(3, { message: message("m-character", "character", null) }),
+      event(4, { message: message("m-system", "system", null) }),
+      event(5, { message: message("m-assistant", "assistant", null) }),
+      event(6, { message: message("m-tool", "tool", null) }),
+    ]);
+    const vm = presentAppShell(desktopStore.getState());
+    const characterIds = vm.workspace!.character.messages.map((item) => item.message_id);
+    const assistantIds = vm.workspace!.assistant.messages.map((item) => item.message_id);
+    // 角色区：user+target=character、character、system
+    expect(characterIds).toEqual(
+      expect.arrayContaining(["m-user-chat", "m-character", "m-system"]),
+    );
+    // 工作台：user+target=assistant、assistant、tool
+    expect(assistantIds).toEqual(
+      expect.arrayContaining(["m-user-work", "m-assistant", "m-tool"]),
+    );
+    // 两条过滤规则互斥：任何消息不得同时出现在两个空间
+    expect(characterIds.filter((id) => assistantIds.includes(id))).toEqual([]);
+    // 用户消息按 target 分流，而非按 source 一刀切
+    expect(characterIds).toContain("m-user-chat");
+    expect(assistantIds).toContain("m-user-work");
+  });
+
   it("voiceMiniPlayer：tts playing/synthesizing 映射播放条，idle 为 null", () => {
     desktopStore.getState().applyEvents([
       {

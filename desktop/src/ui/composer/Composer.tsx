@@ -33,9 +33,47 @@ function voiceStatusText(voice: VoiceViewModel): string {
   if (voice.error) return `语音异常：${voice.error}`;
   if (voice.ptt) return "聆听中（按键说话）";
   if (voice.tts === "playing") return "语音播放中";
-  if (voice.vad_enabled) return `VAD ${voice.vad}`;
+  if (voice.vad_enabled) {
+    switch (voice.vad) {
+      case "listening":
+        return "VAD 聆听中";
+      case "speech_started":
+      case "start":
+        return "VAD 识别中";
+      case "speech_ended":
+      case "end":
+        return "VAD 已结束";
+      case "false_trigger":
+        return "VAD 未识别到语音";
+      case "playing":
+        return "VAD 暂停";
+      default:
+        return `VAD ${voice.vad}`;
+    }
+  }
   if (!voice.supported) return "语音不可用";
   return voice.vad === "unavailable" ? "语音已连接，VAD 不可用" : "语音就绪";
+}
+
+function voiceStatusTone(voice: VoiceViewModel): string {
+  if (voice.error) return "error";
+  switch (voice.vad) {
+    case "listening":
+      return "listening";
+    case "speech_started":
+    case "start":
+      return "speaking";
+    case "speech_ended":
+    case "end":
+    case "false_trigger":
+      return "ended";
+    case "playing":
+      return "playing";
+    case "unavailable":
+      return "unavailable";
+    default:
+      return voice.ptt ? "speaking" : "idle";
+  }
 }
 
 function vadButtonTitle(voice: VoiceViewModel, target: "character" | "assistant"): string {
@@ -233,17 +271,15 @@ export function Composer({
         <button
           type="button"
           className="icon-btn"
-          disabled={voice.tts !== "playing"}
+          disabled={voice.tts === "idle" || voice.tts === "failed"}
           title="停止播报"
           aria-label="停止播报"
           onClick={() => void actions.stopSpeech()}
         >
           <StopIcon />
         </button>
-        <span className="voice-status" aria-live="polite">
-          <span
-            className={`pair-dot ${voice.ptt || voice.tts === "playing" ? "pair-dot-running" : "pair-dot-idle"}`}
-          />
+        <span className={`voice-status voice-status-${voiceStatusTone(voice)}`} aria-live="polite">
+          <span className="pair-dot voice-status-dot" />
           {voiceStatus}
         </span>
           </>
