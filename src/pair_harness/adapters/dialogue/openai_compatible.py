@@ -400,9 +400,14 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             # speech.completed 携带完整原始输出（含解析失败的 JSON），
             # 供技术详情与审查智能体复用；raw 绝不进入气泡。
             yield DialogueEvent(type="speech.completed", raw="".join(text_chunks))
-        turn = self._parse_output("".join(text_chunks)).model_copy(
-            update={"reasoning": "".join(reasoning_chunks).strip()}
-        )
+        raw_text = "".join(text_chunks)
+        turn = self._parse_output(raw_text)
+        # 流式解析已经拿到 speech 时，完整 JSON 可能在收尾分片处截断。
+        # 保留已经展示的正式台词，让正文气泡沿用已解析内容。
+        streamed_speech = parser.speech.strip()
+        if streamed_speech and turn.speech == _FALLBACK_SPEECH:
+            turn = turn.model_copy(update={"speech": streamed_speech})
+        turn = turn.model_copy(update={"reasoning": "".join(reasoning_chunks).strip()})
         yield DialogueEvent(
             type="character.final",
             turn=self._enforce_execution_boundary(turn, request),

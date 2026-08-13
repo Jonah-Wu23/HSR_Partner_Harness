@@ -203,3 +203,23 @@ async def test_stream_plain_text_falls_back_to_raw_deltas() -> None:
     finals = [e for e in events if e.type == "character.final"]
     assert finals[0].turn.speech == "这就去办。"
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stream_keeps_speech_when_json_tail_is_truncated() -> None:
+    """JSON 收尾截断时，完整台词仍沿用已经解析出的 speech 增量。"""
+    client = AsyncClient(
+        base_url="http://test",
+        transport=stream_transport(['{"speech": "正式回复。", "delegation":']),
+    )
+    model = OpenAICompatibleDialogueModel(
+        base_url="http://test", api_key="k", model="m", client=client
+    )
+
+    events = [event async for event in model.stream_reply(make_request())]
+
+    deltas = [event.delta for event in events if event.type == "speech.delta"]
+    assert "".join(deltas) == "正式回复。"
+    finals = [event for event in events if event.type == "character.final"]
+    assert finals[0].turn.speech == "正式回复。"
+    await client.aclose()
