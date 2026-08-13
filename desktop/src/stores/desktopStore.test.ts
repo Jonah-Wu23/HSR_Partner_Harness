@@ -109,6 +109,45 @@ describe("desktopStore event projection", () => {
     expect(state.messagesById[messageId]?.streaming).toBeUndefined();
   });
 
+  it("把助手思考与正文合并到同一条流式消息", () => {
+    const messageId = "assistant:conv-1:task-1";
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "message.delta",
+        sequence: 1,
+        payload: {
+          message_id: messageId,
+          conversation_id: "conv-1",
+          source: "assistant",
+          kind: "assistant.reasoning",
+          channel: "summary",
+          delta: "先检查项目。",
+          reasoning_streaming: true,
+        },
+      },
+      {
+        kind: "event",
+        event: "message.delta",
+        sequence: 2,
+        payload: {
+          message_id: messageId,
+          conversation_id: "conv-1",
+          source: "assistant",
+          kind: "assistant.natural_language",
+          delta: "项目已检查。",
+          reasoning_streaming: false,
+        },
+      },
+    ]);
+
+    const state = desktopStore.getState();
+    expect(state.messageIdsByConversation["conv-1"]?.filter((id) => id === messageId)).toHaveLength(1);
+    expect(state.messagesById[messageId]?.text).toBe("项目已检查。");
+    expect(state.messagesById[messageId]?.payload.reasoning).toBe("先检查项目。");
+    expect(state.messagesById[messageId]?.payload.reasoning_streaming).toBe(false);
+  });
+
   it("connection.status 断线切换状态但保留已加载内容", () => {
     desktopStore.getState().applyEvents([
       {
@@ -340,6 +379,122 @@ describe("desktopStore event projection", () => {
     ]);
     expect(desktopStore.getState().needsBootstrap).toBe(false);
     expect(desktopStore.getState().lastSequence).toBe(2);
+  });
+
+  it("project.changed 只带项目字段时合并现有记录，不丢 conversations（白屏回归）", () => {
+    const projectId = "project-1";
+    const before = desktopStore.getState();
+    const beforeProject = before.projectsById[projectId];
+    expect(beforeProject?.conversations.length).toBeGreaterThan(0);
+    const beforeConversationIds =
+      beforeProject?.conversations.map((c) => c.conversation_id) ?? [];
+
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "project.changed",
+        sequence: 1,
+        payload: {
+          // 后端设置类命令的定向响应形状：无 conversations 字段
+          project: {
+            project_id: projectId,
+            name: "改名后的项目",
+            root_path: before.projectsById[projectId].root_path,
+            approval_mode: "review",
+            reasoning_effort: "max",
+            archived: false,
+            created_at: null,
+            last_opened_at: null,
+            path_available: true,
+          } as unknown as DesktopEvent["payload"],
+        },
+      },
+    ]);
+
+    const state = desktopStore.getState();
+    const project = state.projectsById[projectId];
+    expect(project.approval_mode).toBe("review");
+    expect(project.reasoning_effort).toBe("max");
+    // conversations 保留——presentAppShell 不会对 undefined 调用 map
+    expect(project.conversations.map((c) => c.conversation_id)).toEqual(beforeConversationIds);
+    const viewModel = presentAppShell(state).navigation?.projects.find(
+      (item) => item.project_id === projectId,
+    );
+    expect(viewModel?.conversations).toBeDefined();
+  });
+
+  it("conversation.changed 同步更新项目内会话条目（标题自动生成可见）", () => {
+    const projectId = "project-1";
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "conversation.changed",
+        sequence: 1,
+        payload: {
+          conversation: {
+            conversation_id: "conv-1",
+            project_id: projectId,
+            pair_id: "pair-1",
+            title: "正在整理项目介绍",
+            last_mode: "chat",
+            archived: false,
+            created_at: "2026-08-13T00:00:00Z",
+            updated_at: "2026-08-13T00:00:00Z",
+          },
+        },
+      },
+    ]);
+    const state = desktopStore.getState();
+    // 侧栏渲染源 projectsById[].conversations 必须同步
+    expect(state.projectsById[projectId].conversations[0].title).toBe("正在整理项目介绍");
+    expect(presentAppShell(state).navigation?.projects[0].conversations[0].title).toBe(
+      "正在整理项目介绍",
+    );
+  });
+
+  it("turn.status_changed failed 清掉该会话 streaming 占位（三点不卡死）", () => {
+    const messageId = "speech:conv-1:user-1";
+    const turn = (
+      sequence: number,
+      status: string,
+    ): DesktopEvent => ({
+      kind: "event",
+      event: sequence === 2 ? "turn.started" : "turn.status_changed",
+      sequence,
+      payload: {
+        turn: {
+          turn_id: "turn-1",
+          account_id: "default-local",
+          project_id: "project-1",
+          conversation_id: "conv-1",
+          target: "character",
+          source_message_id: "user-1",
+          status,
+          created_at: "2026-08-13T00:00:00Z",
+          updated_at: "2026-08-13T00:00:00Z",
+        },
+      },
+    });
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "message.delta",
+        sequence: 1,
+        payload: {
+          message_id: messageId,
+          conversation_id: "conv-1",
+          source: "character",
+          kind: "character.speech",
+          delta: "",
+          started: true,
+        },
+      },
+      turn(2, "running"),
+    ]);
+    expect(desktopStore.getState().messagesById[messageId]?.streaming).toBe(true);
+
+    desktopStore.getState().applyEvents([turn(3, "failed")]);
+    expect(desktopStore.getState().messagesById[messageId]?.streaming).toBe(false);
   });
 
   it("locks approval actions until the resolved event arrives", () => {

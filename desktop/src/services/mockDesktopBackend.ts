@@ -8,6 +8,7 @@ import type {
   ProjectRecord,
   QueueItem,
   ToolRun,
+  Turn,
 } from "../contracts/protocol";
 import type { DesktopBackend } from "./backend";
 import { RequestIdFactory } from "./backend";
@@ -365,50 +366,16 @@ export class MockDesktopBackend implements DesktopBackend {
     const projectId = this.scenario.snapshot.projects.find((item) =>
       item.conversations.some((item) => item.conversation_id === conversationId),
     )?.project_id ?? "";
-    this.emit("turn.status_changed", {
-      turn: {
-        turn_id: turnId,
-        account_id: "",
-        project_id: projectId,
-        conversation_id: conversationId,
-        target,
-        source_message_id: userMessageId,
-        status: "accepted",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      },
-    });
+    const turn = (status: Turn["status"]): Turn =>
+      mockTurn(turnId, projectId, conversationId, target, userMessageId, status);
+    this.emit("turn.status_changed", { turn: turn("accepted") });
     const events =
       this.scenario.name === "chat-streaming" && conversationId === "conv-1"
         ? this.scenario.submitEvents
         : createSubmitEvents(conversationId, text, target);
     for (const event of events) this.emit(event.event, event.payload);
-    this.emit("turn.started", {
-      turn: {
-        turn_id: turnId,
-        account_id: "",
-        project_id: projectId,
-        conversation_id: conversationId,
-        target,
-        source_message_id: userMessageId,
-        status: "running",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      },
-    });
-    this.emit("turn.status_changed", {
-      turn: {
-        turn_id: turnId,
-        account_id: "",
-        project_id: projectId,
-        conversation_id: conversationId,
-        target,
-        source_message_id: userMessageId,
-        status: "completed",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      },
-    });
+    this.emit("turn.started", { turn: turn("running") });
+    this.emit("turn.status_changed", { turn: turn("completed") });
     if (!hadUserMessage) {
       const title = titleFromMessage(text);
       this.scenario.snapshot.projects = this.scenario.snapshot.projects.map((item) => ({
@@ -659,15 +626,18 @@ export class MockDesktopBackend implements DesktopBackend {
       };
       const current = snapshot.messages.find((item) => item.message_id === payload.message_id);
       const delta = String(payload.delta ?? "");
-      const characterReasoning = payload.source === "character" && payload.channel === "reasoning";
+      const reasoningDelta =
+        (payload.source === "character" && payload.channel === "reasoning") ||
+        (payload.source === "assistant" && payload.kind === "assistant.reasoning");
       const messagePayload: Record<string, unknown> = { ...(current?.payload ?? {}) };
       let text = current?.text ?? "";
-      if (characterReasoning) {
+      if (payload.reasoning_streaming !== undefined) {
+        messagePayload.reasoning_streaming = payload.reasoning_streaming;
+      }
+      if (reasoningDelta) {
         const reasoning = typeof messagePayload.reasoning === "string" ? messagePayload.reasoning : "";
         messagePayload.reasoning = reasoning + delta;
-        if (payload.reasoning_streaming !== undefined) {
-          messagePayload.reasoning_streaming = payload.reasoning_streaming;
-        } else if (payload.started || payload.completed !== undefined) {
+        if (payload.reasoning_streaming === undefined && (payload.started || payload.completed !== undefined)) {
           messagePayload.reasoning_streaming = !payload.completed;
         }
       } else {
@@ -751,6 +721,27 @@ export class MockDesktopBackend implements DesktopBackend {
   nextRequestId(): string {
     return this.requestIds.next();
   }
+}
+
+function mockTurn(
+  turnId: string,
+  projectId: string,
+  conversationId: string,
+  target: Turn["target"],
+  sourceMessageId: string,
+  status: Turn["status"],
+): Turn {
+  return {
+    turn_id: turnId,
+    account_id: "",
+    project_id: projectId,
+    conversation_id: conversationId,
+    target,
+    source_message_id: sourceMessageId,
+    status,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
 }
 
 function projectWithoutConversations(projectRecord: ProjectRecord): DesktopSnapshot["current_project"] {

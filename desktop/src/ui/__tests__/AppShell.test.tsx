@@ -74,6 +74,9 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
 
     expect(screen.getByLabelText("助手工作台")).toBeInTheDocument();
     expect(screen.getByText("任务运行中")).toBeInTheDocument();
+    const toolToggle = screen.getByRole("button", { name: /工具调用/ });
+    expect(screen.queryByText("检查项目文件")).not.toBeInTheDocument();
+    fireEvent.click(toolToggle);
     expect(screen.getByText("检查项目文件")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /取消任务/ })).toBeEnabled();
     // 运行中的聊天在“运行中”分组并有呼吸点

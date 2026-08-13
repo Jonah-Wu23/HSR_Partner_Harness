@@ -112,6 +112,22 @@ describe("MessageList 流式与身份展示", () => {
     expect(container.querySelector(".reasoning-ribbon-body")?.textContent).toContain("先看看当前对话");
   });
 
+  it("助手思考与正文共用一个工作台气泡", () => {
+    const message = makeMessage({
+      source: "assistant",
+      kind: "assistant.reasoning",
+      text: "",
+      streaming: true,
+      payload: { reasoning: "先检查项目结构。", reasoning_streaming: true },
+    });
+    const { container, getByText } = render(
+      <MessageList timeline={makeTimeline([message])} pair={pair} emptyText="空" />,
+    );
+    expect(container.querySelectorAll('[data-message-source="assistant"]')).toHaveLength(1);
+    expect(getByText("...")).toBeInTheDocument();
+    expect(container.querySelector(".reasoning-ribbon-body")?.textContent).toContain("先检查项目结构");
+  });
+
   it("空时间线展示占位文案", () => {
     const { getByText } = render(
       <MessageList timeline={makeTimeline([])} pair={pair} emptyText="和角色聊聊…" />,

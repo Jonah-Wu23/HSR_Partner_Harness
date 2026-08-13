@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ReasoningRibbon } from "../workspace/ReasoningRibbon";
+import { ToolCard } from "../workspace/ToolCard";
 import { VoiceMiniPlayer } from "../composer/VoiceMiniPlayer";
 
 afterEach(cleanup);
@@ -75,5 +76,31 @@ describe("VoiceMiniPlayer", () => {
     expect(onStop).toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "跳下一条" }));
     expect(onSkip).toHaveBeenCalled();
+  });
+});
+
+describe("ToolCard", () => {
+  it("折叠时隐藏命令与结果，展开后同时显示", () => {
+    render(
+      <ToolCard
+        run={{
+          tool_call_id: "tool-1",
+          conversation_id: "conv-1",
+          task_id: "task-1",
+          engine_turn_id: "turn-1",
+          sequence: 1,
+          status: "succeeded",
+          title: "Get-ChildItem -Force",
+          summary: "已完成",
+          details: "desktop\nsrc\ntests",
+        }}
+      />,
+    );
+    expect(screen.queryByText("Get-ChildItem -Force")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /工具调用/ }));
+    expect(screen.getByText("命令")).toBeInTheDocument();
+    expect(screen.getByText("Get-ChildItem -Force")).toBeInTheDocument();
+    expect(screen.getByText("执行结果")).toBeInTheDocument();
+    expect(screen.getByText(/desktop/)).toBeInTheDocument();
   });
 });

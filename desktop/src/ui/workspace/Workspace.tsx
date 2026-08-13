@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import type { PairRecord } from "../../contracts/protocol";
 import type { WorkspaceViewModel } from "../../contracts/view-models";
-import { MessageList } from "./MessageList";
+import { MessageBubble, MessageList } from "./MessageList";
 import { ToolCard } from "./ToolCard";
 import { DelegationCard } from "./DelegationCard";
 import { CollapseIcon } from "../../assets/icons/icons";
@@ -145,13 +145,7 @@ export function Workspace({
               {workspace.assistant.messages
                 .filter((message) => message.source !== "tool")
                 .map((message) => (
-                  <div key={message.message_id} className="msg-row" data-message-source="assistant">
-                    <div className="msg-bubble msg-assistant">
-                      <span className="msg-source">{pair.assistant.name}</span>
-                      {message.text}
-                      {message.streaming ? <span className="msg-streaming-caret" aria-hidden /> : null}
-                    </div>
-                  </div>
+                  <MessageBubble key={message.message_id} message={message} pair={pair} />
                 ))}
               {workspace.assistant.toolRuns.map((run) => (
                 <ToolCard key={run.tool_call_id} run={run} />

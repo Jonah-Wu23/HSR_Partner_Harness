@@ -347,6 +347,7 @@ async def test_streaming_assistant_events_reconcile_to_one_persisted_message(
             if message["source"] == "assistant"
         ]
         assert delta_ids
+        assert len(delta_ids) == 1
         assert delta_ids <= finalized_ids
         assert len(assistant_messages) == 1
         assert assistant_messages[0]["message_id"] in delta_ids

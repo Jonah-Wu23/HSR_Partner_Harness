@@ -324,10 +324,7 @@ class DesktopApplicationService:
             "projects": projects,
             "current_account_id": self.current_account_id,
             "current_account": self._account_payload(self.current_account_id),
-            "accounts": [
-                {**account, "is_last_login": account["account_id"] == self.current_account_id}
-                for account in self.store.list_accounts()
-            ],
+            "accounts": self._account_list_payload(),
             "current_project_id": self.current_project_id,
             "current_conversation_id": self.current_conversation_id,
             "current_project": (
@@ -554,14 +551,10 @@ class DesktopApplicationService:
         if root_changed and project_id == self.current_project_id:
             # 重建运行时上下文（项目目录变化）但不回推整份快照
             self._select_conversation_context(self.current_conversation_id, emit=False)
-        self.emitter.emit(
-            "project.changed",
-            {"project": self._project_payload(self.store.get_project(project_id))},
-        )
+        updated = self._project_payload(self.store.get_project(project_id))
+        self.emitter.emit("project.changed", {"project": updated})
         # V0.2：设置类命令返回定向响应，不再用整份 bootstrap 覆盖未修改字段
-        return {
-            "project": self._project_payload(self.store.get_project(project_id)),
-        }
+        return {"project": updated}
 
     async def _project_archive(self, params: Mapping[str, Any]) -> dict[str, Any]:
         project_id = str(params.get("project_id") or self.current_project_id)
@@ -824,6 +817,11 @@ class DesktopApplicationService:
             self.orchestrator.report_system_status(
                 conversation_id, f"本次回复失败：{exc}"
             )
+            # 回合失败：清掉角色思考/正文与助手的临时流占位，避免前端
+            # 气泡永久停在“三个点”（正常路径由最终消息或执行收尾覆盖）。
+            self._finalize_streaming_for_conversation(
+                conversation_id, user_message.message_id
+            )
             return "failed"
         self._emit_turn_status(turn_id, "completed")
         return "completed"
@@ -900,11 +898,9 @@ class DesktopApplicationService:
 
     async def _voice_tts_stop(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
-        if self.voice_runtime is None:
-            self._voice_state["tts"] = "idle"
-        else:
+        if self.voice_runtime is not None:
             self.voice_runtime.stop_speaking()
-            self._voice_state["tts"] = "idle"
+        self._voice_state["tts"] = "idle"
         self._emit_voice_changed()
         return {"voice": self._voice_snapshot()}
 
@@ -993,10 +989,7 @@ class DesktopApplicationService:
     async def _account_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
         return {
-            "accounts": [
-                {**account, "is_last_login": account["account_id"] == self.current_account_id}
-                for account in self.store.list_accounts()
-            ],
+            "accounts": self._account_list_payload(),
             "current_account_id": self.current_account_id,
         }
 
@@ -1536,10 +1529,12 @@ class DesktopApplicationService:
                     "kind": "assistant.natural_language",
                     "delta": str(event.payload.get("text", "")),
                     "task_id": event.task_id,
+                    "reasoning_streaming": False,
                 },
             )
         elif event_type == EngineEventType.ASSISTANT_REASONING_DELTA:
-            message_id = f"assistant-reasoning:{event.conversation_id}:{event.task_id}"
+            # 思考与正文共用一个消息 id，工作台沿用角色区的单气泡流式展示。
+            message_id = f"assistant:{event.conversation_id}:{event.task_id}"
             self._streaming_message_ids.setdefault(
                 (event.conversation_id, event.task_id), set()
             ).add(message_id)
@@ -1553,6 +1548,7 @@ class DesktopApplicationService:
                     "channel": event.payload.get("channel", "summary"),
                     "delta": str(event.payload.get("text", "")),
                     "task_id": event.task_id,
+                    "reasoning_streaming": True,
                 },
             )
         elif event_type in (
@@ -1588,9 +1584,9 @@ class DesktopApplicationService:
                 engine_turn_id=event.engine_turn_id,
                 sequence=event.sequence,
                 status=cast(Any, status),
-                title=str(payload.get("title", "工具")),
+                title=str(payload.get("command") or payload.get("title") or "工具"),
                 summary=str(payload.get("summary", "")),
-                details=str(payload.get("details", "")),
+                details=str(payload.get("details") or payload.get("command") or ""),
             )
         else:
             status = current.status
@@ -1600,7 +1596,8 @@ class DesktopApplicationService:
                 update={
                     "sequence": event.sequence,
                     "status": status,
-                    "title": str(payload.get("title", current.title)),
+                    # 后续完成事件可能只带“工具调用”标题，保留开始事件里的真实命令。
+                    "title": str(payload.get("command") or current.title or payload.get("title") or "工具"),
                     "summary": str(payload.get("summary", current.summary)),
                     "details": str(payload.get("details", current.details)),
                 }
@@ -1625,6 +1622,26 @@ class DesktopApplicationService:
                 )
         self._streaming_message_ids.clear()
         self.emitter.emit("task.busy_changed", {"busy": False, "active_task": None})
+
+    def _finalize_streaming_for_conversation(
+        self, conversation_id: str, source_message_id: str
+    ) -> None:
+        """回合失败时对仍在流的临时消息补发 message.finalized。
+
+        角色思考/正文占位 id 是 ``speech:{conversation_id}:{source_message_id}``，
+        只登记在 ``_streaming_message_ids`` 里的助手流式 id 一并收尾；
+        正常路径由最终 ``message.created`` 覆盖或 ``_on_execution_finished``
+        收尾，失败路径必须显式清掉，否则前端气泡永久停在“三个点”。
+        """
+        message_ids: set[str] = {f"speech:{conversation_id}:{source_message_id}"}
+        for (conv_id, _task_id), ids in tuple(self._streaming_message_ids.items()):
+            if conv_id == conversation_id:
+                message_ids.update(ids)
+        for message_id in message_ids:
+            self.emitter.emit(
+                "message.finalized",
+                {"conversation_id": conversation_id, "message_id": message_id},
+            )
 
     # ------------------------------------------------------------------ 上下文工具
 

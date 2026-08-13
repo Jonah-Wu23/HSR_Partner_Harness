@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { Message, PairRecord } from "../../contracts/protocol";
+import type { Message, MessageSource, PairRecord } from "../../contracts/protocol";
 import type { ConversationTimelineViewModel } from "../../contracts/view-models";
 import { ReasoningRibbon } from "./ReasoningRibbon";
 
@@ -10,6 +10,22 @@ interface MessageListProps {
   emptyText: string;
 }
 
+const ROW_CLASS: Record<MessageSource, string> = {
+  user: "msg-row msg-row-user",
+  system: "msg-row msg-row-system",
+  tool: "msg-row msg-row-system",
+  character: "msg-row",
+  assistant: "msg-row",
+};
+
+const BUBBLE_CLASS: Record<MessageSource, string> = {
+  character: "msg-bubble msg-character",
+  assistant: "msg-bubble msg-assistant",
+  user: "msg-bubble msg-user",
+  system: "msg-bubble msg-system",
+  tool: "msg-bubble msg-system",
+};
+
 function sourceLabel(message: Message, pair: PairRecord): string | null {
   if (message.source === "character") return pair.character.name;
   if (message.source === "assistant") return pair.assistant.name;
@@ -17,29 +33,17 @@ function sourceLabel(message: Message, pair: PairRecord): string | null {
   return null;
 }
 
-function Bubble({ message, pair }: { message: Message; pair: PairRecord }) {
+export function MessageBubble({ message, pair }: { message: Message; pair: PairRecord }) {
   const label = sourceLabel(message, pair);
   const reasoning =
-    typeof message.payload?.reasoning === "string" ? (message.payload.reasoning as string) : null;
+    typeof message.payload?.reasoning === "string" ? message.payload.reasoning : null;
   const reasoningStreaming = message.payload?.reasoning_streaming === true;
   const reasoningSeconds =
     typeof message.payload?.reasoning_seconds === "number"
-      ? (message.payload.reasoning_seconds as number)
+      ? message.payload.reasoning_seconds
       : undefined;
-  const rowClass =
-    message.source === "user"
-      ? "msg-row msg-row-user"
-      : message.source === "system" || message.source === "tool"
-        ? "msg-row msg-row-system"
-        : "msg-row";
-  const bubbleClass =
-    message.source === "character"
-      ? "msg-bubble msg-character"
-      : message.source === "assistant"
-        ? "msg-bubble msg-assistant"
-      : message.source === "user"
-          ? "msg-bubble msg-user"
-          : "msg-bubble msg-system";
+  const rowClass = ROW_CLASS[message.source];
+  const bubbleClass = BUBBLE_CLASS[message.source];
   const displayText = message.text || (message.streaming ? "..." : "");
 
   return (
@@ -117,14 +121,14 @@ export function MessageList({ timeline, pair, emptyText }: MessageListProps) {
                   className="message-virtual-row"
                   style={{ transform: `translateY(${item.start}px)` }}
                 >
-                  <Bubble message={message} pair={pair} />
+                  <MessageBubble message={message} pair={pair} />
                 </div>
               ) : null;
             })}
           </div>
         ) : (
           timeline.messages.map((message) => (
-            <Bubble key={message.message_id} message={message} pair={pair} />
+            <MessageBubble key={message.message_id} message={message} pair={pair} />
           ))
         )}
       </div>

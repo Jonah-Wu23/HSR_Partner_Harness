@@ -220,10 +220,30 @@ function indexSnapshot(snapshot: DesktopSnapshot) {
   };
 }
 
+function upsertIndexed<T>(
+  byId: Record<string, T>,
+  idsByConversation: Record<string, string[]>,
+  conversationId: string,
+  id: string,
+  item: T,
+): { byId: Record<string, T>; idsByConversation: Record<string, string[]> } {
+  const ids = idsByConversation[conversationId] ?? [];
+  return {
+    byId: { ...byId, [id]: item },
+    idsByConversation: ids.includes(id)
+      ? idsByConversation
+      : { ...idsByConversation, [conversationId]: [...ids, id] },
+  };
+}
+
 function pushToast(toasts: StoreToast[], toast: StoreToast): StoreToast[] {
   // V0.2 M4：同 code+message 去重（以 id 为准），最多保留 5 条
   if (toasts.some((item) => item.id === toast.id)) return toasts;
   return [...toasts, toast].slice(-5);
+}
+
+function snapshotMode(snapshot: DesktopSnapshot): "chat" | "collaboration" {
+  return snapshot.current_conversation.last_mode === "collaboration" ? "collaboration" : "chat";
 }
 
 function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): DesktopState {
@@ -233,11 +253,7 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
   const conversationChanged =
     state.lastSequence >= 0 && state.currentConversationId !== snapshot.current_conversation_id;
   const mode =
-    state.lastSequence === -1 || conversationChanged
-      ? snapshot.current_conversation.last_mode === "collaboration"
-        ? "collaboration"
-        : "chat"
-      : state.mode;
+    state.lastSequence === -1 || conversationChanged ? snapshotMode(snapshot) : state.mode;
   return {
     ...state,
     ...indexSnapshot(snapshot),
@@ -251,8 +267,8 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
     pair: snapshot.pair,
     activeTask: snapshot.active_task,
     busy: snapshot.busy,
-      approvals: snapshot.approvals,
-      approvalResolvingById: {},
+    approvals: snapshot.approvals,
+    approvalResolvingById: {},
     reviewActive: false,
     reviewText: null,
     voice: snapshot.voice,
@@ -283,14 +299,15 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
       return hydrateSnapshotState(next, event.payload as unknown as DesktopSnapshot);
     case "message.created": {
       const message = event.payload.message as Message;
-      next.messagesById = { ...next.messagesById, [message.message_id]: message };
-      const ids = next.messageIdsByConversation[message.conversation_id] ?? [];
-      if (!ids.includes(message.message_id)) {
-        next.messageIdsByConversation = {
-          ...next.messageIdsByConversation,
-          [message.conversation_id]: [...ids, message.message_id],
-        };
-      }
+      const indexed = upsertIndexed(
+        next.messagesById,
+        next.messageIdsByConversation,
+        message.conversation_id,
+        message.message_id,
+        message,
+      );
+      next.messagesById = indexed.byId;
+      next.messageIdsByConversation = indexed.idsByConversation;
       break;
     }
     case "message.status_changed": {
@@ -316,15 +333,18 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
       };
       const current = next.messagesById[payload.message_id];
       const delta = String(payload.delta ?? "");
-      const characterReasoning = payload.source === "character" && payload.channel === "reasoning";
+      const reasoningDelta =
+        (payload.source === "character" && payload.channel === "reasoning") ||
+        (payload.source === "assistant" && payload.kind === "assistant.reasoning");
       const messagePayload: Record<string, unknown> = { ...(current?.payload ?? {}) };
       let text = current?.text ?? "";
-      if (characterReasoning) {
+      if (payload.reasoning_streaming !== undefined) {
+        messagePayload.reasoning_streaming = payload.reasoning_streaming;
+      }
+      if (reasoningDelta) {
         const reasoning = typeof messagePayload.reasoning === "string" ? messagePayload.reasoning : "";
         messagePayload.reasoning = reasoning + delta;
-        if (payload.reasoning_streaming !== undefined) {
-          messagePayload.reasoning_streaming = payload.reasoning_streaming;
-        } else if (payload.started || payload.completed !== undefined) {
+        if (payload.reasoning_streaming === undefined && (payload.started || payload.completed !== undefined)) {
           messagePayload.reasoning_streaming = !payload.completed;
         }
       } else {
@@ -363,25 +383,25 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
     }
     case "tool_run.upserted": {
       const toolRun = event.payload.tool_run as ToolRun;
-      next.toolRunsById = { ...next.toolRunsById, [toolRun.tool_call_id]: toolRun };
-      const ids = next.toolIdsByConversation[toolRun.conversation_id] ?? [];
-      if (!ids.includes(toolRun.tool_call_id)) {
-        next.toolIdsByConversation = {
-          ...next.toolIdsByConversation,
-          [toolRun.conversation_id]: [...ids, toolRun.tool_call_id],
-        };
-      }
+      const indexed = upsertIndexed(
+        next.toolRunsById,
+        next.toolIdsByConversation,
+        toolRun.conversation_id,
+        toolRun.tool_call_id,
+        toolRun,
+      );
+      next.toolRunsById = indexed.byId;
+      next.toolIdsByConversation = indexed.idsByConversation;
       break;
     }
-    case "approval.requested":
-      {
-        const approval = event.payload as unknown as PendingApproval;
-        next.approvals = [
-          ...next.approvals.filter((item) => item.approval_id !== approval.approval_id),
-          approval,
-        ];
-      }
+    case "approval.requested": {
+      const approval = event.payload as unknown as PendingApproval;
+      next.approvals = [
+        ...next.approvals.filter((item) => item.approval_id !== approval.approval_id),
+        approval,
+      ];
       break;
+    }
     case "approval.resolved": {
       const approvalId = String(event.payload.approval_id ?? "");
       next.approvals = next.approvals.filter((item) => item.approval_id !== approvalId);
@@ -399,13 +419,32 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
       // 快照水合后同 turn 的事件按状态覆盖。
       const turn = event.payload.turn as Turn;
       if (!turn) break;
-      next.turnsById = { ...next.turnsById, [turn.turn_id]: turn };
-      const ids = next.turnIdsByConversation[turn.conversation_id] ?? [];
-      if (!ids.includes(turn.turn_id)) {
-        next.turnIdsByConversation = {
-          ...next.turnIdsByConversation,
-          [turn.conversation_id]: [...ids, turn.turn_id],
-        };
+      const indexed = upsertIndexed(
+        next.turnsById,
+        next.turnIdsByConversation,
+        turn.conversation_id,
+        turn.turn_id,
+        turn,
+      );
+      next.turnsById = indexed.byId;
+      next.turnIdsByConversation = indexed.idsByConversation;
+      // 回合失败/取消：清掉该会话内所有 streaming 占位，避免气泡永久停在
+      // “三个点”（后端只在回合成功时用最终消息覆盖临时流）。
+      if (
+        event.event === "turn.status_changed" &&
+        (turn.status === "failed" || turn.status === "cancelled")
+      ) {
+        const messageIds = next.messageIdsByConversation[turn.conversation_id] ?? [];
+        let changed = false;
+        const messages = { ...next.messagesById };
+        for (const messageId of messageIds) {
+          const message = messages[messageId];
+          if (message?.streaming) {
+            messages[messageId] = { ...message, streaming: false };
+            changed = true;
+          }
+        }
+        if (changed) next.messagesById = messages;
       }
       break;
     }
@@ -429,11 +468,13 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
     case "review.completed": {
       const payload = event.payload as { allow?: boolean; reason?: string };
       next.reviewActive = false;
-      next.reviewText = payload.allow === false
-        ? `审查否决：${payload.reason ?? ""}`
-        : payload.allow === true
-          ? "审查通过"
-          : null;
+      if (payload.allow === false) {
+        next.reviewText = `审查否决：${payload.reason ?? ""}`;
+      } else if (payload.allow === true) {
+        next.reviewText = "审查通过";
+      } else {
+        next.reviewText = null;
+      }
       break;
     }
     case "review.failed":
@@ -442,12 +483,35 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
       break;
     case "project.changed": {
       const project = event.payload.project as ProjectRecord;
-      next.projectsById = { ...next.projectsById, [project.project_id]: project };
+      // 设置类命令（审批模式/推理档位）的 project.changed 只携带项目字段，
+      // 不含 conversations；与现有记录合并，避免渲染层对 undefined 调用 map 白屏。
+      const existing = next.projectsById[project.project_id];
+      next.projectsById = {
+        ...next.projectsById,
+        [project.project_id]: existing ? { ...existing, ...project } : project,
+      };
       break;
     }
     case "conversation.changed": {
       const conversation = event.payload.conversation as ConversationRecord;
-      if (conversation) next.conversationsById = { ...next.conversationsById, [conversation.conversation_id]: conversation };
+      if (conversation) {
+        next.conversationsById = {
+          ...next.conversationsById,
+          [conversation.conversation_id]: conversation,
+        };
+        // 侧栏标题渲染自 projectsById[].conversations（标题自动生成只广播
+        // conversation.changed），同步更新项目内的会话条目，否则新标题不显示。
+        const projectId = conversation.project_id ?? "";
+        const project = projectId ? next.projectsById[projectId] : undefined;
+        if (project && Array.isArray(project.conversations)) {
+          const replaced = project.conversations.map((item) =>
+            item.conversation_id === conversation.conversation_id ? conversation : item,
+          );
+          const exists = replaced.some((item) => item.conversation_id === conversation.conversation_id);
+          const conversations = exists ? replaced : [...replaced, conversation];
+          next.projectsById = { ...next.projectsById, [projectId]: { ...project, conversations } };
+        }
+      }
       break;
     }
     case "voice.asr_partial":

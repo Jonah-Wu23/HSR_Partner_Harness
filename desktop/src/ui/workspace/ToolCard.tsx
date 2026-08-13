@@ -23,6 +23,8 @@ interface ToolCardProps {
 /** 工具卡片：状态色条 + mono 标题 + 可展开明细，全程静音、不进入 TTS。 */
 export function ToolCard({ run }: ToolCardProps) {
   const [expanded, setExpanded] = useState(false);
+  const hasCommand = Boolean(run.title || run.details);
+  const displayTitle = "工具调用";
 
   return (
     <div className={`tool-card tool-card-status-${run.status}`} data-tool-status={run.status}>
@@ -35,7 +37,7 @@ export function ToolCard({ run }: ToolCardProps) {
         <span className={`tool-status-icon tool-status-${run.status}`}>
           <StatusIcon status={run.status} />
         </span>
-        <span className="tool-title">{run.title}</span>
+        <span className="tool-title">{displayTitle}</span>
         <span className={`tool-status-text tool-status-${run.status}`}>
           {STATUS_TEXT[run.status]}
         </span>
@@ -44,8 +46,28 @@ export function ToolCard({ run }: ToolCardProps) {
           style={{ transform: expanded ? "rotate(180deg)" : "rotate(-90deg)" }}
         />
       </button>
-      {run.summary ? <div className="tool-summary">{run.summary}</div> : null}
-      {expanded && run.details ? <pre className="tool-details">{run.details}</pre> : null}
+      {expanded && hasCommand ? (
+        <div className="tool-expanded-body">
+          {run.title ? (
+            <div className="tool-command">
+              <span className="tool-detail-label">命令</span>
+              <pre>{run.title}</pre>
+            </div>
+          ) : null}
+          {run.details ? (
+            <div className="tool-result">
+              <span className="tool-detail-label">执行结果</span>
+              <pre className="tool-details">{run.details}</pre>
+            </div>
+          ) : null}
+          {run.summary && run.summary !== run.details ? (
+            <div className="tool-result">
+              <span className="tool-detail-label">状态说明</span>
+              <pre className="tool-details">{run.summary}</pre>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
