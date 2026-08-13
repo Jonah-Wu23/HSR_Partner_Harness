@@ -132,6 +132,28 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
     ]);
     vm = presentAppShell(desktopStore.getState());
     expect(vm.workspace?.delegation?.status).toBe("running");
+
+    desktopStore.getState().applyEvents([
+      event(3, {
+        message: {
+          message_id: "delegation-result-1",
+          conversation_id: "conv-1",
+          pair_id: "phainon_ancient_machine",
+          engine_turn_id: "engine-1",
+          source: "character",
+          kind: "character.speech",
+          text: "这次没做成。",
+          payload: { result_status: "failed" },
+          tts_eligible: true,
+          created_at: "2026-08-11T00:00:01+00:00",
+          target: "character",
+          origin: "character_delegation",
+          delegation_id: "task-9",
+        },
+      }),
+    ]);
+    vm = presentAppShell(desktopStore.getState());
+    expect(vm.workspace?.delegation?.status).toBe("failed");
   });
 
   it("delegation：无委派消息时为 null；普通 user 消息不触发", () => {

@@ -385,11 +385,13 @@ class DesktopApplicationService:
             return
         config = self._load_account_config()
         enabled = config.get("voice.enabled") not in ("false", "0")
+        vad_enabled = config.get("vad_enabled") in ("true", "1")
         self._voice_state["enabled"] = enabled
+        self._voice_state["vad_enabled"] = vad_enabled
         if not enabled:
             return
         try:
-            if config.get("vad_enabled") not in ("false", "0"):
+            if vad_enabled:
                 await self.voice_runtime.start_listening()
             self.voice_runtime.start_playback()
         except Exception as exc:  # noqa: BLE001 - 语音不可用不阻塞文本主线
@@ -840,13 +842,33 @@ class DesktopApplicationService:
         terminal_status = "completed"
         try:
             if target == "assistant":
-                await self.orchestrator.process_direct_input(
+                outcome = await self.orchestrator.process_direct_input(
                     conversation_id=conversation_id, user_message=user_message
                 )
             else:
-                await self.orchestrator.process_character_turn(
+                outcome = await self.orchestrator.process_character_turn(
                     conversation_id=conversation_id, user_message=user_message
                 )
+            if outcome.receipt is not None and outcome.receipt.status != "completed":
+                result = outcome.receipt.status
+                terminal_status = outcome.receipt.status
+                error_text = (
+                    outcome.receipt.errors[0]
+                    if outcome.receipt.errors
+                    else outcome.receipt.summary
+                )
+                if outcome.receipt.status == "failed":
+                    logger.error(
+                        "后台任务失败：%s，conversation=%s",
+                        error_text,
+                        conversation_id,
+                    )
+                    self.orchestrator.mark_message_failed(
+                        conversation_id, user_message.message_id, error_text
+                    )
+                    self.orchestrator.report_system_status(
+                        conversation_id, f"本次回复失败：{error_text}"
+                    )
         except asyncio.CancelledError:
             result = "cancelled"
             terminal_status = "cancelled"
@@ -1233,7 +1255,7 @@ class DesktopApplicationService:
                 self.voice_runtime.stop_speaking()
         if "vad_enabled" in updates:
             self._voice_state["vad_enabled"] = (
-                account_config.get("vad_enabled") not in ("false", "0")
+                account_config.get("vad_enabled") in ("true", "1")
             )
         self._emit_voice_changed()
         return {"config": await self._config_get({})}

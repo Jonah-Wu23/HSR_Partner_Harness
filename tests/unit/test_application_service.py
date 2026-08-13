@@ -439,6 +439,9 @@ async def test_voice_commands_only_exchange_state_with_attached_runtime(tmp_path
         assert service.bootstrap()["voice"]["supported"] is True
         # V0.2 M4：voice 快照与事件都携带待播队列长度
         assert service.bootstrap()["voice"]["speech_queue_len"] == 0
+        await service.start_voice()
+        assert runtime.listening is False
+        assert service.bootstrap()["voice"]["vad_enabled"] is False
         await service.handle_command(command("vad-on", "voice.vad_set", enabled=True))
         await service.handle_command(command("ptt-on", "voice.ptt_start", target="character"))
         await service.handle_command(command("ptt-off", "voice.ptt_stop"))
