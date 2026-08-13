@@ -46,6 +46,9 @@ class CodexAuthService:
     @property
     def env_overrides(self) -> dict[str, str]:
         """注入 Codex 进程的环境变量（账号隔离数据目录）。"""
+        # Codex app-server 在启动时会校验 CODEX_HOME 已存在。首次使用
+        # 账号时这里通常还没有 auth.json，但运行目录必须先创建。
+        self.home.mkdir(parents=True, exist_ok=True)
         return {"CODEX_HOME": str(self.home)}
 
     def status(self) -> dict[str, object]:

@@ -137,7 +137,9 @@ def _resolve_executable(
 def resolve_codex_executable(bundled_bin: str | None = None) -> str:
     """codex 可执行文件：打包内置 > 环境变量 > PATH 默认。"""
     return _resolve_executable(
-        bundled_bin, ("PAIR_HARNESS_BUNDLED_CODEX_BIN", "CODEX_BIN"), "codex"
+        bundled_bin,
+        ("PAIR_HARNESS_BUNDLED_CODEX_BIN", "PAIR_HARNESS_CODEX_BIN", "CODEX_BIN"),
+        "codex",
     )
 
 

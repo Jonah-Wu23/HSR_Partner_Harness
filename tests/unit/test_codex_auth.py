@@ -26,6 +26,7 @@ def test_api_login_writes_auth_json_and_status(tmp_path: Path) -> None:
     assert "sk-test-123" in data
     # 环境注入指向账号隔离目录
     assert service.env_overrides["CODEX_HOME"] == str(service.home)
+    assert service.home.is_dir()
 
 
 def test_start_login_waiting_then_api_login_clears_waiting(tmp_path: Path) -> None:

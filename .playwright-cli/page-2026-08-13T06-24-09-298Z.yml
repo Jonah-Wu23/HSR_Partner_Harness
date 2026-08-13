@@ -1,0 +1,116 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - button "连接状态：已连接，查看技术详情" [ref=e5] [cursor=pointer]:
+      - generic [ref=e7]: 已连接
+    - generic [ref=e8]:
+      - generic [ref=e9]: HSR Partner Harness
+      - generic [ref=e10]:
+        - text: 白厄
+        - generic [ref=e12]: ×
+        - text: 神秘的古代机械
+    - tablist "模式切换" [ref=e14]:
+      - tab "聊天" [ref=e15] [cursor=pointer]
+      - tab "协作" [selected] [ref=e16] [cursor=pointer]
+    - button "设置" [ref=e17] [cursor=pointer]
+  - generic [ref=e21]:
+    - navigation [ref=e22]:
+      - navigation "项目轨道" [ref=e23]:
+        - button "日常聊天（即将推出）" [disabled] [ref=e24]
+        - generic [ref=e30]: 项目
+        - button "项目 1：一个很长的项目标题用于检查导航布局" [ref=e31] [cursor=pointer]:
+          - generic [ref=e32]: 项目
+        - button "项目 2：一个很长的项目标题用于检查导航布局" [ref=e34] [cursor=pointer]:
+          - generic [ref=e35]: 项目
+        - button "项目 3：一个很长的项目标题用于检查导航布局" [ref=e37] [cursor=pointer]:
+          - generic [ref=e38]: 项目
+        - button "项目 4：一个很长的项目标题用于检查导航布局" [ref=e40] [cursor=pointer]:
+          - generic [ref=e41]: 项目
+        - button "项目 5：一个很长的项目标题用于检查导航布局" [ref=e43] [cursor=pointer]:
+          - generic [ref=e44]: 项目
+        - button "新建项目" [ref=e46] [cursor=pointer]
+      - generic [ref=e52]:
+        - generic [ref=e53]:
+          - generic "项目 1：一个很长的项目标题用于检查导航布局" [ref=e54]
+          - generic "路径正常" [ref=e55]
+          - button "项目操作" [ref=e60] [cursor=pointer]
+        - button "新建聊天" [ref=e65] [cursor=pointer]
+        - searchbox "搜索聊天" [ref=e72]
+        - region "更早" [ref=e74]:
+          - generic [ref=e76]:
+            - button "聊天 1：持续讨论中的较长标题 8/11" [ref=e77] [cursor=pointer]:
+              - generic [ref=e78]: 聊天 1：持续讨论中的较长标题
+              - generic [ref=e80]:
+                - generic "白厄 × 神秘的古代机械" [ref=e81]
+                - generic [ref=e84]: 8/11
+            - button "更多操作" [ref=e87] [cursor=pointer]
+          - generic [ref=e92]:
+            - button "聊天 2：持续讨论中的较长标题 8/11" [ref=e93] [cursor=pointer]:
+              - generic [ref=e94]: 聊天 2：持续讨论中的较长标题
+              - generic [ref=e96]:
+                - generic "白厄 × 神秘的古代机械" [ref=e97]
+                - generic [ref=e100]: 8/11
+            - button "更多操作" [ref=e103] [cursor=pointer]
+          - generic [ref=e108]:
+            - button "聊天 3：持续讨论中的较长标题 8/11" [ref=e109] [cursor=pointer]:
+              - generic [ref=e110]: 聊天 3：持续讨论中的较长标题
+              - generic [ref=e112]:
+                - generic "白厄 × 神秘的古代机械" [ref=e113]
+                - generic [ref=e116]: 8/11
+            - button "更多操作" [ref=e119] [cursor=pointer]
+          - generic [ref=e124]:
+            - button "聊天 4：持续讨论中的较长标题 8/11" [ref=e125] [cursor=pointer]:
+              - generic [ref=e126]: 聊天 4：持续讨论中的较长标题
+              - generic [ref=e128]:
+                - generic "白厄 × 神秘的古代机械" [ref=e129]
+                - generic [ref=e132]: 8/11
+            - button "更多操作" [ref=e135] [cursor=pointer]
+          - generic [ref=e140]:
+            - button "聊天 5：持续讨论中的较长标题 8/11" [ref=e141] [cursor=pointer]:
+              - generic [ref=e142]: 聊天 5：持续讨论中的较长标题
+              - generic [ref=e144]:
+                - generic "白厄 × 神秘的古代机械" [ref=e145]
+                - generic [ref=e148]: 8/11
+            - button "更多操作" [ref=e151] [cursor=pointer]
+          - generic [ref=e156]:
+            - button "聊天 6：持续讨论中的较长标题 8/11" [ref=e157] [cursor=pointer]:
+              - generic [ref=e158]: 聊天 6：持续讨论中的较长标题
+              - generic [ref=e160]:
+                - generic "白厄 × 神秘的古代机械" [ref=e161]
+                - generic [ref=e164]: 8/11
+            - button "更多操作" [ref=e167] [cursor=pointer]
+        - generic [ref=e172]:
+          - button "切换主题" [ref=e173] [cursor=pointer]
+          - button "收起聊天栏" [ref=e185] [cursor=pointer]
+    - main [ref=e189]:
+      - generic [ref=e190]:
+        - region "角色区" [ref=e191]:
+          - generic [ref=e192]:
+            - text: 白厄
+            - generic [ref=e194]: 空闲
+          - generic [ref=e195]: 和 白厄 聊聊吧
+        - separator "调整工作区宽度" [ref=e199]
+        - region "助手工作台" [ref=e200]:
+          - generic [ref=e201]:
+            - generic [ref=e202]:
+              - text: 神秘的古代机械
+              - generic [ref=e204]: 空闲
+              - button "收起工作台" [ref=e205] [cursor=pointer]
+            - generic [ref=e211]:
+              - paragraph [ref=e212]: 把任务交给 神秘的古代机械，执行记录会出现在这里
+              - button "试试：让它介绍一下这个项目" [ref=e213] [cursor=pointer]
+      - generic [ref=e214]:
+        - generic [ref=e215]:
+          - generic [ref=e216]:
+            - tablist "发送对象" [ref=e217]:
+              - tab "对角色说" [selected] [ref=e218] [cursor=pointer]
+              - tab "交给助手" [ref=e219] [cursor=pointer]
+            - textbox "消息输入" [ref=e220]:
+              - /placeholder: 和角色聊聊…
+          - button "发送" [disabled] [ref=e221]
+        - generic [ref=e224]:
+          - button "审批模式" [ref=e226] [cursor=pointer]: 请求批准
+          - button "推理档位" [ref=e231] [cursor=pointer]: 推理 · 轻度
+          - button "VAD" [ref=e235] [cursor=pointer]
+          - button "按住说话" [ref=e242] [cursor=pointer]
+          - button "停止播报" [disabled] [ref=e246]
+          - generic [ref=e249]: 语音就绪

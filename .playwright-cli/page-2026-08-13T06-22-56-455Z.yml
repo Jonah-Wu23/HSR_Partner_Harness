@@ -1,0 +1,52 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - button "连接状态：已连接，查看技术详情" [ref=e5] [cursor=pointer]:
+      - generic [ref=e7]: 已连接
+    - generic [ref=e8]:
+      - generic [ref=e9]: HSR Partner Harness
+      - generic [ref=e10]:
+        - text: 白厄
+        - generic [ref=e12]: ×
+        - text: 神秘的古代机械
+    - tablist "模式切换" [ref=e14]:
+      - tab "聊天" [selected] [ref=e15] [cursor=pointer]
+      - tab "协作" [ref=e16] [cursor=pointer]
+    - button "设置" [ref=e17] [cursor=pointer]
+  - generic [ref=e21]:
+    - navigation [ref=e22]:
+      - navigation "项目轨道" [ref=e23]:
+        - button "日常聊天（即将推出）" [disabled] [ref=e24]
+        - generic [ref=e30]: 项目
+        - button "新建项目" [ref=e31] [cursor=pointer]
+      - generic [ref=e37]:
+        - generic [ref=e38]:
+          - generic [ref=e39]: 未选择项目
+          - button "项目操作" [ref=e42] [cursor=pointer]
+        - button "新建聊天" [disabled] [ref=e47]
+        - searchbox "搜索聊天" [ref=e54]
+        - generic [ref=e56]:
+          - text: 还没有项目
+          - button "新建项目" [ref=e57] [cursor=pointer]
+        - generic [ref=e58]:
+          - button "切换主题" [ref=e59] [cursor=pointer]
+          - button "收起聊天栏" [ref=e71] [cursor=pointer]
+    - main [ref=e75]:
+      - generic [ref=e77]:
+        - heading "没有打开的聊天" [level=1] [ref=e78]
+        - paragraph [ref=e79]: 在左侧新建或选择一个聊天开始
+      - generic [ref=e80]:
+        - generic [ref=e81]:
+          - generic [ref=e82]:
+            - tablist "发送对象" [ref=e83]:
+              - tab "对角色说" [selected] [ref=e84] [cursor=pointer]
+              - tab "交给助手" [disabled] [ref=e85]
+            - textbox "消息输入" [disabled] [ref=e86]:
+              - /placeholder: 和角色聊聊…
+          - button "发送" [disabled] [ref=e87]
+        - generic [ref=e90]:
+          - button "审批模式" [ref=e92] [cursor=pointer]: 请求批准
+          - button "推理档位" [ref=e97] [cursor=pointer]: 推理 · 轻度
+          - button "VAD" [ref=e101] [cursor=pointer]
+          - button "按住说话" [ref=e108] [cursor=pointer]
+          - button "停止播报" [disabled] [ref=e112]
+          - generic [ref=e115]: 语音就绪

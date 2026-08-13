@@ -9,10 +9,6 @@ from uuid import uuid4
 
 from pair_harness.adapters.codex.auth import CodexAuthService
 from pair_harness.adapters.codex.engine import CodexAppServerEngine
-from pair_harness.adapters.codex.transport import (
-    JsonlProcessTransport,
-    SubprocessJsonLineConnection,
-)
 from pair_harness.adapters.demo import ScriptedCodingEngine, ScriptedDialogueModel
 from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDialogueModel
 from pair_harness.adapters.reviewer import DialogueModelReviewer
@@ -41,6 +37,7 @@ from pair_harness.settings import Settings
 from pair_harness.storage.sqlite_store import SQLiteStore
 
 from .commands import DesktopCommand
+from .engine_factory import build_codex_transport
 from .events import EventEmitter, EventSink, to_jsonable
 from .voice_factory import build_real_voice_runtime
 
@@ -169,6 +166,9 @@ class DesktopApplicationService:
         self._title_tasks: set[asyncio.Task[None]] = set()
         # V0.2：后台回合任务集合（快速接受后立即返回，回合在后台推进）
         self._turn_tasks: set[asyncio.Task[None]] = set()
+        # 角色对话不占用全局 coding busy 状态；用会话级任务记录阻止同一
+        # 聊天在角色仍流式输出时再次并发启动，后续提交进入既有队列。
+        self._conversation_turn_tasks: dict[str, asyncio.Task[None]] = {}
         self._title_generation_started: set[str] = set()
         # V0.2 M2：Turn 统一运行模型——一次提交 = 一个 Turn。运行态记录，
         # 快照随 bootstrap 水合；终态保留供前端历史展示。
@@ -679,7 +679,9 @@ class DesktopApplicationService:
         # V0.2 M2（问题 9）：忙碌时提交先入队（followup 追加 / steer 置队首），
         # 先持久化再向前端确认；派发由回合完成后的自动派发链处理。
         active = self.orchestrator.state.active
-        if active is not None:
+        turn_task = self._conversation_turn_tasks.get(conversation_id)
+        conversation_busy = turn_task is not None and not turn_task.done()
+        if active is not None or conversation_busy:
             intent = str(params.get("intent", "followup"))
             if intent not in {"followup", "steer"}:
                 raise ServiceError("intent 必须是 followup 或 steer", code="invalid_intent")
@@ -709,8 +711,7 @@ class DesktopApplicationService:
             ),
             name=f"turn:{conversation_id}:{user_message.message_id}",
         )
-        self._turn_tasks.add(task)
-        task.add_done_callback(self._turn_tasks.discard)
+        self._track_turn_task(conversation_id, task)
         if not had_user_messages:
             self._schedule_title_generation(conversation_id, target)
         return {
@@ -720,6 +721,20 @@ class DesktopApplicationService:
             "target": target,
             "turn_id": turn["turn_id"],
         }
+
+    def _track_turn_task(
+        self, conversation_id: str, task: asyncio.Task[None]
+    ) -> None:
+        """登记后台回合，并在结束时清除对应会话的忙碌标记。"""
+        self._turn_tasks.add(task)
+        self._conversation_turn_tasks[conversation_id] = task
+
+        def _on_done(completed: asyncio.Task[None]) -> None:
+            self._turn_tasks.discard(completed)
+            if self._conversation_turn_tasks.get(conversation_id) is completed:
+                self._conversation_turn_tasks.pop(conversation_id, None)
+
+        task.add_done_callback(_on_done)
 
     def _register_turn(self, conversation_id: str, user_message: Any, target: str) -> dict[str, Any]:
         """创建并登记 Turn（accepted 态），返回 payload。"""
@@ -821,6 +836,8 @@ class DesktopApplicationService:
         返回终态供派发链决定是否继续。
         """
         self._emit_turn_status(turn_id, "running")
+        result = "completed"
+        terminal_status = "completed"
         try:
             if target == "assistant":
                 await self.orchestrator.process_direct_input(
@@ -831,25 +848,32 @@ class DesktopApplicationService:
                     conversation_id=conversation_id, user_message=user_message
                 )
         except asyncio.CancelledError:
-            self._emit_turn_status(turn_id, "cancelled")
+            result = "cancelled"
+            terminal_status = "cancelled"
+            self.orchestrator.mark_message_cancelled(
+                conversation_id, user_message.message_id
+            )
             raise
         except Exception as exc:  # noqa: BLE001 - 回合失败转为可见消息状态
             logger.exception("后台回合失败：%s", conversation_id)
-            self._emit_turn_status(turn_id, "failed")
+            result = "failed"
+            terminal_status = "failed"
             self.orchestrator.mark_message_failed(
                 conversation_id, user_message.message_id, str(exc)
             )
             self.orchestrator.report_system_status(
                 conversation_id, f"本次回复失败：{exc}"
             )
-            # 回合失败：清掉角色思考/正文与助手的临时流占位，避免前端
-            # 气泡永久停在“三个点”（正常路径由最终消息或执行收尾覆盖）。
+        finally:
+            # 成功、失败、取消都补发收尾事件。正常消息已经落库时这是
+            # 幂等的；若模型在 character.final 前退出，则可解除前端流式占位。
             self._finalize_streaming_for_conversation(
                 conversation_id, user_message.message_id
             )
-            return "failed"
-        self._emit_turn_status(turn_id, "completed")
-        return "completed"
+            # 让 turn 终态成为本回合最后一个事件，前端可以把它作为
+            # 回合收尾信号，而不会在其后再次看到流式占位。
+            self._emit_turn_status(turn_id, terminal_status)
+        return result
 
     def _set_conversation_mode(
         self, conversation_id: str, mode: str
@@ -2012,14 +2036,13 @@ def _build_service(
             ),
             temperature=1.0,
         )
-        async def codex_connection() -> SubprocessJsonLineConnection:
-            return await SubprocessJsonLineConnection.create(
-                settings.codex_bin, args=["app-server"]
-            )
-
+        initial_codex_auth = CodexAuthService(store.database.parent, account_id)
         coding_engine = CodexAppServerEngine(
-            JsonlProcessTransport(
-                settings.codex_bin, connection_factory=codex_connection
+            build_codex_transport(
+                codex_auth=initial_codex_auth,
+                codex_bin=settings.codex_bin,
+                base_url=dialogue_base,
+                api_key=dialogue_key,
             ),
             model=dialogue_model_name,
             reasoning_effort=(

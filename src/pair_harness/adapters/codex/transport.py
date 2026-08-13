@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shutil
+from collections import deque
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
@@ -26,6 +27,8 @@ class JsonLineConnection(Protocol):
 class SubprocessJsonLineConnection:
     def __init__(self, process: asyncio.subprocess.Process) -> None:
         self.process = process
+        self._stderr_tail: deque[str] = deque(maxlen=20)
+        self._stderr_task: asyncio.Task[None] | None = None
 
     @staticmethod
     def _resolve_executable(executable: str) -> str:
@@ -54,8 +57,8 @@ class SubprocessJsonLineConnection:
         ``args`` 追加到可执行文件后（codex 用 ``app-server``，Reasonix
         ACP 用 ``acp``）；``env`` 为账号级环境覆盖（V0.2 M3：每个本地
         账号独立的 Codex 数据目录 CODEX_HOME，见 CodexAuthService）。
-        stderr 无人消费会打满管道缓冲并阻塞子进程（O1.3）。MVP 阶段丢弃
-        stderr；B1 联调需要诊断输出时再改为独立任务消费并接入日志。
+        stderr 由独立任务持续消费，避免管道缓冲打满阻塞子进程；最近的
+        stderr 行会附在退出异常中，便于定位 app-server 启动失败。
         """
         resolved = cls._resolve_executable(executable)
         if resolved.lower().endswith((".cmd", ".bat")):
@@ -70,10 +73,45 @@ class SubprocessJsonLineConnection:
             *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
             env=merged_env,
         )
-        return cls(process)
+        connection = cls(process)
+        connection._stderr_task = asyncio.create_task(
+            connection._drain_stderr(), name="codex-stderr-reader"
+        )
+        return connection
+
+    async def _drain_stderr(self) -> None:
+        if self.process.stderr is None:
+            return
+        while True:
+            line = await self.process.stderr.readline()
+            if not line:
+                return
+            text = line.decode("utf-8", errors="replace").strip()
+            if text:
+                self._stderr_tail.append(text[-500:])
+                logger.debug("Codex app-server stderr: %s", text)
+
+    async def exit_description(self) -> str:
+        """返回子进程退出码和最近的 stderr，避免只暴露泛化 EOF。"""
+        if self.process.returncode is None:
+            try:
+                await asyncio.wait_for(self.process.wait(), timeout=0.5)
+            except asyncio.TimeoutError:
+                pass
+        if self._stderr_task is not None:
+            try:
+                await asyncio.wait_for(self._stderr_task, timeout=0.5)
+            except asyncio.TimeoutError:
+                self._stderr_task.cancel()
+                await asyncio.gather(self._stderr_task, return_exceptions=True)
+        detail = f"Codex app-server exited (exit code {self.process.returncode})"
+        if self._stderr_tail:
+            stderr = " | ".join(self._stderr_tail)
+            detail = f"{detail}: {stderr[-3000:]}"
+        return detail
 
     async def read_line(self) -> bytes:
         if self.process.stdout is None:
@@ -93,8 +131,13 @@ class SubprocessJsonLineConnection:
         if self.process.stdin is not None:
             self.process.stdin.close()
         if self.process.returncode is None:
-            self.process.terminate()
+            try:
+                self.process.terminate()
+            except ProcessLookupError:
+                pass
         await self.process.wait()
+        if self._stderr_task is not None:
+            await asyncio.gather(self._stderr_task, return_exceptions=True)
 
 
 ConnectionFactory = Callable[[], Awaitable[JsonLineConnection]]
@@ -212,6 +255,9 @@ class JsonlProcessTransport:
             while True:
                 line = await self._connection.read_line()
                 if not line:
+                    describe_exit = getattr(self._connection, "exit_description", None)
+                    if callable(describe_exit):
+                        raise TransportClosed(await describe_exit())
                     raise failure
                 # 单行坏 JSON 只跳过并计数，不杀掉整个读循环（O1.3）；
                 # 只有连接关闭（空行）才终止循环。

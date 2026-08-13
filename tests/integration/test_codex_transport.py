@@ -15,6 +15,11 @@ class ResetOnWriteConnection(QueueJsonLineConnection):
         raise ConnectionResetError("连接已重置")
 
 
+class ExitedConnection(QueueJsonLineConnection):
+    async def exit_description(self) -> str:
+        return "Codex app-server exited (exit code 1): CODEX_HOME 不存在"
+
+
 @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
 def test_codex_reasoning_effort_accepts_gpt_56_sol_levels(effort: str) -> None:
     engine = CodexAppServerEngine(JsonlProcessTransport("unused"))
@@ -78,6 +83,24 @@ async def test_transport_normalizes_connection_reset_and_releases_connection() -
     assert str(raised.value) == "Codex app-server connection lost"
     assert not transport.is_running
     assert transport._connection is None
+    await transport.close()
+
+
+@pytest.mark.asyncio
+async def test_transport_preserves_process_exit_diagnostics() -> None:
+    """app-server EOF 要保留退出码/启动 stderr，而不是只报泛化 EOF。"""
+    connection = ExitedConnection()
+
+    async def factory():
+        return connection
+
+    transport = JsonlProcessTransport("unused", connection_factory=factory)
+    request = asyncio.create_task(transport.request("initialize"))
+    await connection.receive_request()
+    await connection.server_to_client.put(b"")
+
+    with pytest.raises(TransportClosed, match="CODEX_HOME 不存在"):
+        await request
     await transport.close()
 
 

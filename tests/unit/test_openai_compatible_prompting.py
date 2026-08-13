@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Literal
 
 import pytest
 
@@ -24,6 +25,7 @@ from pair_harness.core.contracts import (
     Message,
     MessageKind,
     MessageSource,
+    ProjectRuntimeContext,
     TaskAmendmentDraft,
     TaskRequestDraft,
 )
@@ -89,7 +91,10 @@ def make_model(base_url: str) -> OpenAICompatibleDialogueModel:
 
 
 def make_request(
-    *, text: str = "帮我把报告整理好", result_status: str | None = None
+    *,
+    text: str = "帮我把报告整理好",
+    result_status: str | None = None,
+    runtime_mode: Literal["chat", "collaboration"] | None = None,
 ) -> DialogueRequest:
     user = Message(
         conversation_id="c",
@@ -124,6 +129,15 @@ def make_request(
             total_steps=3,
         ),
         result_summary=result,
+        runtime_context=(
+            ProjectRuntimeContext(
+                project_name="HSR Partner Harness",
+                project_abs_dir=r"E:\AI\HSR Partner Harness",
+                conversation_mode=runtime_mode,
+            )
+            if runtime_mode is not None
+            else None
+        ),
     )
 
 
@@ -208,6 +222,32 @@ async def test_explicit_local_task_has_deterministic_delegation_boundary(
         assert turn.delegation.instructions == "请帮我删除 notes.txt 文件"
         assert "我来" not in turn.speech
         assert "古代机械" in turn.speech
+
+
+@pytest.mark.asyncio
+async def test_current_project_query_recovers_missing_delegation_in_collaboration(
+    fake_chat_server: str,
+) -> None:
+    """真实故障回归：模型只返回省略号时，项目介绍请求仍进入委派链路。"""
+    _FakeChatHandler.scripts.extend(
+        [
+            {"stream": True, "chunks": ['{"speech":"……"}']},
+            {"stream": True, "chunks": ['{"speech":"……"}']},
+        ]
+    )
+    model = make_model(fake_chat_server)
+    text = "嗯，今天的话，我想陪你看看这个项目到底是做什么的。"
+
+    collaboration = await run_turn(
+        model, make_request(text=text, runtime_mode="collaboration")
+    )
+    chat = await run_turn(model, make_request(text=text, runtime_mode="chat"))
+
+    assert isinstance(collaboration.delegation, TaskRequestDraft)
+    assert collaboration.delegation.instructions == text
+    assert collaboration.speech != "……"
+    assert "古代机械" in collaboration.speech
+    assert chat.delegation is None
 
 
 @pytest.mark.asyncio

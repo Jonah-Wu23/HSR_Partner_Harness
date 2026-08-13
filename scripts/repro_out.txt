@@ -1,0 +1,10 @@
+  [消息] {"kind": "event", "event": "backend.ready", "sequence": 0, "payload": {"pid": 20732, "demo": true}}
+  [启动 bootstrap] lastSequence=0 gaps=[] needsBootstrap=False onboarding=True
+  [注册后] lastSequence=0 gaps=[] needsBootstrap=False onboarding=True
+  [消息] {"kind": "error", "error": {"code": "unknown_method", "message": "未知桌面命令：account.onboarding_complete"}}
+  [store异常] 'sequence'
+  [点开始使用后] lastSequence=0 gaps=[] needsBootstrap=False onboarding=True
+  [再次 bootstrap] lastSequence=0 gaps=[] needsBootstrap=False onboarding=True
+  [进程] 正常退出，退出码: 0
+
+★ 结论：flag 未翻转，仍显示引导（但组件不重挂，UI 停在当前步骤）

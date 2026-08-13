@@ -12,7 +12,12 @@ from pair_harness.adapters.acp.engine import AcpCodingEngine
 from pair_harness.adapters.codex.engine import CodexAppServerEngine
 from pair_harness.adapters.demo import ScriptedCodingEngine
 from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDialogueModel
-from pair_harness.core.contracts import ApprovalMode, MessageSource
+from pair_harness.core.contracts import (
+    ApprovalMode,
+    CharacterTurn,
+    DialogueEvent,
+    MessageSource,
+)
 from pair_harness.desktop_backend.application_service import (
     ServiceError,
     build_demo_service,
@@ -1430,6 +1435,78 @@ async def test_conversation_and_engine_data_isolated_per_account(tmp_path: Path)
             for conv in project["conversations"]
         )
     finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_role_turn_same_conversation_is_queued_while_streaming(tmp_path: Path) -> None:
+    """角色流不走 coding busy，也必须阻止同一聊天并发生成两轮。"""
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+
+    class BlockingDialogueModel:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.calls = 0
+
+        async def generate_title(self, *, pair_id: str, context: tuple) -> str | None:
+            del pair_id, context
+            return None
+
+        async def stream_reply(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                self.started.set()
+                yield DialogueEvent(type="speech.delta", delta="第一轮正在回复")
+                await self.release.wait()
+            yield DialogueEvent(
+                type="character.final",
+                turn=CharacterTurn(speech=f"第{self.calls}轮完成。"),
+            )
+
+    model = BlockingDialogueModel()
+    service.dialogue_model = model
+    service.orchestrator.dialogue_model = model
+    try:
+        conversation_id = service.current_conversation_id
+        first = await service.handle_command(
+            command(
+                "first",
+                "chat.submit",
+                conversation_id=conversation_id,
+                target="character",
+                text="第一条",
+            )
+        )
+        await asyncio.wait_for(model.started.wait(), timeout=1.0)
+
+        second = await service.handle_command(
+            command(
+                "second",
+                "chat.submit",
+                conversation_id=conversation_id,
+                target="character",
+                text="第二条",
+            )
+        )
+        assert second["queued"] is True
+        assert second["queue_item"]["status"] == "queued"
+        assert model.calls == 1
+        assert first["message_id"] != second["queue_item"]["queue_item_id"]
+
+        model.release.set()
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while asyncio.get_running_loop().time() < deadline:
+            if not service.store.list_queue_items(conversation_id) and model.calls == 2:
+                break
+            await asyncio.sleep(0.01)
+        assert not service.store.list_queue_items(conversation_id)
+        assert model.calls == 2
+    finally:
+        model.release.set()
         await service.shutdown()
 
 

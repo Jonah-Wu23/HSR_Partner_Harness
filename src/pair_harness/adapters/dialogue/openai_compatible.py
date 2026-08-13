@@ -173,11 +173,20 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             return turn.model_copy(update={"speech": speech, "delegation": None})
 
         delegation = turn.delegation
-        if delegation is None and _is_explicit_local_task(request.user_message.text):
+        needs_project_inspection = (
+            request.runtime_context is not None
+            and request.runtime_context.conversation_mode == "collaboration"
+            and _is_current_project_query(request.user_message.text)
+        )
+        if delegation is None and (
+            _is_explicit_local_task(request.user_message.text) or needs_project_inspection
+        ):
             delegation = TaskRequestDraft(instructions=request.user_message.text.strip())
 
         speech = turn.speech
-        if isinstance(delegation, TaskRequestDraft) and _claims_self_execution(speech):
+        if delegation is not None and _is_placeholder_speech(speech):
+            speech = f"这事交给{assistant_name}查看，等结果回来我再和你说。"
+        elif isinstance(delegation, TaskRequestDraft) and _claims_self_execution(speech):
             speech = f"这事得交给{assistant_name}来处理。{assistant_name}，麻烦你了。"
         elif delegation is not None and not speech.strip():
             speech = f"这事交给{assistant_name}来处理。"
@@ -459,6 +468,27 @@ _LOCAL_OBJECT_WORDS = (
 )
 _QUESTION_CUES = ("怎么", "如何", "为什么", "解释", "教程", "原理")
 _REQUEST_CUES = ("请", "帮我", "替我", "麻烦", "让", "把")
+_CURRENT_PROJECT_REFERENCES = (
+    "这个项目",
+    "当前项目",
+    "本项目",
+    "这个仓库",
+    "当前仓库",
+    "本仓库",
+)
+_PROJECT_QUERY_CUES = (
+    "介绍",
+    "了解",
+    "看看",
+    "查看",
+    "讲讲",
+    "说说",
+    "做什么",
+    "干什么",
+    "用途",
+    "结构",
+    "技术栈",
+)
 _SELF_EXECUTION_RE = re.compile(
     r"我(?:来|去|现在|这就|马上)?(?:帮你|替你)?"
     r"(?:创建|新建|删除|移除|重命名|移动|复制|修改|编辑|写入|追加|保存|运行|执行|安装|构建|编译|测试|检查|读取|打开|处理)"
@@ -480,6 +510,17 @@ def _is_explicit_local_task(text: str) -> bool:
         re.search(r"(?:[a-z]:[\\/]|[.]{0,2}[\\/]|\b[\w.-]+\.(?:txt|md|py|json|ya?ml|toml|csv)\b)", normalized)
     )
     return has_action and has_request and (has_object or has_path)
+
+
+def _is_current_project_query(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    return any(ref in normalized for ref in _CURRENT_PROJECT_REFERENCES) and any(
+        cue in normalized for cue in _PROJECT_QUERY_CUES
+    )
+
+
+def _is_placeholder_speech(speech: str) -> bool:
+    return not str(speech or "").strip(" \\t\\r\\n.…。!！?？")
 
 
 def _claims_self_execution(speech: str) -> bool:

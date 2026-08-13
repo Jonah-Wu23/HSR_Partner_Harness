@@ -234,6 +234,31 @@ class ConversationOrchestrator:
             return updated
         return None
 
+    def mark_message_cancelled(
+        self, conversation_id: str, message_id: str, reason: str = "用户取消"
+    ) -> Message | None:
+        """把尚未完成的用户消息标记为取消，保留原文供前端对账。"""
+        history = self._history.get(conversation_id, [])
+        for index, message in enumerate(history):
+            if message.message_id != message_id:
+                continue
+            updated = message.model_copy(
+                update={
+                    "status": MessageStatus.CANCELLED,
+                    "payload": {
+                        **dict(message.payload),
+                        "cancelled_reason": reason,
+                    },
+                }
+            )
+            history[index] = updated
+            if self.store is not None:
+                self.store.save_message(updated)
+            if self.on_message_status_changed is not None:
+                self.on_message_status_changed(updated)
+            return updated
+        return None
+
     def report_system_status(self, conversation_id: str, text: str) -> Message:
         """把运行时错误作为可见且可恢复的系统消息写入当前聊天。"""
         return self._message(
