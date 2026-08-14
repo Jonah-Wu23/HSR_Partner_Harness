@@ -1,7 +1,9 @@
 import pytest
 from pair_harness.config.pairs import (
+    PAIR_CATALOG_IDS,
     PairConfigError,
     adopt_voice_id,
+    list_pair_configs,
     load_pair_config,
     load_prompt,
 )
@@ -35,6 +37,19 @@ def test_phainon_pair_config_loads_names_colors_and_prompts() -> None:
     assert config.theme.character_active == "#296CE1"
     assert config.theme.assistant_primary == "#B08D57"
     assert "文件和命令都没有执行权" in load_prompt(config.character.prompt)
+
+
+def test_public_pair_catalog_loads_two_new_pairs_and_excludes_reviewer() -> None:
+    configs = list_pair_configs()
+
+    assert [config.pair_id for config in configs] == list(PAIR_CATALOG_IDS)
+    assert [config.character.name for config in configs] == ["流萤", "三月七", "白厄"]
+    assert [config.assistant.name for config in configs] == [
+        "萨姆",
+        "第四面镜",
+        "神秘的古代机械",
+    ]
+    assert all(config.pair_id != "reviewer" for config in configs)
 
 
 def test_missing_prompt_file_raises_pair_config_error(tmp_path) -> None:
@@ -139,4 +154,3 @@ def test_adopt_voice_id_missing_section_raises(tmp_path) -> None:
     pair.write_text("pair_id: demo_pair\ncharacter:\n  id: phainon\n", encoding="utf-8")
     with pytest.raises(PairConfigError, match="未找到"):
         adopt_voice_id(pair, "assistant", "qwen-any-id")
-

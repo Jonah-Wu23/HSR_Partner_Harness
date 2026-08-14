@@ -67,7 +67,14 @@ function toConnectionStatus(status: AppShellViewModel["status"]): ConnectionView
  * 只有启动期（尚无 navigation 数据）失败才整屏。
  */
 export function AppShell({ vm, actions }: AppShellProps) {
-  const pair = vm.navigation?.currentPair ?? null;
+  const activeConv = vm.navigation?.projects
+    .flatMap((p) => p.conversations)
+    .find((c) => c.conversation_id === vm.navigation?.currentConversationId);
+  const activePair =
+    vm.navigation?.pairs?.find((p) => p.pair_id === activeConv?.pair_id) ??
+    vm.navigation?.currentPair ??
+    null;
+  const pair = activePair ?? vm.navigation?.currentPair ?? null;
   const [techDetailsOpen, setTechDetailsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsPage, setSettingsPage] = useState<SettingsPage>("account");
@@ -118,8 +125,6 @@ export function AppShell({ vm, actions }: AppShellProps) {
     // V0.2 M4：非默认账号且引导未完成 → 整屏首次引导
     body = (
       <Onboarding
-        characterName={pair?.character.name ?? "角色"}
-        assistantName={pair?.assistant.name ?? "助手"}
         onCreateProject={async () => {
           await actions.createProject();
           return true;
@@ -188,7 +193,7 @@ export function AppShell({ vm, actions }: AppShellProps) {
             {workspace ? (
               <Workspace
                 workspace={workspace}
-                pair={vm.navigation.currentPair}
+                pair={pair ?? vm.navigation.currentPair}
                 onQuickTask={(text) => void actions.submitMessage(text, "assistant")}
                 onCloseWorkbench={() => actions.switchMode("chat")}
                 onCancelDelegation={() => void actions.cancelTask()}
@@ -238,7 +243,7 @@ export function AppShell({ vm, actions }: AppShellProps) {
   }
 
   return (
-    <div className="app-shell" data-theme={vm.theme} data-testid="app-shell">
+    <div className="app-shell" data-theme={vm.theme} data-pair={vm.currentPairId} data-testid="app-shell">
       {body}
       {/* V0.2 M4：Toast 队列（右上角）；空队列不渲染 */}
       <ToastStack

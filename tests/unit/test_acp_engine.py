@@ -295,6 +295,26 @@ class LegacyShapedServer(FakeAcpServer):
         return await super().handle_request(method, params)
 
 
+class MissingStopReasonServer(FakeAcpServer):
+    """真实 ACP 成功响应的兼容形状：session/prompt 只返回 sessionId。"""
+
+    async def handle_request(self, method: str, params: dict) -> dict:
+        result = await super().handle_request(method, params)
+        if method == "session/prompt":
+            result.pop("stopReason", None)
+        return result
+
+
+class ErrorStopReasonAfterSuccessServer(FakeAcpServer):
+    """Reasonix v1.24.2 的真实形状：成功事件后返回 stopReason=error。"""
+
+    async def handle_request(self, method: str, params: dict) -> dict:
+        result = await super().handle_request(method, params)
+        if method == "session/prompt":
+            result["stopReason"] = "error"
+        return result
+
+
 @pytest.mark.asyncio
 async def test_run_turn_accepts_snake_case_fields_and_rejected_status(
     engine_and_server,
@@ -322,6 +342,47 @@ async def test_run_turn_accepts_snake_case_fields_and_rejected_status(
     assert finished[0].payload["summary"] == "权限不足"
     # 终态由 stopReason 决定（end_turn → completed）；工具失败经
     # TOOL_FINISHED status=failed 表达，编排器据此计算失败回执
+    assert events[-1].type == EngineEventType.TURN_COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_run_turn_recovers_error_stop_reason_after_successful_tools(
+    engine_and_server,
+) -> None:
+    """成功工具与助手终稿齐全时保留终态警告，但任务仍为 completed。"""
+    engine, transport, _server = engine_and_server
+    transport.server = ErrorStopReasonAfterSuccessServer(transport)
+    ref = await engine.open_session(
+        ProjectRef(project_id="p1", name="项目", root_path="C:/project")
+    )
+    events = [
+        event
+        async for event in engine.run_turn(
+            ref,
+            TaskRequest(conversation_id="c1", origin_message_id="m1", instructions="检查项目文件"),
+        )
+    ]
+    assert events[-1].type == EngineEventType.TURN_COMPLETED
+    assert events[-1].payload["warning"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_run_turn_treats_missing_stop_reason_without_error_as_completed(
+    engine_and_server,
+) -> None:
+    """ACP 成功响应缺省 stopReason 时不应把已完成回合标成失败。"""
+    engine, transport, _server = engine_and_server
+    transport.server = MissingStopReasonServer(transport)
+    ref = await engine.open_session(
+        ProjectRef(project_id="p1", name="项目", root_path="C:/project")
+    )
+    events = [
+        event
+        async for event in engine.run_turn(
+            ref,
+            TaskRequest(conversation_id="c1", origin_message_id="m1", instructions="检查项目文件"),
+        )
+    ]
     assert events[-1].type == EngineEventType.TURN_COMPLETED
 
 

@@ -261,10 +261,15 @@ export class MockDesktopBackend implements DesktopBackend {
     if (projectIndex < 0) return this.snapshotResult<DesktopSnapshot>();
     const selectedProject = this.scenario.snapshot.projects[projectIndex];
     const conversationId = `${projectId}-conversation-${selectedProject.conversations.length + 1}`;
+    const pairId =
+      typeof params.pair_id === "string"
+        ? params.pair_id
+        : this.scenario.snapshot.pair?.pair_id ?? "phainon_ancient_machine";
     const newConversation = conversation(
       conversationId,
       projectId,
       String(params.title ?? "新聊天"),
+      pairId,
     );
     this.scenario.snapshot.projects = this.scenario.snapshot.projects.map((item, index) =>
       index === projectIndex

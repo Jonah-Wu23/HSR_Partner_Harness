@@ -41,6 +41,14 @@ class PairConfigError(RuntimeError):
     """搭档配置缺失或损坏。"""
 
 
+# 面向用户的搭档目录显式维护，内部 reviewer 配置不进入桌面目录。
+PAIR_CATALOG_IDS = (
+    "firefly_sam",
+    "march7_fourth_mirror",
+    "phainon_ancient_machine",
+)
+
+
 def repository_root() -> Path:
     if getattr(sys, "frozen", False):
         return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
@@ -64,6 +72,15 @@ def load_pair_config(pair_id: str, root: Path | None = None) -> PairConfig:
         if not prompt_path.is_file():
             raise PairConfigError(f"{label} prompt file not found: {prompt_path}")
     return config
+
+
+def list_pair_configs(root: Path | None = None) -> list[PairConfig]:
+    """按桌面目录顺序加载面向用户的搭档配置。
+
+    目录采用显式允许列表，避免把 reviewer 等内部配置泄漏给前端。
+    任一配置加载失败都会直接抛出 ``PairConfigError``，由启动链路暴露真实错误。
+    """
+    return [load_pair_config(pair_id, root=root) for pair_id in PAIR_CATALOG_IDS]
 
 
 def load_prompt(relative_path: str, root: Path | None = None) -> str:

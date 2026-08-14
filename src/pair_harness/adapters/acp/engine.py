@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -38,6 +39,8 @@ from pair_harness.core.contracts import (
     TaskRequest,
 )
 from pair_harness.core.ports import CodingEngine
+
+logger = logging.getLogger(__name__)
 
 
 class AcpCodingEngine(CodingEngine):
@@ -82,7 +85,7 @@ class AcpCodingEngine(CodingEngine):
         await self.transport.start()
         await self.transport.request(
             "initialize",
-            {"clientInfo": {"name": "pair-harness", "version": "0.2.5"}},
+            {"clientInfo": {"name": "pair-harness", "version": "0.3.0"}},
         )
         self._initialized = True
 
@@ -152,6 +155,19 @@ class AcpCodingEngine(CodingEngine):
         }
         codec = AcpCodec()
         assistant_chunks: list[str] = []
+        tool_succeeded = False
+        tool_failed = False
+
+        def remember_event(event: EngineEvent) -> None:
+            nonlocal tool_succeeded, tool_failed
+            if event.type == EngineEventType.ASSISTANT_DELTA:
+                assistant_chunks.append(str(event.payload.get("text") or ""))
+            elif event.type == EngineEventType.TOOL_FINISHED:
+                if str(event.payload.get("status") or "") == "succeeded":
+                    tool_succeeded = True
+                else:
+                    tool_failed = True
+
         try:
             while True:
                 if prompt_task.done():
@@ -174,8 +190,7 @@ class AcpCodingEngine(CodingEngine):
                         event = codec.map_notification(notification, binding)
                         if event is None:
                             continue
-                        if event.type == EngineEventType.ASSISTANT_DELTA:
-                            assistant_chunks.append(str(event.payload.get("text") or ""))
+                        remember_event(event)
                         yield event
                         # 收到事件后再留一个短窗口，覆盖同一回合的后续更新。
                         deadline = min(
@@ -193,10 +208,7 @@ class AcpCodingEngine(CodingEngine):
                         # 通知与 prompt 同时到达：先消费通知，不丢事件
                         event = codec.map_notification(notification_task.result(), binding)
                         if event is not None:
-                            if event.type == EngineEventType.ASSISTANT_DELTA:
-                                assistant_chunks.append(
-                                    str(event.payload.get("text") or "")
-                                )
+                            remember_event(event)
                             yield event
                     else:
                         notification_task.cancel()
@@ -205,8 +217,7 @@ class AcpCodingEngine(CodingEngine):
                 event = codec.map_notification(notification, binding)
                 if event is None:
                     continue
-                if event.type == EngineEventType.ASSISTANT_DELTA:
-                    assistant_chunks.append(str(event.payload.get("text") or ""))
+                remember_event(event)
                 yield event
         except asyncio.CancelledError:
             prompt_task.cancel()
@@ -224,7 +235,29 @@ class AcpCodingEngine(CodingEngine):
             return
         stop = await prompt_task
         stop_reason = str(stop.get("stopReason") or stop.get("stop_reason") or "")
-        status = "failed" if "error" in stop_reason.lower() or not stop_reason else "completed"
+        stop_error = (
+            stop.get("error")
+            or stop.get("errorMessage")
+            or stop.get("error_message")
+        )
+        # Reasonix 的真实 session/prompt 成功响应可能只包含 sessionId，
+        # 不带 stopReason。v1.24.2 还会在助手最终回复与工具均成功后返回
+        # stopReason=error；此时保留 warning，但不能把已完成的任务改写成失败。
+        failure_text = f"{stop_reason} {stop_error or ''}".lower()
+        terminal_error = bool(
+            stop_error or "error" in failure_text or "fail" in failure_text
+        )
+        recoverable_terminal_error = terminal_error and bool(
+            assistant_chunks and tool_succeeded and not tool_failed
+        )
+        status = "completed" if not terminal_error or recoverable_terminal_error else "failed"
+        warning = None
+        if recoverable_terminal_error:
+            warning = stop_error or stop_reason
+            logger.warning(
+                "Reasonix returned terminal error after successful tool execution: %s",
+                warning,
+            )
         if assistant_chunks:
             yield EngineEvent(
                 conversation_id=request.conversation_id,
@@ -234,6 +267,14 @@ class AcpCodingEngine(CodingEngine):
                 type=EngineEventType.ASSISTANT_FINAL,
                 payload={"text": "".join(assistant_chunks)},
             )
+        terminal_payload: dict[str, Any] = {
+            "summary": "DeepSeek 编程助手回合结束",
+            "stop_reason": stop_reason,
+        }
+        if warning:
+            terminal_payload["warning"] = str(warning)
+        if status == "failed" and stop_error:
+            terminal_payload["error"] = str(stop_error)
         yield EngineEvent(
             conversation_id=request.conversation_id,
             task_id=request.task_id,
@@ -244,7 +285,7 @@ class AcpCodingEngine(CodingEngine):
                 if status == "completed"
                 else EngineEventType.TURN_FAILED
             ),
-            payload={"summary": "DeepSeek 编程助手回合结束", "stop_reason": stop_reason},
+            payload=terminal_payload,
         )
 
     async def cancel_turn(self, session_ref: EngineSessionRef, turn_id: str) -> None:

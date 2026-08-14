@@ -79,15 +79,26 @@ function VoicePreviewField({
   fallbackName,
   onPreview,
 }: VoicePreviewFieldProps) {
+  const isPlaceholder = !voiceId || voiceId.startsWith("demo-");
   return (
     <div className="field">
       <span className="field-label">{label}</span>
       <span className="settings-voice-info">
         <span>
           <span className="settings-voice-info-name">{voiceName || fallbackName}</span>
-          {voiceId ? <div className="settings-voice-info-id">{voiceId}</div> : null}
+          {isPlaceholder ? (
+            <div className="settings-voice-info-id settings-voice-unconfigured">音色未配置</div>
+          ) : voiceId ? (
+            <div className="settings-voice-info-id">{voiceId}</div>
+          ) : null}
         </span>
-        <button type="button" className="btn btn-outline" onClick={onPreview}>
+        <button
+          type="button"
+          className="btn btn-outline"
+          onClick={onPreview}
+          disabled={isPlaceholder}
+          title={isPlaceholder ? "音色未配置" : "试听音色"}
+        >
           试听
         </button>
       </span>
@@ -239,7 +250,7 @@ function CodingAssistantPage(props: SettingsCenterProps) {
   return (
     <section className="settings-page">
       <p className="settings-hint">
-        供应商在「角色对话模型」页统一选择，角色和古代机械始终使用同一家：OpenAI OAuth/API 使用 GPT，DeepSeek 使用 DeepSeek。
+        供应商在「角色对话模型」页统一选择，角色和助手始终使用同一家：OpenAI OAuth/API 使用 GPT，DeepSeek 使用 DeepSeek。
       </p>
 
       {props.coding.engine === "codex" ? (
@@ -442,8 +453,10 @@ function VoicePage(props: SettingsCenterProps) {
             })
           }
         />
-        古代机械（助手）语音
-        <span className="field-note">默认关闭；开启后自动朗读古代机械的回复</span>
+        {voice.assistantVoiceName ? `${voice.assistantVoiceName}（助手）语音` : "助手语音"}
+        <span className="field-note">
+          默认关闭；开启后自动朗读{voice.assistantVoiceName || "助手"}的回复
+        </span>
       </label>
 
       {/* 自愿赞助卡：语音服务由作者自费提供，二维码为微信收款码 */}
@@ -461,7 +474,7 @@ function VoicePage(props: SettingsCenterProps) {
         <span className="settings-sponsor-meta">微信支付 · 扫码打赏</span>
         <span className="settings-sponsor-payee">请认准收款人：天小可</span>
         <span className="settings-sponsor-amount">
-          <strong>6元</strong>一杯咖啡的价格
+          <strong>10元</strong>建议赞助金额
         </span>
         <div className="settings-sponsor-actions">
           <button
@@ -492,7 +505,7 @@ function VoicePage(props: SettingsCenterProps) {
               label="角色音色"
               voiceId={voice.characterVoiceId}
               voiceName={voice.characterVoiceName}
-              fallbackName="白厄"
+              fallbackName="角色"
               onPreview={() =>
                 props.onPreviewVoice(voice.characterVoiceId, voice.characterVoiceName)
               }
@@ -501,7 +514,7 @@ function VoicePage(props: SettingsCenterProps) {
               label="助手音色"
               voiceId={voice.assistantVoiceId}
               voiceName={voice.assistantVoiceName}
-              fallbackName="神秘的古代机械"
+              fallbackName="助手"
               onPreview={() =>
                 props.onPreviewVoice(voice.assistantVoiceId, voice.assistantVoiceName)
               }

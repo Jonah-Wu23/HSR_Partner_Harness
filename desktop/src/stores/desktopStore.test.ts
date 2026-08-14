@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import type { DesktopEvent, ToolRun } from "../contracts/protocol";
+import type { DesktopEvent, DesktopSnapshot, ToolRun } from "../contracts/protocol";
 import { createMockScenario } from "../mocks/scenarios";
 import { presentAppShell } from "../presenters/presenters";
 import { desktopStore } from "./desktopStore";
@@ -530,5 +530,23 @@ describe("desktopStore event projection", () => {
     ]);
     expect(presentAppShell(desktopStore.getState()).approval.pending).toEqual([]);
     expect(desktopStore.getState().approvalResolvingById).toEqual({});
+  });
+
+  it("V0.3.0: hydrateSnapshotState 正确水合 pairs 目录并在 snapshot 没有 pairs 时用 pair 兜底", () => {
+    const scenario = createMockScenario("multi-pair");
+    desktopStore.getState().hydrate(scenario.snapshot);
+    const state = desktopStore.getState();
+    expect(state.pairs).toHaveLength(3);
+    expect(state.pairs.map((p) => p.pair_id)).toEqual([
+      "phainon_ancient_machine",
+      "firefly_sam",
+      "march7_fourth_mirror",
+    ]);
+
+    // 没有 pairs 字段时，以 pair 构成单项目录兜底
+    const { pairs: _pairs, ...withoutPairs } = scenario.snapshot;
+    desktopStore.getState().hydrate(withoutPairs as unknown as DesktopSnapshot);
+    expect(desktopStore.getState().pairs).toHaveLength(1);
+    expect(desktopStore.getState().pairs[0].pair_id).toBe(scenario.snapshot.pair.pair_id);
   });
 });

@@ -1,8 +1,6 @@
 import { useState } from "react";
 
 interface OnboardingProps {
-  characterName: string;
-  assistantName: string;
   /** 选文件夹并创建第一个项目；返回 false 表示用户取消。 */
   onCreateProject: () => Promise<boolean>;
   /** 保存角色模型配置并测试连接；返回人话结果。 */
@@ -21,8 +19,6 @@ const OPENAI_MODEL = "gpt-5.6-sol";
 
 /** 首次引导三步：建项目 → 配模型 → 完成。任何一步可跳过。 */
 export function Onboarding({
-  characterName,
-  assistantName,
   onCreateProject,
   onSaveModelConfig,
   onFinish,
@@ -49,7 +45,7 @@ export function Onboarding({
       {step === 0 ? (
         <section className="onboarding-panel">
           <h2>创建第一个项目</h2>
-          <p className="onboarding-hint">项目就是你想让 {assistantName} 帮忙干活的文件夹。</p>
+          <p className="onboarding-hint">项目就是你想让助手帮忙干活的文件夹。</p>
           <div className="onboarding-actions">
             <button
               type="button"
@@ -75,7 +71,7 @@ export function Onboarding({
       {step === 1 ? (
         <section className="onboarding-panel">
           <h2>配置角色模型</h2>
-          <p className="onboarding-hint">{characterName} 需要一个对话模型才能开口。之后可以在设置中心随时修改。</p>
+          <p className="onboarding-hint">角色需要一个对话模型才能开口。之后可以在设置中心随时修改。</p>
           <label className="field">
             <span className="field-label">模型来源</span>
             <select value={provider} onChange={(event) => setProvider(event.target.value)}>
@@ -163,7 +159,7 @@ export function Onboarding({
         <section className="onboarding-panel">
           <h2>都准备好了</h2>
           <p className="onboarding-hint">
-            {characterName} 随时陪你聊天；切到协作模式，{assistantName} 就能读写你的项目。
+            角色随时陪你聊天；切到协作模式，助手就能读写你的项目。
           </p>
           <div className="onboarding-actions">
             <button type="button" className="btn btn-primary" onClick={onFinish}>

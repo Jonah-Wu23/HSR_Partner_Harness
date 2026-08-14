@@ -450,3 +450,7 @@
   font-size: var(--text-c1-size);
   color: var(--text-muted);
 }
+.settings-voice-unconfigured {
+  color: var(--warning);
+  font-style: italic;
+}

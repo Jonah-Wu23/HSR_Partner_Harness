@@ -4,30 +4,48 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HSR Partner Harness · 上车聊几句，下车活干完</title>
-<meta name="description" content="HSR Partner Harness，Windows 桌面应用，星穹铁道同人作品。实现了角色扮演与本地 AI Agent 的同屏联动：与白厄商定策略后，古代机械即刻执行；任务完成后自动回传结果，对话流畅接续，无需切换窗口。">
-<meta property="og:title" content="HSR Partner Harness">
-<meta property="og:description" content="上车聊几句，下车活干完">
+<meta name="description" content="HSR Partner Harness，Windows 桌面应用，星穹铁道同人作品。三组搭档同屏协作，实现了角色扮演与本地 AI Agent 的双空间联动：与角色商定策略，由助手落地执行；任务完成后自动回传结果，对话流畅接续，重启不串记忆。">
+<meta property="og:title" content="HSR Partner Harness · V0.3.0">
+<meta property="og:description" content="上车聊几句，下车活干完。三组搭档同屏协作，角色负责对话，助手负责执行。">
 <meta property="og:type" content="website">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 L19 13 L30 16 L19 19 L16 30 L13 19 L2 16 L13 13 Z' fill='%23E8B25C'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700;900&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700;900&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{
-  --void:#0A0E1E;
+  --void:#090D1C;
   --panel:#101731;
   --panel-2:#0D1327;
+  --panel-glass:rgba(16,23,49,.78);
   --line:rgba(140,162,214,.16);
   --line-strong:rgba(140,162,214,.32);
   --text:#DCE4F5;
+  --text-bright:#FFFFFF;
   --muted:#8B96B8;
   --faint:#5C6684;
+
+  /* 搭档一：白厄 × 神秘的古代机械 */
   --gold:#E8B25C;
   --gold-dim:rgba(232,178,92,.14);
+  --gold-deep:#8AA4D4;
+  --gold-border:rgba(232,178,92,.35);
+
+  /* 搭档二：流萤 × 萨姆 */
+  --mint:#52D1A3;
+  --mint-dim:rgba(82,209,163,.14);
+  --crimson:#E65A28;
+  --crimson-dim:rgba(230,90,40,.14);
+  --mint-border:rgba(82,209,163,.35);
+
+  /* 搭档三：三月七 × 第四面镜 */
+  --pink:#FF8DA1;
+  --pink-dim:rgba(255,141,161,.14);
+  --violet:#A78BFA;
+  --violet-dim:rgba(167,139,250,.14);
+  --pink-border:rgba(255,141,161,.35);
+
   --green:#7FE3B0;
-  --green-dim:rgba(127,227,176,.12);
-  --pink:#F2A7C3;
-  --pink-dim:rgba(242,167,195,.12);
   --serif:"Noto Serif SC",serif;
   --sans:"Noto Sans SC",-apple-system,"Segoe UI",sans-serif;
   --mono:"JetBrains Mono","Cascadia Code",Consolas,monospace;
@@ -51,9 +69,9 @@ body{
 .veil{
   position:fixed;inset:0;z-index:1;pointer-events:none;
   background:
-    radial-gradient(1100px 600px at 82% -10%, rgba(232,178,92,.07), transparent 60%),
-    radial-gradient(900px 700px at -10% 40%, rgba(127,227,176,.05), transparent 60%),
-    radial-gradient(900px 700px at 110% 85%, rgba(242,167,195,.05), transparent 60%);
+    radial-gradient(1100px 600px at 82% -10%, rgba(232,178,92,.08), transparent 60%),
+    radial-gradient(900px 700px at -10% 40%, rgba(82,209,163,.06), transparent 60%),
+    radial-gradient(900px 700px at 110% 85%, rgba(255,141,161,.06), transparent 60%);
 }
 .page{position:relative;z-index:2}
 
@@ -62,14 +80,18 @@ nav{
   position:fixed;top:0;left:0;right:0;z-index:50;
   display:flex;align-items:center;justify-content:space-between;
   padding:0 clamp(20px,4vw,56px);height:64px;
-  background:rgba(10,14,30,.72);
-  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  background:rgba(9,13,28,.82);
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
   border-bottom:1px solid var(--line);
 }
 .brand{display:flex;align-items:center;gap:12px;text-decoration:none;color:var(--text)}
 .brand svg{flex:none}
 .brand-name{font-family:var(--serif);font-weight:700;font-size:17px;letter-spacing:.02em}
-.brand-ver{font-family:var(--mono);font-size:11px;color:var(--faint);border:1px solid var(--line);border-radius:99px;padding:1px 8px}
+.brand-ver{
+  font-family:var(--mono);font-size:11px;color:var(--gold);
+  border:1px solid var(--gold-border);border-radius:99px;
+  padding:1px 8px;background:var(--gold-dim);
+}
 .nav-links{display:flex;align-items:center;gap:clamp(14px,2.4vw,32px)}
 .nav-links a{
   color:var(--muted);text-decoration:none;font-size:14px;transition:color .2s;
@@ -89,11 +111,11 @@ nav{
 .hero{
   min-height:100vh;
   display:grid;
-  grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr);
+  grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);
   align-items:center;
   gap:clamp(32px,5vw,72px);
   padding:120px clamp(20px,5vw,72px) 72px;
-  max-width:1360px;margin:0 auto;
+  max-width:1380px;margin:0 auto;
 }
 @media(max-width:960px){
   .hero{grid-template-columns:1fr;padding-top:104px}
@@ -106,9 +128,9 @@ nav{
 .eyebrow::before{content:"";width:34px;height:1px;background:var(--gold);opacity:.7}
 h1{
   font-family:var(--serif);font-weight:900;
-  font-size:clamp(34px,4.6vw,60px);
-  line-height:1.28;letter-spacing:.01em;
-  margin-bottom:26px;
+  font-size:clamp(34px,4.6vw,62px);
+  line-height:1.26;letter-spacing:.01em;
+  margin-bottom:24px;
 }
 h1 .em{
   color:var(--gold);
@@ -117,8 +139,8 @@ h1 .em{
   -webkit-text-fill-color:transparent;
 }
 .hero-sub{
-  color:var(--muted);font-size:clamp(15px,1.3vw,17px);
-  max-width:34em;margin-bottom:40px;
+  color:var(--muted);font-size:clamp(15px,1.25vw,17px);
+  max-width:36em;margin-bottom:36px;
 }
 .hero-sub strong{color:var(--text);font-weight:500}
 .cta-row{display:flex;flex-wrap:wrap;gap:14px}
@@ -126,6 +148,7 @@ h1 .em{
   display:inline-flex;align-items:center;gap:9px;
   font-size:15px;font-weight:500;text-decoration:none;
   border-radius:99px;padding:13px 28px;transition:transform .18s,box-shadow .18s,background .18s,border-color .18s;
+  cursor:pointer;
 }
 .btn:active{transform:translateY(1px)}
 .btn-gold{
@@ -145,35 +168,63 @@ h1 .em{
 
 /* ---------- simulated session (signature) ---------- */
 .session{
-  background:linear-gradient(160deg,rgba(20,28,56,.92),rgba(12,17,36,.94));
+  background:linear-gradient(160deg,rgba(20,28,56,.94),rgba(12,17,36,.96));
   border:1px solid var(--line-strong);
   border-radius:18px;
-  box-shadow:0 30px 80px rgba(0,0,0,.5),0 0 0 1px rgba(232,178,92,.05),0 0 60px rgba(232,178,92,.06);
+  box-shadow:0 30px 80px rgba(0,0,0,.55),0 0 0 1px rgba(232,178,92,.06),0 0 60px rgba(232,178,92,.08);
   overflow:hidden;
-  min-height:430px;
+  min-height:460px;
   display:flex;flex-direction:column;
+  transition:box-shadow .4s ease, border-color .4s ease;
 }
 .session-bar{
   display:flex;align-items:center;gap:8px;
-  padding:13px 18px;border-bottom:1px solid var(--line);
+  padding:12px 18px;border-bottom:1px solid var(--line);
   font-family:var(--mono);font-size:11.5px;color:var(--faint);
 }
 .dot{width:10px;height:10px;border-radius:50%}
 .dot-r{background:#E0655F}.dot-y{background:#E0B34E}.dot-g{background:#5FBF7A}
-.session-title{margin-left:8px}
+.session-title{margin-left:8px;display:flex;align-items:center;gap:6px}
 .session-live{
-  margin-left:auto;color:var(--green);display:flex;align-items:center;gap:6px;
+  margin-left:auto;color:var(--green);display:flex;align-items:center;gap:6px;font-weight:600;
 }
 .session-live::before{
   content:"";width:7px;height:7px;border-radius:50%;background:var(--green);
   animation:pulse 1.6s ease-in-out infinite;
 }
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+
+/* 搭档快速切换栏 */
+.session-tabs{
+  display:flex;gap:6px;padding:8px 16px;background:rgba(9,13,28,.6);
+  border-bottom:1px solid var(--line);overflow-x:auto;scrollbar-width:none;
+}
+.session-tab{
+  font-family:var(--mono);font-size:11.5px;padding:4px 12px;border-radius:99px;
+  border:1px solid var(--line);background:transparent;color:var(--muted);
+  cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:all .2s;
+  white-space:nowrap;
+}
+.session-tab:hover{color:var(--text);border-color:var(--line-strong)}
+.session-tab.active{
+  color:var(--text-bright);font-weight:600;
+}
+.session-tab[data-pair="phainon"].active{
+  border-color:var(--gold);background:var(--gold-dim);color:var(--gold);
+}
+.session-tab[data-pair="firefly"].active{
+  border-color:var(--mint);background:var(--mint-dim);color:var(--mint);
+}
+.session-tab[data-pair="march7"].active{
+  border-color:var(--pink);background:var(--pink-dim);color:var(--pink);
+}
+.tab-dot{width:6px;height:6px;border-radius:50%;display:inline-block}
+
 .session-body{
-  padding:22px 20px 26px;flex:1;
+  padding:20px 18px 24px;flex:1;
   display:flex;flex-direction:column;gap:14px;
 }
-.msg{max-width:88%;opacity:0;transform:translateY(10px);transition:opacity .4s,transform .4s}
+.msg{max-width:88%;opacity:0;transform:translateY(10px);transition:opacity .35s,transform .35s}
 .msg.show{opacity:1;transform:none}
 .msg-name{
   font-family:var(--mono);font-size:11px;letter-spacing:.08em;
@@ -181,10 +232,10 @@ h1 .em{
 }
 .msg-name .who{width:8px;height:8px;transform:rotate(45deg);flex:none}
 .msg-bubble{
-  padding:11px 15px;border-radius:12px;font-size:14.5px;line-height:1.7;
+  padding:11px 15px;border-radius:12px;font-size:14px;line-height:1.7;
 }
-.msg-character .msg-name{color:var(--gold)}
-.msg-character .who{background:var(--gold)}
+.msg-character .msg-name{color:var(--pair-char-color, var(--gold))}
+.msg-character .who{background:var(--pair-char-color, var(--gold))}
 .msg-character .msg-bubble{
   background:rgba(232,178,92,.09);border:1px solid rgba(232,178,92,.22);
   border-top-left-radius:3px;
@@ -196,8 +247,8 @@ h1 .em{
   background:rgba(140,162,214,.1);border:1px solid var(--line-strong);
   border-top-right-radius:3px;text-align:left;
 }
-.msg-machine .msg-name{color:#C5A059}
-.msg-machine .who{background:#C5A059}
+.msg-machine .msg-name{color:var(--pair-asst-color, #C5A059)}
+.msg-machine .who{background:var(--pair-asst-color, #C5A059)}
 .msg-machine .msg-bubble{
   background:rgba(197,160,89,.08);border:1px solid rgba(197,160,89,.24);
   border-top-left-radius:3px;
@@ -205,9 +256,9 @@ h1 .em{
 .tool-card{
   align-self:stretch;
   border:1px solid var(--line-strong);border-radius:12px;
-  background:rgba(10,14,30,.6);
-  font-family:var(--mono);font-size:12.5px;
-  opacity:0;transform:translateY(10px);transition:opacity .4s,transform .4s;
+  background:rgba(9,13,28,.7);
+  font-family:var(--mono);font-size:12px;
+  opacity:0;transform:translateY(10px);transition:opacity .35s,transform .35s;
   overflow:hidden;
 }
 .tool-card.show{opacity:1;transform:none}
@@ -216,7 +267,7 @@ h1 .em{
   padding:9px 14px;border-bottom:1px solid var(--line);color:var(--muted);
 }
 .tool-head .tag{
-  font-size:10.5px;letter-spacing:.1em;color:#C5A059;
+  font-size:10px;letter-spacing:.1em;color:var(--pair-asst-color, #C5A059);
   border:1px solid rgba(197,160,89,.35);border-radius:4px;padding:1px 7px;
 }
 .tool-head .status{margin-left:auto;color:var(--green)}
@@ -232,12 +283,12 @@ h1 .em{
 
 /* ---------- route strip ---------- */
 .route-strip{
-  max-width:1360px;margin:0 auto;padding:0 clamp(20px,5vw,72px);
+  max-width:1380px;margin:0 auto;padding:0 clamp(20px,5vw,72px);
 }
 .route-svg{width:100%;height:70px;display:block}
 .route-line{
   stroke:url(#routeGrad);stroke-width:1.5;fill:none;
-  stroke-dasharray:6 7;opacity:.55;
+  stroke-dasharray:6 7;opacity:.65;
 }
 .station{fill:var(--void);stroke-width:1.5}
 .station-label{
@@ -247,10 +298,10 @@ h1 .em{
 
 /* ---------- sections ---------- */
 section{
-  max-width:1360px;margin:0 auto;
-  padding:clamp(72px,9vw,130px) clamp(20px,5vw,72px) 0;
+  max-width:1380px;margin:0 auto;
+  padding:clamp(72px,9vw,120px) clamp(20px,5vw,72px) 0;
 }
-.sec-head{margin-bottom:clamp(36px,5vw,64px);max-width:44em}
+.sec-head{margin-bottom:clamp(36px,5vw,60px);max-width:44em}
 .sec-index{
   font-family:var(--mono);font-size:12px;letter-spacing:.22em;
   color:var(--faint);margin-bottom:14px;display:flex;align-items:center;gap:12px;
@@ -258,7 +309,7 @@ section{
 .sec-index::after{content:"";flex:0 0 34px;height:1px;background:var(--line-strong)}
 h2{
   font-family:var(--serif);font-weight:900;
-  font-size:clamp(26px,3.2vw,40px);line-height:1.35;
+  font-size:clamp(26px,3.2vw,42px);line-height:1.35;
 }
 .sec-desc{color:var(--muted);margin-top:14px;font-size:15.5px}
 
@@ -274,102 +325,188 @@ h2{
 @media(max-width:820px){.loop-grid{grid-template-columns:1fr}}
 .loop-step{
   padding:34px 30px 40px;border-bottom:1px solid var(--line);
-  position:relative;
+  position:relative;background:linear-gradient(180deg,rgba(16,23,49,.4),transparent);
 }
 .loop-step + .loop-step{border-left:1px solid var(--line)}
 @media(max-width:820px){.loop-step + .loop-step{border-left:none}}
 .loop-no{
   font-family:var(--mono);font-size:12px;color:var(--gold);letter-spacing:.18em;
-  margin-bottom:44px;display:block;
+  margin-bottom:36px;display:block;
 }
-.loop-step:nth-child(2) .loop-no{color:var(--green)}
+.loop-step:nth-child(2) .loop-no{color:var(--mint)}
 .loop-step:nth-child(3) .loop-no{color:var(--pink)}
 .loop-step h3{
   font-family:var(--serif);font-size:21px;font-weight:700;margin-bottom:12px;
 }
-.loop-step p{color:var(--muted);font-size:14.5px}
+.loop-step p{color:var(--muted);font-size:14.5px;line-height:1.7}
 .loop-arrow{
   position:absolute;top:44px;right:-9px;z-index:2;color:var(--faint);
   background:var(--void);padding:2px;border-radius:50%;
 }
 @media(max-width:820px){.loop-arrow{display:none}}
 
-/* ---------- partners ---------- */
-.partner-current{
-  display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);
-  border:1px solid rgba(232,178,92,.3);border-radius:18px;
-  background:
-    radial-gradient(600px 300px at 15% 0%,rgba(232,178,92,.1),transparent 60%),
-    linear-gradient(160deg,rgba(20,28,56,.85),rgba(12,17,36,.9));
-  overflow:hidden;margin-bottom:26px;
+/* ---------- partners dossier (V0.3.0 三搭档画卷与档案) ---------- */
+.partner-deck{
+  display:flex;flex-direction:column;gap:36px;
 }
-@media(max-width:880px){.partner-current{grid-template-columns:1fr}}
-.partner-info{padding:clamp(28px,3.6vw,48px)}
-.partner-tag{
-  display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.18em;
-  color:var(--gold);border:1px solid rgba(232,178,92,.4);border-radius:99px;
-  padding:3px 12px;margin-bottom:20px;
+.partner-card{
+  display:grid;
+  grid-template-columns:minmax(0,1.15fr) minmax(0,0.85fr);
+  border-radius:20px;
+  border:1px solid var(--line-strong);
+  background:var(--panel-glass);
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+  overflow:hidden;
+  box-shadow:0 20px 60px rgba(0,0,0,.45);
+  transition:border-color .3s, transform .3s, box-shadow .3s;
 }
-.partner-info h3{
-  font-family:var(--serif);font-size:clamp(24px,2.6vw,32px);font-weight:900;
-  margin-bottom:6px;
+.partner-card:hover{
+  transform:translateY(-3px);
 }
-.partner-pair{font-family:var(--mono);font-size:13px;color:#C5A059;margin-bottom:18px}
-.partner-info p{color:var(--muted);font-size:14.5px;max-width:32em}
-.partner-roles{
-  border-left:1px solid rgba(232,178,92,.25);
-  padding:clamp(28px,3.6vw,48px);
-  display:flex;flex-direction:column;justify-content:center;gap:22px;
+@media(max-width:960px){
+  .partner-card{grid-template-columns:1fr}
 }
-@media(max-width:880px){.partner-roles{border-left:none;border-top:1px solid rgba(232,178,92,.25)}}
-.role{display:flex;gap:16px;align-items:flex-start}
-.role-mark{
-  flex:none;width:40px;height:40px;border-radius:11px;
+
+/* 白厄组风格 */
+.partner-card.card-phainon{
+  border-color:rgba(232,178,92,.3);
+  background:radial-gradient(800px 400px at 0% 0%,rgba(232,178,92,.08),transparent 70%), linear-gradient(160deg,rgba(20,28,56,.85),rgba(12,17,36,.92));
+}
+.partner-card.card-phainon:hover{
+  border-color:rgba(232,178,92,.6);
+  box-shadow:0 24px 70px rgba(232,178,92,.12);
+}
+
+/* 流萤组风格 */
+.partner-card.card-firefly{
+  border-color:rgba(82,209,163,.3);
+  background:radial-gradient(800px 400px at 0% 0%,rgba(82,209,163,.08),transparent 70%), linear-gradient(160deg,rgba(16,34,44,.85),rgba(12,17,36,.92));
+}
+.partner-card.card-firefly:hover{
+  border-color:rgba(82,209,163,.6);
+  box-shadow:0 24px 70px rgba(82,209,163,.12);
+}
+
+/* 三月七组风格 */
+.partner-card.card-march7{
+  border-color:rgba(255,141,161,.3);
+  background:radial-gradient(800px 400px at 0% 0%,rgba(255,141,161,.08),transparent 70%), linear-gradient(160deg,rgba(36,20,44,.85),rgba(12,17,36,.92));
+}
+.partner-card.card-march7:hover{
+  border-color:rgba(255,141,161,.6);
+  box-shadow:0 24px 70px rgba(255,141,161,.12);
+}
+
+/* 视觉画卷区域（主图 + 悬浮镜切片） */
+.partner-art-pane{
+  position:relative;min-height:360px;overflow:hidden;
+  display:flex;align-items:center;justify-content:center;
+  background:#050814;
+}
+.art-main{
+  width:100%;height:100%;object-fit:cover;display:block;
+  transition:transform .6s cubic-bezier(0.2,0.8,0.2,1);
+}
+.partner-card:hover .art-main{
+  transform:scale(1.03);
+}
+.art-overlay{
+  position:absolute;inset:0;
+  background:linear-gradient(to right, transparent 65%, rgba(12,17,36,.95) 100%),
+             linear-gradient(to top, rgba(12,17,36,.8) 0%, transparent 40%);
+  pointer-events:none;
+}
+@media(max-width:960px){
+  .art-overlay{
+    background:linear-gradient(to top, rgba(12,17,36,.95) 0%, transparent 60%);
+  }
+}
+
+/* 悬浮副视镜切片（第二个世界切片） */
+.art-inset-card{
+  position:absolute;bottom:18px;left:18px;
+  width:clamp(150px,22vw,220px);
+  aspect-ratio:16/9;
+  border-radius:12px;overflow:hidden;
+  border:1px solid rgba(255,255,255,.24);
+  box-shadow:0 12px 32px rgba(0,0,0,.6);
+  backdrop-filter:blur(8px);
+  cursor:pointer;
+  transition:transform .3s, border-color .3s, box-shadow .3s;
+  z-index:3;
+}
+.art-inset-card:hover{
+  transform:scale(1.06);
+  border-color:var(--text-bright);
+  box-shadow:0 16px 40px rgba(0,0,0,.8);
+}
+.art-inset-img{
+  width:100%;height:100%;object-fit:cover;display:block;
+}
+.art-inset-tag{
+  position:absolute;bottom:5px;right:6px;
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;
+  background:rgba(9,13,28,.8);color:var(--text);
+  padding:1px 6px;border-radius:4px;border:1px solid var(--line);
+}
+
+/* 档案文字信息 */
+.partner-info-pane{
+  padding:clamp(28px,3.5vw,44px);
+  display:flex;flex-direction:column;justify-content:center;
+  gap:20px;
+}
+.partner-badge-row{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+}
+.partner-status-tag{
+  font-family:var(--mono);font-size:11px;letter-spacing:.16em;
+  padding:3px 12px;border-radius:99px;
+}
+.card-phainon .partner-status-tag{
+  color:var(--gold);border:1px solid var(--gold-border);background:var(--gold-dim);
+}
+.card-firefly .partner-status-tag{
+  color:var(--mint);border:1px solid var(--mint-border);background:var(--mint-dim);
+}
+.card-march7 .partner-status-tag{
+  color:var(--pink);border:1px solid var(--pink-border);background:var(--pink-dim);
+}
+
+.partner-info-pane h3{
+  font-family:var(--serif);font-size:clamp(22px,2.4vw,30px);font-weight:900;
+  line-height:1.25;
+}
+.partner-sub-meta{
+  font-family:var(--mono);font-size:12.5px;letter-spacing:.08em;
+  color:var(--muted);margin-top:2px;
+}
+.partner-desc-p{
+  color:var(--muted);font-size:14.5px;line-height:1.75;
+}
+
+.roles-duo{
+  display:flex;flex-direction:column;gap:14px;
+  border-top:1px solid var(--line);padding-top:16px;
+}
+.role-item{
+  display:flex;gap:12px;align-items:flex-start;font-size:13.5px;
+}
+.role-icon-box{
+  flex:none;width:32px;height:32px;border-radius:8px;
   display:flex;align-items:center;justify-content:center;
 }
-.role-mark svg{display:block}
-.role-character .role-mark{background:var(--gold-dim);border:1px solid rgba(232,178,92,.35)}
-.role-machine .role-mark{background:rgba(197,160,89,.1);border:1px solid rgba(197,160,89,.3)}
-.role-name{font-weight:700;font-size:15.5px}
-.role-duty{font-family:var(--mono);font-size:11px;color:var(--faint);letter-spacing:.1em;margin:2px 0 5px}
-.role-desc{color:var(--muted);font-size:13.5px;line-height:1.65}
-
-.partner-future{
-  display:grid;grid-template-columns:1fr 1fr;gap:26px;
+.role-title-line{font-weight:700;color:var(--text);display:flex;align-items:center;gap:8px}
+.role-duty-pill{
+  font-family:var(--mono);font-size:10px;letter-spacing:.1em;padding:1px 6px;
+  border-radius:4px;border:1px solid var(--line);color:var(--faint);
 }
-@media(max-width:760px){.partner-future{grid-template-columns:1fr}}
-.partner-next{
-  border:1px solid var(--line);border-radius:16px;
-  padding:26px 28px;position:relative;overflow:hidden;
-  background:linear-gradient(160deg,rgba(16,23,49,.7),rgba(12,17,36,.85));
-  transition:border-color .25s,transform .25s;
-}
-.partner-next:hover{transform:translateY(-3px)}
-.partner-next.green:hover{border-color:rgba(127,227,176,.45)}
-.partner-next.pink:hover{border-color:rgba(242,167,195,.45)}
-.partner-next::before{
-  content:"";position:absolute;inset:0;pointer-events:none;
-}
-.partner-next.green::before{background:radial-gradient(420px 200px at 100% 0%,var(--green-dim),transparent 65%)}
-.partner-next.pink::before{background:radial-gradient(420px 200px at 100% 0%,var(--pink-dim),transparent 65%)}
-.partner-next .soon{
-  font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
-  border-radius:99px;padding:2px 11px;
-}
-.partner-next.green .soon{color:var(--green);border:1px solid rgba(127,227,176,.4)}
-.partner-next.pink .soon{color:var(--pink);border:1px solid rgba(242,167,195,.4)}
-.partner-next h4{
-  font-family:var(--serif);font-size:21px;font-weight:700;margin:16px 0 4px;
-}
-.partner-next .pair{font-family:var(--mono);font-size:12px;margin-bottom:12px}
-.partner-next.green .pair{color:var(--green)}
-.partner-next.pink .pair{color:var(--pink)}
-.partner-next p{color:var(--muted);font-size:13.5px;position:relative}
+.role-summary{color:var(--muted);margin-top:2px;line-height:1.6}
 
 /* ---------- features ---------- */
 .feat-list{border-top:1px solid var(--line-strong)}
 .feat-row{
-  display:grid;grid-template-columns:200px minmax(0,1fr) minmax(0,1.6fr);
+  display:grid;grid-template-columns:220px minmax(0,1fr) minmax(0,1.6fr);
   gap:clamp(16px,3vw,48px);align-items:baseline;
   padding:26px 4px;border-bottom:1px solid var(--line);
   transition:background .2s;
@@ -380,7 +517,7 @@ h2{
 .feat-key{
   font-family:var(--mono);font-size:12.5px;color:var(--gold);letter-spacing:.04em;
 }
-.feat-desc{color:var(--muted);font-size:14.5px}
+.feat-desc{color:var(--muted);font-size:14.5px;line-height:1.7}
 
 /* ---------- architecture ---------- */
 .arch-pipe{
@@ -457,6 +594,32 @@ h2{
 .start-note a{color:var(--gold);text-decoration:none;border-bottom:1px solid rgba(232,178,92,.4)}
 .start-note a:hover{border-bottom-color:var(--gold)}
 
+/* ---------- lightbox modal ---------- */
+.lightbox-modal{
+  position:fixed;inset:0;z-index:100;
+  background:rgba(4,6,15,.88);
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+  display:flex;align-items:center;justify-content:center;
+  padding:24px;opacity:0;pointer-events:none;transition:opacity .3s ease;
+}
+.lightbox-modal.is-open{
+  opacity:1;pointer-events:auto;
+}
+.lightbox-content{
+  position:relative;max-width:90vw;max-height:85vh;border-radius:16px;
+  overflow:hidden;border:1px solid var(--line-strong);box-shadow:0 30px 90px rgba(0,0,0,.8);
+}
+.lightbox-img{
+  max-width:100%;max-height:85vh;object-fit:contain;display:block;
+}
+.lightbox-close{
+  position:absolute;top:16px;right:16px;width:36px;height:36px;border-radius:50%;
+  background:rgba(9,13,28,.75);border:1px solid var(--line-strong);color:var(--text);
+  display:flex;align-items:center;justify-content:center;cursor:pointer;
+  transition:background .2s, transform .2s;
+}
+.lightbox-close:hover{background:rgba(232,178,92,.2);transform:scale(1.08)}
+
 /* ---------- footer ---------- */
 footer{
   margin-top:clamp(80px,10vw,140px);
@@ -464,11 +627,11 @@ footer{
   padding:44px clamp(20px,5vw,72px) 52px;
 }
 .foot-inner{
-  max-width:1360px;margin:0 auto;
+  max-width:1380px;margin:0 auto;
   display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start;justify-content:space-between;
 }
 .foot-brand{font-family:var(--serif);font-weight:700;font-size:16px;margin-bottom:8px}
-.foot-note{color:var(--faint);font-size:12.5px;max-width:46em;line-height:1.8}
+.foot-note{color:var(--faint);font-size:12.5px;max-width:48em;line-height:1.8}
 .foot-links{display:flex;gap:22px}
 .foot-links a{
   color:var(--muted);font-size:13px;text-decoration:none;
@@ -482,6 +645,7 @@ footer{
   .msg,.tool-card{transition:none}
   .caret{animation:none}
   .session-live::before{animation:none}
+  .partner-card:hover .art-main{transform:none}
 }
 </style>
 </head>
@@ -494,13 +658,13 @@ footer{
   <a class="brand" href="#top">
     <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 L19 13 L30 16 L19 19 L16 30 L13 19 L2 16 L13 13 Z" fill="#E8B25C"/></svg>
     <span class="brand-name">HSR Partner Harness</span>
-    <span class="brand-ver">v0.2.5</span>
+    <span class="brand-ver">v0.3.0</span>
   </a>
   <div class="nav-links">
     <a href="#loop">工作方式</a>
     <a href="#partners">搭档名录</a>
-    <a href="#features">功能</a>
-    <a href="#arch">架构</a>
+    <a href="#features">功能特性</a>
+    <a href="#arch">架构设计</a>
     <a href="#start">快速开始</a>
     <a class="nav-gh" href="https://github.com/Jonah-Wu23/HSR_Partner_Harness" target="_blank" rel="noopener">
       <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
@@ -512,27 +676,38 @@ footer{
 <!-- ============ HERO ============ -->
 <header class="hero" id="top">
   <div>
-    <div class="eyebrow">Windows 桌面应用 · 星穹铁道同人作品</div>
+    <div class="eyebrow">Windows 桌面应用 · 星穹铁道同人作品 · V0.3.0 正式版</div>
     <h1>上车聊几句，<br><span class="em">下车活干完</span></h1>
     <p class="hero-sub">
-      HSR Partner Harness 实现了角色扮演与本地 AI Agent 的同屏联动：<br>
-      与<strong>白厄</strong>商定策略后，<strong>古代机械</strong>即刻执行；任务完成后自动回传结果，对话流畅接续，无需切换窗口。
+      <strong>HSR Partner Harness</strong> 实现了同人角色扮演与本地工程 Agent 的同屏联动：<br>
+      与<strong>角色</strong>商定策略，由<strong>助手</strong>落地执行。支持自由切换三组搭档，会话记忆与主题色组精准恢复。
     </p>
     <div class="cta-row">
       <a class="btn btn-gold" href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases" target="_blank" rel="noopener">
         <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 12l-4-4h2.5V2h3v6H12L8 12zM2 14h12v1.5H2V14z"/></svg>
-        下载 Windows 版
+        下载 Windows 安装包
       </a>
-      <a class="btn btn-ghost" href="https://github.com/Jonah-Wu23/HSR_Partner_Harness" target="_blank" rel="noopener">查看源码</a>
+      <a class="btn btn-ghost" href="https://github.com/Jonah-Wu23/HSR_Partner_Harness" target="_blank" rel="noopener">查看开源代码</a>
     </div>
-    <div class="hero-note">模型配置留空亦可上车，演示模式全程相伴。</div>
+    <div class="hero-note">内置演示模式无 Key 亦可上车 · 支持 OpenAI OAuth / API 与 DeepSeek 双引擎</div>
   </div>
 
-  <div class="session" aria-label="产品会话演示">
+  <div class="session" id="sessionBox" aria-label="产品会话演示">
     <div class="session-bar">
       <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
-      <span class="session-title">pair-harness · 新聊天</span>
+      <span class="session-title" id="sessionTitle">pair-harness · 白厄 × 神秘的古代机械</span>
       <span class="session-live">LIVE</span>
+    </div>
+    <div class="session-tabs" role="tablist" aria-label="选择搭档体验会话">
+      <button type="button" class="session-tab active" data-pair="phainon">
+        <span class="tab-dot" style="background:#E8B25C"></span>白厄 × 古代机械
+      </button>
+      <button type="button" class="session-tab" data-pair="firefly">
+        <span class="tab-dot" style="background:#52D1A3"></span>流萤 × 萨姆
+      </button>
+      <button type="button" class="session-tab" data-pair="march7">
+        <span class="tab-dot" style="background:#FF8DA1"></span>三月七 × 第四面镜
+      </button>
     </div>
     <div class="session-body" id="sessionBody"></div>
   </div>
@@ -544,17 +719,17 @@ footer{
     <defs>
       <linearGradient id="routeGrad" x1="0" y1="0" x2="1" y2="0">
         <stop offset="0" stop-color="#E8B25C"/>
-        <stop offset=".5" stop-color="#7FE3B0"/>
-        <stop offset="1" stop-color="#F2A7C3"/>
+        <stop offset=".5" stop-color="#52D1A3"/>
+        <stop offset="1" stop-color="#FF8DA1"/>
       </linearGradient>
     </defs>
     <path class="route-line" d="M0 35 C 200 10, 400 60, 600 35 S 1000 10, 1200 35"/>
     <circle class="station" cx="300" cy="40" r="5" stroke="#E8B25C"/>
-    <circle class="station" cx="600" cy="35" r="5" stroke="#7FE3B0"/>
-    <circle class="station" cx="900" cy="30" r="5" stroke="#F2A7C3"/>
-    <text class="station-label" x="300" y="62" text-anchor="middle">PHAINON</text>
-    <text class="station-label" x="600" y="62" text-anchor="middle">FIREFLY</text>
-    <text class="station-label" x="900" y="62" text-anchor="middle">MARCH 7TH</text>
+    <circle class="station" cx="600" cy="35" r="5" stroke="#52D1A3"/>
+    <circle class="station" cx="900" cy="30" r="5" stroke="#FF8DA1"/>
+    <text class="station-label" x="300" y="62" text-anchor="middle">PHAINON · 白厄</text>
+    <text class="station-label" x="600" y="62" text-anchor="middle">FIREFLY · 流萤</text>
+    <text class="station-label" x="900" y="62" text-anchor="middle">MARCH 7TH · 三月七</text>
   </svg>
 </div>
 
@@ -563,80 +738,168 @@ footer{
   <div class="sec-head reveal">
     <div class="sec-index">01 / 工作方式</div>
     <h2>前节与您交谈，<br>后节为您执行。</h2>
-    <p class="sec-desc">前车厢中，角色与您共商方案；后车厢中，古代机械专注执行。间隔之门，随时开启。</p>
+    <p class="sec-desc">角色负责情感陪伴与意图商定，助手专注系统与工程执行。同屏双空间，各司其职，互不越界。</p>
   </div>
   <div class="loop-grid reveal reveal-d1">
     <div class="loop-step">
       <span class="loop-no">STEP 01</span>
-      <h3>商议在前，执行在后</h3>
-      <p>与白厄商讨任务内容。方案商定后方发出委派；若仅需交谈，列车亦可暂缓启程。</p>
+      <h3>商议在前，意图对齐</h3>
+      <p>与角色商讨需求与思路。只在方案明确后形成委派；若只是闲聊或情绪宣泄，列车便只作静静陪伴。</p>
       <svg class="loop-arrow" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.5"/></svg>
     </div>
     <div class="loop-step">
       <span class="loop-no">STEP 02</span>
-      <h3>委派机械执行</h3>
-      <p>商定之事将形成委派单，交由古代机械执行。文件与命令由其自主运行，执行过程以卡片形式呈现。</p>
+      <h3>结构化委派，工具落地</h3>
+      <p>商定结果转为底层任务委派单，助手经由本机 Codex / DeepSeek 引擎自主运行文件与命令，过程以结构化卡片直观呈现。</p>
       <svg class="loop-arrow" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.5"/></svg>
     </div>
     <div class="loop-step">
       <span class="loop-no">STEP 03</span>
-      <h3>事毕回话，再续交谈</h3>
-      <p>进度与结果均回报至同一场会话，白厄过目后再议下一步。机械自司其职，交谈照常进行。</p>
+      <h3>结果回流，对话接续</h3>
+      <p>进度与真实执行结果自动回流到对话中，角色依此给出总结与下一步提议，无需切屏，对话自然流转。</p>
     </div>
   </div>
 </section>
 
-<!-- ============ PARTNERS ============ -->
+<!-- ============ PARTNERS (V0.3.0 三搭档画卷与世界切片) ============ -->
 <section id="partners">
   <div class="sec-head reveal">
-    <div class="sec-index">02 / 搭档名录</div>
-    <h2>一位伴您交谈，<br>一位代您执行。</h2>
-    <p class="sec-desc">每对搭档均由角色与助手组成：角色负责交谈，助手负责执行。v0.2.5 当前提供白厄一对，后续车厢正在建造之中。</p>
+    <div class="sec-index">02 / 搭档名录与世界切片</div>
+    <h2>三组搭档，三种旅途。</h2>
+    <p class="sec-desc">V0.3.0 正式实装三组特色搭档。每对均拥有专属的角色设定、助手分工、动态主题色组与高保真语音朗读。</p>
   </div>
 
-  <div class="partner-current reveal reveal-d1">
-    <div class="partner-info">
-      <span class="partner-tag">当前版本可用 · v0.2.5</span>
-      <h3>白厄 × 神秘的古代机械</h3>
-      <div class="partner-pair">PHAINON × ANCIENT MACHINE</div>
-      <p>商讨思路可寻白厄，执行之事交由来历神秘的古代机械。二者共用同一场会话，交谈与执行各司其职。</p>
-    </div>
-    <div class="partner-roles">
-      <div class="role role-character">
-        <div class="role-mark">
-          <svg width="20" height="20" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 L19 13 L30 16 L19 19 L16 30 L13 19 L2 16 L13 13 Z" fill="#E8B25C"/></svg>
-        </div>
-        <div>
-          <div class="role-name">白厄</div>
-          <div class="role-duty">CHARACTER · 对话</div>
-          <div class="role-desc">伴您商讨方案，回复可朗读。委派须以双方确认为前提。</div>
+  <div class="partner-deck">
+    <!-- 搭档 1：白厄 × 神秘的古代机械 -->
+    <div class="partner-card card-phainon reveal reveal-d1">
+      <div class="partner-art-pane">
+        <img class="art-main" src="assets/website/白厄1.jpg" alt="白厄 · 哀丽秘榭金色麦田" data-full="phainon-main" />
+        <div class="art-overlay"></div>
+        <div class="art-inset-card" title="点击查看高清单张：救世神瞳" data-full="phainon-inset">
+          <img class="art-inset-img" src="assets/website/白厄2.jpg" alt="白厄 · 神瞳" />
+          <span class="art-inset-tag">圣城神瞳 ↗</span>
         </div>
       </div>
-      <div class="role role-machine">
-        <div class="role-mark">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="7" width="18" height="12" rx="2" stroke="#C5A059" stroke-width="1.6"/><circle cx="9" cy="13" r="1.6" fill="#C5A059"/><circle cx="15" cy="13" r="1.6" fill="#C5A059"/><path d="M12 7V3M8 3h8" stroke="#C5A059" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <div class="partner-info-pane">
+        <div class="partner-badge-row">
+          <span class="partner-status-tag">V0.3.0 可用 · 经典搭档</span>
         </div>
         <div>
-          <div class="role-name">神秘的古代机械</div>
-          <div class="role-duty">ASSISTANT · 执行</div>
-          <div class="role-desc">它对应着白厄鉴宝的爱好。收到委派单即开始执行，文件与命令经由本机 Codex app-server 处理，每一步均以卡片呈现。</div>
+          <h3>白厄 × 神秘的古代机械</h3>
+          <div class="partner-sub-meta">PHAINON × ANCIENT MACHINE · 黄金麦浪与青铜机关</div>
+        </div>
+        <p class="partner-desc-p">
+          奥赫玛的救世主少年，性情温和坦率，闲暇时爱逛古玩市集；助手是来历神秘的古老机械，沉稳克制、字句如青铜落地。
+        </p>
+        <div class="roles-duo">
+          <div class="role-item">
+            <div class="role-icon-box" style="background:rgba(232,178,92,.15);border:1px solid rgba(232,178,92,.35)">
+              <svg width="18" height="18" viewBox="0 0 32 32" fill="#E8B25C"><path d="M16 2 L19 13 L30 16 L19 19 L16 30 L13 19 L2 16 L13 13 Z"/></svg>
+            </div>
+            <div>
+              <div class="role-title-line">白厄 <span class="role-duty-pill">CHARACTER · 对话</span></div>
+              <div class="role-summary">伴您商定策略，温和直爽，回复语音可朗读；无工具执行权，委派前必须意图确认。</div>
+            </div>
+          </div>
+          <div class="role-item">
+            <div class="role-icon-box" style="background:rgba(140,162,214,.15);border:1px solid rgba(140,162,214,.35)">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8AA4D4" stroke-width="1.8"><rect x="3" y="7" width="18" height="12" rx="2"/><circle cx="9" cy="13" r="1.5"/><circle cx="15" cy="13" r="1.5"/><path d="M12 7V3M8 3h8"/></svg>
+            </div>
+            <div>
+              <div class="role-title-line">神秘的古代机械 <span class="role-duty-pill">ASSISTANT · 执行</span></div>
+              <div class="role-summary">握有全部工具与命令执行权，只执行结构化任务单，实事求是汇报每一步执行回执。</div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
-  </div>
 
-  <div class="partner-future">
-    <div class="partner-next green reveal reveal-d1">
-      <span class="soon">未来版本 · 航路规划</span>
-      <h4>流萤 × 萨姆</h4>
-      <div class="pair">FIREFLY × SAM</div>
-      <p>萤火与机甲相配：流萤伴您交谈，萨姆代您执行。航路下一站，将停靠这一对。</p>
+    <!-- 搭档 2：流萤 × 萨姆 -->
+    <div class="partner-card card-firefly reveal reveal-d2">
+      <div class="partner-art-pane">
+        <img class="art-main" src="assets/website/流萤1.png" alt="流萤 · 梦境街头回眸" data-full="firefly-main" />
+        <div class="art-overlay"></div>
+        <div class="art-inset-card" title="点击查看高清单张：机甲维生舱" data-full="firefly-inset">
+          <img class="art-inset-img" src="assets/website/流萤2.png" alt="流萤 · 维生机甲" />
+          <span class="art-inset-tag">装甲维生舱 ↗</span>
+        </div>
+      </div>
+      <div class="partner-info-pane">
+        <div class="partner-badge-row">
+          <span class="partner-status-tag">V0.3.0 新增 · 极光与熔火</span>
+        </div>
+        <div>
+          <h3>流萤 × 萨姆</h3>
+          <div class="partner-sub-meta">FIREFLY × SAM · 少女愿望与战略强袭装甲</div>
+        </div>
+        <p class="partner-desc-p">
+          向往平凡日常与甜点的坚韧少女，渴望以「流萤」的身份认识世界；萨姆则是格拉默火萤Ⅳ型战略强袭装甲战术中枢，战意炽烈，行事决绝。
+        </p>
+        <div class="roles-duo">
+          <div class="role-item">
+            <div class="role-icon-box" style="background:rgba(82,209,163,.15);border:1px solid rgba(82,209,163,.35)">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#52D1A3" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            </div>
+            <div>
+              <div class="role-title-line">流萤 <span class="role-duty-pill">CHARACTER · 对话</span></div>
+              <div class="role-summary">真诚清澈，体贴搭档，喜欢橡木蛋糕卷；遇到复杂执行事项委托萨姆处理。</div>
+            </div>
+          </div>
+          <div class="role-item">
+            <div class="role-icon-box" style="background:rgba(230,90,40,.15);border:1px solid rgba(230,90,40,.35)">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#E65A28" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+            </div>
+            <div>
+              <div class="role-title-line">萨姆 <span class="role-duty-pill">ASSISTANT · 执行</span></div>
+              <div class="role-summary">机甲战术中枢，冷峻精准，遵循格拉默协议执行代码编写、静态扫描与自动化验证。</div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
-    <div class="partner-next pink reveal reveal-d2">
-      <span class="soon">未来版本 · 航路规划</span>
-      <h4>三月七 × 第四面镜</h4>
-      <div class="pair">MARCH 7TH × THE FOURTH MIRROR</div>
-      <p>快门声未落，第四面镜已交付完成。这一对亦在航路之上等候。</p>
+
+    <!-- 搭档 3：三月七 × 第四面镜 -->
+    <div class="partner-card card-march7 reveal reveal-d3">
+      <div class="partner-art-pane">
+        <img class="art-main" src="assets/website/三月七1.png" alt="三月七 · 记忆拍立得" data-full="march7-main" />
+        <div class="art-overlay"></div>
+        <div class="art-inset-card" title="点击查看高清单张：破晓泪光微笑" data-full="march7-inset">
+          <img class="art-inset-img" src="assets/website/三月七2.jpg" alt="三月七 · 泪光微笑" />
+          <span class="art-inset-tag">破晓微笑 ↗</span>
+        </div>
+      </div>
+      <div class="partner-info-pane">
+        <div class="partner-badge-row">
+          <span class="partner-status-tag">V0.3.0 新增 · 摄影与魔镜</span>
+        </div>
+        <div>
+          <h3>三月七 × 第四面镜</h3>
+          <div class="partner-sub-meta">MARCH 7TH × THE FOURTH MIRROR · 冰晶快门与思维折射</div>
+        </div>
+        <p class="partner-desc-p">
+          腰挎相机的列车元气开拓者，热衷拍照记录点滴；助手则是空间站大黑塔魔镜之四，思维敏捷、擅长折射数据与意识检索。
+        </p>
+        <div class="roles-duo">
+          <div class="role-item">
+            <div class="role-icon-box" style="background:rgba(255,141,161,.15);border:1px solid rgba(255,141,161,.35)">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#FF8DA1" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            </div>
+            <div>
+              <div class="role-title-line">三月七 <span class="role-duty-pill">CHARACTER · 对话</span></div>
+              <div class="role-summary">精灵古怪、元气满满，随时准备记录银河故事；遇到系统工程交给第四面镜折腾。</div>
+            </div>
+          </div>
+          <div class="role-item">
+            <div class="role-icon-box" style="background:rgba(167,139,250,.15);border:1px solid rgba(167,139,250,.35)">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#A78BFA" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3v18M3 12h18"/></svg>
+            </div>
+            <div>
+              <div class="role-title-line">第四面镜 <span class="role-duty-pill">ASSISTANT · 执行</span></div>
+              <div class="role-summary">通透机敏，口吻风趣，负责高维数据检索、工作区重构与自动化构建任务落地。</div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </section>
@@ -644,59 +907,55 @@ footer{
 <!-- ============ FEATURES ============ -->
 <section id="features">
   <div class="sec-head reveal">
-    <div class="sec-index">03 / 功能</div>
+    <div class="sec-index">03 / 功能特性</div>
     <h2>列车之上，一应俱全。</h2>
+    <p class="sec-desc">V0.3.0 带来完整的搭档目录、多主题动态令牌与端到端双空间消息流转体系。</p>
   </div>
   <div class="feat-list reveal reveal-d1">
     <div class="feat-row">
+      <div class="feat-name">搭档目录与选择</div>
+      <div class="feat-key">PAIR CATALOG</div>
+      <div class="feat-desc">新建聊天时可自由挑选搭档，会话列表按各会话自身 pair 渲染头像与芯片；切换历史会话自动换取专属色组，重启不串角色。</div>
+    </div>
+    <div class="feat-row">
       <div class="feat-name">两种模式</div>
       <div class="feat-key">CHAT / COLLAB</div>
-      <div class="feat-desc">如需纯聊天，可选聊天模式，界面仅保留对话。协作模式将助手工作台置于一侧，任务执行与交谈并行不悖。</div>
+      <div class="feat-desc">聊天模式仅保留纯粹的自然语言交流；协作模式同屏展开助手工作台，代码编写、命令运行与角色对话互不干扰。</div>
+    </div>
+    <div class="feat-row">
+      <div class="feat-name">多搭档动态主题</div>
+      <div class="feat-key">DATA-PAIR TOKENS</div>
+      <div class="feat-desc">三组搭档各有一套深色与浅色 7 色设计令牌。跟随当前选中会话实时切换界面气质，告别单调默认配色。</div>
     </div>
     <div class="feat-row">
       <div class="feat-name">本地账号与设置中心</div>
-      <div class="feat-key">LOCAL ACCOUNT</div>
-      <div class="feat-desc">账号存储于本机，每位用户各有其模型与语音设置，密钥仅回显掩码。Codex 的登录亦由此处统一管理。</div>
+      <div class="feat-key">LOCAL ACCOUNTS</div>
+      <div class="feat-desc">多账号数据隔离于本机 SQLite，密钥仅回显掩码。提供对话模型配置、编程助手登录与各搭档专属音色试听。</div>
     </div>
     <div class="feat-row">
       <div class="feat-name">项目即文件夹</div>
-      <div class="feat-key">LOCAL PROJECT</div>
-      <div class="feat-desc">一个项目对应一个本地文件夹，名称取自文件夹名，可随时修改。路径同理，重新选择即可。</div>
+      <div class="feat-key">LOCAL FOLDER</div>
+      <div class="feat-desc">项目天然绑定本地工程文件夹，支持路径可用性自动检测与一键重选，所有文件读写均在受控工作区内进行。</div>
     </div>
     <div class="feat-row">
-      <div class="feat-name">三档审批</div>
-      <div class="feat-key">APPROVAL</div>
-      <div class="feat-desc">审批按项目配置，共分三档：逐项询问、机器自查、全程放行。是否放行，由您决定。</div>
+      <div class="feat-name">三档安全审批</div>
+      <div class="feat-key">APPROVAL MODES</div>
+      <div class="feat-desc">每个项目可独立设定审批档位：逐项确认、机器自查、全自动放行。危险文件操作与命令由用户掌握最终控制权。</div>
     </div>
     <div class="feat-row">
-      <div class="feat-name">任务队列</div>
-      <div class="feat-key">QUEUE</div>
-      <div class="feat-desc">机械执行期间，新任务先行排队。队列顺序可调整、可撤回，本轮结束后自动派发下一任务。</div>
+      <div class="feat-name">任务队列与实时排队</div>
+      <div class="feat-key">QUEUE STRIP</div>
+      <div class="feat-desc">助手忙碌时发送的消息自动进入排队胶囊条，支持调整执行顺序、拉回输入区重编辑或随时撤回。</div>
     </div>
     <div class="feat-row">
-      <div class="feat-name">流式输出</div>
-      <div class="feat-key">STREAMING</div>
-      <div class="feat-desc">思考过程与正文内容各自独立成流，实时呈现于界面。原始 JSON 存于技术详情之中。</div>
+      <div class="feat-name">双通道思考流式呈现</div>
+      <div class="feat-key">DUAL STREAMING</div>
+      <div class="feat-desc">模型思考过程与最终正文双流独立解析，角色回复前先展现思绪缎带，完成后自动折叠，保持阅读清爽。</div>
     </div>
     <div class="feat-row">
-      <div class="feat-name">编程助手</div>
-      <div class="feat-key">统一供应商</div>
-      <div class="feat-desc">OpenAI OAuth/API 让角色与古代机械共用 GPT，DeepSeek 配置让两者共用 DeepSeek。</div>
-    </div>
-    <div class="feat-row">
-      <div class="feat-name">语音对话</div>
-      <div class="feat-key">DASHSCOPE ASR / TTS</div>
-      <div class="feat-desc">语音识别与合成经由 DashScope，VAD 随安装包内置。白厄的回复可朗读，工具记录与命令输出保持静音。</div>
-    </div>
-    <div class="feat-row">
-      <div class="feat-name">自动聊天标题</div>
-      <div class="feat-key">AUTO TITLE</div>
-      <div class="feat-desc">新会话初始命名为「新聊天」，首轮回复结束后，由助手拟定标题。您自定义的名称将始终有效。</div>
-    </div>
-    <div class="feat-row">
-      <div class="feat-name">深色与浅色</div>
-      <div class="feat-key">THEMES</div>
-      <div class="feat-desc">深色与浅色可自由切换。发言者一望即知：角色一色，机械一色。</div>
+      <div class="feat-name">专属音色复刻与 VAD</div>
+      <div class="feat-key">VOICE REPRODUCTION</div>
+      <div class="feat-desc">基于 DashScope 打造专属复刻人声，角色自然台词进语音朗读，工具事件与日志天然静音；支持按键发话与智能 VAD 聆听。</div>
     </div>
   </div>
 </section>
@@ -704,43 +963,43 @@ footer{
 <!-- ============ ARCHITECTURE ============ -->
 <section id="arch">
   <div class="sec-head reveal">
-    <div class="sec-index">04 / 架构</div>
+    <div class="sec-index">04 / 架构设计</div>
     <h2>车底下，一根管子直通到底。</h2>
-    <p class="sec-desc">窗口由 Tauri 承载，状态由 Python Sidecar 维护，执行由 Codex 完成。</p>
+    <p class="sec-desc">Tauri 2 承载桌面，Python Sidecar 维护业务状态，Codex 与 DeepSeek 承担底层执行。</p>
   </div>
   <div class="arch-pipe reveal reveal-d1">
     <div class="arch-node">
-      <div class="arch-kind">Desktop</div>
+      <div class="arch-kind">Frontend & Native</div>
       <div class="arch-name">桌面窗口</div>
       <div class="arch-tech">Tauri 2 · React · Rust</div>
-      <p>Rust 负责启动并拉起 Sidecar，文件夹选择调用原生接口，断线自动重连。React 渲染界面，工具事件以卡片形式进入工作台。</p>
+      <p>Rust 负责启动并守护 Python Sidecar，原生目录选择，断线重连；React 负责视图渲染与 40ms 高效事件合批。</p>
     </div>
     <div class="arch-link">
       <span class="pipe-label">JSONL / stdio</span>
-      请求带 ID<br>事件推流
+      请求带 ID<br>序号单调推流
     </div>
     <div class="arch-node">
-      <div class="arch-kind">Sidecar</div>
+      <div class="arch-kind">Core Engine</div>
       <div class="arch-name">Python 业务层</div>
       <div class="arch-tech">pair_harness · SQLite</div>
-      <p>业务状态统一收存于 SQLite。长任务并发执行，会话消息完整进出，取消操作亦经由同一通道。</p>
+      <p>状态以 SQLite 为唯一事实来源。管理三组搭档 YAML、多会话隔离、任务编排、TTS/ASR 语音适配与审批状态机。</p>
     </div>
     <div class="arch-link">
       <span class="pipe-label">app-server</span>
-      委派任务<br>进度回报
+      结构化委派<br>真实结果回流
     </div>
     <div class="arch-node">
-      <div class="arch-kind">Execution</div>
-      <div class="arch-name">Codex 编程后端</div>
-      <div class="arch-tech">OpenAI Codex · 本机</div>
-      <p>执行由 Codex app-server 承担，文件与命令均在管辖之内。安装版内置 Codex；从源码运行时，使用本机已安装的版本。</p>
+      <div class="arch-kind">Execution Agent</div>
+      <div class="arch-name">编程执行后端</div>
+      <div class="arch-tech">OpenAI Codex / DeepSeek</div>
+      <p>文件修改、环境探测与终端命令执行均由底层 Agent 处理，严格遵从 Let It Fail 原则，绝不粉饰真实失败。</p>
     </div>
   </div>
   <div class="arch-foot reveal reveal-d2">
     <span class="arch-chip">对话模型 <b>DeepSeek / OpenAI 兼容接口</b></span>
-    <span class="arch-chip">语音 <b>DashScope ASR + TTS · VAD 随包内置</b></span>
-    <span class="arch-chip">连接 <b>状态可见 · 断线自动重连</b></span>
-    <span class="arch-chip">数据 <b>%LOCALAPPDATA%\PairHarness</b></span>
+    <span class="arch-chip">语音链路 <b>DashScope ASR + TTS · 智能 VAD</b></span>
+    <span class="arch-chip">连接韧性 <b>三态药丸 · 后台自动重连</b></span>
+    <span class="arch-chip">持久化路径 <b>%LOCALAPPDATA%\PairHarness</b></span>
   </div>
 </section>
 
@@ -754,9 +1013,9 @@ footer{
     <div class="code-block reveal reveal-d1">
       <div class="code-head">
         <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
-        <span style="margin-left:8px">PowerShell · 从源码运行</span>
+        <span style="margin-left:8px">PowerShell · 源码运行 V0.3.0</span>
       </div>
-      <pre><span class="cm"># 需要 Python 3.11 · Node.js 22 · Rust stable</span>
+      <pre><span class="cm"># 环境要求：Python 3.11+ · Node.js 22+ · Rust stable</span>
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e <span class="cmd">".[voice,dev]"</span>
 
@@ -767,30 +1026,38 @@ npm run tauri:dev</pre>
     </div>
     <div class="start-notes reveal reveal-d2">
       <div class="start-note">
-        <h4><span class="n">A</span>直接安装</h4>
-        <p>Windows x64 安装包位于 <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases" target="_blank" rel="noopener">GitHub Releases</a>，Sidecar 与 Codex 一并封装其中。SmartScreen 弹出提示时，请选择「仍要运行」。</p>
+        <h4><span class="n">A</span>直接下载安装包</h4>
+        <p>Windows x64 安装包位于 <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases" target="_blank" rel="noopener">GitHub Releases</a>，已打包包含全部三组搭档立绘、音色配置与 Sidecar 运行时。</p>
       </div>
       <div class="start-note">
-        <h4><span class="n">B</span>体验演示模式</h4>
-        <p>模型配置留空时，可先行体验演示模式；待配置填写完毕，即可切换至真实模式正式启程。</p>
+        <h4><span class="n">B</span>即刻体验演示模式</h4>
+        <p>无需填写任何 API Key，模型留空即可直接进入演示模式，体验完整的新建聊天、搭档选择与工作台联动。</p>
       </div>
       <div class="start-note">
-        <h4><span class="n">C</span>运行真实模式</h4>
-        <p>从源码运行时，首先运行 <code style="font-family:var(--mono);font-size:12.5px;color:#F0C268">codex --version</code>，确认 Codex 可用；再复制一份 <code style="font-family:var(--mono);font-size:12.5px;color:#F0C268">.env.example</code>，填入对话模型与 DashScope 的 key。</p>
+        <h4><span class="n">C</span>配置真实对话与语音</h4>
+        <p>在设置中心填入 DeepSeek 或 OpenAI Key 开启真实对话；填入 DashScope API Key 即可开启流萤、三月七与白厄的高保真语音朗读。</p>
       </div>
     </div>
   </div>
 </section>
 
+<!-- ============ LIGHTBOX MODAL ============ -->
+<div class="lightbox-modal" id="lightbox" role="dialog" aria-label="立绘与切片全屏查看">
+  <div class="lightbox-content">
+    <button type="button" class="lightbox-close" id="lightboxClose" aria-label="关闭">✕</button>
+    <img class="lightbox-img" id="lightboxImg" src="" alt="切片大图" />
+  </div>
+</div>
+
 <!-- ============ FOOTER ============ -->
 <footer>
   <div class="foot-inner">
     <div>
-      <div class="foot-brand">HSR Partner Harness</div>
+      <div class="foot-brand">HSR Partner Harness · V0.3.0</div>
       <div class="foot-note">
         代码采用 Apache License 2.0，版权所有 © 2026 Zonghe Wu。<br>
-        角色名称和世界观相关内容归原权利人所有，本项目为同人作品。<br>
-        供应商识别逻辑改写自 DeepSeek-Reasonix（MIT），OpenAI 配置使用 Codex，DeepSeek 配置使用 Reasonix ACP。
+        角色名称、立绘素材和崩铁世界观内容归原权利人米哈游所有，本项目为非营利同人作品。<br>
+        供应商识别逻辑基于 DeepSeek-Reasonix（MIT）改写。
       </div>
     </div>
     <div class="foot-links">
@@ -811,7 +1078,7 @@ npm run tauri:dev</pre>
   var canvas = document.getElementById("starfield");
   var ctx = canvas.getContext("2d");
   var stars = [], W = 0, H = 0, dpr = Math.min(window.devicePixelRatio || 1, 2);
-  var COLORS = ["#DCE4F5","#DCE4F5","#DCE4F5","#E8B25C","#7FE3B0","#F2A7C3"];
+  var COLORS = ["#DCE4F5","#DCE4F5","#E8B25C","#52D1A3","#FF8DA1","#A78BFA"];
 
   function resize(){
     W = window.innerWidth; H = window.innerHeight;
@@ -821,7 +1088,7 @@ npm run tauri:dev</pre>
   }
   function seed(){
     stars = [];
-    var n = Math.round((W * H) / 9000);
+    var n = Math.round((W * H) / 9500);
     for (var i = 0; i < n; i++){
       stars.push({
         x: Math.random() * W,
@@ -866,26 +1133,85 @@ npm run tauri:dev</pre>
     window.addEventListener("scroll", draw, { passive: true });
   }
 
-  /* ---------- simulated session ---------- */
+  /* ---------- 三搭档模拟会话脚本 ---------- */
+  var SCRIPTS = {
+    phainon: {
+      title: "pair-harness · 白厄 × 神秘的古代机械",
+      charColor: "#E8B25C",
+      asstColor: "#C5A059",
+      glow: "rgba(232,178,92,.18)",
+      dialogue: [
+        { kind:"msg", cls:"msg-character", name:"白厄", mark:"#E8B25C",
+          text:"我觉得咱们车上缺全局搜索功能。你觉得怎样实现会比较好？跟我说说，我去叫古代机械做一下。" },
+        { kind:"msg", cls:"msg-user", name:"你", mark:"#8B96B8",
+          text:"文件名与内容均需支持检索，命中位置需在结果中高亮显示。" },
+        { kind:"msg", cls:"msg-machine", name:"神秘的古代机械", mark:"#C5A059",
+          text:"收到委派。正在建立搜索索引，覆盖代码与界面。完成后汇报结果。" },
+        { kind:"tool",
+          tag:"DELEGATION", title:"codex · 建立搜索索引",
+          lines:[
+            { cls:"path", text:"$ 检索 src/ 与 desktop/src，建立索引树" },
+            { cls:"path", text:"$ 修改 search_index.py · SearchPanel.tsx" },
+            { cls:"ok",   text:"✓ 完成 · 改动尽数落地，测试悉数通过" }
+          ] },
+        { kind:"msg", cls:"msg-character", name:"白厄", mark:"#E8B25C",
+          text:"做完了，古代机械干得利索。搜索和高亮都齐了，你过来看看，哪里不对跟我说。" }
+      ]
+    },
+    firefly: {
+      title: "pair-harness · 流萤 × 萨姆",
+      charColor: "#52D1A3",
+      asstColor: "#E65A28",
+      glow: "rgba(82,209,163,.18)",
+      dialogue: [
+        { kind:"msg", cls:"msg-character", name:"流萤", mark:"#52D1A3",
+          text:"刚才我看了下项目日志，测试套件好像有几个用例还没覆盖到。要不要让萨姆跑一次完整的自动化检查？" },
+        { kind:"msg", cls:"msg-user", name:"你", mark:"#8B96B8",
+          text:"好，把单元测试和前端类型检查都跑一遍，有错误就直接修复。" },
+        { kind:"msg", cls:"msg-machine", name:"萨姆", mark:"#E65A28",
+          text:"战术协议已激活。开始执行测试套件与类型静态分析。" },
+        { kind:"tool",
+          tag:"DELEGATION", title:"sam · 执行工程自检",
+          lines:[
+            { cls:"path", text:"$ pytest -q tests/unit/ · npm run typecheck" },
+            { cls:"path", text:"$ 校验 416 项用例，对齐协议契约" },
+            { cls:"ok",   text:"✓ 完成 · 416 passed, typecheck 0 errors" }
+          ] },
+        { kind:"msg", cls:"msg-character", name:"流萤", mark:"#52D1A3",
+          text:"萨姆那边已经全部搞定啦！测试全绿通过，可以放心推进下一步了。" }
+      ]
+    },
+    march7: {
+      title: "pair-harness · 三月七 × 第四面镜",
+      charColor: "#FF8DA1",
+      asstColor: "#A78BFA",
+      glow: "rgba(255,141,161,.18)",
+      dialogue: [
+        { kind:"msg", cls:"msg-character", name:"三月七", mark:"#FF8DA1",
+          text:"看咱拍的新照片！不过相册目录里的静态资源有点散，要不让第四面镜帮咱们整理归档一下？" },
+        { kind:"msg", cls:"msg-user", name:"你", mark:"#8B96B8",
+          text:"按搭档分类整理到 assets 目录，并更新引用路径。" },
+        { kind:"msg", cls:"msg-machine", name:"第四面镜", mark:"#A78BFA",
+          text:"思维折射启动。正在扫描资源文件树，重构路径映射。" },
+        { kind:"tool",
+          tag:"DELEGATION", title:"fourth_mirror · 重构资源结构",
+          lines:[
+            { cls:"path", text:"$ 扫描 docs/assets/website/ 文件结构" },
+            { cls:"path", text:"$ 建立 static import 映射与高分辨率切片" },
+            { cls:"ok",   text:"✓ 完成 · 6 张高清立绘已归档映射" }
+          ] },
+        { kind:"msg", cls:"msg-character", name:"三月七", mark:"#FF8DA1",
+          text:"搞定啦，第四面镜动作还挺麻利！照片整整齐齐的，看着真舒服。" }
+      ]
+    }
+  };
+
+  var currentPairKey = "phainon";
   var body = document.getElementById("sessionBody");
-  var SCRIPT = [
-    { kind:"msg", cls:"msg-character", name:"白厄", mark:"#E8B25C",
-      text:"我觉得咱们车上缺全局搜索功能。你觉得怎样实现会比较好？跟我说说，我去叫古代机械做一下。" },
-    { kind:"msg", cls:"msg-user", name:"你", mark:"#8B96B8",
-      text:"文件名与内容均需支持检索，命中位置需在结果中高亮显示。" },
-    { kind:"msg", cls:"msg-machine", name:"神秘的古代机械", mark:"#C5A059",
-      text:"收到委派。正在建立搜索索引，覆盖代码与界面。完成后汇报结果。" },
-    { kind:"tool",
-      tag:"DELEGATION", title:"codex · 执行编程任务",
-      lines:[
-        { cls:"path", text:"$ 检索 src/ 与 desktop/src，建立搜索索引" },
-        { cls:"path", text:"$ 修改 search_index.py · SearchPanel.tsx" },
-        { cls:"ok",   text:"✓ 完成 · 改动尽数落地，测试悉数通过" }
-      ] },
-    { kind:"msg", cls:"msg-character", name:"白厄", mark:"#E8B25C",
-      text:"做完了，古代机械干得利索。搜索和高亮都齐了，你过来看看，哪里不对跟我说。" }
-  ];
-  var TYPE_MS = 34;
+  var sessionTitle = document.getElementById("sessionTitle");
+  var sessionBox = document.getElementById("sessionBox");
+  var TYPE_MS = 30;
+  var runToken = 0;
 
   function el(tag, cls, text){
     var e = document.createElement(tag);
@@ -895,20 +1221,35 @@ npm run tauri:dev</pre>
   }
   function wait(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
 
-  function buildMsg(step){
+  function buildMsg(step, charColor, asstColor){
     var wrap = el("div", "msg " + step.cls);
     var name = el("div", "msg-name");
-    var who = el("span", "who"); who.style.background = step.mark;
+    var who = el("span", "who");
+    var isChar = step.cls.includes("msg-character");
+    var color = isChar ? charColor : (step.cls.includes("msg-machine") ? asstColor : step.mark);
+    who.style.background = color;
+    name.style.color = color;
     name.appendChild(who);
     name.appendChild(document.createTextNode(step.name));
     var bubble = el("div", "msg-bubble");
+    if (isChar){
+      bubble.style.borderColor = color + "44";
+      bubble.style.background = color + "14";
+    } else if (step.cls.includes("msg-machine")){
+      bubble.style.borderColor = color + "44";
+      bubble.style.background = color + "14";
+    }
     wrap.appendChild(name); wrap.appendChild(bubble);
     return { wrap: wrap, bubble: bubble };
   }
-  function buildTool(step){
+
+  function buildTool(step, asstColor){
     var card = el("div", "tool-card");
     var head = el("div", "tool-head");
-    head.appendChild(el("span", "tag", step.tag));
+    var tag = el("span", "tag", step.tag);
+    tag.style.color = asstColor;
+    tag.style.borderColor = asstColor + "55";
+    head.appendChild(tag);
     head.appendChild(el("span", null, step.title));
     var status = el("span", "status", "running…");
     head.appendChild(status);
@@ -917,17 +1258,18 @@ npm run tauri:dev</pre>
     return { card: card, lines: lines, status: status };
   }
 
-  function typeText(node, text){
+  function typeText(node, text, myToken){
     return new Promise(function(resolve){
       if (reduceMotion){ node.textContent = text; resolve(); return; }
       var caret = el("span", "caret");
       node.appendChild(caret);
       var i = 0;
       (function step(){
+        if (myToken !== runToken){ resolve(); return; }
         if (i < text.length){
           caret.before(document.createTextNode(text[i]));
           i++;
-          setTimeout(step, TYPE_MS + Math.random() * 30);
+          setTimeout(step, TYPE_MS + Math.random() * 25);
         } else {
           caret.remove();
           resolve();
@@ -936,56 +1278,78 @@ npm run tauri:dev</pre>
     });
   }
 
-  var running = false;
-  async function playSession(){
-    if (running) return;
-    running = true;
-    while (true){
+  async function playSessionFor(pairKey){
+    var myToken = ++runToken;
+    var currentScript = SCRIPTS[pairKey];
+    sessionTitle.textContent = currentScript.title;
+    sessionBox.style.setProperty("--pair-char-color", currentScript.charColor);
+    sessionBox.style.setProperty("--pair-asst-color", currentScript.asstColor);
+    sessionBox.style.boxShadow = "0 30px 80px rgba(0,0,0,.55), 0 0 0 1px " + currentScript.charColor + "33, 0 0 50px " + currentScript.glow;
+
+    while (myToken === runToken){
       body.innerHTML = "";
-      for (var s = 0; s < SCRIPT.length; s++){
-        var step = SCRIPT[s];
+      var dialogue = currentScript.dialogue;
+      for (var s = 0; s < dialogue.length; s++){
+        if (myToken !== runToken) return;
+        var step = dialogue[s];
         if (step.kind === "msg"){
-          var m = buildMsg(step);
+          var m = buildMsg(step, currentScript.charColor, currentScript.asstColor);
           body.appendChild(m.wrap);
-          await wait(60);
+          await wait(50);
           m.wrap.classList.add("show");
-          await typeText(m.bubble, step.text);
-          await wait(reduceMotion ? 300 : 650);
+          await typeText(m.bubble, step.text, myToken);
+          if (myToken !== runToken) return;
+          await wait(reduceMotion ? 250 : 600);
         } else {
-          var tc = buildTool(step);
+          var tc = buildTool(step, currentScript.asstColor);
           body.appendChild(tc.card);
-          await wait(60);
+          await wait(50);
           tc.card.classList.add("show");
           for (var l = 0; l < step.lines.length; l++){
+            if (myToken !== runToken) return;
             var ln = step.lines[l];
-            await wait(reduceMotion ? 60 : 480);
+            await wait(reduceMotion ? 50 : 420);
             var lineEl = el("div", ln.cls, ln.text);
             tc.lines.appendChild(lineEl);
             if (l === step.lines.length - 1){
               tc.status.textContent = "done";
             }
           }
-          await wait(reduceMotion ? 300 : 800);
+          if (myToken !== runToken) return;
+          await wait(reduceMotion ? 250 : 750);
         }
       }
-      if (reduceMotion) break;              // 静态展示一遍即可
-      await wait(7000);                     // 停留后重播
-      body.style.transition = "opacity .5s";
+      if (reduceMotion) break;
+      await wait(7500);
+      if (myToken !== runToken) return;
+      body.style.transition = "opacity .4s";
       body.style.opacity = "0";
-      await wait(550);
+      await wait(450);
       body.style.opacity = "1";
     }
   }
 
-  /* 进入视口后再开播 */
+  // 搭档切换 Tab 点击交互
+  document.querySelectorAll(".session-tab").forEach(function(tab){
+    tab.addEventListener("click", function(){
+      var key = this.getAttribute("data-pair");
+      if (key === currentPairKey) return;
+      currentPairKey = key;
+      document.querySelectorAll(".session-tab").forEach(function(t){ t.classList.remove("active"); });
+      this.classList.add("active");
+      playSessionFor(currentPairKey);
+    });
+  });
+
+  /* 视口触发起播 */
   var played = false;
   var heroIO = new IntersectionObserver(function(entries){
     if (entries[0].isIntersecting && !played){
       played = true;
-      playSession();
+      playSessionFor(currentPairKey);
       heroIO.disconnect();
     }
-  }, { threshold: 0.2 });
+  }, { threshold: 0.15 });
   heroIO.observe(document.querySelector(".session"));
 
   /* ---------- scroll reveal ---------- */
@@ -996,8 +1360,48 @@ npm run tauri:dev</pre>
         io.unobserve(en.target);
       }
     });
-  }, { threshold: 0.12 });
+  }, { threshold: 0.1 });
   document.querySelectorAll(".reveal").forEach(function(n){ io.observe(n); });
+
+  /* ---------- lightbox modal ---------- */
+  var lightbox = document.getElementById("lightbox");
+  var lightboxImg = document.getElementById("lightboxImg");
+  var lightboxClose = document.getElementById("lightboxClose");
+  var lightboxSources = Object.freeze({
+    "phainon-main": "assets/website/白厄1.jpg",
+    "phainon-inset": "assets/website/白厄2.jpg",
+    "firefly-main": "assets/website/流萤1.png",
+    "firefly-inset": "assets/website/流萤2.png",
+    "march7-main": "assets/website/三月七1.png",
+    "march7-inset": "assets/website/三月七2.jpg"
+  });
+
+  function openLightbox(sourceKey){
+    var safeSrc = lightboxSources[sourceKey];
+    if (!safeSrc) return;
+    lightboxImg.src = safeSrc;
+    lightbox.classList.add("is-open");
+  }
+  function closeLightbox(){
+    lightbox.classList.remove("is-open");
+    lightboxImg.src = "";
+  }
+
+  document.querySelectorAll("[data-full]").forEach(function(elNode){
+    elNode.addEventListener("click", function(e){
+      e.stopPropagation();
+      var sourceKey = this.getAttribute("data-full");
+      if (sourceKey) openLightbox(sourceKey);
+    });
+  });
+
+  lightboxClose.addEventListener("click", closeLightbox);
+  lightbox.addEventListener("click", function(e){
+    if (e.target === lightbox) closeLightbox();
+  });
+  window.addEventListener("keydown", function(e){
+    if (e.key === "Escape" && lightbox.classList.contains("is-open")) closeLightbox();
+  });
 })();
 </script>
 </body>

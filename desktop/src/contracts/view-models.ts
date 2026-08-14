@@ -4,6 +4,7 @@ import type {
   ConversationRecord,
   Message,
   PairRecord,
+  PairSummary,
   PendingApproval,
   ProjectRecord,
   ToolRun,
@@ -38,6 +39,7 @@ export interface NavigationViewModel {
   currentProjectId: string;
   currentConversationId: string;
   currentPair: PairRecord;
+  pairs: PairSummary[];
 }
 
 export interface ConversationTimelineViewModel {
@@ -102,6 +104,7 @@ export interface SettingsViewModel {
 export interface AppShellViewModel {
   status: "booting" | "ready" | "disconnected" | "error";
   theme: "dark" | "light";
+  currentPairId: string;
   navigation: NavigationViewModel | null;
   workspace: WorkspaceViewModel | null;
   composer: ComposerViewModel;

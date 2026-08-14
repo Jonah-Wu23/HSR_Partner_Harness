@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AppShell } from "../AppShell";
 import type { MockScenarioName } from "../../mocks/scenarios";
+import { createMockScenario } from "../../mocks/scenarios";
 import { presentAppShell } from "../../presenters/presenters";
 import { createActionController, type ActionController } from "../../services/actions";
 import { MockDesktopBackend } from "../../services/mockDesktopBackend";
@@ -447,5 +448,69 @@ describe("AppShell QueueStrip 接线（V0.2 M4）", () => {
     const strip = screen.getByRole("region", { name: "排队 2 条" });
     const capsules = strip.querySelectorAll(".queue-capsule");
     expect(capsules[0]?.textContent).toContain("请检查这个项目的测试");
+  });
+
+  it("V0.3.0: multi-pair 多搭档展示、data-pair 属性与新建聊天选择搭档", async () => {
+    const { controller, rerender, present, backend } = await renderScenario("multi-pair");
+    expect(screen.getByTestId("app-shell")).toHaveAttribute("data-pair", "firefly_sam");
+
+    // 列表中三个会话分别显示对应搭档信息
+    expect(screen.getByTitle("白厄 × 神秘的古代机械")).toBeInTheDocument();
+    expect(screen.getByTitle("流萤 × 萨姆")).toBeInTheDocument();
+    expect(screen.getByTitle("三月七 × 第四面镜")).toBeInTheDocument();
+
+    // 顶栏当前选中流萤会话
+    const topbarPair = document.querySelector(".topbar-pair");
+    expect(topbarPair?.textContent).toContain("流萤");
+    expect(topbarPair?.textContent).toContain("萨姆");
+
+    // 点击三月七会话切换
+    await controller.actions.selectConversation("conv-march7");
+    rerender(<AppShell vm={present()} actions={controller.actions} />);
+    expect(screen.getByTestId("app-shell")).toHaveAttribute("data-pair", "march7_fourth_mirror");
+    expect(screen.getByLabelText("角色区")).toHaveTextContent("三月七");
+    expect(screen.getByLabelText("助手工作台")).toHaveTextContent("第四面镜");
+
+    // 点击新建聊天按钮弹出搭档选择菜单
+    const newChatBtn = screen.getByRole("button", { name: /新建聊天/ });
+    fireEvent.click(newChatBtn);
+
+    const menu = screen.getByRole("menu", { name: "选择搭档新建聊天" });
+    expect(menu).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /白厄 × 神秘的古代机械/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /流萤 × 萨姆/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /三月七 × 第四面镜/ })).toBeInTheDocument();
+
+    // 选中流萤建新聊天
+    fireEvent.click(screen.getByRole("menuitem", { name: /流萤 × 萨姆/ }));
+    await waitFor(() => {
+      const createReq = backend.recordedRequests.find(
+        (req) => req.method === "conversation.create",
+      );
+      expect(createReq?.params.pair_id).toBe("firefly_sam");
+    });
+  });
+
+  it("V0.3.0: 历史未知 pair_id 会话降级渲染不崩溃", async () => {
+    const { rerender, present } = await renderScenario("single-project");
+    const snapshot = desktopStore.getState();
+    const unknownConv = {
+      ...snapshot.conversationsById["conv-1"],
+      pair_id: "unknown_custom_pair",
+      title: "历史遗留未知搭档聊天",
+    };
+    desktopStore.getState().hydrate({
+      ...createMockScenario("single-project").snapshot,
+      projects: [
+        {
+          ...createMockScenario("single-project").snapshot.projects[0],
+          conversations: [unknownConv],
+        },
+      ],
+      current_conversation_id: "conv-1",
+    });
+    rerender(<AppShell vm={present()} actions={createActionController(new MockDesktopBackend()).actions} />);
+    expect(screen.getByText("历史遗留未知搭档聊天")).toBeInTheDocument();
+    expect(screen.getByTitle("unknown_custom_pair")).toBeInTheDocument();
   });
 });
