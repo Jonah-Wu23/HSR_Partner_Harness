@@ -12,7 +12,13 @@ from httpx import AsyncClient, Request, Response
 from httpx._transports.mock import MockTransport
 
 from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDialogueModel
-from pair_harness.core.contracts import DialogueRequest, Message, MessageKind, MessageSource
+from pair_harness.core.contracts import (
+    DialogueRequest,
+    Message,
+    MessageKind,
+    MessageSource,
+    ProjectRuntimeContext,
+)
 
 
 def _capturing_transport(bodies: list[dict]) -> MockTransport:
@@ -151,3 +157,75 @@ async def test_deepseek_structured_dialogue_uses_deterministic_sampling() -> Non
     [event async for event in model.stream_reply(make_request())]
     assert bodies[0]["temperature"] == 0.0
     assert bodies[0]["max_tokens"] == 8192
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_dialogue_retries_empty_content_once() -> None:
+    calls = 0
+
+    def handler(request: Request) -> Response:
+        nonlocal calls
+        calls += 1
+        content = " " if calls < 3 else '{"speech":"ok"}'
+        delta = json.dumps({"choices": [{"delta": {"content": content}}]})
+        lines = [f"data: {delta}\n".encode(), b"data: [DONE]\n"]
+        return Response(200, content=b"".join(lines))
+
+    client = AsyncClient(
+        base_url="https://api.deepseek.com",
+        transport=MockTransport(handler),
+    )
+    model = OpenAICompatibleDialogueModel(
+        base_url="https://api.deepseek.com",
+        api_key="sk-test",
+        model="deepseek-v4-flash",
+        client=client,
+    )
+    events = [event async for event in model.stream_reply(make_request())]
+    assert calls == 3
+    assert events[-1].type == "character.final"
+    assert events[-1].turn is not None
+    assert events[-1].turn.speech == "ok"
+
+
+@pytest.mark.asyncio
+async def test_deepseek_collaboration_retries_missing_delegation() -> None:
+    calls = 0
+
+    def handler(request: Request) -> Response:
+        nonlocal calls
+        calls += 1
+        content = (
+            '{"speech":"交给搭档。"}'
+            if calls == 1
+            else '{"speech":"交给搭档。","delegation":{"type":"task","instructions":"检查项目文件"}}'
+        )
+        delta = json.dumps({"choices": [{"delta": {"content": content}}]})
+        lines = [f"data: {delta}\n".encode(), b"data: [DONE]\n"]
+        return Response(200, content=b"".join(lines))
+
+    user = make_request().user_message.model_copy(update={"text": "请让搭档检查项目文件"})
+    request = make_request().model_copy(
+        update={
+            "user_message": user,
+            "runtime_context": ProjectRuntimeContext(
+                project_name="项目",
+                project_abs_dir="C:/project",
+                conversation_mode="collaboration",
+            ),
+        }
+    )
+    client = AsyncClient(
+        base_url="https://api.deepseek.com",
+        transport=MockTransport(handler),
+    )
+    model = OpenAICompatibleDialogueModel(
+        base_url="https://api.deepseek.com",
+        api_key="sk-test",
+        model="deepseek-v4-flash",
+        client=client,
+    )
+    events = [event async for event in model.stream_reply(request)]
+    assert calls == 2
+    assert events[-1].turn is not None
+    assert events[-1].turn.delegation is not None

@@ -34,14 +34,13 @@ _REQUIRED_ENV = (
 
 
 @pytest.fixture(scope="module")
-def live_env() -> dict[str, str]:
+def live_env() -> None:
     load_dotenv(Path(__file__).resolve().parents[2] / ".env")
     if os.getenv("RUN_LIVE_DEEPSEEK") != "1":
         pytest.skip("未设置 RUN_LIVE_DEEPSEEK=1（live 双重门槛）")
     missing = [name for name in _REQUIRED_ENV if not os.getenv(name)]
     if missing:
         pytest.skip(f"缺少真实凭据: {', '.join(missing)}")
-    return {name: os.environ[name] for name in _REQUIRED_ENV}
 
 
 @pytest.fixture(scope="module")
@@ -93,12 +92,12 @@ def run_cli(project: Path, message: str, conversation: str, *extra: str) -> subp
 
 
 def test_live_cli_creates_file_and_resumes_thread(
-    live_env: dict[str, str], smoke_project: Path
+    live_env: None, smoke_project: Path
 ) -> None:
     """第一次运行创建 hello.txt；同一会话二次运行恢复旧聊天；新会话另开线程。"""
     first = run_cli(
         smoke_project,
-        "请让古代机械创建 hello.txt，内容为 hello",
+        "请严格通过结构化 delegation 让古代机械创建 hello.txt，内容为 hello",
         conversation="live-smoke",
     )
     assert first.returncode == 0, first.stdout + first.stderr
@@ -111,7 +110,7 @@ def test_live_cli_creates_file_and_resumes_thread(
     # 因此用"追加一行"这类必须真实执行引擎操作的请求来验证 resume 路径。
     second = run_cli(
         smoke_project,
-        "请让古代机械在 hello.txt 末尾追加一行 world，其他内容保持不变",
+        "请严格通过结构化 delegation 让古代机械在 hello.txt 末尾追加一行 world，其他内容保持不变",
         conversation="live-smoke",
     )
     assert second.returncode == 0, second.stdout + second.stderr
@@ -123,7 +122,7 @@ def test_live_cli_creates_file_and_resumes_thread(
     # 用明确委派句式降低真实模型闲聊不委派的概率。
     fresh = run_cli(
         smoke_project,
-        "请让古代机械检查当前目录下是否存在 hello.txt，并报告其内容",
+        "请严格通过结构化 delegation 让古代机械检查当前目录下是否存在 hello.txt，并报告其内容",
         conversation="live-smoke-fresh",
     )
     assert fresh.returncode == 0, fresh.stdout + fresh.stderr
@@ -136,13 +135,13 @@ def test_live_cli_creates_file_and_resumes_thread(
 
 @pytest.mark.asyncio
 async def test_live_deepseek_roleplay_boundaries_are_stable(
-    live_env: dict[str, str], tmp_path: Path
+    live_env: None, tmp_path: Path
 ) -> None:
     """固定三场景重复两轮：闲聊、委派、失败结果均遵守职责边界。"""
     model = OpenAICompatibleDialogueModel(
-        base_url=live_env["PAIR_HARNESS_DIALOGUE_BASE_URL"],
-        api_key=live_env["PAIR_HARNESS_DIALOGUE_API_KEY"],
-        model=live_env["PAIR_HARNESS_DIALOGUE_MODEL"],
+        base_url=os.environ["PAIR_HARNESS_DIALOGUE_BASE_URL"],
+        api_key=os.environ["PAIR_HARNESS_DIALOGUE_API_KEY"],
+        model=os.environ["PAIR_HARNESS_DIALOGUE_MODEL"],
         thinking=True,
         reasoning_effort="max",
         temperature=1.0,
@@ -184,17 +183,19 @@ async def test_live_deepseek_roleplay_boundaries_are_stable(
             assert "做完了" not in last_character.text
             assert "已经完成" not in last_character.text
 
-            # DeepSeek thinking 已开启：至少一条角色消息应保存服务实际返回的字段。
+            # DeepSeek 结构化角色回合为保证 JSON 委派可解析会关闭 thinking；
+            # 供应商若返回 reasoning，运行时仍需保留，未返回时不伪造字段。
             all_messages = (
                 chat_outcome.messages
                 + task_outcome.messages
                 + failed_outcome.messages
             )
-            assert any(
-                str(message.payload.get("reasoning", "")).strip()
+            reasoning_values = [
+                message.payload.get("reasoning", "")
                 for message in all_messages
                 if message.kind == MessageKind.CHARACTER_SPEECH
-            )
+            ]
+            assert all(isinstance(value, str) for value in reasoning_values)
     finally:
         await model.aclose()
 

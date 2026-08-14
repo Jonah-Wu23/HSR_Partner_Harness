@@ -4,10 +4,10 @@
 
 <h1 align="center">HSR Partner Harness</h1>
 
-<p align="center">把角色对话和本地 AI 编程放进同一个 Windows 工作台</p>
+<p align="center">一条会话，两条工作轨。</p>
 
 <p align="center">
-  <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases"><img src="https://img.shields.io/badge/version-v0.2.5-E8B25C" alt="Version 0.2.5" /></a>
+  <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases"><img src="https://img.shields.io/badge/version-v0.3.0-E8B25C" alt="Version 0.3.0" /></a>
   <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/actions/workflows/ci.yml"><img src="https://github.com/Jonah-Wu23/HSR_Partner_Harness/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" /></a>
   <img src="https://img.shields.io/badge/platform-Windows%20x64-2F5D50" alt="Windows x64" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-5B6C8F" alt="Apache License 2.0" /></a>
@@ -17,40 +17,83 @@
 <p align="center">
   <a href="README.en.md">English</a> ·
   <a href="https://jonah-wu23.github.io/HSR_Partner_Harness/">项目介绍网站</a> ·
-  <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases">下载 Windows x64</a> ·
-  <a href="docs/architecture.md">架构说明</a>
+  <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases">Windows x64 下载</a> ·
+  <a href="docs/architecture_V0.2.0.md">架构说明</a>
 </p>
 
-HSR Partner Harness 是一个 Windows 桌面应用。你可以先和白厄讨论项目，确定任务后把它交给神秘的古代机械，执行过程和结果会回到同一条会话里，白厄也能继续根据结果交流。
+HSR Partner Harness 将角色扮演对话与本地 AI 编程整合至同一个 Windows 工作台。在会话中与角色讨论需求后，任务可直接委派给助手，在绑定的本地项目目录中执行。对话上下文全程保持连贯，执行状态与产出结果在同一条时间线呈现。
 
-项目把讨论和任务执行放在一个工作区里，结果也会留在会话中。它适合个人开发，也适合研究原型和角色型产品创作。
+角色空间保障交流连续，助手空间负责文件读写与命令执行。任务委派具备清晰来源标记，执行结果同步回传至对话上下文。
 
-## 产品定位
+## 一条会话，两条工作轨
 
-HSR Partner Harness 面向本地项目工作流，适合以下场景：
+聊天模式专注角色交流，协作模式展开助手工作台。模式切换时上下文保持连贯，角色能够结合执行结果继续对话。
 
-| 使用者 | 适合的工作方式 |
+| 产品特点 | 具体表现 |
 | --- | --- |
-| 个人开发者 | 在对话中说明目标，让编程助手进入项目文件夹完成任务。 |
-| 研究与原型团队 | 保留完整任务上下文，方便复盘实验过程。 |
-| 角色型产品创作者 | 用角色对话承接需求，再把明确任务交给可执行的编程助手。 |
+| 任务过程可见 | 工具调用与执行状态显示在助手工作台。 |
+| 搭档随会话切换 | 头像与界面主题跟随当前会话的搭档配置。 |
+| 项目文件夹绑定 | 助手在绑定的本地项目目录中读写文件并执行命令。 |
+| 角色专属语音 | DashScope 语音音色按照当前搭档配置加载。 |
 
-当前版本聚焦本地 Windows 工作流，模型请求按你的配置发往相应服务商。
+## 使用说明
 
-## 项目质量门
+### 创建项目
 
-GitHub Actions 在 Windows runner 执行 Python 测试、前端测试与构建、Rust 格式检查和测试。PR 会触发依赖审查，CodeQL 负责 Python 与 TypeScript 检查。
+首次启动时选择本地项目文件夹。应用使用文件夹名称创建项目，后续可在项目栏更改名称或重新选择路径。
 
-## 核心特色
+![首次启动时选择项目文件夹](output/playwright/readme-01-first-launch.png)
 
-| 能力 | 说明 |
+### 开始对话
+
+聊天模式由当前角色参与对话，适合整理需求或查看历史消息。每条会话独立保存所选搭档，切换会话时会同步更新头像与界面主题。
+
+![聊天模式中的角色对话](output/playwright/readme-05-chat-mode.png)
+
+### 选择搭档
+
+新建聊天时可从搭档目录选择角色组合。v0.3.0 提供以下搭档：
+
+| 角色 | 助手 |
 | --- | --- |
-| 一条会话，两条工作轨 | 聊天模式专注角色对话；协作模式打开助手工作台，任务运行期间也能继续聊天。 |
-| 统一模型供应商 | 引导页或设置选择 OpenAI OAuth/API 时，角色和古代机械都使用 GPT；选择 DeepSeek 时，两者都使用 DeepSeek。 |
-| 任务过程可见 | OpenAI 配置通过 Codex app-server 执行，DeepSeek 配置通过随包的 DeepSeek-Reasonix ACP 执行；工具事件以结构化卡片显示。 |
-| 项目文件夹绑定 | 一个项目对应一个本地文件夹，名称默认取文件夹名，也支持随时重选路径。Python Sidecar 管理会话状态，SQLite 保存本地数据。 |
-| 语音与思考通道 | 角色回复支持 DashScope ASR/TTS；思考内容和工具记录各自显示，工具记录保持静音。 |
-| 可先体验再配置 | demo 模式提供完整界面与交互体验，写入模型配置后即可切换真实运行。 |
+| 白厄 | 神秘的古代机械 |
+| 流萤 | 萨姆 |
+| 三月七 | 第四面镜 |
+
+![多搭档协作界面](output/playwright/readme-02-multi-pair-overview.png)
+
+浅色主题根据当前搭档使用对应的界面配色。
+
+![切换搭档后的浅色主题](output/playwright/readme-04-switch-pair-light-theme.png)
+
+### 执行任务
+
+协作模式在角色对话区旁呈现助手工作台。在输入区勾选“交给助手”后发送任务，工具调用与执行结果将以结构化卡片展示。
+
+![协作任务的工具调用与执行结果](output/playwright/readme-03-collaboration-result.png)
+
+### 设置语音
+
+语音设置页用于启用 DashScope 语音服务，也可设置自动朗读与 VAD。音色跟随当前会话的搭档切换，自然语言回复接入自动朗读通道。
+
+![语音设置与打赏二维码](output/playwright/readme-06-voice-settings.png)
+
+以上截图取自内置预览场景，用于说明操作位置与界面状态。完成模型配置后可运行真实协作任务。
+
+## 工作模式
+
+| 模式 | 用途 |
+| --- | --- |
+| 聊天模式 | 界面集中呈现角色对话。 |
+| 协作模式 | 角色参与当前会话，助手接收结构化任务并操作项目文件。 |
+
+角色消息与助手消息保留各自的来源标记。命令及工具事件使用独立卡片显示。
+
+## 模型接入
+
+OpenAI 配置通过内置 Codex app-server 执行任务。DeepSeek 配置通过 DeepSeek-Reasonix ACP 执行任务，角色模型与助手模型共用当前供应商设置。
+
+推理档位与 API effort 的对应关系如下：
 
 | 界面档位 | API effort |
 | --- | --- |
@@ -60,65 +103,34 @@ GitHub Actions 在 Windows runner 执行 Python 测试、前端测试与构建�
 | 极高 | `xhigh` |
 | 最高 | `max` |
 
-## v0.2.5 更新
+语音功能采用 DashScope 服务，自然语言回复接入自动朗读通道。
 
-- 本地账号和设置中心，按账号保存各项模型与语音设置，并管理 Codex 登录信息。
-- 持久化会话队列支持调整任务内容与顺序，也可撤回任务；当前回合结束后自动派发。
-- DeepSeek 角色与古代机械共用同一供应商配置；结构化输出分成思考和正文两条流，技术详情保留原始 JSON。
-- Sidecar 提供连接状态和自动重连，断线期间已加载的界面继续可用。
-- Windows NSIS 安装包随带 Python Sidecar，并内置 Codex 与 VAD 资源。
+## 安装
 
-## 工作方式
+Windows x64 安装包发布于 [GitHub Releases](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases)。安装后可使用内置预览模式查看界面交互，配置模型后即可运行真实任务。
 
-```mermaid
-flowchart LR
-    A[角色对话] --> B{协作模式}
-    B --> C[结构化任务]
-    C --> D{所选供应商}
-    D -->|OpenAI OAuth/API| E[Codex app-server]
-    D -->|DeepSeek| F[DeepSeek-Reasonix ACP]
-    E --> G[文件与命令]
-    F --> G
-    G --> H[结构化回执]
-    H --> A
-```
+安装版默认读取 `%LOCALAPPDATA%\PairHarness\.env`。源码运行默认读取仓库根目录的 `.env`，可通过 `PAIR_HARNESS_ENV_FILE` 自定义配置文件路径。
 
-角色负责交流和任务委派，助手负责文件操作与命令执行。消息按来源归位，工具记录单独显示。
+## 配置
 
-界面细节和交互走查见[项目介绍网站](https://jonah-wu23.github.io/HSR_Partner_Harness/)。
-
-## 下载与快速体验
-
-Windows x64 安装包在 [GitHub Releases](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases)。首次安装可能触发 Windows SmartScreen 提醒。
-
-安装后可直接进入 demo 模式体验界面和交互。配置模型后即可运行真实编程功能：OpenAI 配置使用随包 Codex，DeepSeek 配置使用随包 DeepSeek-Reasonix。
-
-```powershell
-codex --version
-```
-
-OpenAI 配置默认使用随包 Codex，DeepSeek 配置默认使用随包 Reasonix；从源码运行时，也可以通过 `PAIR_HARNESS_CODEX_BIN` 和 `PAIR_HARNESS_REASONIX_BIN` 指定路径。
-
-## 真实模式配置
-
-复制 [.env.example](.env.example) 到配置文件，再填入模型服务信息。源码运行时默认读取仓库根目录的 `.env`，安装版默认读取 `%LOCALAPPDATA%\PairHarness\.env`。需要使用其他位置时，设置 `PAIR_HARNESS_ENV_FILE`。
+复制 [.env.example](.env.example) 为 `.env` 并填写对应服务配置：
 
 | 变量 | 用途 |
 | --- | --- |
 | `PAIR_HARNESS_DIALOGUE_BASE_URL` | 对话模型的 OpenAI 兼容地址。 |
 | `PAIR_HARNESS_DIALOGUE_API_KEY` | 对话模型密钥。 |
 | `PAIR_HARNESS_DIALOGUE_MODEL` | 对话模型名称。 |
-| `PAIR_HARNESS_CODEX_BIN` | 覆盖 Codex 可执行文件路径。 |
+| `PAIR_HARNESS_CODEX_BIN` | Codex 可执行文件路径。 |
 | `DASHSCOPE_API_KEY` | DashScope 语音密钥。 |
 | `PAIR_HARNESS_DASHSCOPE_HOST` | DashScope 工作空间域名。 |
 
-角色声音 ID 写在 [phainon_ancient_machine.yaml](config/pairs/phainon_ancient_machine.yaml) 中。使用自己的 DashScope 账号时，需要替换成该账号可用的声音。
+搭档资料与音色 ID 位于 `config/pairs/*.yaml`。自定义 DashScope 账号需要填入当前账号支持的音色 ID。
 
-找到配置文件时，应用默认进入真实模式。也可以用 `PAIR_HARNESS_REAL=1` 强制真实模式，或用 `PAIR_HARNESS_DEMO=1` 强制 demo 模式。
+通过环境变量 `PAIR_HARNESS_REAL=1` 启用真实模式，`PAIR_HARNESS_DEMO=1` 启用预览模式。
 
 ## 从源码运行
 
-开发环境需要 Python 3.11，桌面构建需要 Node.js 22 和 Rust stable。
+环境要求：Python 3.11，桌面端构建依赖 Node.js 22 与 Rust stable。
 
 ```powershell
 python -m venv .venv
@@ -130,7 +142,7 @@ npm run build:sidecar
 npm run tauri:dev
 ```
 
-发布构建会把 Windows 原生 Codex app-server 和 DeepSeek-Reasonix 复制进安装包。构建机需要准备 `@openai/codex` 与 `reasonix`，或分别设置 `PAIR_HARNESS_CODEX_NATIVE_ROOT`、`PAIR_HARNESS_REASONIX_NATIVE_ROOT`：
+发布构建会将 Windows 原生 Codex app-server 与 DeepSeek-Reasonix 打包入安装程序。构建环境可全局安装依赖，也可通过 `PAIR_HARNESS_CODEX_NATIVE_ROOT` 与 `PAIR_HARNESS_REASONIX_NATIVE_ROOT` 指定路径。
 
 ```powershell
 npm install -g @openai/codex
@@ -139,22 +151,23 @@ Set-Location desktop
 npm run tauri:build
 ```
 
-安装包位于 `desktop/src-tauri/target/release/bundle/nsis/`。直接运行的 GUI 位于 `desktop/src-tauri/target/release/hsr-partner-harness.exe`。启动时默认隐藏控制台；调试 Sidecar 时可运行 `hsr-partner-harness.exe --debug-console`，`--console` 也可使用。
+NSIS 安装包生成于 `desktop/src-tauri/target/release/bundle/nsis/`。编译后的可执行程序位于 `desktop/src-tauri/target/release/hsr-partner-harness.exe`。
 
-## 测试与发布验证
+## 验证结果
 
-当前 v0.2.5 已完成以下验证：
+v0.3.0 当前源码已完成以下验证：
 
 | 检查项 | 结果 |
 | --- | --- |
-| Python | `413 passed, 5 skipped` |
-| 前端 Vitest | `103 passed` |
+| Python | `420 passed, 5 skipped` |
+| 前端 Vitest | `107 passed` |
 | TypeScript | `tsc --noEmit` 通过 |
 | Rust | `cargo test`，`7 passed` |
-| 生产构建 | Vite build 通过 |
-| Windows 安装包 | NSIS `HSR Partner Harness_0.2.5_x64-setup.exe` 构建通过，Sidecar、Codex、Reasonix 与 VAD 资源已随包封装 |
+| 前端生产构建 | Vite build 通过 |
+| DeepSeek 真实链路 | 2 项测试通过 |
+| Codex app-server | 文件检查任务完成，收到 `turn.completed` 事件 |
 
-常用命令：
+常用验证命令：
 
 ```powershell
 # Python
@@ -171,28 +184,37 @@ Set-Location desktop\src-tauri
 cargo test
 ```
 
-## 仓库结构与文档
+## 仓库结构
 
 | 路径 | 内容 |
 | --- | --- |
-| `desktop/` | Tauri 2 桌面端和 React 界面。 |
-| `src/pair_harness/` | Python Sidecar 和业务代码。 |
-| `config/` | 搭档配置和提示词。 |
-| `assets/` | 运行时模型文件。 |
+| `desktop/` | Tauri 2 桌面端与 React 界面。 |
+| `src/pair_harness/` | Python Sidecar 与业务代码。 |
+| `config/` | 搭档配置与提示词。 |
+| `assets/` | 桌面应用运行时资源。 |
 | `tests/` | Python 测试。 |
-| `docs/architecture.md` | 桌面架构说明。 |
-| `docs/design/v0.2.5-release-notes.md` | v0.2.5 发布说明。 |
+| `docs/` | 架构资料与项目介绍网站。 |
+
+Python Sidecar 管理业务状态，桌面端通过 JSONL 协议与其通信。本地持久化数据存储于 SQLite。
+
+## 项目支持
+
+语音服务由项目作者持续提供。自愿支持项目可使用下方二维码。
+
+<p align="center">
+  <img src="desktop/src/assets/sponsor/qrcode.png" alt="项目打赏二维码" width="220" />
+</p>
 
 ## 参与项目
 
-欢迎通过 [Issues](https://github.com/Jonah-Wu23/HSR_Partner_Harness/issues) 提交问题和使用反馈。修改代码前，请先阅读 [AGENTS.md](AGENTS.md) 以及相关设计文档，优先保持 Python Sidecar 的业务权威和现有桌面架构。
+问题与使用反馈可提交至 [Issues](https://github.com/Jonah-Wu23/HSR_Partner_Harness/issues)。修改代码前请阅读 [AGENTS.md](AGENTS.md) 及相关设计文档，业务状态以 Python Sidecar 为准。
 
 ## 外部代码与许可
 
-`src/pair_harness/config/providers.py` 中的供应商识别方式和推理档位语义参考了 [DeepSeek-Reasonix](https://github.com/esengine/deepseek-reasonix)，原项目使用 MIT License，完整声明在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+`src/pair_harness/config/providers.py` 的供应商识别方式与推理档位语义参考 [DeepSeek-Reasonix](https://github.com/esengine/deepseek-reasonix)。原项目采用 MIT License，完整声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-编程助手接入 [OpenAI Codex](https://github.com/openai/codex)，通过本机 Codex app-server 执行文件和命令。
+编程助手通过本机 [OpenAI Codex](https://github.com/openai/codex) app-server 执行文件操作与命令。
 
 代码采用 [Apache License 2.0](LICENSE)，版权所有 © 2026 Zonghe Wu。
 
-本项目为同人创作，角色名称和世界观相关内容归原权利人所有。
+本项目为同人创作，角色名称与世界观相关内容归原权利人所有。

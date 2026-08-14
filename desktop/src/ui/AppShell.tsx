@@ -125,8 +125,6 @@ export function AppShell({ vm, actions }: AppShellProps) {
     // V0.2 M4：非默认账号且引导未完成 → 整屏首次引导
     body = (
       <Onboarding
-        characterName={pair?.character.name ?? "角色"}
-        assistantName={pair?.assistant.name ?? "助手"}
         onCreateProject={async () => {
           await actions.createProject();
           return true;

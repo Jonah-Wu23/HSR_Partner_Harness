@@ -119,7 +119,9 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         section = _first_markdown_section(prompt)
         return f"## 你的搭档（助手）\n{section}"
 
-    def _build_messages(self, request: DialogueRequest) -> list[dict[str, Any]]:
+    def _build_messages(
+        self, request: DialogueRequest, *, delegation_retry: bool = False
+    ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._system_prompt(request.pair_id)}
         ]
@@ -149,7 +151,30 @@ class OpenAICompatibleDialogueModel(DialogueModel):
                     "content": _runtime_context_text(request.runtime_context),
                 }
             )
+        if delegation_retry:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "上一轮输出缺少结构化 delegation。当前用户请求涉及项目、文件、"
+                        "目录、代码或命令操作；本轮必须返回 delegation.type=task，"
+                        "把真实任务写入 delegation.instructions。不要只在 speech 中说"
+                        "让搭档处理，也不要声称已经完成。"
+                    ),
+                }
+            )
         messages.append({"role": "user", "content": request.user_message.text})
+        if delegation_retry:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "请按运行时协议重新输出本轮结果：只输出一个 JSON 对象，必须包含"
+                        " speech 和 delegation.type=task；把当前用户要执行的真实操作写入"
+                        " delegation.instructions，不要只返回台词。"
+                    ),
+                }
+            )
         return messages
 
     def _enforce_execution_boundary(
@@ -364,11 +389,19 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         extras["response_format"] = {"type": "json_object"}
         return extras
 
-    async def stream_reply(self, request: DialogueRequest) -> AsyncIterator[DialogueEvent]:
+    async def stream_reply(
+        self,
+        request: DialogueRequest,
+        *,
+        _attempt: int = 0,
+        _delegation_retry: bool = False,
+    ) -> AsyncIterator[DialogueEvent]:
         client = self._client_or_raise()
         payload = {
             "model": self.model,
-            "messages": self._build_messages(request),
+            "messages": self._build_messages(
+                request, delegation_retry=_delegation_retry
+            ),
             "stream": True,
         }
         deepseek_structured = is_deepseek_host(self.base_url)
@@ -380,6 +413,12 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         elif self.temperature is not None:
             payload["temperature"] = self.temperature
         payload.update(self._request_extras(structured_dialogue=deepseek_structured))
+        if deepseek_structured and _attempt > 0 and not _delegation_retry:
+            # DeepSeek 偶发在带历史的 response_format=json_object 请求中返回
+            # 空 content；重试时放宽供应商格式约束，仍由本地解析器和委派
+            # 协议决定是否接受结果。
+            payload.pop("response_format", None)
+            payload["temperature"] = 0.2
         # V0.2 M2（问题 10）：content 增量经 IncrementalJsonSpeechParser 只提取
         # 干净 speech 上屏（不再闪烁 JSON 键名）；reasoning_content 走独立通道。
         # 增量期间若字段尚未解析出来，界面显示“正在组织语言…”。
@@ -425,12 +464,35 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             # 供技术详情与审查智能体复用；raw 绝不进入气泡。
             yield DialogueEvent(type="speech.completed", raw="".join(text_chunks))
         raw_text = "".join(text_chunks)
-        turn = self._parse_output(raw_text)
+        try:
+            turn = self._parse_output(raw_text)
+        except ValueError:
+            # DeepSeek 结构化 JSON 偶发返回空 content。没有产生任何 speech
+            # 增量时可以安全重试两次；不会用占位台词掩盖失败，也不会重放
+            # 已经展示过的半截正文。
+            if deepseek_structured and _attempt < 2 and not speech_started:
+                async for retry_event in self.stream_reply(
+                    request, _attempt=_attempt + 1
+                ):
+                    yield retry_event
+                return
+            raise
         turn = turn.model_copy(update={"reasoning": "".join(reasoning_chunks).strip()})
-        yield DialogueEvent(
-            type="character.final",
-            turn=self._enforce_execution_boundary(turn, request),
-        )
+        turn = self._enforce_execution_boundary(turn, request)
+        if (
+            deepseek_structured
+            and _attempt < 2
+            and not _delegation_retry
+            and _needs_delegation_retry(request, turn)
+        ):
+            async for retry_event in self.stream_reply(
+                request,
+                _attempt=1,
+                _delegation_retry=True,
+            ):
+                yield retry_event
+            return
+        yield DialogueEvent(type="character.final", turn=turn)
 
 
 _OUTPUT_FORMAT_INSTRUCTION = """## 运行时输出协议（最高优先级）
@@ -465,6 +527,11 @@ _SELF_EXECUTION_RE = re.compile(
     r"(?:创建|新建|删除|移除|重命名|移动|复制|修改|编辑|写入|追加|保存|运行|执行|安装|构建|编译|测试|检查|读取|打开|处理)"
 )
 _FAILURE_CUES = ("没做成", "失败", "未执行", "没有完成", "已取消", "取消了")
+_OPERATION_ACTION_RE = re.compile(
+    r"(?:创建|新建|删除|移除|重命名|移动|复制|修改|编辑|写入|追加|保存|运行|执行|安装|"
+    r"构建|编译|测试|检查|读取|打开|处理)"
+)
+_OPERATION_RESOURCE_RE = re.compile(r"(?:文件|目录|项目|仓库|代码|命令|脚本|测试)")
 
 
 def _is_placeholder_speech(speech: str) -> bool:
@@ -478,6 +545,20 @@ def _claims_self_execution(speech: str) -> bool:
 def _mentions_assistant(speech: str, assistant_name: str) -> bool:
     aliases = {assistant_name, assistant_name.rsplit("的", 1)[-1]}
     return any(alias and alias in speech for alias in aliases)
+
+
+def _needs_delegation_retry(request: DialogueRequest, turn: CharacterTurn) -> bool:
+    """只为明确的协作操作请求纠偏漏掉的结构化委派。"""
+    context = request.runtime_context
+    if (
+        context is None
+        or context.conversation_mode != "collaboration"
+        or request.result_summary is not None
+        or turn.delegation is not None
+    ):
+        return False
+    text = request.user_message.text
+    return bool(_OPERATION_ACTION_RE.search(text) and _OPERATION_RESOURCE_RE.search(text))
 
 
 def _truthful_result_speech(speech: str, status: str, assistant_name: str) -> str:

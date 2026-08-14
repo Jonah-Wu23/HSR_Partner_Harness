@@ -250,7 +250,7 @@ function CodingAssistantPage(props: SettingsCenterProps) {
   return (
     <section className="settings-page">
       <p className="settings-hint">
-        供应商在「角色对话模型」页统一选择，角色和古代机械始终使用同一家：OpenAI OAuth/API 使用 GPT，DeepSeek 使用 DeepSeek。
+        供应商在「角色对话模型」页统一选择，角色和助手始终使用同一家：OpenAI OAuth/API 使用 GPT，DeepSeek 使用 DeepSeek。
       </p>
 
       {props.coding.engine === "codex" ? (
@@ -474,7 +474,7 @@ function VoicePage(props: SettingsCenterProps) {
         <span className="settings-sponsor-meta">微信支付 · 扫码打赏</span>
         <span className="settings-sponsor-payee">请认准收款人：天小可</span>
         <span className="settings-sponsor-amount">
-          <strong>6元</strong>一杯咖啡的价格
+          <strong>10元</strong>建议赞助金额
         </span>
         <div className="settings-sponsor-actions">
           <button

@@ -53,8 +53,6 @@ describe("Onboarding", () => {
     const onFinish = vi.fn();
     render(
       <Onboarding
-        characterName="白厄"
-        assistantName="机枢"
         onCreateProject={onCreateProject}
         onSaveModelConfig={vi.fn().mockResolvedValue("连接正常（延迟 120 ms）")}
         onFinish={onFinish}
@@ -76,8 +74,6 @@ describe("Onboarding", () => {
     const onSaveModelConfig = vi.fn().mockResolvedValue("连接正常（延迟 546 ms）");
     render(
       <Onboarding
-        characterName="白厄"
-        assistantName="机枢"
         onCreateProject={vi.fn().mockResolvedValue(true)}
         onSaveModelConfig={onSaveModelConfig}
         onFinish={vi.fn()}
@@ -95,8 +91,6 @@ describe("Onboarding", () => {
   it("首次引导提供 DeepSeek、OpenAI 兼容 API 与 OpenAI OAuth", () => {
     render(
       <Onboarding
-        characterName="白厄"
-        assistantName="机枢"
         onCreateProject={vi.fn().mockResolvedValue(true)}
         onSaveModelConfig={vi.fn().mockResolvedValue("连接正常")}
         onFinish={vi.fn()}
