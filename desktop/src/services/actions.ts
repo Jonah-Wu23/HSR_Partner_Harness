@@ -207,7 +207,8 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       return result?.message ?? "连接正常";
     },
     async codexOauthStart() {
-      await request("codex.oauth_start");
+      const result = await request<{ config?: Record<string, unknown> }>("codex.oauth_start");
+      if (result?.config) desktopStore.getState().setConfigSnapshot(result.config);
     },
     async codexApiLogin(apiKey) {
       await request("codex.api_login", { api_key: apiKey });

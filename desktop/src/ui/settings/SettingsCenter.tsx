@@ -25,10 +25,10 @@ interface SettingsCenterProps {
   onSaveProfile: (displayName: string) => void;
   onChangePassword: (oldPassword: string, newPassword: string) => void;
   onLogout: () => void;
-  onCodexOAuthStart: () => void;
+  onCodexOAuthStart: () => void | Promise<void>;
   onCodexLogout: () => void;
   onCodexApiLogin: (apiKey: string) => void;
-  onSaveModel: (config: CharacterModelPageView & { apiKey?: string }) => void;
+  onSaveModel: (config: CharacterModelPageView & { apiKey?: string }) => void | Promise<void>;
   onTestModel: () => void;
   /** 语音页开关改动即保存，无独立保存按钮。 */
   onSaveVoice: (config: {
@@ -224,7 +224,17 @@ function AccountPage(props: SettingsCenterProps) {
 
 function CodingAssistantPage(props: SettingsCenterProps) {
   const [apiKey, setApiKey] = useState("");
+  const [oauthError, setOauthError] = useState<string | null>(null);
   const { codex } = props.coding;
+
+  const startOAuth = async () => {
+    setOauthError(null);
+    try {
+      await props.onCodexOAuthStart();
+    } catch (error) {
+      setOauthError(error instanceof Error ? error.message : String(error));
+    }
+  };
 
   return (
     <section className="settings-page">
@@ -238,7 +248,7 @@ function CodingAssistantPage(props: SettingsCenterProps) {
             <>
               <p className="settings-status-ok">已登录 {codex.accountLabel ?? "Codex"}</p>
               <div className="settings-row">
-                <button type="button" className="btn btn-outline" onClick={props.onCodexOAuthStart}>
+                <button type="button" className="btn btn-outline" onClick={() => void startOAuth()}>
                   重新授权
                 </button>
                 <button type="button" className="btn btn-danger-outline" onClick={props.onCodexLogout}>
@@ -254,10 +264,11 @@ function CodingAssistantPage(props: SettingsCenterProps) {
                 <p className="field-error" role="alert">登录已过期，请重新授权。</p>
               ) : null}
               <div className="settings-row">
-                <button type="button" className="btn btn-primary" onClick={props.onCodexOAuthStart}>
+                <button type="button" className="btn btn-primary" onClick={() => void startOAuth()}>
                   通过浏览器登录
                 </button>
               </div>
+              {oauthError ? <p className="field-error" role="alert">{oauthError}</p> : null}
               <h3 className="settings-subhead">或使用 API Key</h3>
               <label className="field">
                 <span className="field-label">OpenAI API Key</span>
@@ -306,6 +317,8 @@ function CharacterModelPage(props: SettingsCenterProps) {
   });
   const initialProvider = normalizeProvider(props.model.provider);
   const [apiKey, setApiKey] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const dirty =
     form.provider !== initialProvider ||
     form.model !== props.model.model ||
@@ -367,18 +380,29 @@ function CharacterModelPage(props: SettingsCenterProps) {
       </details>
 
       <TestResultNote result={props.modelTest} okClass="field-ok" testingLabel="正在测试连接…" />
+      {saveError ? <p className="field-error" role="alert">{saveError}</p> : null}
 
       <div className="settings-row">
         <button
           type="button"
           className="btn btn-primary"
-          disabled={!dirty}
+          disabled={!dirty || saving}
           onClick={() => {
-            props.onSaveModel({ ...form, apiKey: apiKey || undefined });
-            props.onTestModel();
+            setSaving(true);
+            setSaveError(null);
+            void Promise.resolve(props.onSaveModel({ ...form, apiKey: apiKey || undefined }))
+              .then(() => {
+                // OAuth 的保存动作会直接启动浏览器登录；此时不能立刻拿
+                // 尚未登录的 OAuth 状态去做连接测试并显示失败。
+                if (form.provider !== "openai_oauth") props.onTestModel();
+              })
+              .catch((error: unknown) => {
+                setSaveError(error instanceof Error ? error.message : String(error));
+              })
+              .finally(() => setSaving(false));
           }}
         >
-          保存并测试
+          {saving ? "正在保存…" : "保存并测试"}
         </button>
       </div>
     </section>

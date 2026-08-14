@@ -39,6 +39,20 @@ def test_start_login_waiting_then_api_login_clears_waiting(tmp_path: Path) -> No
     assert not service.home.joinpath("login.waiting").exists()
 
 
+def test_start_login_surfaces_process_start_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = make_service(tmp_path)
+
+    def fail_start(*_args, **_kwargs):
+        raise OSError("codex not found")
+
+    monkeypatch.setattr("pair_harness.adapters.codex.auth.subprocess.Popen", fail_start)
+    with pytest.raises(RuntimeError, match="启动 Codex OAuth 浏览器流程失败：codex not found"):
+        service.start_login("codex.exe")
+    assert service.status()["status"] == "logged_out"
+
+
 def test_cancel_login_returns_to_logged_out(tmp_path: Path) -> None:
     service = make_service(tmp_path)
     service.start_login()

@@ -92,7 +92,8 @@ class CodexAuthService:
                     creationflags=creationflags,
                 )
             except OSError as exc:
-                logger.warning("启动 Codex OAuth 浏览器流程失败：%s", exc)
+                self._waiting_file.unlink(missing_ok=True)
+                raise RuntimeError(f"启动 Codex OAuth 浏览器流程失败：{exc}") from exc
         return {"status": "waiting", "note": "请在浏览器中完成 Codex 登录"}
 
     def api_login(self, api_key: str) -> dict[str, object]:

@@ -1323,6 +1323,24 @@ class DesktopApplicationService:
 
     async def _codex_oauth_start(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
+        # OAuth 是统一供应商切换的一部分：先把角色和古代机械都切到
+        # OpenAI/GPT，并清掉上一家供应商的 Key，再启动浏览器登录。
+        updates = self._canonicalize_provider_updates(
+            {
+                "engine": "codex",
+                "dialogue.provider": "openai_oauth",
+                "dialogue.base_url": "https://api.openai.com/v1",
+                "dialogue.model": "gpt-5.6-sol",
+            }
+        )
+        for key, value in updates.items():
+            if key == "dialogue.api_key":
+                self.store.set_secret(self.current_account_id, key, value)
+            else:
+                self.store.set_config(self.current_account_id, key, value)
+        self._account_config = None
+        self._rebuild_runtime_for_account(self._load_account_config())
+
         if self._demo:
             result = self.codex_auth.start_login()
         else:
@@ -1331,15 +1349,7 @@ class DesktopApplicationService:
             result = self.codex_auth.start_login(
                 resolve_codex_executable(os.getenv("PAIR_HARNESS_BUNDLED_CODEX_BIN"))
             )
-        self.store.set_config(self.current_account_id, "engine", "codex")
-        self.store.set_config(self.current_account_id, "dialogue.provider", "openai_oauth")
-        self.store.set_config(
-            self.current_account_id, "dialogue.base_url", "https://api.openai.com/v1"
-        )
-        self.store.set_config(self.current_account_id, "dialogue.model", "gpt-5.6-sol")
-        self._account_config = None
-        self._rebuild_runtime_for_account(self._load_account_config())
-        return result
+        return {**result, "config": await self._config_get({})}
 
     async def _codex_oauth_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params

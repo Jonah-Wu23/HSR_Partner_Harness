@@ -1180,6 +1180,53 @@ async def test_codex_login_state_machine(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_oauth_switch_from_deepseek_persists_before_starting_login(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DeepSeek → OAuth 必须先切统一供应商，再启动浏览器登录。"""
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        await service.handle_command(
+            command(
+                "deepseek-config",
+                "config.set",
+                updates={
+                    "engine": "deepseek",
+                    "dialogue.provider": "deepseek",
+                    "dialogue.base_url": "https://api.deepseek.com",
+                    "dialogue.model": "deepseek-v4-flash",
+                    "dialogue.api_key": "sk-deepseek-test",
+                },
+            )
+        )
+        seen_config: list[dict[str, str]] = []
+
+        def fake_start_login() -> dict[str, object]:
+            seen_config.append(service._load_account_config())
+            return {"status": "waiting", "note": "test login"}
+
+        monkeypatch.setattr(service.codex_auth, "start_login", fake_start_login)
+        result = await service.handle_command(command("oauth-start", "codex.oauth_start"))
+
+        assert seen_config == [
+            {
+                "engine": "codex",
+                "dialogue.provider": "openai_oauth",
+                "dialogue.base_url": "https://api.openai.com/v1",
+                "dialogue.model": "gpt-5.6-sol",
+            }
+        ]
+        assert service.store.get_secret(service.current_account_id, "dialogue.api_key") == ""
+        assert result["config"]["engine"] == "codex"
+        assert result["config"]["dialogue"]["provider"] == "openai_oauth"
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_queue_item_failure_returns_to_queued_for_retry(tmp_path: Path) -> None:
     """F2/非功能-可靠：队列项回合失败退回 queued（可重试），不删除不吞掉。
 

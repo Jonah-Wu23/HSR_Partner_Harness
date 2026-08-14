@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AccountGate } from "../gate/AccountGate";
@@ -173,7 +173,7 @@ describe("SettingsCenter", () => {
     expect(props.onClose).toHaveBeenCalled();
   });
 
-  it("模型页未修改时保存按钮禁用，修改后可保存并测试", () => {
+  it("模型页未修改时保存按钮禁用，修改后可保存并测试", async () => {
     const props = renderSettings();
     const save = screen.getByRole("button", { name: "保存并测试" });
     expect(save).toBeDisabled();
@@ -181,10 +181,35 @@ describe("SettingsCenter", () => {
     fireEvent.change(screen.getByLabelText("模型"), { target: { value: "deepseek-chat" } });
     expect(save).toBeEnabled();
     fireEvent.click(save);
-    expect(props.onSaveModel).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "deepseek-chat", apiKey: undefined }),
+    await waitFor(() =>
+      expect(props.onSaveModel).toHaveBeenCalledWith(
+        expect.objectContaining({ model: "deepseek-chat", apiKey: undefined }),
+      ),
     );
     expect(props.onTestModel).toHaveBeenCalled();
+  });
+
+  it("模型页切到 OpenAI OAuth 时先保存并启动登录，不测试未登录连接", async () => {
+    const onSaveModel = vi.fn().mockResolvedValue(undefined);
+    const onTestModel = vi.fn();
+    const props = renderSettings({ onSaveModel, onTestModel });
+
+    fireEvent.change(screen.getByLabelText("服务商"), {
+      target: { value: "openai_oauth" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
+
+    await waitFor(() =>
+      expect(onSaveModel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: "openai_oauth",
+          baseUrl: "https://api.openai.com/v1",
+          model: "gpt-5.6-sol",
+          apiKey: undefined,
+        }),
+      ),
+    );
+    expect(onTestModel).not.toHaveBeenCalled();
   });
 
   it("编程助手页未登录时提供浏览器登录与 API Key 两条路", () => {

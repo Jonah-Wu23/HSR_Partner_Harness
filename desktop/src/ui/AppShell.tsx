@@ -264,17 +264,18 @@ export function AppShell({ vm, actions }: AppShellProps) {
           void actions.changePassword(oldPassword, newPassword)
         }
         onLogout={() => void actions.logoutAccount()}
-        onCodexOAuthStart={() => void actions.codexOauthStart()}
+        onCodexOAuthStart={() => actions.codexOauthStart()}
         onCodexLogout={() => void actions.codexLogout()}
         onCodexApiLogin={(apiKey) => void actions.codexApiLogin(apiKey)}
-        onSaveModel={(config) => {
+        onSaveModel={async (config) => {
           const updates: Record<string, string> = {
             "dialogue.provider": config.provider,
             "dialogue.base_url": config.baseUrl,
             "dialogue.model": config.model,
           };
           if (config.apiKey) updates["dialogue.api_key"] = config.apiKey;
-          void actions.setConfig(updates);
+          await actions.setConfig(updates);
+          if (config.provider === "openai_oauth") await actions.codexOauthStart();
         }}
         onTestModel={() =>
           runTest(setModelTest, () => actions.testConnection(), (value) => {

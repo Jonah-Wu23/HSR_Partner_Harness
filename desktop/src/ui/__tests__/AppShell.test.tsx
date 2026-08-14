@@ -332,6 +332,35 @@ describe("AppShell V0.2 M4 接口接线", () => {
       expect(screen.queryByRole("dialog", { name: "设置" })).not.toBeInTheDocument();
     });
   });
+
+  it("设置页从 DeepSeek 切到 OpenAI OAuth 时先保存再启动登录", async () => {
+    const { controller, rerender, present } = await renderScenario("single-project");
+    const setConfig = vi.fn().mockResolvedValue(undefined);
+    const codexOauthStart = vi.fn().mockResolvedValue(undefined);
+    const testConnection = vi.fn().mockResolvedValue("请先完成 OpenAI OAuth 登录");
+    const actions = { ...controller.actions, setConfig, codexOauthStart, testConnection };
+    rerender(<AppShell vm={present()} actions={actions} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    await waitFor(() => expect(screen.getByRole("dialog", { name: "设置" })).toBeInTheDocument());
+    await waitFor(() => expect(desktopStore.getState().configSnapshot).not.toBeNull());
+    rerender(<AppShell vm={present()} actions={actions} />);
+    fireEvent.click(screen.getByRole("button", { name: "角色对话模型" }));
+    await waitFor(() => expect(screen.getByLabelText("服务商")).toHaveValue("deepseek"));
+    fireEvent.change(screen.getByLabelText("服务商"), {
+      target: { value: "openai_oauth" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
+
+    await waitFor(() => expect(setConfig).toHaveBeenCalledOnce());
+    await waitFor(() => expect(codexOauthStart).toHaveBeenCalledOnce());
+    expect(testConnection).not.toHaveBeenCalled();
+    expect(setConfig).toHaveBeenCalledWith({
+      "dialogue.provider": "openai_oauth",
+      "dialogue.base_url": "https://api.openai.com/v1",
+      "dialogue.model": "gpt-5.6-sol",
+    });
+  });
 });
 
 describe("AppShell QueueStrip 接线（V0.2 M4）", () => {
