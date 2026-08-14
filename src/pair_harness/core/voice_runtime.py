@@ -109,6 +109,7 @@ class VoiceRuntime:
         self._ptt_active = False
         self._ptt_target = "character"
         self._started = False
+        self._vad_enabled = False
         # V0.2 M2-4：跳过当前句的标记，由播放循环消费（见 skip_playing）
         self._skip = False
         # V0.2 M4：当前句合成失败标记——失败后 tts 保持 failed，直到下次播放成功
@@ -131,11 +132,13 @@ class VoiceRuntime:
 
     # ------------------------------------------------------------ 生命周期
 
-    async def start_listening(self) -> None:
-        """打开麦克风，进入 VAD 监听循环；VAD 不可用时仅保留采集供 PTT。"""
+    async def start_listening(self, *, vad_enabled: bool = True) -> None:
+        """打开麦克风；VAD 可单独关闭，但仍保留采集供 PTT。"""
         if self._started:
+            await self.set_vad_enabled(vad_enabled)
             return
         self._started = True
+        self._vad_enabled = bool(vad_enabled and self._vad is not None)
         self._capture = self._capture_factory()
         try:
             await self._capture.__aenter__()
@@ -148,6 +151,36 @@ class VoiceRuntime:
             self._on_vad_state("idle")
             self._on_error("VAD 不可用，已切换为按键说话")
             return
+        if self._vad_enabled:
+            self._start_vad_loop()
+        else:
+            self._on_vad_state("idle")
+
+    async def set_vad_enabled(self, enabled: bool) -> None:
+        """只切换 VAD；关闭 VAD 时不关闭麦克风，保证 PTT 仍可用。"""
+        if self._vad is None:
+            self._vad_enabled = False
+            self._on_vad_state("unavailable")
+            return
+        if not self._started:
+            if enabled:
+                await self.start_listening(vad_enabled=True)
+            return
+        if enabled:
+            if self._vad_enabled and self._vad_task is not None and not self._vad_task.done():
+                return
+            self._vad_enabled = True
+            self._start_vad_loop()
+            return
+        self._vad_enabled = False
+        await self._cancel_task(self._vad_task)
+        self._vad_task = None
+        self._vad_input = None
+        self._on_vad_state("idle")
+
+    def _start_vad_loop(self) -> None:
+        if self._vad is None or not self._started:
+            return
         self._vad_input = asyncio.Queue()
         self._vad_task = asyncio.create_task(self._vad_loop())
         self._on_vad_state("listening")
@@ -156,6 +189,7 @@ class VoiceRuntime:
         if not self._started:
             return
         self._started = False
+        self._vad_enabled = False
         for task in (self._vad_task, self._capture_task):
             if task is not None and not task.done():
                 task.cancel()
@@ -475,7 +509,7 @@ class VoiceRuntime:
                 self._on_tts_state("idle")
             await self._restart_vad()
             # _restart_vad 已发出 "listening"；仅无 VAD/未启动时置 "idle"
-            if self._vad is None or not self._started:
+            if self._vad is None or not self._started or not self._vad_enabled:
                 self._on_vad_state("idle")
 
     async def _wait_for_player_drain(self) -> None:
@@ -518,15 +552,17 @@ class VoiceRuntime:
 
     async def _restart_vad(self) -> None:
         """播放结束后重开 VAD 会话，避免把扬声器尾音误判为说话。"""
-        if self._vad is None or not self._started:
+        if self._vad is None or not self._started or not self._vad_enabled:
             return
         await self._cancel_task(self._vad_task)
-        assert self._vad_input is not None
+        self._vad_task = None
         # 丢弃播放期间可能残留的帧
+        if self._vad_input is None:
+            self._start_vad_loop()
+            return
         while not self._vad_input.empty():
             try:
                 self._vad_input.get_nowait()
             except asyncio.QueueEmpty:
                 break
-        self._vad_task = asyncio.create_task(self._vad_loop())
-        self._on_vad_state("listening")
+        self._start_vad_loop()

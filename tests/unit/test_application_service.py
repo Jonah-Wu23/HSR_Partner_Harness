@@ -403,6 +403,7 @@ async def test_voice_commands_only_exchange_state_with_attached_runtime(tmp_path
 
         def __init__(self) -> None:
             self.listening = False
+            self.vad_enabled = False
             self.ptt = False
             self.stopped = False
             self.assistant_voice_enabled = False
@@ -410,8 +411,12 @@ async def test_voice_commands_only_exchange_state_with_attached_runtime(tmp_path
         def set_assistant_voice_enabled(self, enabled: bool) -> None:
             self.assistant_voice_enabled = enabled
 
-        async def start_listening(self) -> None:
+        async def start_listening(self, *, vad_enabled: bool = True) -> None:
             self.listening = True
+            self.vad_enabled = vad_enabled
+
+        async def set_vad_enabled(self, enabled: bool) -> None:
+            self.vad_enabled = enabled
 
         async def stop_listening(self) -> None:
             self.listening = False
@@ -444,7 +449,8 @@ async def test_voice_commands_only_exchange_state_with_attached_runtime(tmp_path
         # V0.2 M4：voice 快照与事件都携带待播队列长度
         assert service.bootstrap()["voice"]["speech_queue_len"] == 0
         await service.start_voice()
-        assert runtime.listening is False
+        assert runtime.listening is True
+        assert runtime.vad_enabled is False
         assert service.bootstrap()["voice"]["vad_enabled"] is False
         assert service.bootstrap()["voice"]["assistant_voice_enabled"] is False
         assert runtime.assistant_voice_enabled is False
@@ -458,6 +464,7 @@ async def test_voice_commands_only_exchange_state_with_attached_runtime(tmp_path
         assert service.bootstrap()["voice"]["assistant_voice_enabled"] is True
         assert runtime.assistant_voice_enabled is True
         await service.handle_command(command("vad-on", "voice.vad_set", enabled=True))
+        assert runtime.vad_enabled is True
         await service.handle_command(command("ptt-on", "voice.ptt_start", target="character"))
         await service.handle_command(command("ptt-off", "voice.ptt_stop"))
         await service.handle_command(command("tts-off", "voice.tts_stop"))

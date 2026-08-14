@@ -75,4 +75,14 @@ describe("Composer 语音按钮组", () => {
     fireEvent.pointerUp(screen.getByRole("button", { name: "按住说话" }));
     expect(actions.stopPushToTalk).toHaveBeenCalled();
   });
+
+  it("右 Alt 作为默认 PTT 键位，按下开始、松开停止", () => {
+    const actions = stubActions();
+    render(<Composer composer={composer} voice={voice} mode="chat" actions={actions} />);
+
+    fireEvent.keyDown(window, { code: "AltRight", key: "Alt", location: 2 });
+    expect(actions.startPushToTalk).toHaveBeenCalledWith("character");
+    fireEvent.keyUp(window, { code: "AltRight", key: "Alt", location: 2 });
+    expect(actions.stopPushToTalk).toHaveBeenCalled();
+  });
 });

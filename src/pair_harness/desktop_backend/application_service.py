@@ -397,8 +397,9 @@ class DesktopApplicationService:
         if not enabled:
             return
         try:
-            if vad_enabled:
-                await self.voice_runtime.start_listening()
+            # 麦克风采集与 VAD 分开：VAD 默认关闭时仍需启动采集，PTT 才能把
+            # 音频帧送进 ASR。
+            await self.voice_runtime.start_listening(vad_enabled=vad_enabled)
             self.voice_runtime.start_playback()
         except Exception as exc:  # noqa: BLE001 - 语音不可用不阻塞文本主线
             self._on_voice_error(f"语音启动失败：{exc}")
@@ -936,10 +937,15 @@ class DesktopApplicationService:
         if self.voice_runtime is None:
             self._voice_state["error"] = "语音运行时未启用"
         elif enabled:
-            await self.voice_runtime.start_listening()
+            await self.voice_runtime.set_vad_enabled(True)
             self.voice_runtime.start_playback()
         else:
-            await self.voice_runtime.stop_listening()
+            if self._voice_state["enabled"]:
+                # 关闭 VAD 仍要保留采集，PTT 依赖同一条麦克风通道。
+                await self.voice_runtime.start_listening(vad_enabled=False)
+                self.voice_runtime.start_playback()
+            else:
+                await self.voice_runtime.stop_listening()
         self._emit_voice_changed()
         return {"voice": self._voice_snapshot()}
 
@@ -1247,10 +1253,6 @@ class DesktopApplicationService:
             self._voice_state["enabled"] = (
                 account_config.get("voice.enabled") not in ("false", "0")
             )
-            # 关闭总开关：停止聆听并清空待播队列，避免后台继续出声
-            if not self._voice_state["enabled"] and self.voice_runtime is not None:
-                await self.voice_runtime.stop_listening()
-                self.voice_runtime.stop_speaking()
         if "assistant_voice_enabled" in updates:
             self._voice_state["assistant_voice_enabled"] = (
                 account_config.get("assistant_voice_enabled") in ("true", "1")
@@ -1263,6 +1265,18 @@ class DesktopApplicationService:
             self._voice_state["vad_enabled"] = (
                 account_config.get("vad_enabled") in ("true", "1")
             )
+        if self.voice_runtime is not None and (
+            "voice.enabled" in updates or "vad_enabled" in updates
+        ):
+            if self._voice_state["enabled"]:
+                await self.voice_runtime.start_listening(
+                    vad_enabled=self._voice_state["vad_enabled"]
+                )
+                self.voice_runtime.start_playback()
+            else:
+                # 关闭总开关：停止聆听并清空待播队列，避免后台继续出声。
+                await self.voice_runtime.stop_listening()
+                self.voice_runtime.stop_speaking()
         self._emit_voice_changed()
         return {"config": await self._config_get({})}
 

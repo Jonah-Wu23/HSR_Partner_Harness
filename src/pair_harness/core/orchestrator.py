@@ -782,6 +782,7 @@ class ConversationOrchestrator:
         tool_runs: dict[str, ToolRun] = {}
         failed = False
         cancelled = False
+        terminal_status: ReceiptStatus | None = None
         errors: list[str] = []
         changed_files: list[str] = []
         checks: list[str] = []
@@ -1069,7 +1070,10 @@ class ConversationOrchestrator:
                 elif event.type == EngineEventType.TOOL_FINISHED:
                     status = cast(ToolRunStatus, str(event.payload.get("status", "succeeded")))
                     if status == "failed":
-                        failed = True
+                        # 单个工具步骤失败不等于整个 turn 失败：引擎可能会
+                        # 重试、改用其他路径，最后正常完成。保留错误明细，
+                        # 但让真实的 turn.failed / turn.completed 终态决定
+                        # 任务回执状态。
                         if event.payload.get("error"):
                             errors.append(str(event.payload["error"]))
                     if event.payload.get("check"):
@@ -1090,14 +1094,21 @@ class ConversationOrchestrator:
                             details=str(event.payload.get("details", "")),
                         )
                 elif event.type == EngineEventType.TURN_FAILED:
-                    failed = True
+                    terminal_status = "failed"
                     error = event.payload.get("error")
                     if error:
                         errors.append(str(error))
                 elif event.type == EngineEventType.TURN_COMPLETED:
                     cancelled = event.payload.get("status") == "cancelled"
+                    # 最后一个终态事件决定回执；引擎可能在重试过程中
+                    # 先报告一次失败，随后用 completed 收尾。
+                    terminal_status = "cancelled" if cancelled else "completed"
 
-            if not assistant_text.strip() and not failed and not cancelled:
+            if (
+                not assistant_text.strip()
+                and terminal_status not in ("failed", "cancelled")
+                and not failed
+            ):
                 raise RuntimeError("古代机械未返回最终回复")
 
             # O2.3：取消链路接通后，生命周期可能已被 cancel_active_task
@@ -1106,6 +1117,8 @@ class ConversationOrchestrator:
             target_status = (
                 "cancelled"
                 if cancelled or lifecycle.status == TaskStatus.CANCELLED
+                else terminal_status
+                if terminal_status is not None
                 else "failed"
                 if failed
                 else "completed"
@@ -1117,7 +1130,7 @@ class ConversationOrchestrator:
             if status == "cancelled":
                 # O2.3：中断的演示流程没有收尾文案，回执如实标注已取消
                 summary = assistant_text or "任务已取消"
-            elif failed:
+            elif status == "failed":
                 summary = assistant_text or "任务执行失败"
             else:
                 summary = assistant_text or "任务执行完成"

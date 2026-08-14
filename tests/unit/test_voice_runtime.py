@@ -392,6 +392,27 @@ async def test_push_to_talk_stops_playback_then_commits() -> None:
         await runtime.stop_listening()
 
 
+async def test_push_to_talk_works_when_vad_is_disabled() -> None:
+    blocks_in = asyncio.Event()
+    runtime, ctx = make_runtime(
+        vad=FakeVad({}),
+        recognizer=FakeRecognizer(
+            final="关闭 VAD 也能识别。", blocks=1, on_blocks=blocks_in
+        ),
+    )
+    await runtime.start_listening(vad_enabled=False)
+    try:
+        await runtime.push_to_talk_start(target="character")
+        ctx.capture.feed(BLOCK)
+        await wait_until(lambda: blocks_in.is_set())
+        await runtime.push_to_talk_stop()
+        await wait_until(lambda: len(ctx.orch.character_inputs) == 1)
+        assert ctx.orch.character_inputs == [("conv-1", "关闭 VAD 也能识别。")]
+        assert ctx.vad.received == []
+    finally:
+        await runtime.stop_listening()
+
+
 async def test_empty_final_not_committed() -> None:
     runtime, ctx = make_runtime(vad=FakeVad({1: "speech_started", 2: "speech_ended"}))
     await runtime.start_listening()

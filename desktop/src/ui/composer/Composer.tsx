@@ -28,6 +28,7 @@ const EFFORT_LABEL: Record<ReasoningEffort, string> = {
 };
 
 const COLLAPSE_ROTATED_STYLE = { transform: "rotate(-90deg)" };
+const PTT_KEY_CODE = "AltRight";
 
 function voiceStatusText(voice: VoiceViewModel): string {
   if (voice.error) return `语音异常：${voice.error}`;
@@ -107,6 +108,7 @@ export function Composer({
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const lastSeedNonce = useRef<number | null>(null);
+  const pttKeyboardActive = useRef(false);
   // V0.2 M4：QueueStrip「编辑」拉回的草稿——nonce 变化时写入输入区
   useEffect(() => {
     if (draftSeed && draftSeed.nonce !== lastSeedNonce.current) {
@@ -114,6 +116,52 @@ export function Composer({
       setDraft(draftSeed.text);
     }
   }, [draftSeed]);
+
+  useEffect(() => {
+    const isRightAlt = (event: KeyboardEvent) =>
+      event.code === PTT_KEY_CODE ||
+      ((event.key === "Alt" || event.key === "AltGraph") && event.location === 2);
+    const canUsePtt =
+      composer.enabled &&
+      voice.enabled !== false &&
+      voice.supported &&
+      voice.canPushToTalk;
+
+    const stopKeyboardPtt = (event?: KeyboardEvent) => {
+      if (!pttKeyboardActive.current) return;
+      if (event) event.preventDefault();
+      pttKeyboardActive.current = false;
+      void actions.stopPushToTalk();
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!isRightAlt(event) || event.repeat || pttKeyboardActive.current || !canUsePtt) {
+        return;
+      }
+      event.preventDefault();
+      pttKeyboardActive.current = true;
+      void actions.startPushToTalk(target);
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (isRightAlt(event)) stopKeyboardPtt(event);
+    };
+    const onWindowBlur = () => stopKeyboardPtt();
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") stopKeyboardPtt();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onWindowBlur);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onWindowBlur);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      stopKeyboardPtt();
+    };
+  }, [actions, composer.enabled, target, voice.canPushToTalk, voice.enabled, voice.supported]);
 
   useEffect(() => {
     const node = inputRef.current;
@@ -258,13 +306,12 @@ export function Composer({
           type="button"
           className="icon-btn"
           disabled={!voice.supported || !voice.canPushToTalk}
-          title="按住说话"
+          title="按住说话（右 Alt）"
           aria-label="按住说话"
           onPointerDown={() => void actions.startPushToTalk(target)}
           onPointerUp={() => void actions.stopPushToTalk()}
-          onPointerLeave={() => {
-            if (voice.ptt) void actions.stopPushToTalk();
-          }}
+          onPointerCancel={() => void actions.stopPushToTalk()}
+          onPointerLeave={() => void actions.stopPushToTalk()}
         >
           <RecordVoiceIcon />
         </button>
