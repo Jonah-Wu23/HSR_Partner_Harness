@@ -21,8 +21,9 @@ vad 状态保持既有语义。V0.2 M4：合成开始置 synthesizing、首个 P
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import deque
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from inspect import isawaitable
 from typing import TYPE_CHECKING
@@ -54,6 +55,7 @@ if TYPE_CHECKING:  # pragma: no cover - 仅类型标注
 # pre-roll 环形缓冲容量：8 块 × 640 B（20 ms @ 16 kHz）
 PRE_ROLL_BLOCKS = 8
 _ASR_END = object()  # ASR 输入流哨兵
+logger = logging.getLogger(__name__)
 
 
 class VoiceRuntime:
@@ -78,6 +80,7 @@ class VoiceRuntime:
         on_asr_partial: Callable[[str], None] = lambda _t: None,
         on_error: Callable[[str], None] = lambda _m: None,
         on_tts_state: Callable[[str], None] = lambda _s: None,
+        on_text_input: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._recognizer = recognizer
@@ -92,6 +95,9 @@ class VoiceRuntime:
         self._on_asr_partial = on_asr_partial
         self._on_error = on_error
         self._on_tts_state = on_tts_state
+        # 桌面端把语音文本交给后台 Turn 链；未注入时保留核心测试/CLI 的
+        # 直接编排器路径。
+        self._on_text_input = on_text_input
 
         self._capture: "MicrophoneCapture | None" = None
         self._capture_task: asyncio.Task | None = None
@@ -108,6 +114,7 @@ class VoiceRuntime:
         self._pre_roll: deque[bytes] = deque(maxlen=PRE_ROLL_BLOCKS)
         self._ptt_active = False
         self._ptt_target = "character"
+        self._commit_tasks: set[asyncio.Task[None]] = set()
         self._started = False
         self._vad_enabled = False
         # V0.2 M2-4：跳过当前句的标记，由播放循环消费（见 skip_playing）
@@ -217,6 +224,11 @@ class VoiceRuntime:
         self.stop_speaking()
         if self._asr_active:
             await self._end_asr(commit=False, target=self._ptt_target)
+        commit_tasks = tuple(self._commit_tasks)
+        for task in commit_tasks:
+            task.cancel()
+        if commit_tasks:
+            await asyncio.gather(*commit_tasks, return_exceptions=True)
         await self.stop_listening()
         await self._cancel_task(self._playback_task)
         self._playback_task = None
@@ -313,9 +325,9 @@ class VoiceRuntime:
             self._asr_final_text = ""
             self._on_error(f"语音识别失败：{event.error}")
 
-    async def _end_asr(self, *, commit: bool, target: str) -> None:
+    async def _end_asr(self, *, commit: bool, target: str) -> str:
         if not self._asr_active or self._asr_input is None:
-            return
+            return ""
         self._asr_input.put_nowait(_ASR_END)
         self._asr_active = False
         if self._asr_task is not None:
@@ -326,10 +338,13 @@ class VoiceRuntime:
             await self._commit(text, target)
         else:
             self._on_asr_partial("")  # 空转写/误触发：清空回显，不提交
+        return text
 
     async def _commit(self, text: str, target: str) -> None:
         self._on_asr_partial("")  # final 已提交，清空输入区回显
-        if target == "assistant":
+        if self._on_text_input is not None:
+            await self._on_text_input(text, target)
+        elif target == "assistant":
             await self._orchestrator.handle_direct_input(
                 conversation_id=self._conversation_id, text=text
             )
@@ -337,6 +352,23 @@ class VoiceRuntime:
             await self._orchestrator.handle_character_input(
                 conversation_id=self._conversation_id, text=text
             )
+
+    def _schedule_commit(self, text: str, target: str) -> None:
+        """后台提交 PTT 文本；停止聆听不能等待模型或工具回合。"""
+        task = asyncio.create_task(self._commit(text, target), name="voice:commit")
+        self._commit_tasks.add(task)
+
+        def on_done(completed: asyncio.Task[None]) -> None:
+            self._commit_tasks.discard(completed)
+            if completed.cancelled():
+                return
+            try:
+                completed.result()
+            except Exception as exc:  # noqa: BLE001 - 真实提交失败必须可见
+                logger.exception("语音提交失败")
+                self._on_error(f"语音提交失败：{exc}")
+
+        task.add_done_callback(on_done)
 
     # ------------------------------------------------------------ 上行：按键说话
 
@@ -349,11 +381,13 @@ class VoiceRuntime:
         await self._begin_asr(pre_roll=False)
 
     async def push_to_talk_stop(self) -> None:
-        """松开说话键：收尾识别，非空提交。"""
+        """结束聆听：收尾识别，文本提交交给后台，不等待模型回合。"""
         if not self._ptt_active:
             return
         self._ptt_active = False
-        await self._end_asr(commit=True, target=self._ptt_target)
+        text = await self._end_asr(commit=False, target=self._ptt_target)
+        if text:
+            self._schedule_commit(text, self._ptt_target)
 
     # ------------------------------------------------------------ 下行：TTS
 

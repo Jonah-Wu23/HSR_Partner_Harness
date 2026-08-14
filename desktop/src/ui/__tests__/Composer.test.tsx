@@ -43,10 +43,10 @@ function stubActions(): HarnessActions {
 afterEach(cleanup);
 
 describe("Composer 语音按钮组", () => {
-  it("voice.enabled=true 时显示 VAD/按住说话/停止播报与状态", () => {
+  it("voice.enabled=true 时显示 VAD/按键说话/停止播报与状态", () => {
     render(<Composer composer={composer} voice={voice} mode="chat" actions={stubActions()} />);
     expect(screen.getByRole("button", { name: "VAD" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "按住说话" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "按键说话" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "停止播报" })).toBeInTheDocument();
   });
 
@@ -60,29 +60,32 @@ describe("Composer 语音按钮组", () => {
       />,
     );
     expect(screen.queryByRole("button", { name: "VAD" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "按住说话" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "按键说话" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "停止播报" })).not.toBeInTheDocument();
   });
 
-  it("VAD 按钮切换调用 setVadEnabled，按住说话调用 pushToTalk", () => {
+  it("VAD 按钮切换，PTT 点击开始/结束聆听", () => {
     const actions = stubActions();
     render(<Composer composer={composer} voice={voice} mode="chat" actions={actions} />);
     fireEvent.click(screen.getByRole("button", { name: "VAD" }));
     expect(actions.setVadEnabled).toHaveBeenCalledWith(true);
 
-    fireEvent.pointerDown(screen.getByRole("button", { name: "按住说话" }));
+    const ptt = screen.getByRole("button", { name: "按键说话" });
+    fireEvent.click(ptt);
     expect(actions.startPushToTalk).toHaveBeenCalledWith("character");
-    fireEvent.pointerUp(screen.getByRole("button", { name: "按住说话" }));
+    fireEvent.click(ptt);
     expect(actions.stopPushToTalk).toHaveBeenCalled();
   });
 
-  it("右 Alt 作为默认 PTT 键位，按下开始、松开停止", () => {
+  it("右 Alt 作为默认 PTT 键位，按下切换，松开不结束", () => {
     const actions = stubActions();
     render(<Composer composer={composer} voice={voice} mode="chat" actions={actions} />);
 
     fireEvent.keyDown(window, { code: "AltRight", key: "Alt", location: 2 });
     expect(actions.startPushToTalk).toHaveBeenCalledWith("character");
     fireEvent.keyUp(window, { code: "AltRight", key: "Alt", location: 2 });
+    expect(actions.stopPushToTalk).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, { code: "AltRight", key: "Alt", location: 2 });
     expect(actions.stopPushToTalk).toHaveBeenCalled();
   });
 });

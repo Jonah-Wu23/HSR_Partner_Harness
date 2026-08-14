@@ -216,6 +216,7 @@ def make_runtime(
     synthesizer: FakeSynthesizer | None = None,
     queue: SpeechQueue | None = None,
     player: FakePlayer | None = None,
+    on_text_input: Any = None,
 ) -> tuple[VoiceRuntime, SimpleNamespace]:
     recognizer = recognizer or FakeRecognizer()
     synthesizer = synthesizer or FakeSynthesizer()
@@ -241,6 +242,7 @@ def make_runtime(
         on_asr_partial=partials_seen.append,
         on_error=errors.append,
         on_tts_state=tts_states.append,
+        on_text_input=on_text_input,
     )
     return runtime, SimpleNamespace(
         runtime=runtime,
@@ -411,6 +413,40 @@ async def test_push_to_talk_works_when_vad_is_disabled() -> None:
         assert ctx.vad.received == []
     finally:
         await runtime.stop_listening()
+
+
+async def test_push_to_talk_stop_does_not_wait_for_model_turn() -> None:
+    blocks_in = asyncio.Event()
+    commit_started = asyncio.Event()
+    commit_finished = asyncio.Event()
+    release_commit = asyncio.Event()
+
+    async def on_text_input(text: str, target: str) -> None:
+        assert (text, target) == ("后台提交也不阻塞停止聆听。", "character")
+        commit_started.set()
+        await release_commit.wait()
+        commit_finished.set()
+
+    runtime, ctx = make_runtime(
+        vad=FakeVad({}),
+        recognizer=FakeRecognizer(
+            final="后台提交也不阻塞停止聆听。", blocks=1, on_blocks=blocks_in
+        ),
+        on_text_input=on_text_input,
+    )
+    await runtime.start_listening(vad_enabled=False)
+    try:
+        await runtime.push_to_talk_start(target="character")
+        ctx.capture.feed(BLOCK)
+        await wait_until(lambda: blocks_in.is_set())
+        await asyncio.wait_for(runtime.push_to_talk_stop(), timeout=0.5)
+        await wait_until(lambda: commit_started.is_set())
+        assert not commit_finished.is_set()
+        release_commit.set()
+        await wait_until(lambda: commit_finished.is_set())
+    finally:
+        release_commit.set()
+        await runtime.shutdown()
 
 
 async def test_empty_final_not_committed() -> None:

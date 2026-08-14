@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from typing import Callable
 
 from pair_harness.config.pairs import PairConfig, repository_root
@@ -18,6 +19,7 @@ def build_real_voice_runtime(
     on_asr_partial: Callable[[str], None],
     on_error: Callable[[str], None],
     on_tts_state: Callable[[str], None] = lambda _s: None,
+    on_text_input: Callable[[str, str], Awaitable[None]] | None = None,
 ) -> VoiceRuntime:
     """创建供桌面 Sidecar 使用的 VoiceRuntime。"""
     if not settings.dashscope_api_key:
@@ -64,4 +66,5 @@ def build_real_voice_runtime(
         on_asr_partial=on_asr_partial,
         on_error=on_error,
         on_tts_state=on_tts_state,
+        on_text_input=on_text_input,
     )

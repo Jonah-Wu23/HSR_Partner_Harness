@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { HarnessActions } from "../../contracts/actions";
 import type { ApprovalMode, ReasoningEffort } from "../../contracts/protocol";
 import type { ComposerViewModel, VoiceViewModel } from "../../contracts/view-models";
@@ -106,9 +106,11 @@ export function Composer({
 }: ComposerProps) {
   const [target, setTarget] = useState<"character" | "assistant">(composer.target);
   const [draft, setDraft] = useState("");
+  const [pttRequested, setPttRequested] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const lastSeedNonce = useRef<number | null>(null);
-  const pttKeyboardActive = useRef(false);
+  const pttToggleActive = useRef(false);
+  const pttRequestVersion = useRef(0);
   // V0.2 M4：QueueStrip「编辑」拉回的草稿——nonce 变化时写入输入区
   useEffect(() => {
     if (draftSeed && draftSeed.nonce !== lastSeedNonce.current) {
@@ -116,6 +118,28 @@ export function Composer({
       setDraft(draftSeed.text);
     }
   }, [draftSeed]);
+
+  const requestPtt = useCallback(
+    (active: boolean) => {
+      const requestVersion = ++pttRequestVersion.current;
+      pttToggleActive.current = active;
+      setPttRequested(active);
+      const request = active
+        ? actions.startPushToTalk(target)
+        : actions.stopPushToTalk();
+      void Promise.resolve(request).catch(() => {
+        if (requestVersion !== pttRequestVersion.current) return;
+        // 真实请求失败时只收回本地“正在聆听”意图，不生成假成功。
+        pttToggleActive.current = false;
+        setPttRequested(false);
+      });
+    },
+    [actions, target],
+  );
+
+  const togglePtt = useCallback(() => {
+    requestPtt(!pttToggleActive.current);
+  }, [requestPtt]);
 
   useEffect(() => {
     const isRightAlt = (event: KeyboardEvent) =>
@@ -127,41 +151,30 @@ export function Composer({
       voice.supported &&
       voice.canPushToTalk;
 
-    const stopKeyboardPtt = (event?: KeyboardEvent) => {
-      if (!pttKeyboardActive.current) return;
-      if (event) event.preventDefault();
-      pttKeyboardActive.current = false;
-      void actions.stopPushToTalk();
+    const stopPttOnFocusLoss = () => {
+      if (pttToggleActive.current) requestPtt(false);
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!isRightAlt(event) || event.repeat || pttKeyboardActive.current || !canUsePtt) {
-        return;
-      }
+      if (!isRightAlt(event) || event.repeat || !canUsePtt) return;
       event.preventDefault();
-      pttKeyboardActive.current = true;
-      void actions.startPushToTalk(target);
+      togglePtt();
     };
-    const onKeyUp = (event: KeyboardEvent) => {
-      if (isRightAlt(event)) stopKeyboardPtt(event);
-    };
-    const onWindowBlur = () => stopKeyboardPtt();
+    const onWindowBlur = () => stopPttOnFocusLoss();
     const onVisibilityChange = () => {
-      if (document.visibilityState !== "visible") stopKeyboardPtt();
+      if (document.visibilityState !== "visible") stopPttOnFocusLoss();
     };
 
     window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onWindowBlur);
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onWindowBlur);
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      stopKeyboardPtt();
+      stopPttOnFocusLoss();
     };
-  }, [actions, composer.enabled, target, voice.canPushToTalk, voice.enabled, voice.supported]);
+  }, [composer.enabled, requestPtt, togglePtt, voice.canPushToTalk, voice.enabled, voice.supported]);
 
   useEffect(() => {
     const node = inputRef.current;
@@ -183,6 +196,7 @@ export function Composer({
   const vadUnavailable = voice.vad === "unavailable";
   const canUseVad = voice.supported && !vadUnavailable && target === "character";
   const voiceStatus = voiceStatusText(voice);
+  const pttActive = pttRequested || voice.ptt;
 
   return (
     <div className={`composer${composer.enabled ? "" : " is-disabled"}`} data-testid="composer">
@@ -306,12 +320,10 @@ export function Composer({
           type="button"
           className="icon-btn"
           disabled={!voice.supported || !voice.canPushToTalk}
-          title="按住说话（右 Alt）"
-          aria-label="按住说话"
-          onPointerDown={() => void actions.startPushToTalk(target)}
-          onPointerUp={() => void actions.stopPushToTalk()}
-          onPointerCancel={() => void actions.stopPushToTalk()}
-          onPointerLeave={() => void actions.stopPushToTalk()}
+          title={pttActive ? "结束聆听（点击或右 Alt）" : "开始聆听（点击或右 Alt）"}
+          aria-label="按键说话"
+          aria-pressed={pttActive}
+          onClick={togglePtt}
         >
           <RecordVoiceIcon />
         </button>

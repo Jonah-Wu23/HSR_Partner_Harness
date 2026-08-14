@@ -479,6 +479,42 @@ async def test_voice_commands_only_exchange_state_with_attached_runtime(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_ptt_stop_failure_clears_listening_state_and_surfaces_error(tmp_path: Path) -> None:
+    events: list[dict] = []
+
+    class FailingVoiceRuntime:
+        on_message = lambda self, _message: None
+        speech_queue_len = 0
+
+        async def push_to_talk_stop(self) -> None:
+            raise ValueError("角色模型未返回可用 speech")
+
+        async def shutdown(self) -> None:
+            pass
+
+    service = build_demo_service(
+        database=tmp_path / "data" / "ptt-failure.db",
+        project_root=tmp_path,
+        event_sink=events.append,
+    )
+    runtime = FailingVoiceRuntime()
+    service.attach_voice_runtime(runtime)  # type: ignore[arg-type]
+    service._voice_state["ptt"] = True
+    try:
+        with pytest.raises(ValueError, match="角色模型未返回可用 speech"):
+            await service.handle_command(command("ptt-stop-fail", "voice.ptt_stop"))
+        assert service.bootstrap()["voice"]["ptt"] is False
+        assert service.bootstrap()["voice"]["error"] == "语音提交失败：角色模型未返回可用 speech"
+        assert any(
+            event["event"] == "voice.state_changed"
+            and event["payload"]["voice"]["ptt"] is False
+            for event in events
+        )
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_voice_tts_play_skip_and_preview_commands(tmp_path: Path) -> None:
     """V0.2 M2-4：voice.tts_play 按 message_id 重播、tts_skip 跳过、preview 试听入队。"""
     events: list[dict] = []

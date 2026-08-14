@@ -158,6 +158,9 @@ class DesktopApplicationService:
         self.current_conversation_id = current_conversation_id
         self.voice_runtime = voice_runtime
         self._shutdown = False
+        # Router 会并发处理 JSONL 命令；PTT 的开始/结束必须按顺序执行，
+        # 否则快速点击会让 stop 抢在 start 完成前进入 ASR 收尾。
+        self._voice_ptt_lock = asyncio.Lock()
         self._tool_runs: dict[tuple[str, str], ToolRun] = {}
         self._streaming_message_ids: dict[tuple[str, str], set[str]] = {}
         # 编程助手在工具调用前发出的阶段性说明先走增量事件；在工具开始
@@ -731,6 +734,16 @@ class DesktopApplicationService:
             "turn_id": turn["turn_id"],
         }
 
+    async def _submit_voice_input(self, text: str, target: str) -> None:
+        """把已完成 ASR 的文本送入同一条后台 Turn 链。"""
+        await self._chat_submit(
+            {
+                "conversation_id": self.current_conversation_id,
+                "target": target,
+                "text": text,
+            }
+        )
+
     def _track_turn_task(
         self, conversation_id: str, task: asyncio.Task[None]
     ) -> None:
@@ -953,19 +966,33 @@ class DesktopApplicationService:
         target = str(params.get("target", "character"))
         if self.voice_runtime is None:
             raise ServiceError("语音运行时未启用", code="voice_unavailable")
-        await self.voice_runtime.push_to_talk_start(target=target)
-        self._voice_state["ptt"] = True
-        self._emit_voice_changed()
-        return {"voice": self._voice_snapshot()}
+        async with self._voice_ptt_lock:
+            try:
+                await self.voice_runtime.push_to_talk_start(target=target)
+            except Exception as exc:  # noqa: BLE001 - 保留真实启动失败
+                self._voice_state["ptt"] = False
+                self._on_voice_error(f"按键说话启动失败：{exc}")
+                raise
+            self._voice_state["error"] = None
+            self._voice_state["ptt"] = True
+            self._emit_voice_changed()
+            return {"voice": self._voice_snapshot()}
 
     async def _voice_ptt_stop(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
         if self.voice_runtime is None:
             raise ServiceError("语音运行时未启用", code="voice_unavailable")
-        await self.voice_runtime.push_to_talk_stop()
-        self._voice_state["ptt"] = False
-        self._emit_voice_changed()
-        return {"voice": self._voice_snapshot()}
+        async with self._voice_ptt_lock:
+            try:
+                await self.voice_runtime.push_to_talk_stop()
+            except Exception as exc:  # noqa: BLE001 - ASR 收尾/后台调度失败继续上抛
+                self._on_voice_error(f"语音提交失败：{exc}")
+                raise
+            finally:
+                # ASR 收尾或角色提交失败都不能留下“聆听中”假状态。
+                self._voice_state["ptt"] = False
+                self._emit_voice_changed()
+            return {"voice": self._voice_snapshot()}
 
     async def _voice_tts_stop(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
@@ -2280,6 +2307,7 @@ def _build_service(
                 on_asr_partial=service._on_asr_partial,
                 on_error=service._on_voice_error,
                 on_tts_state=service._on_tts_state,
+                on_text_input=service._submit_voice_input,
             )
             service.attach_voice_runtime(runtime)
         except Exception as exc:  # noqa: BLE001 - 文本功能不因语音依赖失败而退出
