@@ -30,8 +30,12 @@ interface SettingsCenterProps {
   onCodexApiLogin: (apiKey: string) => void;
   onSaveModel: (config: CharacterModelPageView & { apiKey?: string }) => void;
   onTestModel: () => void;
-  /** 语音页只有两个开关可改（总开关 / VAD），改动即保存，无独立保存按钮。 */
-  onSaveVoice: (config: { enabled: boolean; vadEnabled: boolean }) => void;
+  /** 语音页开关改动即保存，无独立保存按钮。 */
+  onSaveVoice: (config: {
+    enabled: boolean;
+    assistantVoiceEnabled: boolean;
+    vadEnabled: boolean;
+  }) => void;
   onPreviewVoice: (voiceId: string, voiceName: string) => void;
 }
 
@@ -391,11 +395,31 @@ function VoicePage(props: SettingsCenterProps) {
           type="checkbox"
           checked={voice.enabled}
           onChange={(event) =>
-            props.onSaveVoice({ enabled: event.target.checked, vadEnabled: voice.vadEnabled })
+            props.onSaveVoice({
+              enabled: event.target.checked,
+              assistantVoiceEnabled: voice.assistantVoiceEnabled,
+              vadEnabled: voice.vadEnabled,
+            })
           }
         />
         语音功能
         <span className="field-note">关闭后输入区的语音按钮整体隐藏</span>
+      </label>
+
+      <label className="settings-switch">
+        <input
+          type="checkbox"
+          checked={voice.assistantVoiceEnabled}
+          onChange={(event) =>
+            props.onSaveVoice({
+              enabled: voice.enabled,
+              assistantVoiceEnabled: event.target.checked,
+              vadEnabled: voice.vadEnabled,
+            })
+          }
+        />
+        古代机械（助手）语音
+        <span className="field-note">默认关闭；开启后自动朗读古代机械的回复</span>
       </label>
 
       {/* 自愿赞助卡：语音服务由作者自费提供，二维码为微信收款码 */}
@@ -420,7 +444,13 @@ function VoicePage(props: SettingsCenterProps) {
             type="button"
             className="btn btn-primary"
             disabled={voice.enabled}
-            onClick={() => props.onSaveVoice({ enabled: true, vadEnabled: voice.vadEnabled })}
+            onClick={() =>
+              props.onSaveVoice({
+                enabled: true,
+                assistantVoiceEnabled: voice.assistantVoiceEnabled,
+                vadEnabled: voice.vadEnabled,
+              })
+            }
           >
             我已打赏，开启语音
           </button>
@@ -465,7 +495,11 @@ function VoicePage(props: SettingsCenterProps) {
               type="checkbox"
               checked={voice.vadEnabled}
               onChange={(event) =>
-                props.onSaveVoice({ enabled: voice.enabled, vadEnabled: event.target.checked })
+                props.onSaveVoice({
+                  enabled: voice.enabled,
+                  assistantVoiceEnabled: voice.assistantVoiceEnabled,
+                  vadEnabled: event.target.checked,
+                })
               }
             />
             语音自动聆听（VAD）

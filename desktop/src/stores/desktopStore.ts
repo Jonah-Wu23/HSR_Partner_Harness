@@ -112,6 +112,7 @@ export type DesktopRenderState = Pick<
 
 const emptyVoice: VoiceState = {
   supported: false,
+  assistant_voice_enabled: false,
   vad: "idle",
   vad_enabled: false,
   ptt: false,

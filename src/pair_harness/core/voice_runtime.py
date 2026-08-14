@@ -113,6 +113,8 @@ class VoiceRuntime:
         self._skip = False
         # V0.2 M4：当前句合成失败标记——失败后 tts 保持 failed，直到下次播放成功
         self._tts_failed = False
+        # 古代机械语音默认关闭；由账号级语音设置显式开启。
+        self._assistant_voice_enabled = False
         # 古代机械的阶段性说明会先于最终执行回执到达。记录已提前入队的
         # 文本，最终消息再次落库时只保留一份语音。
         self._preannounced_assistant_texts: set[str] = set()
@@ -122,6 +124,10 @@ class VoiceRuntime:
     def speech_queue_len(self) -> int:
         """待播队列条数（不含正在播放的当前条）；VoiceMiniPlayer 的 queuedCount。"""
         return self._queue.pending
+
+    def set_assistant_voice_enabled(self, enabled: bool) -> None:
+        """设置古代机械是否自动朗读消息。"""
+        self._assistant_voice_enabled = bool(enabled)
 
     # ------------------------------------------------------------ 生命周期
 
@@ -328,6 +334,8 @@ class VoiceRuntime:
             return
         if not is_tts_eligible(message.source, message.kind):
             return
+        if message.source == MessageSource.ASSISTANT and not self._assistant_voice_enabled:
+            return
         self._enqueue_for_playback(message)
 
     def replay_message(self, message: Message) -> None:
@@ -384,6 +392,8 @@ class VoiceRuntime:
 
     def enqueue_assistant_progress(self, text: str) -> None:
         """把古代机械的阶段性说明立即送入语音队列。"""
+        if not self._assistant_voice_enabled:
+            return
         text = str(text or "").strip()
         if not is_readable_text(text):
             return

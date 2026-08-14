@@ -189,6 +189,8 @@ class DesktopApplicationService:
             "supported": voice_runtime is not None,
             # 语音总开关：默认随运行时启用，账号配置 voice.enabled=false 时关闭
             "enabled": voice_runtime is not None,
+            # 古代机械语音必须由用户单独开启，默认关闭
+            "assistant_voice_enabled": False,
             "vad": "idle",
             "vad_enabled": False,
             "ptt": False,
@@ -266,6 +268,7 @@ class DesktopApplicationService:
             "dialogue.model",
             "dialogue.api_key",
             "voice.enabled",
+            "assistant_voice_enabled",
             "vad_enabled",
         )
         config: dict[str, str] = {}
@@ -385,9 +388,12 @@ class DesktopApplicationService:
             return
         config = self._load_account_config()
         enabled = config.get("voice.enabled") not in ("false", "0")
+        assistant_voice_enabled = config.get("assistant_voice_enabled") in ("true", "1")
         vad_enabled = config.get("vad_enabled") in ("true", "1")
         self._voice_state["enabled"] = enabled
+        self._voice_state["assistant_voice_enabled"] = assistant_voice_enabled
         self._voice_state["vad_enabled"] = vad_enabled
+        self.voice_runtime.set_assistant_voice_enabled(assistant_voice_enabled)
         if not enabled:
             return
         try:
@@ -842,19 +848,23 @@ class DesktopApplicationService:
         terminal_status = "completed"
         try:
             if target == "assistant":
-                await self.orchestrator.process_direct_input(
+                outcome = await self.orchestrator.process_direct_input(
                     conversation_id=conversation_id, user_message=user_message
                 )
             else:
-                await self.orchestrator.process_character_turn(
+                outcome = await self.orchestrator.process_character_turn(
                     conversation_id=conversation_id, user_message=user_message
                 )
+            if outcome.receipt is not None and outcome.receipt.status != "completed":
+                result = outcome.receipt.status
+                terminal_status = outcome.receipt.status
         except asyncio.CancelledError:
             result = "cancelled"
             terminal_status = "cancelled"
             self.orchestrator.mark_message_cancelled(
                 conversation_id, user_message.message_id
             )
+            self.orchestrator.mark_processing_delegations_cancelled(conversation_id)
             raise
         except Exception as exc:  # noqa: BLE001 - 回合失败转为可见消息状态
             logger.exception("后台回合失败：%s", conversation_id)
@@ -862,6 +872,9 @@ class DesktopApplicationService:
             terminal_status = "failed"
             self.orchestrator.mark_message_failed(
                 conversation_id, user_message.message_id, str(exc)
+            )
+            self.orchestrator.mark_processing_delegations_failed(
+                conversation_id, str(exc)
             )
             self.orchestrator.report_system_status(
                 conversation_id, f"本次回复失败：{exc}"
@@ -1170,7 +1183,7 @@ class DesktopApplicationService:
             },
             "voice": {
                 # 语音配置全部由应用内置：API Key / 模型 / 音色 / 服务地址
-                # 来自环境变量与 pair 配置，账号配置只保留 enabled / vad_enabled
+                # 来自环境变量与 pair 配置，账号配置只保留开关类偏好
                 "enabled": (
                     config.get("voice.enabled")
                     or ("true" if self.voice_runtime is not None else "false")
@@ -1183,6 +1196,7 @@ class DesktopApplicationService:
                 "character_voice_name": self.pair_config.character.name,
                 "assistant_voice": self.pair_config.assistant.voice_id,
                 "assistant_voice_name": self.pair_config.assistant.name,
+                "assistant_voice_enabled": config.get("assistant_voice_enabled") or "false",
                 "vad_enabled": config.get("vad_enabled") or "",
             },
             "codex": {
@@ -1195,7 +1209,8 @@ class DesktopApplicationService:
         """账号级配置：扁平键写入 provider_configs/secret_refs，立即生效。
 
         语音的凭据/模型/音色/服务地址由应用内置（环境变量 + pair 配置），
-        客户端一律禁止写入，只允许开关类偏好（voice.enabled / vad_enabled）。
+        客户端一律禁止写入，只允许开关类偏好（voice.enabled /
+        assistant_voice_enabled / vad_enabled）。
         """
         updates = params.get("updates")
         if not isinstance(updates, dict):
@@ -1236,6 +1251,14 @@ class DesktopApplicationService:
             if not self._voice_state["enabled"] and self.voice_runtime is not None:
                 await self.voice_runtime.stop_listening()
                 self.voice_runtime.stop_speaking()
+        if "assistant_voice_enabled" in updates:
+            self._voice_state["assistant_voice_enabled"] = (
+                account_config.get("assistant_voice_enabled") in ("true", "1")
+            )
+            if self.voice_runtime is not None:
+                self.voice_runtime.set_assistant_voice_enabled(
+                    self._voice_state["assistant_voice_enabled"]
+                )
         if "vad_enabled" in updates:
             self._voice_state["vad_enabled"] = (
                 account_config.get("vad_enabled") in ("true", "1")

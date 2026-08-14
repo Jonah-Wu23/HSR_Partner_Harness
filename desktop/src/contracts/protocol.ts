@@ -192,6 +192,8 @@ export interface VoiceState {
   supported: boolean;
   /** 语音功能总开关（账号配置 voice.enabled；Composer 据此隐藏语音按钮）。 */
   enabled?: boolean;
+  /** 古代机械（助手）自动朗读开关（账号配置 assistant_voice_enabled，默认关闭）。 */
+  assistant_voice_enabled: boolean;
   vad: string;
   vad_enabled: boolean;
   ptt: boolean;

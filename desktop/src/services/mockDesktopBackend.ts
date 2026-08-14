@@ -520,6 +520,7 @@ export class MockDesktopBackend implements DesktopBackend {
       },
       voice: {
         enabled: "true",
+        assistant_voice_enabled: "false",
         base_url: "https://dashscope.aliyuncs.com/api/v1",
         api_key_masked: "sk-v…5678",
         asr_model: "qwen-audio-3.0-asr-flash-streaming",

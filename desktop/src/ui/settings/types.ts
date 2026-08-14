@@ -27,6 +27,8 @@ export interface CharacterModelPageView {
 export interface VoicePageView {
   /** 语音功能总开关（与赞助无关，不赞助也可开启）。 */
   enabled: boolean;
+  /** 古代机械（助手）自动朗读开关，默认关闭。 */
+  assistantVoiceEnabled: boolean;
   /** 内置角色/助手音色展示（试听按钮回传 voice_id）。 */
   characterVoiceId: string;
   characterVoiceName: string;

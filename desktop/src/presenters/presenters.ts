@@ -48,7 +48,7 @@ function presentQueueItems(state: DesktopRenderState): QueueItemView[] {
 }
 
 /** V0.2 M4：委派卡——当前会话中角色发起的委派（origin=character_delegation
-    且 delegation_id 非空），取最新一条 user 消息；状态随 activeTask 推进。 */
+    且 delegation_id 非空），取最新一条 user 消息；状态来自真实消息状态。 */
 function presentDelegation(state: DesktopRenderState): DelegationCardView | null {
   if (!state.pair) return null;
   const ids = state.messageIdsByConversation[state.currentConversationId] ?? [];
@@ -65,11 +65,21 @@ function presentDelegation(state: DesktopRenderState): DelegationCardView | null
     }
   }
   if (!delegationMessage) return null;
+  const executionStatus = delegationMessage.status;
+  const status =
+    state.activeTask?.task_id === delegationMessage.delegation_id ||
+    executionStatus === "processing"
+      ? "running"
+      : executionStatus === "failed"
+        ? "failed"
+        : executionStatus === "cancelled"
+          ? "cancelled"
+          : "completed";
   return {
     delegationId: delegationMessage.delegation_id ?? "",
     fromName: state.pair.character.name,
     summary: delegationMessage.text,
-    status: state.activeTask ? "running" : "completed",
+    status,
   };
 }
 
@@ -127,6 +137,9 @@ function presentSettings(state: DesktopRenderState): AppShellViewModel["settings
     typeof dialogue.reasoning_effort === "string" ? dialogue.reasoning_effort : "auto";
   const voice: VoicePageView = {
     enabled: Boolean(voiceConfig.enabled === true || voiceConfig.enabled === "true"),
+    assistantVoiceEnabled: Boolean(
+      voiceConfig.assistant_voice_enabled === true || voiceConfig.assistant_voice_enabled === "true",
+    ),
     characterVoiceId: String(voiceConfig.character_voice ?? ""),
     characterVoiceName: String(voiceConfig.character_voice_name ?? ""),
     assistantVoiceId: String(voiceConfig.assistant_voice ?? ""),

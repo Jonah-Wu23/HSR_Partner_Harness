@@ -216,41 +216,72 @@ class ConversationOrchestrator:
         即时回显原则：处理失败后文字仍在，前端可按真实 id 对账并重试。
         同时更新内存历史与 SQLite，并推送 ``message.status_changed``。
         """
-        history = self._history.get(conversation_id, [])
-        for index, message in enumerate(history):
-            if message.message_id != message_id:
-                continue
-            updated = message.model_copy(
-                update={
-                    "status": MessageStatus.FAILED,
-                    "payload": {**dict(message.payload), "error": reason},
-                }
-            )
-            history[index] = updated
-            if self.store is not None:
-                self.store.save_message(updated)
-            if self.on_message_status_changed is not None:
-                self.on_message_status_changed(updated)
-            return updated
-        return None
+        return self._set_message_status(
+            conversation_id,
+            message_id,
+            MessageStatus.FAILED,
+            reason=reason,
+        )
 
     def mark_message_cancelled(
         self, conversation_id: str, message_id: str, reason: str = "用户取消"
     ) -> Message | None:
         """把尚未完成的用户消息标记为取消，保留原文供前端对账。"""
+        return self._set_message_status(
+            conversation_id,
+            message_id,
+            MessageStatus.CANCELLED,
+            reason=reason,
+        )
+
+    def mark_processing_delegations_failed(
+        self, conversation_id: str, reason: str
+    ) -> None:
+        """让委派卡与真实失败回合保持一致。"""
+        for message in tuple(self._history.get(conversation_id, [])):
+            if (
+                message.origin == MessageOrigin.CHARACTER_DELEGATION
+                and message.status == MessageStatus.PROCESSING
+            ):
+                self._set_message_status(
+                    conversation_id,
+                    message.message_id,
+                    MessageStatus.FAILED,
+                    reason=reason,
+                )
+
+    def mark_processing_delegations_cancelled(self, conversation_id: str) -> None:
+        """让取消中的委派卡落到 cancelled，而不是伪装成 completed。"""
+        for message in tuple(self._history.get(conversation_id, [])):
+            if (
+                message.origin == MessageOrigin.CHARACTER_DELEGATION
+                and message.status == MessageStatus.PROCESSING
+            ):
+                self._set_message_status(
+                    conversation_id,
+                    message.message_id,
+                    MessageStatus.CANCELLED,
+                    reason="用户取消",
+                )
+
+    def _set_message_status(
+        self,
+        conversation_id: str,
+        message_id: str,
+        status: MessageStatus,
+        *,
+        reason: str | None = None,
+    ) -> Message | None:
         history = self._history.get(conversation_id, [])
         for index, message in enumerate(history):
             if message.message_id != message_id:
                 continue
-            updated = message.model_copy(
-                update={
-                    "status": MessageStatus.CANCELLED,
-                    "payload": {
-                        **dict(message.payload),
-                        "cancelled_reason": reason,
-                    },
-                }
-            )
+            payload = dict(message.payload)
+            if reason:
+                payload[
+                    "cancelled_reason" if status == MessageStatus.CANCELLED else "error"
+                ] = reason
+            updated = message.model_copy(update={"status": status, "payload": payload})
             history[index] = updated
             if self.store is not None:
                 self.store.save_message(updated)
@@ -367,6 +398,7 @@ class ConversationOrchestrator:
         target: MessageTarget | None = None,
         origin: MessageOrigin | None = None,
         delegation_id: str | None = None,
+        status: MessageStatus = MessageStatus.DONE,
     ) -> Message:
         message_values = {
             "conversation_id": conversation_id,
@@ -380,6 +412,7 @@ class ConversationOrchestrator:
             "target": target or self._default_target(source),
             "origin": origin or self._default_origin(source),
             "delegation_id": delegation_id,
+            "status": status,
         }
         if message_id is not None:
             message_values["message_id"] = message_id
@@ -787,6 +820,7 @@ class ConversationOrchestrator:
                 origin=origin,
                 delegation_id=task_delegation_id,
                 message_id=f"delegation:{task.conversation_id}:{task.task_id}",
+                status=MessageStatus.PROCESSING,
             )
         try:
             session = self._sessions.get(task.conversation_id)
@@ -1063,6 +1097,9 @@ class ConversationOrchestrator:
                 elif event.type == EngineEventType.TURN_COMPLETED:
                     cancelled = event.payload.get("status") == "cancelled"
 
+            if not assistant_text.strip() and not failed and not cancelled:
+                raise RuntimeError("古代机械未返回最终回复")
+
             # O2.3：取消链路接通后，生命周期可能已被 cancel_active_task
             # 先行落到 CANCELLED（终态），这里只做去重转移——目标状态与
             # 当前相同就不再 transition，避免 InvalidTaskTransition。
@@ -1096,7 +1133,7 @@ class ConversationOrchestrator:
             for tool_run in tool_runs.values():
                 if self.store is not None:
                     self.store.save_tool_run(tool_run)
-            if assistant_text:
+            if assistant_text.strip():
                 assistant_reasoning = (
                     assistant_reasoning_content.strip()
                     or assistant_reasoning_summary.strip()
@@ -1146,21 +1183,37 @@ class ConversationOrchestrator:
             async for dialogue_event in self.dialogue_model.stream_reply(dialogue_request):
                 if dialogue_event.type == "character.final":
                     result_turn = dialogue_event.turn
-            if result_turn is not None:
-                self._message(
-                    conversation_id=task.conversation_id,
-                    source=MessageSource.CHARACTER,
-                    kind=MessageKind.CHARACTER_SPEECH,
-                    text=result_turn.speech,
-                    engine_turn_id=engine_turn_id,
-                    pair_id=task_pair_id,
-                    delegation_id=task_delegation_id,
-                    origin=origin or MessageOrigin.USER,
-                    payload=(
-                        {"reasoning": result_turn.reasoning}
-                        if result_turn.reasoning
-                        else None
-                    ),
+            if result_turn is None:
+                raise RuntimeError("角色未返回委派结果回复")
+            self._message(
+                conversation_id=task.conversation_id,
+                source=MessageSource.CHARACTER,
+                kind=MessageKind.CHARACTER_SPEECH,
+                text=result_turn.speech,
+                engine_turn_id=engine_turn_id,
+                pair_id=task_pair_id,
+                delegation_id=task_delegation_id,
+                origin=origin or MessageOrigin.USER,
+                payload=(
+                    {
+                        "reasoning": result_turn.reasoning,
+                        "execution_status": receipt.status,
+                    }
+                    if result_turn.reasoning
+                    else {"execution_status": receipt.status}
+                ),
+            )
+            if origin == MessageOrigin.CHARACTER_DELEGATION:
+                delegation_status = {
+                    "completed": MessageStatus.DONE,
+                    "failed": MessageStatus.FAILED,
+                    "cancelled": MessageStatus.CANCELLED,
+                }[receipt.status]
+                self._set_message_status(
+                    task.conversation_id,
+                    f"delegation:{task.conversation_id}:{task.task_id}",
+                    delegation_status,
+                    reason=receipt.errors[0] if receipt.errors else None,
                 )
             # 本次执行的全部新消息：审批 system 卡片、助手说明与角色回应
             messages = self._history.get(task.conversation_id, [])[history_start:]

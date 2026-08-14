@@ -206,8 +206,8 @@ async def test_stream_plain_text_falls_back_to_raw_deltas() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stream_keeps_speech_when_json_tail_is_truncated() -> None:
-    """JSON 收尾截断时，完整台词仍沿用已经解析出的 speech 增量。"""
+async def test_stream_rejects_truncated_json_tail() -> None:
+    """JSON 收尾截断时直接失败，不能把增量预览当成完整协议结果。"""
     client = AsyncClient(
         base_url="http://test",
         transport=stream_transport(['{"speech": "正式回复。", "delegation":']),
@@ -216,10 +216,6 @@ async def test_stream_keeps_speech_when_json_tail_is_truncated() -> None:
         base_url="http://test", api_key="k", model="m", client=client
     )
 
-    events = [event async for event in model.stream_reply(make_request())]
-
-    deltas = [event.delta for event in events if event.type == "speech.delta"]
-    assert "".join(deltas) == "正式回复。"
-    finals = [event for event in events if event.type == "character.final"]
-    assert finals[0].turn.speech == "正式回复。"
+    with pytest.raises(ValueError, match="可用 speech"):
+        _ = [event async for event in model.stream_reply(make_request())]
     await client.aclose()

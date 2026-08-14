@@ -3,7 +3,7 @@
 用本地假 HTTP 服务（http.server 后台线程）覆盖：
 - 提示词装配内容（角色卡、搭档表达配置、进度/结果摘要注入、历史消息）；
 - 三种输出形态：纯聊天、任务委派（task）、修改（amendment）；
-- 解析失败降级为纯台词，且原始 JSON 不进台词（TTS）；
+- 解析失败直接暴露，不能把空输出变成省略号或其他占位台词；
 - client 生命周期：复用、超时、关闭。
 """
 
@@ -199,55 +199,39 @@ async def test_plain_chat_output_yields_no_delegation(fake_chat_server: str) -> 
 
 
 @pytest.mark.asyncio
-async def test_explicit_local_task_has_deterministic_delegation_boundary(
+async def test_missing_delegation_is_not_synthesized_from_user_keywords(
     fake_chat_server: str,
 ) -> None:
-    """模型漏委派并声称自己执行时，连续三轮都收敛到结构化助手委派。"""
-    for _ in range(3):
-        _FakeChatHandler.scripts.append(
-            {
-                "stream": True,
-                "chunks": [
-                    '{"speech":"我来帮你处理。"}'
-                ],
-            }
-        )
+    """模型漏委派时不能靠关键词猜测并伪造一次助手任务。"""
+    _FakeChatHandler.scripts.append(
+        {"stream": True, "chunks": ['{"speech":"我来帮你处理。"}']}
+    )
     model = make_model(fake_chat_server)
     request = make_request(text="请帮我删除 notes.txt 文件")
 
-    turns = [await run_turn(model, request) for _ in range(3)]
-
-    for turn in turns:
-        assert isinstance(turn.delegation, TaskRequestDraft)
-        assert turn.delegation.instructions == "请帮我删除 notes.txt 文件"
-        assert "我来" not in turn.speech
-        assert "古代机械" in turn.speech
+    turn = await run_turn(model, request)
+    assert turn.delegation is None
+    assert turn.speech == "我来帮你处理。"
 
 
 @pytest.mark.asyncio
-async def test_current_project_query_recovers_missing_delegation_in_collaboration(
+async def test_placeholder_speech_fails_instead_of_becoming_a_delegation_reply(
     fake_chat_server: str,
 ) -> None:
-    """真实故障回归：模型只返回省略号时，项目介绍请求仍进入委派链路。"""
-    _FakeChatHandler.scripts.extend(
-        [
-            {"stream": True, "chunks": ['{"speech":"……"}']},
-            {"stream": True, "chunks": ['{"speech":"……"}']},
-        ]
+    """模型只返回省略号时必须报错，不能伪造成委派成功。"""
+    _FakeChatHandler.scripts.append(
+        {"stream": True, "chunks": ['{"speech":"……"}']}
     )
     model = make_model(fake_chat_server)
-    text = "嗯，今天的话，我想陪你看看这个项目到底是做什么的。"
 
-    collaboration = await run_turn(
-        model, make_request(text=text, runtime_mode="collaboration")
-    )
-    chat = await run_turn(model, make_request(text=text, runtime_mode="chat"))
-
-    assert isinstance(collaboration.delegation, TaskRequestDraft)
-    assert collaboration.delegation.instructions == text
-    assert collaboration.speech != "……"
-    assert "古代机械" in collaboration.speech
-    assert chat.delegation is None
+    with pytest.raises(ValueError, match="占位标点"):
+        await run_turn(
+            model,
+            make_request(
+                text="嗯，今天的话，我想陪你看看这个项目到底是做什么的。",
+                runtime_mode="collaboration",
+            ),
+        )
 
 
 @pytest.mark.asyncio
@@ -330,10 +314,10 @@ async def test_amendment_delegation_json_output(fake_chat_server: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_broken_json_degrades_to_plain_speech_without_json_in_tts(
+async def test_broken_json_fails_instead_of_becoming_plain_speech(
     fake_chat_server: str,
 ) -> None:
-    """损坏的 JSON 输出：降级为纯台词、无委派，且原始 JSON 不进 speech。"""
+    """损坏的 JSON 输出直接失败，不能把半截协议当成成功回复。"""
     _FakeChatHandler.scripts.append(
         {
             "stream": True,
@@ -344,10 +328,8 @@ async def test_broken_json_degrades_to_plain_speech_without_json_in_tts(
     )
     model = make_model(fake_chat_server)
 
-    turn = await run_turn(model, make_request())
-    assert turn.delegation is None
-    assert "{" not in turn.speech
-    assert "delegation" not in turn.speech
+    with pytest.raises(ValueError, match="可用 speech"):
+        await run_turn(model, make_request())
 
 
 @pytest.mark.asyncio

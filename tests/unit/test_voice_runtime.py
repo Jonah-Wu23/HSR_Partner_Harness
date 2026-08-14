@@ -440,6 +440,7 @@ def test_on_message_selects_voice_id_by_source_and_filters() -> None:
     runtime.on_message(
         msg(MessageSource.CHARACTER, MessageKind.CHARACTER_SPEECH, "你好，白厄。")
     )
+    runtime.set_assistant_voice_enabled(True)
     # 助手消息含围栏代码块：只朗读自然语言段落
     runtime.on_message(
         msg(
@@ -464,6 +465,27 @@ def test_on_message_selects_voice_id_by_source_and_filters() -> None:
         (pair.character.voice_id, "你好，白厄。"),
         (pair.assistant.voice_id, "好的。"),
     ]
+
+
+def test_assistant_voice_is_disabled_by_default_until_enabled() -> None:
+    runtime, ctx = make_runtime(vad=None)
+    assistant = Message(
+        conversation_id="conv-1",
+        pair_id=PAIR_ID,
+        source=MessageSource.ASSISTANT,
+        kind=MessageKind.ASSISTANT_NATURAL_LANGUAGE,
+        text="我来处理这件事。",
+    )
+
+    runtime.on_message(assistant)
+    assert ctx.queue.pop_next() is None
+
+    runtime.set_assistant_voice_enabled(True)
+    runtime.on_message(assistant)
+    request = ctx.queue.pop_next()
+    assert request is not None
+    assert request.voice_id == load_pair_config(PAIR_ID).assistant.voice_id
+    assert request.text == assistant.text
 
 
 def test_on_message_filters_ellipsis_and_punctuation_only_text() -> None:
@@ -736,6 +758,7 @@ def test_replay_message_ignores_tts_eligibility() -> None:
 def test_assistant_progress_is_spoken_once_when_final_message_arrives() -> None:
     """工具前的助手阶段性说明先播报，最终消息落库时不重复入队。"""
     runtime, ctx = make_runtime(vad=None)
+    runtime.set_assistant_voice_enabled(True)
     runtime.enqueue_assistant_progress("我来读取项目目录。")
     progress = ctx.queue.pop_next()
     assert progress is not None

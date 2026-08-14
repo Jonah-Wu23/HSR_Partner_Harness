@@ -209,6 +209,7 @@ function baseSnapshot(
     voice: {
       supported: true,
       enabled: true,
+      assistant_voice_enabled: false,
       vad: "idle",
       vad_enabled: false,
       ptt: false,

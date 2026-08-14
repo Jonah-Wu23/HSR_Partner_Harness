@@ -405,6 +405,10 @@ async def test_voice_commands_only_exchange_state_with_attached_runtime(tmp_path
             self.listening = False
             self.ptt = False
             self.stopped = False
+            self.assistant_voice_enabled = False
+
+        def set_assistant_voice_enabled(self, enabled: bool) -> None:
+            self.assistant_voice_enabled = enabled
 
         async def start_listening(self) -> None:
             self.listening = True
@@ -442,6 +446,17 @@ async def test_voice_commands_only_exchange_state_with_attached_runtime(tmp_path
         await service.start_voice()
         assert runtime.listening is False
         assert service.bootstrap()["voice"]["vad_enabled"] is False
+        assert service.bootstrap()["voice"]["assistant_voice_enabled"] is False
+        assert runtime.assistant_voice_enabled is False
+        await service.handle_command(
+            command(
+                "assistant-voice-on",
+                "config.set",
+                updates={"assistant_voice_enabled": "true"},
+            )
+        )
+        assert service.bootstrap()["voice"]["assistant_voice_enabled"] is True
+        assert runtime.assistant_voice_enabled is True
         await service.handle_command(command("vad-on", "voice.vad_set", enabled=True))
         await service.handle_command(command("ptt-on", "voice.ptt_start", target="character"))
         await service.handle_command(command("ptt-off", "voice.ptt_stop"))
@@ -1003,6 +1018,7 @@ async def test_config_get_set_masks_secrets(tmp_path: Path) -> None:
                     "dialogue.model": "deepseek-chat",
                     "dialogue.api_key": "sk-super-secret-123456",
                     "voice.enabled": "false",
+                    "assistant_voice_enabled": "true",
                     "vad_enabled": "true",
                 },
             )
@@ -1018,6 +1034,7 @@ async def test_config_get_set_masks_secrets(tmp_path: Path) -> None:
         assert "sk-super-secret" not in str(config)
         # 语音开关类偏好可读写；凭据/模型/音色由应用内置，不回显账号配置
         assert config["voice"]["enabled"] == "false"
+        assert config["voice"]["assistant_voice_enabled"] == "true"
         assert config["voice"]["vad_enabled"] == "true"
         assert config["voice"]["character_voice_name"] == "白厄"
         assert config["voice"]["assistant_voice_name"] == "神秘的古代机械"

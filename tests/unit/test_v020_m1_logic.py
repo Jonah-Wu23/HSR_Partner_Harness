@@ -150,6 +150,48 @@ async def test_collaboration_executes_delegation_with_delegation_id(tmp_path: Pa
         if m.source == MessageSource.CHARACTER and m.text == "做完了。"
     )
     assert result_char.delegation_id == outcome.task.task_id
+    delegation_message = next(
+        m
+        for m in outcome.messages
+        if m.origin == MessageOrigin.CHARACTER_DELEGATION
+    )
+    assert delegation_message.status == "done"
+    assert result_char.payload["execution_status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_delegation_without_assistant_final_fails_instead_of_completed(
+    tmp_path: Path,
+) -> None:
+    """助手没有最终回复时，委派不能被标成完成。"""
+    class NoAssistantFinalEngine(RecordingCodingEngine):
+        async def run_turn(self, session_ref, request):
+            if False:
+                yield session_ref  # pragma: no cover
+
+    orchestrator = _make_orchestrator(
+        CharacterTurn(
+            speech="交给古代机械。",
+            delegation=TaskRequestDraft(instructions="检查项目"),
+        ),
+        tmp_path=tmp_path,
+        engine=NoAssistantFinalEngine(),
+    )
+    user = await orchestrator.submit_user_message(
+        conversation_id="c", text="检查项目", target="character"
+    )
+
+    with pytest.raises(RuntimeError, match="最终回复"):
+        await orchestrator.process_character_turn(
+            conversation_id="c", user_message=user
+        )
+
+    delegation_message = next(
+        m
+        for m in orchestrator._history["c"]
+        if m.origin == MessageOrigin.CHARACTER_DELEGATION
+    )
+    assert delegation_message.status == "processing"
 
 @pytest.mark.asyncio
 async def test_runtime_context_injected_in_dialogue_request(tmp_path: Path) -> None:

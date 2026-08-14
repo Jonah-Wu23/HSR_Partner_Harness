@@ -17,6 +17,7 @@ const composer: ComposerViewModel = {
 const voice: VoiceViewModel = {
   supported: true,
   enabled: true,
+  assistant_voice_enabled: false,
   vad: "idle",
   vad_enabled: false,
   ptt: false,

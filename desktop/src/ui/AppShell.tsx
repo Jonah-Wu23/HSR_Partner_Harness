@@ -286,6 +286,7 @@ export function AppShell({ vm, actions }: AppShellProps) {
           // 语音页只有开关类偏好可存；API Key/模型/音色由应用内置
           void actions.setConfig({
             "voice.enabled": String(config.enabled),
+            "assistant_voice_enabled": String(config.assistantVoiceEnabled),
             "vad_enabled": String(config.vadEnabled),
           });
           // VAD 开关立即作用于运行时；语音关闭时停止聆听

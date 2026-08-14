@@ -135,6 +135,7 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsCenter>[0]>
     },
     voice: {
       enabled: true,
+      assistantVoiceEnabled: false,
       characterVoiceId: "qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32",
       characterVoiceName: "白厄",
       assistantVoiceId: "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19",
@@ -203,6 +204,7 @@ describe("SettingsCenter", () => {
     // 内置音色只读展示，不再有可编辑输入框
     expect(screen.getByText("白厄")).toBeInTheDocument();
     expect(screen.getByText("神秘的古代机械")).toBeInTheDocument();
+    expect(screen.getByLabelText(/古代机械（助手）语音/)).not.toBeChecked();
     expect(screen.queryByLabelText("API Key")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("ASR 模型")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("TTS 模型")).not.toBeInTheDocument();
@@ -213,6 +215,7 @@ describe("SettingsCenter", () => {
       page: "voice",
       voice: {
         enabled: false,
+        assistantVoiceEnabled: false,
         characterVoiceId: "",
         characterVoiceName: "",
         assistantVoiceId: "",
@@ -231,9 +234,23 @@ describe("SettingsCenter", () => {
     const props = renderSettings({ page: "voice" });
     expect(screen.getByRole("button", { name: "我已打赏，开启语音" })).toBeDisabled();
     fireEvent.click(screen.getByLabelText(/语音功能/));
-    expect(props.onSaveVoice).toHaveBeenCalledWith({ enabled: false, vadEnabled: false });
+    expect(props.onSaveVoice).toHaveBeenCalledWith({
+      enabled: false,
+      assistantVoiceEnabled: false,
+      vadEnabled: false,
+    });
+    fireEvent.click(screen.getByLabelText(/古代机械（助手）语音/));
+    expect(props.onSaveVoice).toHaveBeenLastCalledWith({
+      enabled: true,
+      assistantVoiceEnabled: true,
+      vadEnabled: false,
+    });
     fireEvent.click(screen.getByLabelText(/语音自动聆听（VAD）/));
-    expect(props.onSaveVoice).toHaveBeenLastCalledWith({ enabled: true, vadEnabled: true });
+    expect(props.onSaveVoice).toHaveBeenLastCalledWith({
+      enabled: true,
+      assistantVoiceEnabled: false,
+      vadEnabled: true,
+    });
   });
 
   it("语音页试听按钮按音色回传 voice_id 与名称", () => {

@@ -34,8 +34,7 @@ from pair_harness.core.contracts import (
 from pair_harness.core.ports import DialogueModel
 
 # 当前协议要求单一 JSON 对象；解析器仍兼容早期“台词 + JSON”输出。
-# 解析失败时降级为纯台词；原始 JSON 绝不进入台词（TTS 只朗读 speech）。
-_FALLBACK_SPEECH = "……"
+# 解析失败必须暴露；不能把空输出改写成可显示的省略号。
 
 
 class OpenAICompatibleDialogueModel(DialogueModel):
@@ -158,10 +157,9 @@ class OpenAICompatibleDialogueModel(DialogueModel):
     ) -> CharacterTurn:
         """把模型输出收敛到角色/助手职责边界。
 
-        JSON 模式和提示词负责主要行为；这里保留一条确定性边界：明确要求
-        操作本地文件、代码或命令时，若模型漏掉 delegation，仍以用户原始
-        指令形成结构化委派。角色只说“交给搭档”，不把工具操作说成自己做。
-        结果回应则以 ExecutionReceipt 派生的状态为准，禁止成功/失败倒置。
+        JSON 模式和提示词负责主要行为；这里仅保留职责边界：角色已经输出
+        delegation 时，角色不把助手任务说成自己执行。结果回应以
+        ExecutionReceipt 派生的状态为准，禁止成功/失败倒置。
         """
         config = load_pair_config(request.pair_id, root=self._config_root)
         assistant_name = config.assistant.name
@@ -173,23 +171,9 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             return turn.model_copy(update={"speech": speech, "delegation": None})
 
         delegation = turn.delegation
-        needs_project_inspection = (
-            request.runtime_context is not None
-            and request.runtime_context.conversation_mode == "collaboration"
-            and _is_current_project_query(request.user_message.text)
-        )
-        if delegation is None and (
-            _is_explicit_local_task(request.user_message.text) or needs_project_inspection
-        ):
-            delegation = TaskRequestDraft(instructions=request.user_message.text.strip())
-
         speech = turn.speech
-        if delegation is not None and _is_placeholder_speech(speech):
-            speech = f"这事交给{assistant_name}查看，等结果回来我再和你说。"
-        elif isinstance(delegation, TaskRequestDraft) and _claims_self_execution(speech):
+        if isinstance(delegation, TaskRequestDraft) and _claims_self_execution(speech):
             speech = f"这事得交给{assistant_name}来处理。{assistant_name}，麻烦你了。"
-        elif delegation is not None and not speech.strip():
-            speech = f"这事交给{assistant_name}来处理。"
         elif delegation is not None and not _mentions_assistant(speech, assistant_name):
             speech = f"{speech.rstrip('。！？!?')}。{assistant_name}，麻烦你了。"
 
@@ -202,18 +186,24 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         """把模型输出解析为 CharacterTurn。
 
         整体或结尾 JSON 对象 → 结构化（speech + delegation）；
-        解析失败 → 降级为纯台词（剥离疑似 JSON 残块，原始 JSON 不进 TTS）。
+        解析失败或 speech 为空 → 直接抛错，不能生成占位台词。
         """
         text = raw_text.strip()
         obj = OpenAICompatibleDialogueModel._try_parse_json(text)
         if obj is not None:
-            speech = str(obj.get("speech") or "").strip() or _FALLBACK_SPEECH
+            if "speech" not in obj:
+                raise ValueError("角色模型输出缺少 speech 字段")
+            speech = str(obj.get("speech") or "").strip()
+            if _is_placeholder_speech(speech):
+                raise ValueError("角色模型输出的 speech 为空或仅包含占位标点")
             delegation = OpenAICompatibleDialogueModel._parse_delegation(
                 obj.get("delegation")
             )
             return CharacterTurn(speech=speech, delegation=delegation)
         cleaned = OpenAICompatibleDialogueModel._strip_json_attempt(text)
-        return CharacterTurn(speech=cleaned or _FALLBACK_SPEECH)
+        if _is_placeholder_speech(cleaned):
+            raise ValueError("角色模型未返回可用 speech")
+        return CharacterTurn(speech=cleaned)
 
     @staticmethod
     def _try_parse_json(text: str) -> dict[str, Any] | None:
@@ -422,11 +412,6 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             yield DialogueEvent(type="speech.completed", raw="".join(text_chunks))
         raw_text = "".join(text_chunks)
         turn = self._parse_output(raw_text)
-        # 流式解析已经拿到 speech 时，完整 JSON 可能在收尾分片处截断。
-        # 保留已经展示的正式台词，让正文气泡沿用已解析内容。
-        streamed_speech = parser.speech.strip()
-        if streamed_speech and turn.speech == _FALLBACK_SPEECH:
-            turn = turn.model_copy(update={"speech": streamed_speech})
         turn = turn.model_copy(update={"reasoning": "".join(reasoning_chunks).strip()})
         yield DialogueEvent(
             type="character.final",
@@ -457,66 +442,11 @@ _OUTPUT_FORMAT_INSTRUCTION = """## 运行时输出协议（最高优先级）
 结果前，不得把任务描述成已执行或已完成。"""
 
 
-_ACTION_WORDS = (
-    "创建", "新建", "删除", "移除", "重命名", "移动", "复制", "修改",
-    "编辑", "写入", "追加", "保存", "运行", "执行", "安装", "构建", "编译",
-    "测试", "检查", "读取", "打开", "列出",
-)
-_LOCAL_OBJECT_WORDS = (
-    "文件", "文件夹", "目录", "路径", "代码", "项目", "仓库", "脚本", "命令",
-    "测试", "依赖",
-)
-_QUESTION_CUES = ("怎么", "如何", "为什么", "解释", "教程", "原理")
-_REQUEST_CUES = ("请", "帮我", "替我", "麻烦", "让", "把")
-_CURRENT_PROJECT_REFERENCES = (
-    "这个项目",
-    "当前项目",
-    "本项目",
-    "这个仓库",
-    "当前仓库",
-    "本仓库",
-)
-_PROJECT_QUERY_CUES = (
-    "介绍",
-    "了解",
-    "看看",
-    "查看",
-    "讲讲",
-    "说说",
-    "做什么",
-    "干什么",
-    "用途",
-    "结构",
-    "技术栈",
-)
 _SELF_EXECUTION_RE = re.compile(
     r"我(?:来|去|现在|这就|马上)?(?:帮你|替你)?"
     r"(?:创建|新建|删除|移除|重命名|移动|复制|修改|编辑|写入|追加|保存|运行|执行|安装|构建|编译|测试|检查|读取|打开|处理)"
 )
 _FAILURE_CUES = ("没做成", "失败", "未执行", "没有完成", "已取消", "取消了")
-
-
-def _is_explicit_local_task(text: str) -> bool:
-    normalized = str(text or "").strip().lower()
-    if not normalized:
-        return False
-    if any(cue in normalized for cue in _QUESTION_CUES) and normalized.endswith(("?", "？")):
-        return False
-    has_action = any(word in normalized for word in _ACTION_WORDS)
-    has_object = any(word in normalized for word in _LOCAL_OBJECT_WORDS)
-    has_request = any(word in normalized for word in _REQUEST_CUES)
-    # 文件名或相对/绝对路径也属于明确本地对象。
-    has_path = bool(
-        re.search(r"(?:[a-z]:[\\/]|[.]{0,2}[\\/]|\b[\w.-]+\.(?:txt|md|py|json|ya?ml|toml|csv)\b)", normalized)
-    )
-    return has_action and has_request and (has_object or has_path)
-
-
-def _is_current_project_query(text: str) -> bool:
-    normalized = str(text or "").strip().lower()
-    return any(ref in normalized for ref in _CURRENT_PROJECT_REFERENCES) and any(
-        cue in normalized for cue in _PROJECT_QUERY_CUES
-    )
 
 
 def _is_placeholder_speech(speech: str) -> bool:

@@ -78,7 +78,7 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
     expect(queueItems[1]).toMatchObject({ queueItemId: "q-2", summary: "继续", position: 2 });
   });
 
-  it("delegation：当前会话最新委派消息 → 委派卡；activeTask 决定运行态", () => {
+  it("delegation：委派卡按真实消息状态展示运行/完成", () => {
     const event = (sequence: number, payload: Record<string, unknown>): DesktopEvent => ({
       kind: "event",
       event: "message.created",
@@ -101,6 +101,7 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
           target: "assistant",
           origin: "character_delegation",
           delegation_id: "task-9",
+          status: "done",
         },
       }),
     ]);
@@ -133,6 +134,58 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
     vm = presentAppShell(desktopStore.getState());
     expect(vm.workspace?.delegation?.status).toBe("running");
 
+  });
+
+  it("delegation：失败消息不再被 activeTask 清理误标为已完成", () => {
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "message.created",
+        sequence: 1,
+        payload: {
+          message: {
+            message_id: "delegation-failed",
+            conversation_id: "conv-1",
+            pair_id: "phainon_ancient_machine",
+            engine_turn_id: null,
+            source: "user",
+            kind: "user.text",
+            text: "帮我检查项目",
+            payload: { error: "古代机械未返回最终回复" },
+            tts_eligible: false,
+            created_at: "2026-08-11T00:00:00+00:00",
+            target: "assistant",
+            origin: "character_delegation",
+            delegation_id: "task-failed",
+            status: "processing",
+          },
+        },
+      },
+      {
+        kind: "event",
+        event: "message.status_changed",
+        sequence: 2,
+        payload: {
+          message: {
+            message_id: "delegation-failed",
+            conversation_id: "conv-1",
+            pair_id: "phainon_ancient_machine",
+            engine_turn_id: null,
+            source: "user",
+            kind: "user.text",
+            text: "帮我检查项目",
+            payload: { error: "古代机械未返回最终回复" },
+            tts_eligible: false,
+            created_at: "2026-08-11T00:00:00+00:00",
+            target: "assistant",
+            origin: "character_delegation",
+            delegation_id: "task-failed",
+            status: "failed",
+          },
+        },
+      },
+    ]);
+    expect(presentAppShell(desktopStore.getState()).workspace?.delegation?.status).toBe("failed");
   });
 
   it("delegation：无委派消息时为 null；普通 user 消息不触发", () => {
@@ -305,6 +358,7 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
       },
       voice: {
         enabled: "true",
+        assistant_voice_enabled: "false",
         base_url: "https://dashscope.aliyuncs.com/api/v1",
         api_key_masked: "sk-v…5678",
         asr_model: "qwen-audio-3.0-asr-flash-streaming",
@@ -326,6 +380,7 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
     });
     expect(mapped.settings.voice).toMatchObject({
       enabled: true,
+      assistantVoiceEnabled: false,
       characterVoiceId: "longxiaoyu",
       characterVoiceName: "白厄",
       assistantVoiceId: "longxiaoyu",
