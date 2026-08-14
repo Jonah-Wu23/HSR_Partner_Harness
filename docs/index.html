@@ -773,9 +773,9 @@ footer{
     <!-- 搭档 1：白厄 × 神秘的古代机械 -->
     <div class="partner-card card-phainon reveal reveal-d1">
       <div class="partner-art-pane">
-        <img class="art-main" src="assets/website/白厄1.jpg" alt="白厄 · 哀丽秘榭金色麦田" data-full="assets/website/白厄1.jpg" />
+        <img class="art-main" src="assets/website/白厄1.jpg" alt="白厄 · 哀丽秘榭金色麦田" data-full="phainon-main" />
         <div class="art-overlay"></div>
-        <div class="art-inset-card" title="点击查看高清单张：救世神瞳" data-full="assets/website/白厄2.jpg">
+        <div class="art-inset-card" title="点击查看高清单张：救世神瞳" data-full="phainon-inset">
           <img class="art-inset-img" src="assets/website/白厄2.jpg" alt="白厄 · 神瞳" />
           <span class="art-inset-tag">圣城神瞳 ↗</span>
         </div>
@@ -817,9 +817,9 @@ footer{
     <!-- 搭档 2：流萤 × 萨姆 -->
     <div class="partner-card card-firefly reveal reveal-d2">
       <div class="partner-art-pane">
-        <img class="art-main" src="assets/website/流萤1.png" alt="流萤 · 梦境街头回眸" data-full="assets/website/流萤1.png" />
+        <img class="art-main" src="assets/website/流萤1.png" alt="流萤 · 梦境街头回眸" data-full="firefly-main" />
         <div class="art-overlay"></div>
-        <div class="art-inset-card" title="点击查看高清单张：机甲维生舱" data-full="assets/website/流萤2.png">
+        <div class="art-inset-card" title="点击查看高清单张：机甲维生舱" data-full="firefly-inset">
           <img class="art-inset-img" src="assets/website/流萤2.png" alt="流萤 · 维生机甲" />
           <span class="art-inset-tag">装甲维生舱 ↗</span>
         </div>
@@ -861,9 +861,9 @@ footer{
     <!-- 搭档 3：三月七 × 第四面镜 -->
     <div class="partner-card card-march7 reveal reveal-d3">
       <div class="partner-art-pane">
-        <img class="art-main" src="assets/website/三月七1.png" alt="三月七 · 记忆拍立得" data-full="assets/website/三月七1.png" />
+        <img class="art-main" src="assets/website/三月七1.png" alt="三月七 · 记忆拍立得" data-full="march7-main" />
         <div class="art-overlay"></div>
-        <div class="art-inset-card" title="点击查看高清单张：破晓泪光微笑" data-full="assets/website/三月七2.jpg">
+        <div class="art-inset-card" title="点击查看高清单张：破晓泪光微笑" data-full="march7-inset">
           <img class="art-inset-img" src="assets/website/三月七2.jpg" alt="三月七 · 泪光微笑" />
           <span class="art-inset-tag">破晓微笑 ↗</span>
         </div>
@@ -1367,9 +1367,19 @@ npm run tauri:dev</pre>
   var lightbox = document.getElementById("lightbox");
   var lightboxImg = document.getElementById("lightboxImg");
   var lightboxClose = document.getElementById("lightboxClose");
+  var lightboxSources = Object.freeze({
+    "phainon-main": "assets/website/白厄1.jpg",
+    "phainon-inset": "assets/website/白厄2.jpg",
+    "firefly-main": "assets/website/流萤1.png",
+    "firefly-inset": "assets/website/流萤2.png",
+    "march7-main": "assets/website/三月七1.png",
+    "march7-inset": "assets/website/三月七2.jpg"
+  });
 
-  function openLightbox(src){
-    lightboxImg.src = src;
+  function openLightbox(sourceKey){
+    var safeSrc = lightboxSources[sourceKey];
+    if (!safeSrc) return;
+    lightboxImg.src = safeSrc;
     lightbox.classList.add("is-open");
   }
   function closeLightbox(){
@@ -1380,8 +1390,8 @@ npm run tauri:dev</pre>
   document.querySelectorAll("[data-full]").forEach(function(elNode){
     elNode.addEventListener("click", function(e){
       e.stopPropagation();
-      var src = this.getAttribute("data-full");
-      if (src) openLightbox(src);
+      var sourceKey = this.getAttribute("data-full");
+      if (sourceKey) openLightbox(sourceKey);
     });
   });
 
