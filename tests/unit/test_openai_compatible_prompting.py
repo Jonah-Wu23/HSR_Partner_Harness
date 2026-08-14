@@ -170,6 +170,7 @@ async def test_prompt_assembly_injects_role_card_partner_and_summaries(
     assert "神秘的古代机械" in system
     # 输出格式约定（delegation JSON 形态）
     assert '"type": "task"' in system and '"type": "amendment"' in system
+    assert "介绍、查看、分析当前项目、仓库、目录或文件" in system
     # 近期角色对话：character → assistant
     assert {"role": "assistant", "content": "好，我陪着你弄。"} in messages
     # 进度与结果摘要注入

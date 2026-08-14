@@ -41,7 +41,7 @@ def make_request() -> DialogueRequest:
 
 
 @pytest.mark.asyncio
-async def test_deepseek_request_carries_thinking_and_effort() -> None:
+async def test_deepseek_structured_dialogue_disables_thinking() -> None:
     bodies: list[dict] = []
     client = AsyncClient(
         base_url="https://api.deepseek.com",
@@ -58,9 +58,13 @@ async def test_deepseek_request_carries_thinking_and_effort() -> None:
 
     body = bodies[0]
     assert body["model"] == "deepseek-v4-flash"
-    assert body["thinking"] == {"type": "enabled"}
+    # 真实 deepseek-v4-flash 在 thinking + JSON Output + 对话上下文时会返回
+    # 只有空格的 content；结构化角色回合必须使用可解析的请求形态。
+    assert body["thinking"] == {"type": "disabled"}
     assert body["response_format"] == {"type": "json_object"}
     assert "reasoning_effort" not in body  # 未指定档位不写入
+    assert body["temperature"] == 0.0
+    assert body["max_tokens"] == 8192
 
 
 @pytest.mark.asyncio
@@ -81,8 +85,9 @@ async def test_deepseek_effort_medium_normalized_to_high() -> None:
     [event async for event in model.stream_reply(make_request())]
 
     body = bodies[0]
-    assert body["thinking"] == {"type": "enabled"}
-    assert body["reasoning_effort"] == "high"
+    assert body["thinking"] == {"type": "disabled"}
+    # 结构化角色回合不把已关闭的 thinking 与 effort 再混传。
+    assert "reasoning_effort" not in body
 
 
 @pytest.mark.asyncio
@@ -129,8 +134,8 @@ async def test_non_deepseek_host_keeps_standard_body() -> None:
 
 
 @pytest.mark.asyncio
-async def test_temperature_written_only_when_set() -> None:
-    """B1：显式温度写入请求体；未设置时不写（交给服务端默认）。"""
+async def test_deepseek_structured_dialogue_uses_deterministic_sampling() -> None:
+    """结构化角色回合固定采样参数，避免服务端生成空白正文。"""
     bodies: list[dict] = []
     client = AsyncClient(
         base_url="https://api.deepseek.com",
@@ -144,18 +149,5 @@ async def test_temperature_written_only_when_set() -> None:
         temperature=1.0,
     )
     [event async for event in model.stream_reply(make_request())]
-    assert bodies[0]["temperature"] == 1.0
-
-    bodies2: list[dict] = []
-    client2 = AsyncClient(
-        base_url="https://api.deepseek.com",
-        transport=_capturing_transport(bodies2),
-    )
-    model2 = OpenAICompatibleDialogueModel(
-        base_url="https://api.deepseek.com",
-        api_key="sk-test",
-        model="deepseek-v4-flash",
-        client=client2,
-    )
-    [event async for event in model2.stream_reply(make_request())]
-    assert "temperature" not in bodies2[0]
+    assert bodies[0]["temperature"] == 0.0
+    assert bodies[0]["max_tokens"] == 8192

@@ -52,7 +52,7 @@ class OpenAICompatibleDialogueModel(DialogueModel):
     - ``progress_summary`` / ``result_summary`` 以系统消息注入；
     - 输出解析为 :class:`CharacterTurn`：``delegation.type == "task"`` →
       :class:`TaskRequestDraft`，``"amendment"`` → :class:`TaskAmendmentDraft`；
-      解析失败降级为纯台词，且原始 JSON 不会作为台词进入 TTS。
+      解析失败直接抛出，且原始 JSON 不会作为台词进入 TTS。
     """
 
     def __init__(
@@ -337,22 +337,30 @@ class OpenAICompatibleDialogueModel(DialogueModel):
                 return title
         return None
 
-    def _request_extras(self) -> dict[str, Any]:
+    def _request_extras(self, *, structured_dialogue: bool = False) -> dict[str, Any]:
         """B1：按后端识别注入推理请求形态。
 
         只对 DeepSeek 端点写入 thinking/reasoning_effort 字段；
         其余 OpenAI 兼容端点保持标准请求体（Reasonix 文档——
         "the endpoint silently ignores reasoning_effort" 的后端不做无谓注入）。
+
+        DeepSeek 的结构化角色回合必须关闭 thinking。真实 ``deepseek-v4-flash``
+        联调表明，``thinking=enabled`` 与 ``response_format=json_object`` 组合在
+        带历史和项目上下文的回合里会返回 HTTP 200，但 content 只有空格；这不是
+        可解析的台词，也不能靠占位文本或重试伪装成成功。结构化委派仍由同一个
+        DeepSeek 模型生成，只调整这个已验证会失败的请求形态。
         """
         if not is_deepseek_host(self.base_url):
             return {}
+        thinking = False if structured_dialogue else self.thinking
+        effort = None if structured_dialogue else self.reasoning_effort
         extras = deepseek_request_extras(
-            thinking=self.thinking,
-            effort=self.reasoning_effort,
+            thinking=thinking,
+            effort=effort,
             model=self.model,
         )
-        # DeepSeek JSON Output：与 system 中唯一的 JSON 协议配合，避免
-        # “正文 + JSON 尾巴”在流式分块或随机采样下偶发解析失败。
+        # DeepSeek JSON Output：与 system 中唯一的 JSON 协议配合；结构化角色
+        # 回合不启用 thinking，避免真实接口返回空白 content。
         extras["response_format"] = {"type": "json_object"}
         return extras
 
@@ -363,9 +371,15 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             "messages": self._build_messages(request),
             "stream": True,
         }
-        if self.temperature is not None:
+        deepseek_structured = is_deepseek_host(self.base_url)
+        if deepseek_structured:
+            # 结构化委派回合使用确定的采样参数；不改变供应商或模型，只避开
+            # deepseek-v4-flash 在 thinking + JSON Output 下的空白正文响应。
+            payload["temperature"] = 0.0
+            payload["max_tokens"] = 8192
+        elif self.temperature is not None:
             payload["temperature"] = self.temperature
-        payload.update(self._request_extras())
+        payload.update(self._request_extras(structured_dialogue=deepseek_structured))
         # V0.2 M2（问题 10）：content 增量经 IncrementalJsonSpeechParser 只提取
         # 干净 speech 上屏（不再闪烁 JSON 键名）；reasoning_content 走独立通道。
         # 增量期间若字段尚未解析出来，界面显示“正在组织语言…”。
@@ -433,6 +447,10 @@ _OUTPUT_FORMAT_INSTRUCTION = """## 运行时输出协议（最高优先级）
 执行”“我已经完成”。必须通过 delegation 交给搭档：
 
 {"speech": "角色台词", "delegation": {"type": "task", "instructions": "任务内容", "constraints": ["约束"]}}
+
+在协作模式下，用户要求介绍、查看、分析当前项目、仓库、目录或文件时，
+这就是需要本地文件的任务，必须返回上面的 delegation.type == "task"；不能
+只在 speech 里说“让搭档看看”。只有实际返回 delegation 才算委派。
 
 修改正在执行的任务：
 
