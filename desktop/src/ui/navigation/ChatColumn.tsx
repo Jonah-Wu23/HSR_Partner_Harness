@@ -21,6 +21,7 @@ import {
 } from "../../assets/icons/icons";
 import { Menu } from "../primitives/Menu";
 import { isSameDay, relativeTime } from "../format";
+import { getPairAvatars } from "../../assets/pairs/avatars";
 
 interface ChatColumnProps {
   navigation: NavigationViewModel;
@@ -142,14 +143,35 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
 
   const renderRow = (conversation: ConversationViewModel) => {
     const editing = editingId === conversation.conversation_id;
+    const convPairId = conversation.pair_id;
+    const matchedPair =
+      navigation.pairs?.find((p) => p.pair_id === convPairId) ??
+      (convPairId === navigation.currentPair?.pair_id ? navigation.currentPair : null);
+    const avatars = convPairId ? getPairAvatars(convPairId) : null;
+    const pairTitle = matchedPair
+      ? `${matchedPair.character.name} × ${matchedPair.assistant.name}`
+      : (convPairId || "未知搭档");
+
     const meta = (
       <div className="conv-meta">
-        <span
-          className="pair-chip"
-          title={`${navigation.currentPair.character.name} × ${navigation.currentPair.assistant.name}`}
-        >
-          <span className="pair-dot pair-dot-character" />
-          <span className="pair-dot pair-dot-assistant" />
+        <span className="pair-chip" title={pairTitle}>
+          {avatars ? (
+            <span className="pair-chip-avatars">
+              <img src={avatars.character} alt="" className="pair-chip-avatar" />
+              <img src={avatars.assistant} alt="" className="pair-chip-avatar pair-chip-avatar-offset" />
+            </span>
+          ) : matchedPair ? (
+            <>
+              <span className="pair-dot" style={{ background: matchedPair.theme.character_primary }} />
+              <span className="pair-dot" style={{ background: matchedPair.theme.assistant_primary }} />
+            </>
+          ) : (
+            <>
+              <span className="pair-dot pair-dot-character" />
+              <span className="pair-dot pair-dot-assistant" />
+            </>
+          )}
+          <span className="pair-chip-name">{pairTitle}</span>
         </span>
         <span className="conv-time">{relativeTime(conversation.updated_at)}</span>
       </div>
@@ -216,6 +238,39 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
     );
   };
 
+  const pairsList = navigation.pairs?.length ? navigation.pairs : (navigation.currentPair ? [navigation.currentPair] : []);
+  const currentSelectedConv = (currentProject?.conversations ?? []).find(
+    (c) => c.conversation_id === navigation.currentConversationId,
+  );
+  const defaultPairId =
+    currentSelectedConv?.pair_id ||
+    navigation.currentPair?.pair_id ||
+    pairsList[0]?.pair_id ||
+    "phainon_ancient_machine";
+
+  const pairMenuItems = pairsList.map((pair) => {
+    const avatars = getPairAvatars(pair.pair_id);
+    return {
+      id: pair.pair_id,
+      label: `${pair.character.name} × ${pair.assistant.name}`,
+      icon: (
+        <span className="pair-menu-icon">
+          {avatars ? (
+            <span className="pair-menu-avatars">
+              <img src={avatars.character} alt="" className="pair-menu-avatar" />
+              <img src={avatars.assistant} alt="" className="pair-menu-avatar pair-menu-avatar-offset" />
+            </span>
+          ) : (
+            <span className="pair-chip">
+              <span className="pair-dot" style={{ background: pair.theme.character_primary }} />
+              <span className="pair-dot" style={{ background: pair.theme.assistant_primary }} />
+            </span>
+          )}
+        </span>
+      ),
+    };
+  });
+
   return (
     <div className="chat-column-inner">
       <div className="chat-header">
@@ -267,15 +322,27 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
         </div>
       </div>
 
-      <button
-        type="button"
-        className="new-chat-btn"
-        disabled={!currentProject || pathBroken}
-        onClick={() => void actions.createConversation(navigation.currentProjectId)}
-      >
-        <AddConversationIcon />
-        新建聊天
-      </button>
+      <div className="new-chat-wrapper">
+        <Menu
+          ariaLabel="选择搭档新建聊天"
+          align="left"
+          selectedId={defaultPairId}
+          trigger={({ open }) => (
+            <button
+              type="button"
+              className={`new-chat-btn${open ? " is-active" : ""}`}
+              disabled={!currentProject || pathBroken}
+            >
+              <AddConversationIcon />
+              新建聊天
+            </button>
+          )}
+          items={pairMenuItems}
+          onSelect={(pairId) => {
+            void actions.createConversation(navigation.currentProjectId, undefined, pairId);
+          }}
+        />
+      </div>
 
       <div className="chat-search">
         <SearchIcon />

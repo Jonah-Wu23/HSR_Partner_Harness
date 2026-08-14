@@ -58,8 +58,12 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async archiveProject(projectId) {
       await request("project.archive", { project_id: projectId });
     },
-    async createConversation(projectId, title) {
-      await request("conversation.create", { project_id: projectId, title });
+    async createConversation(projectId, title, pairId) {
+      await request("conversation.create", {
+        project_id: projectId,
+        title,
+        ...(pairId ? { pair_id: pairId } : {}),
+      });
     },
     async selectConversation(conversationId) {
       await request("conversation.select", { conversation_id: conversationId });

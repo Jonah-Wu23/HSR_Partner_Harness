@@ -381,9 +381,9 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
     expect(mapped.settings.voice).toMatchObject({
       enabled: true,
       assistantVoiceEnabled: false,
-      characterVoiceId: "longxiaoyu",
+      characterVoiceId: "demo-phainon",
       characterVoiceName: "白厄",
-      assistantVoiceId: "longxiaoyu",
+      assistantVoiceId: "demo-ancient-machine",
       assistantVoiceName: "神秘的古代机械",
       vadEnabled: true,
     });
@@ -406,5 +406,45 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
     expect(presentAppShell(desktopStore.getState()).toasts).toMatchObject([
       { id: "sidecar:Sidecar 断开", kind: "warning", text: "Sidecar 断开", hasDetails: true },
     ]);
+  });
+
+  it("V0.3.0: multi-pair 场景下的 navigation.pairs、currentPairId 与按会话切换搭档语音展示", () => {
+    desktopStore.getState().hydrate(createMockScenario("multi-pair").snapshot);
+    const vm = presentAppShell(desktopStore.getState());
+
+    // 目录包含三组搭档
+    expect(vm.navigation?.pairs).toHaveLength(3);
+    expect(vm.navigation?.pairs.map((p) => p.pair_id)).toEqual([
+      "phainon_ancient_machine",
+      "firefly_sam",
+      "march7_fourth_mirror",
+    ]);
+
+    // 当前选中 conv-firefly -> currentPairId 为 firefly_sam
+    expect(vm.currentPairId).toBe("firefly_sam");
+    expect(vm.settings.voice.characterVoiceName).toBe("流萤");
+    expect(vm.settings.voice.assistantVoiceName).toBe("萨姆");
+    expect(vm.settings.voice.characterVoiceId).toBe("demo-firefly");
+    expect(vm.settings.voice.assistantVoiceId).toBe("demo-sam");
+
+    // 切换到三月七会话 conv-march7
+    desktopStore.getState().hydrate({
+      ...createMockScenario("multi-pair").snapshot,
+      current_conversation_id: "conv-march7",
+    });
+    const march7Vm = presentAppShell(desktopStore.getState());
+    expect(march7Vm.currentPairId).toBe("march7_fourth_mirror");
+    expect(march7Vm.settings.voice.characterVoiceName).toBe("三月七");
+    expect(march7Vm.settings.voice.assistantVoiceName).toBe("第四面镜");
+
+    // 切换到白厄会话 conv-phainon
+    desktopStore.getState().hydrate({
+      ...createMockScenario("multi-pair").snapshot,
+      current_conversation_id: "conv-phainon",
+    });
+    const phainonVm = presentAppShell(desktopStore.getState());
+    expect(phainonVm.currentPairId).toBe("phainon_ancient_machine");
+    expect(phainonVm.settings.voice.characterVoiceName).toBe("白厄");
+    expect(phainonVm.settings.voice.assistantVoiceName).toBe("神秘的古代机械");
   });
 });

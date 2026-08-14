@@ -9,6 +9,7 @@ import type {
   DesktopSnapshot,
   Message,
   PairRecord,
+  PairSummary,
   PendingApproval,
   ProjectRecord,
   QueueItem,
@@ -50,6 +51,7 @@ export interface DesktopState {
   currentProjectId: string;
   currentConversationId: string;
   pair: PairRecord | null;
+  pairs: PairSummary[];
   activeTask: DesktopSnapshot["active_task"];
   busy: boolean;
   approvals: PendingApproval[];
@@ -99,6 +101,7 @@ export type DesktopRenderState = Pick<
   | "currentProjectId"
   | "currentConversationId"
   | "pair"
+  | "pairs"
   | "activeTask"
   | "busy"
   | "approvals"
@@ -158,6 +161,7 @@ function createInitialState(): Omit<
     currentProjectId: "",
     currentConversationId: "",
     pair: null,
+    pairs: [],
     activeTask: null,
     busy: false,
     approvals: [],
@@ -266,6 +270,7 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
     currentProjectId: snapshot.current_project_id,
     currentConversationId: snapshot.current_conversation_id,
     pair: snapshot.pair,
+    pairs: snapshot.pairs ?? (snapshot.pair ? [snapshot.pair] : []),
     activeTask: snapshot.active_task,
     busy: snapshot.busy,
     approvals: snapshot.approvals,
@@ -647,6 +652,7 @@ export const selectDesktopRenderState = (state: DesktopState): DesktopRenderStat
   currentProjectId: state.currentProjectId,
   currentConversationId: state.currentConversationId,
   pair: state.pair,
+  pairs: state.pairs,
   activeTask: state.activeTask,
   busy: state.busy,
   approvals: state.approvals,

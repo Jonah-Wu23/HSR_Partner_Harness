@@ -12,8 +12,14 @@ from pair_harness.core.contracts import (
     TaskRequestDraft,
 )
 from pair_harness.core.orchestrator import ConversationOrchestrator
+from pair_harness.desktop_backend.application_service import build_demo_service
+from pair_harness.desktop_backend.commands import DesktopCommand
 from pair_harness.storage.sqlite_store import SQLiteStore
 from tests.fakes import FixedDialogueModel
+
+
+def _desktop_command(request_id: str, method: str, **params) -> DesktopCommand:
+    return DesktopCommand(request_id=request_id, method=method, params=params)
 
 
 @pytest.mark.asyncio
@@ -151,4 +157,60 @@ def test_restore_drops_session_from_a_different_engine(tmp_path: Path) -> None:
 
     assert "c" not in orchestrator._sessions
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_desktop_service_restores_each_conversation_pair_without_crossing(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "data" / "pair_harness.db"
+    service = build_demo_service(database=database, project_root=tmp_path)
+    try:
+        project_id = service.current_project_id
+        firefly = await service.handle_command(
+            _desktop_command(
+                "create-firefly",
+                "conversation.create",
+                project_id=project_id,
+                pair_id="firefly_sam",
+            )
+        )
+        firefly_id = firefly["current_conversation_id"]
+        march = await service.handle_command(
+            _desktop_command(
+                "create-march",
+                "conversation.create",
+                project_id=project_id,
+                pair_id="march7_fourth_mirror",
+            )
+        )
+        march_id = march["current_conversation_id"]
+    finally:
+        await service.shutdown()
+
+    restored = build_demo_service(database=database, project_root=tmp_path)
+    try:
+        firefly_after_restart = await restored.handle_command(
+            _desktop_command(
+                "select-firefly",
+                "conversation.select",
+                conversation_id=firefly_id,
+            )
+        )
+        assert firefly_after_restart["current_conversation"]["pair_id"] == "firefly_sam"
+        assert firefly_after_restart["pair"]["character"]["name"] == "流萤"
+        assert firefly_after_restart["pair"]["assistant"]["name"] == "萨姆"
+
+        march_after_restart = await restored.handle_command(
+            _desktop_command(
+                "select-march",
+                "conversation.select",
+                conversation_id=march_id,
+            )
+        )
+        assert march_after_restart["current_conversation"]["pair_id"] == "march7_fourth_mirror"
+        assert march_after_restart["pair"]["character"]["name"] == "三月七"
+        assert march_after_restart["pair"]["assistant"]["name"] == "第四面镜"
+    finally:
+        await restored.shutdown()
 

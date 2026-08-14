@@ -173,6 +173,25 @@
   white-space: nowrap;
 }
 
+.topbar-pair-avatars {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+.topbar-avatar {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-xxs);
+  object-fit: cover;
+  flex: none;
+}
+.topbar-pair-names {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .pair-dot {
   width: 8px;
   height: 8px;
@@ -376,6 +395,16 @@
   padding: 0 var(--space-3) var(--space-2);
   flex: none;
 }
+.new-chat-wrapper {
+  width: 100%;
+}
+.new-chat-wrapper .menu-root {
+  width: 100%;
+}
+.new-chat-wrapper .menu-popup-left {
+  left: var(--space-3);
+  min-width: 220px;
+}
 .new-chat-btn {
   display: flex;
   align-items: center;
@@ -393,9 +422,34 @@
   flex: none;
 }
 .new-chat-btn:hover:not(:disabled) { background: var(--fill-hover); }
-.new-chat-btn:active:not(:disabled) { background: var(--fill-active); }
+.new-chat-btn:active:not(:disabled),
+.new-chat-btn.is-active { background: var(--fill-active); }
 .new-chat-btn:disabled { opacity: 0.45; }
 .new-chat-btn svg { width: 16px; height: 16px; flex: none; color: var(--text-secondary); }
+
+.pair-menu-icon {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  margin-right: 2px;
+}
+.pair-menu-avatars {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+.pair-menu-avatar {
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-xxs);
+  object-fit: cover;
+  flex: none;
+  border: 0.5px solid var(--separator);
+}
+.pair-menu-avatar-offset {
+  margin-left: -5px;
+  box-shadow: -1px 0 0 var(--bg-elevated);
+}
 
 .chat-search {
   display: flex;
@@ -537,6 +591,24 @@
   min-width: 0;
 }
 .pair-chip .pair-dot { width: 6px; height: 6px; }
+.pair-chip-avatars {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  margin-right: 2px;
+}
+.pair-chip-avatar {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-xxs);
+  object-fit: cover;
+  flex: none;
+  border: 0.5px solid var(--separator);
+}
+.pair-chip-avatar-offset {
+  margin-left: -4px;
+  box-shadow: -1px 0 0 var(--bg-card);
+}
 .pair-chip-name {
   overflow: hidden;
   text-overflow: ellipsis;

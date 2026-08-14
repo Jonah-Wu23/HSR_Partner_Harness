@@ -14,7 +14,13 @@ from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDia
 from pair_harness.adapters.reviewer import DialogueModelReviewer
 from pair_harness.app_paths import AppPaths
 from pair_harness.cli import load_dotenv
-from pair_harness.config.pairs import PairConfig, load_pair_config, load_prompt
+from pair_harness.config.pairs import (
+    PAIR_CATALOG_IDS,
+    PairConfig,
+    list_pair_configs,
+    load_pair_config,
+    load_prompt,
+)
 from pair_harness.config.providers import detect_provider, load_reasoning_preset
 from pair_harness.core.contracts import (
     ApprovalDecision,
@@ -137,6 +143,7 @@ class DesktopApplicationService:
         store: SQLiteStore,
         orchestrator: ConversationOrchestrator,
         pair_config: PairConfig,
+        pair_catalog: list[PairConfig],
         emitter: EventEmitter,
         approval_broker: ApprovalBroker,
         dialogue_model: Any,
@@ -148,6 +155,7 @@ class DesktopApplicationService:
         self.store = store
         self.orchestrator = orchestrator
         self.pair_config = pair_config
+        self.pair_catalog = tuple(pair_catalog)
         self.emitter = emitter
         self.approval_broker = approval_broker
         self.dialogue_model = dialogue_model
@@ -370,6 +378,7 @@ class DesktopApplicationService:
             "approvals": self.approval_broker.snapshot(),
             "voice": self._voice_snapshot(),
             "pair": self._pair_payload(self.pair_config),
+            "pairs": [self._pair_payload(pair) for pair in self.pair_catalog],
             # 快照记录最近一条已经发出的事件；next_sequence 指向下一条待发事件。
             # 前端以该值作为 lastSequence，下一条事件必须从它递增一位。
             "sequence": self.emitter.next_sequence - 1,
@@ -497,6 +506,7 @@ class DesktopApplicationService:
         return {"stopped": True}
 
     async def _project_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        pair_id = self._requested_pair_id(params)
         root_value = params.get("root_path")
         if not isinstance(root_value, str) or not root_value:
             raise ServiceError("project.create 需要 root_path", code="invalid_params")
@@ -515,7 +525,7 @@ class DesktopApplicationService:
             )
         conversation = self._find_or_create_conversation(
             project.project_id,
-            pair_id=str(params.get("pair_id") or self.pair_config.pair_id),
+            pair_id=pair_id,
         )
         self._select_conversation_context(conversation.conversation_id, emit=True)
         return self.bootstrap()
@@ -615,12 +625,13 @@ class DesktopApplicationService:
         return self.bootstrap()
 
     async def _conversation_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        pair_id = self._requested_pair_id(params)
         project_id = str(params.get("project_id") or self.current_project_id)
         project = self._current_account_project(project_id)
         title = str(params.get("title") or "新聊天")
         conversation = self.store.create_conversation(
             project_id=project.project_id,
-            pair_id=str(params.get("pair_id") or self.pair_config.pair_id),
+            pair_id=pair_id,
             title=title,
             account_id=self.current_account_id,
         )
@@ -1958,6 +1969,18 @@ class DesktopApplicationService:
 
     # ------------------------------------------------------------------ 上下文工具
 
+    def _requested_pair_id(self, params: Mapping[str, Any]) -> str:
+        """解析创建命令的搭档参数；省略时保持启动搭档的旧行为。"""
+        if "pair_id" not in params:
+            return self.pair_config.pair_id
+        pair_id = str(params["pair_id"])
+        if pair_id not in PAIR_CATALOG_IDS:
+            raise ServiceError(
+                f"搭档不存在：{pair_id}",
+                code="PAIR_NOT_FOUND",
+            )
+        return pair_id
+
     def _restore_current_conversation(self) -> None:
         if not self.current_conversation_id:
             return
@@ -2217,6 +2240,7 @@ def _build_service(
     event_sink: EventSink,
     demo: bool,
 ) -> DesktopApplicationService:
+    pair_catalog = list_pair_configs()
     pair_config = load_pair_config(pair_id)
     store = SQLiteStore(database)
     account_id = store.get_app_state("current_account_id") or "default-local"
@@ -2296,6 +2320,7 @@ def _build_service(
         store=store,
         orchestrator=orchestrator,
         pair_config=pair_config,
+        pair_catalog=pair_catalog,
         emitter=emitter,
         approval_broker=broker,
         dialogue_model=dialogue_model,

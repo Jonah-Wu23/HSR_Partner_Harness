@@ -1,0 +1,19 @@
+pair_id: firefly_sam
+character:
+  id: firefly
+  name: 流萤
+  prompt: config/prompts/characters/firefly.md
+  voice_id: qwen-audio-3.0-tts-flash-firefly-233c61b0cb184b1e94fe5de4448df4ea
+assistant:
+  id: sam
+  name: 萨姆
+  prompt: config/prompts/assistants/sam.md
+  voice_id: qwen-audio-3.0-tts-flash-sam-576163dee3584951ae8847f7dd748b2e
+theme:
+  character_text: "#D1FAE5"
+  character_primary: "#52D1A3"
+  character_deep: "#1B4738"
+  character_active: "#22C58B"
+  assistant_primary: "#E65A28"
+  assistant_bright: "#FF844B"
+  assistant_shadow: "#9C3210"

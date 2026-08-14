@@ -57,6 +57,12 @@ async def test_bootstrap_contains_projects_conversation_and_voice_shape(tmp_path
         snapshot = await service.handle_command(command("1", "app.bootstrap"))
         assert snapshot["projects"][0]["path_available"] is True
         assert snapshot["current_conversation"]["pair_id"] == "phainon_ancient_machine"
+        assert [pair["pair_id"] for pair in snapshot["pairs"]] == [
+            "firefly_sam",
+            "march7_fourth_mirror",
+            "phainon_ancient_machine",
+        ]
+        assert snapshot["pairs"][-1] == snapshot["pair"]
         assert snapshot["messages"] == []
         assert snapshot["voice"]["supported"] is False
         # V0.2 M4：voice 快照携带待播队列长度（VoiceMiniPlayer 的 queuedCount）
@@ -474,6 +480,50 @@ async def test_voice_commands_only_exchange_state_with_attached_runtime(tmp_path
         changed = [event for event in events if event["event"] == "voice.state_changed"]
         assert changed
         assert all(event["payload"]["voice"]["speech_queue_len"] == 0 for event in changed)
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_invalid_pair_id_is_rejected_before_creating_records(tmp_path: Path) -> None:
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        existing_conversations = service.store.list_conversations(
+            service.current_project_id,
+            account_id=service.current_account_id,
+        )
+        with pytest.raises(ServiceError) as conversation_error:
+            await service.handle_command(
+                command(
+                    "invalid-conversation",
+                    "conversation.create",
+                    project_id=service.current_project_id,
+                    pair_id="not-a-pair",
+                )
+            )
+        assert conversation_error.value.code == "PAIR_NOT_FOUND"
+        assert "not-a-pair" in str(conversation_error.value)
+        assert service.store.list_conversations(
+            service.current_project_id,
+            account_id=service.current_account_id,
+        ) == existing_conversations
+
+        invalid_project = tmp_path / "should-not-be-created"
+        with pytest.raises(ServiceError) as project_error:
+            await service.handle_command(
+                command(
+                    "invalid-project",
+                    "project.create",
+                    root_path=str(invalid_project),
+                    pair_id="not-a-pair",
+                )
+            )
+        assert project_error.value.code == "PAIR_NOT_FOUND"
+        assert "not-a-pair" in str(project_error.value)
+        assert service.store.find_project_by_root_path(str(invalid_project.resolve())) is None
     finally:
         await service.shutdown()
 

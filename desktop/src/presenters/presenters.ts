@@ -135,15 +135,30 @@ function presentSettings(state: DesktopRenderState): AppShellViewModel["settings
   const codex = config?.codex ?? {};
   const reasoningEffort =
     typeof dialogue.reasoning_effort === "string" ? dialogue.reasoning_effort : "auto";
+
+  const currentConv = state.conversationsById[state.currentConversationId];
+  const activePairId = currentConv?.pair_id || state.pair?.pair_id;
+  const activePair =
+    state.pairs.find((p) => p.pair_id === activePairId) ?? state.pair;
+
+  const characterVoiceId =
+    activePair?.character.voice_id || String(voiceConfig.character_voice ?? "");
+  const characterVoiceName =
+    activePair?.character.name || String(voiceConfig.character_voice_name ?? "");
+  const assistantVoiceId =
+    activePair?.assistant.voice_id || String(voiceConfig.assistant_voice ?? "");
+  const assistantVoiceName =
+    activePair?.assistant.name || String(voiceConfig.assistant_voice_name ?? "");
+
   const voice: VoicePageView = {
     enabled: Boolean(voiceConfig.enabled === true || voiceConfig.enabled === "true"),
     assistantVoiceEnabled: Boolean(
       voiceConfig.assistant_voice_enabled === true || voiceConfig.assistant_voice_enabled === "true",
     ),
-    characterVoiceId: String(voiceConfig.character_voice ?? ""),
-    characterVoiceName: String(voiceConfig.character_voice_name ?? ""),
-    assistantVoiceId: String(voiceConfig.assistant_voice ?? ""),
-    assistantVoiceName: String(voiceConfig.assistant_voice_name ?? ""),
+    characterVoiceId,
+    characterVoiceName,
+    assistantVoiceId,
+    assistantVoiceName,
     vadEnabled: Boolean(voiceConfig.vad_enabled === "true"),
     vadStatus: "ready",
   };
@@ -212,16 +227,20 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
     : [];
   const assistantTools = currentConversation ? toolsFor(state, currentConversation.conversation_id) : [];
   const approvalMode = currentProject?.approval_mode ?? "request_approval";
+  const currentPairId =
+    currentConversation?.pair_id || state.pair?.pair_id || "phainon_ancient_machine";
 
   return {
     status: state.status,
     theme: state.theme,
+    currentPairId,
     navigation: state.pair
       ? {
           projects,
           currentProjectId: state.currentProjectId,
           currentConversationId: state.currentConversationId,
           currentPair: state.pair,
+          pairs: state.pairs?.length ? state.pairs : [state.pair],
         }
       : null,
     workspace: currentConversation

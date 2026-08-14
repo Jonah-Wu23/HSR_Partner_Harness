@@ -3,6 +3,7 @@ import type { PairRecord } from "../contracts/protocol";
 import type { ConnectionViewStatus } from "./status/types";
 import { ConnectionPill } from "./status/ConnectionPill";
 import { SettingIcon, StopIcon } from "../assets/icons/icons";
+import { getPairAvatars } from "../assets/pairs/avatars";
 
 interface TopBarProps {
   mode: "chat" | "collaboration";
@@ -33,11 +34,27 @@ export function TopBar({
         <span className="topbar-title">HSR Partner Harness</span>
         {pair ? (
           <span className="topbar-pair">
-            <span className="pair-dot pair-dot-character" />
-            {pair.character.name}
-            <span aria-hidden>×</span>
-            <span className="pair-dot pair-dot-assistant" />
-            {pair.assistant.name}
+            {getPairAvatars(pair.pair_id) ? (
+              <span className="topbar-pair-avatars">
+                <img
+                  src={getPairAvatars(pair.pair_id)!.character}
+                  alt={pair.character.name}
+                  className="topbar-avatar"
+                />
+                <img
+                  src={getPairAvatars(pair.pair_id)!.assistant}
+                  alt={pair.assistant.name}
+                  className="topbar-avatar"
+                />
+              </span>
+            ) : (
+              <span className="pair-dot pair-dot-character" />
+            )}
+            <span className="topbar-pair-names">
+              {pair.character.name}
+              <span aria-hidden>×</span>
+              {pair.assistant.name}
+            </span>
           </span>
         ) : null}
       </div>

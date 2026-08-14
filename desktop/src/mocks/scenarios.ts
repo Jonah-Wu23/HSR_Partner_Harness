@@ -11,6 +11,7 @@ export const MOCK_SCENARIO_NAMES = [
   "empty",
   "single-project",
   "many-projects",
+  "multi-pair",
   "invalid-path",
   "chat-streaming",
   "collaboration-running",
@@ -38,24 +39,64 @@ export interface MockScenario {
   submitEvents: DesktopEvent[];
 }
 
-const pair: PairRecord = {
-  pair_id: "phainon_ancient_machine",
-  character: { id: "phainon", name: "白厄", voice_id: "demo-phainon" },
-  assistant: {
-    id: "ancient_machine",
-    name: "神秘的古代机械",
-    voice_id: "demo-ancient-machine",
+export const MOCK_PAIRS: PairRecord[] = [
+  {
+    pair_id: "phainon_ancient_machine",
+    character: { id: "phainon", name: "白厄", voice_id: "demo-phainon" },
+    assistant: {
+      id: "ancient_machine",
+      name: "神秘的古代机械",
+      voice_id: "demo-ancient-machine",
+    },
+    theme: {
+      character_text: "#C7D4E3",
+      character_primary: "#8AA4D4",
+      character_deep: "#3A548C",
+      character_active: "#296CE1",
+      assistant_primary: "#B08D57",
+      assistant_bright: "#C5A059",
+      assistant_shadow: "#8C6B3F",
+    },
   },
-  theme: {
-    character_text: "#C7D4E3",
-    character_primary: "#8AA4D4",
-    character_deep: "#3A548C",
-    character_active: "#296CE1",
-    assistant_primary: "#B08D57",
-    assistant_bright: "#C5A059",
-    assistant_shadow: "#8C6B3F",
+  {
+    pair_id: "firefly_sam",
+    character: { id: "firefly", name: "流萤", voice_id: "demo-firefly" },
+    assistant: {
+      id: "sam",
+      name: "萨姆",
+      voice_id: "demo-sam",
+    },
+    theme: {
+      character_text: "#D1FAE5",
+      character_primary: "#52D1A3",
+      character_deep: "#1B4738",
+      character_active: "#22C58B",
+      assistant_primary: "#E65A28",
+      assistant_bright: "#FF844B",
+      assistant_shadow: "#9C3210",
+    },
   },
-};
+  {
+    pair_id: "march7_fourth_mirror",
+    character: { id: "march7", name: "三月七", voice_id: "demo-march7" },
+    assistant: {
+      id: "fourth_mirror",
+      name: "第四面镜",
+      voice_id: "demo-fourth-mirror",
+    },
+    theme: {
+      character_text: "#FFE4EC",
+      character_primary: "#FF8DA1",
+      character_deep: "#542031",
+      character_active: "#F43F5E",
+      assistant_primary: "#A78BFA",
+      assistant_bright: "#C4B5FD",
+      assistant_shadow: "#6D28D9",
+    },
+  },
+];
+
+const pair: PairRecord = MOCK_PAIRS[0];
 
 // V0.2 M4：场景默认已登录非默认账号（username != "default"，不触发账号门）；
 // 账号门/引导场景单独用 gate-default / onboarding-pending。
@@ -104,11 +145,12 @@ export function conversation(
   id: string,
   projectId: string,
   title: string,
+  pairId: string = pair.pair_id,
 ): ProjectRecord["conversations"][number] {
   return {
     conversation_id: id,
     project_id: projectId,
-    pair_id: pair.pair_id,
+    pair_id: pairId,
     title,
     last_mode: "collaboration",
     archived: false,
@@ -123,11 +165,12 @@ export function message(
   source: Message["source"],
   kind: Message["kind"],
   text: string,
+  pairId: string = pair.pair_id,
 ): Message {
   return {
     message_id: id,
     conversation_id: conversationId,
-    pair_id: pair.pair_id,
+    pair_id: pairId,
     engine_turn_id: null,
     source,
     kind,
@@ -160,6 +203,7 @@ function baseSnapshot(
   conversationId: string,
   messages: Message[] = [],
   toolRuns: ToolRun[] = [],
+  pairOverride?: PairRecord,
 ): DesktopSnapshot {
   const currentProject = projects.find((item) =>
     item.conversations.some((item) => item.conversation_id === conversationId),
@@ -169,6 +213,7 @@ function baseSnapshot(
   );
   const fallbackProject = currentProject ?? projects[0];
   const fallbackConversation = currentConversation ?? fallbackProject?.conversations[0];
+  const activePair = pairOverride ?? pair;
   return {
     projects,
     current_account_id: demoAccount.account_id,
@@ -192,7 +237,7 @@ function baseSnapshot(
     current_conversation: fallbackConversation ?? {
       conversation_id: "",
       project_id: null,
-      pair_id: pair.pair_id,
+      pair_id: activePair.pair_id,
       title: "",
       last_mode: "chat",
       archived: false,
@@ -219,7 +264,8 @@ function baseSnapshot(
       // V0.2 M4：待播队列条数（VoiceMiniPlayer 的 queuedCount）
       speech_queue_len: 0,
     },
-    pair,
+    pair: activePair,
+    pairs: MOCK_PAIRS,
     sequence: 0,
   };
 }
@@ -293,6 +339,41 @@ export function createMockScenario(name: MockScenarioName): MockScenario {
 
   if (name === "empty") {
     snapshot = baseSnapshot([], "", [], []);
+  } else if (name === "multi-pair") {
+    const conv1 = conversation(
+      "conv-phainon",
+      "project-1",
+      "白厄与古代机械 - 麦田日常",
+      "phainon_ancient_machine",
+    );
+    const conv2 = conversation(
+      "conv-firefly",
+      "project-1",
+      "流萤与萨姆 - 苍穹与甜点",
+      "firefly_sam",
+    );
+    const conv3 = conversation(
+      "conv-march7",
+      "project-1",
+      "三月七与第四面镜 - 冰晶摄影",
+      "march7_fourth_mirror",
+    );
+    projects = [
+      project("project-1", "多搭档联合项目", "C:/Projects/hsr-partners", [
+        conv1,
+        conv2,
+        conv3,
+      ]),
+    ];
+    messages = [
+      message("msg-p-1", "conv-phainon", "user", "user.text", "小白，今天去哪训练？", "phainon_ancient_machine"),
+      message("msg-p-2", "conv-phainon", "character", "character.speech", "先去广场转转，听说西塔罗斯先生又进了一批老物件。", "phainon_ancient_machine"),
+      message("msg-f-1", "conv-firefly", "user", "user.text", "流萤，今天感觉怎么样？", "firefly_sam"),
+      message("msg-f-2", "conv-firefly", "character", "character.speech", "我很好。刚才去买了橡木蛋糕卷，分你一半。", "firefly_sam"),
+      message("msg-m-1", "conv-march7", "user", "user.text", "三月，拍到好照片了吗？", "march7_fourth_mirror"),
+      message("msg-m-2", "conv-march7", "character", "character.speech", "本姑娘出马当然拍到啦，看，这张构图绝了吧！", "march7_fourth_mirror"),
+    ];
+    snapshot = baseSnapshot(projects, "conv-firefly", messages, [], MOCK_PAIRS[1]);
   } else if (name === "many-projects") {
     projects = Array.from({ length: 5 }, (_, projectIndex) => {
       const projectId = `project-${projectIndex + 1}`;

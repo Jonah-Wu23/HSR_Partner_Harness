@@ -151,6 +151,8 @@ export interface PairSpeaker {
   voice_id: string;
 }
 
+export type PairSpeakerSummary = PairSpeaker;
+
 export interface PairTheme {
   character_text: string;
   character_primary: string;
@@ -167,6 +169,10 @@ export interface PairRecord {
   assistant: PairSpeaker;
   theme: PairTheme;
 }
+
+export type PairSummary = PairRecord;
+
+export const PAIR_NOT_FOUND = "PAIR_NOT_FOUND";
 
 export interface ActiveTask {
   project_id: string;
@@ -226,6 +232,7 @@ export interface DesktopSnapshot {
   approvals: PendingApproval[];
   voice: VoiceState;
   pair: PairRecord;
+  pairs: PairSummary[];
   sequence: number;
 }
 

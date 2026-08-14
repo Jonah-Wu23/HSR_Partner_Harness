@@ -1,0 +1,19 @@
+pair_id: march7_fourth_mirror
+character:
+  id: march7
+  name: 三月七
+  prompt: config/prompts/characters/march7.md
+  voice_id: qwen-audio-3.0-tts-flash-march7-87efc5e56bf74146a396e03769653e0e
+assistant:
+  id: fourth_mirror
+  name: 第四面镜
+  prompt: config/prompts/assistants/fourth_mirror.md
+  voice_id: qwen-audio-3.0-tts-flash-fourthmirr-53ec3a67726c4145a1d3a4288a354ff3
+theme:
+  character_text: "#FFE4EC"
+  character_primary: "#FF8DA1"
+  character_deep: "#542031"
+  character_active: "#F43F5E"
+  assistant_primary: "#A78BFA"
+  assistant_bright: "#C4B5FD"
+  assistant_shadow: "#6D28D9"
