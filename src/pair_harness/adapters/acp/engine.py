@@ -82,7 +82,7 @@ class AcpCodingEngine(CodingEngine):
         await self.transport.start()
         await self.transport.request(
             "initialize",
-            {"clientInfo": {"name": "pair-harness", "version": "0.2.0"}},
+            {"clientInfo": {"name": "pair-harness", "version": "0.2.5"}},
         )
         self._initialized = True
 

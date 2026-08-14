@@ -7,7 +7,7 @@
 <p align="center">把角色对话和本地 AI 编程放进同一个 Windows 工作台</p>
 
 <p align="center">
-  <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases"><img src="https://img.shields.io/badge/version-v0.2.0-E8B25C" alt="Version 0.2.0" /></a>
+  <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases"><img src="https://img.shields.io/badge/version-v0.2.5-E8B25C" alt="Version 0.2.5" /></a>
   <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/actions/workflows/ci.yml"><img src="https://github.com/Jonah-Wu23/HSR_Partner_Harness/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" /></a>
   <img src="https://img.shields.io/badge/platform-Windows%20x64-2F5D50" alt="Windows x64" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-5B6C8F" alt="Apache License 2.0" /></a>
@@ -60,7 +60,7 @@ GitHub Actions 在 Windows runner 执行 Python 测试、前端测试与构建�
 | 极高 | `xhigh` |
 | 最高 | `max` |
 
-## v0.2.0 更新
+## v0.2.5 更新
 
 - 本地账号和设置中心，按账号保存各项模型与语音设置，并管理 Codex 登录信息。
 - 持久化会话队列支持调整任务内容与顺序，也可撤回任务；当前回合结束后自动派发。
@@ -143,16 +143,16 @@ npm run tauri:build
 
 ## 测试与发布验证
 
-当前 v0.2.0 已完成以下验证：
+当前 v0.2.5 已完成以下验证：
 
 | 检查项 | 结果 |
 | --- | --- |
-| Python | `370 passed, 5 skipped` |
-| 前端 Vitest | `71 passed` |
+| Python | `413 passed, 5 skipped` |
+| 前端 Vitest | `103 passed` |
 | TypeScript | `tsc --noEmit` 通过 |
 | Rust | `cargo test`，`7 passed` |
 | 生产构建 | Vite build 通过 |
-| Windows 安装包 | NSIS 安装版启动冒烟通过，Sidecar 与随包资源加载正常 |
+| Windows 安装包 | NSIS `HSR Partner Harness_0.2.5_x64-setup.exe` 构建通过，Sidecar、Codex、Reasonix 与 VAD 资源已随包封装 |
 
 常用命令：
 
@@ -181,7 +181,7 @@ cargo test
 | `assets/` | 运行时模型文件。 |
 | `tests/` | Python 测试。 |
 | `docs/architecture.md` | 桌面架构说明。 |
-| `docs/design/v0.2.0-release-notes.md` | v0.2.0 发布说明。 |
+| `docs/design/v0.2.5-release-notes.md` | v0.2.5 发布说明。 |
 
 ## 参与项目
 
