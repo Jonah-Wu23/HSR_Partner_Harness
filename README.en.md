@@ -4,14 +4,14 @@
 
 [![Website](https://img.shields.io/badge/website-jonah--wu23.github.io-E8B25C)](https://jonah-wu23.github.io/HSR_Partner_Harness/)
 [![GitHub Pages](https://img.shields.io/github/deployments/Jonah-Wu23/HSR_Partner_Harness/github-pages?label=pages)](https://jonah-wu23.github.io/HSR_Partner_Harness/)
-[![Version](https://img.shields.io/badge/version-v0.2.5-E8B25C)](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases)
+[![Version](https://img.shields.io/badge/version-v0.3.1-E8B25C)](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases)
 [![CI](https://github.com/Jonah-Wu23/HSR_Partner_Harness/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Jonah-Wu23/HSR_Partner_Harness/actions/workflows/ci.yml)
 
 Project website: <https://jonah-wu23.github.io/HSR_Partner_Harness/>
 
 HSR Partner Harness is a Windows desktop app where character chat and local AI coding happen in the same conversation. You can talk the plan through with Phainon first, hand the task to the Mysterious Ancient Machine once you agree, and the progress and results come back into the same conversation for Phainon to respond to.
 
-The current release is `v0.2.5`. The interface is built with Tauri 2 and React, and a Python sidecar manages session state and model calls.
+The current release is `v0.3.1`. The interface is built with Tauri 2 and React, and a Python sidecar manages session state and model calls.
 
 The product is a local Windows workspace for development and research prototypes, with character-driven interaction built into the workflow. It keeps planning and execution in one session. The current release focuses on local Windows workflows, with model requests sent to the provider configured by you.
 
@@ -74,6 +74,40 @@ The app includes a demo mode for the interface and interaction experience. Add m
 | UI | There are dark and light themes, and you can reselect a project folder at any time. |
 
 The bundled pair is Phainon and the Mysterious Ancient Machine.
+
+## Screenshots
+
+Real screenshots from the desktop app:
+
+First launch asks you to pick a local project folder; the project is created from the folder name.
+
+![Pick a project folder on first launch](output/real/readme-01-first-launch.png)
+
+Chat mode keeps the character conversation focused.
+
+![Character chat in chat mode](output/real/readme-05-chat-mode.png)
+
+New chats pick a pair from the directory; the theme follows the current pair.
+
+![Pair overview](output/real/readme-02-multi-pair-overview.png)
+
+![Light theme after switching pairs](output/real/readme-04-switch-pair-light-theme.png)
+
+Collaboration mode shows the assistant workspace next to the character chat. Delegations carry a source marker, and results come back as structured cards in the same timeline.
+
+![Tool calls and results in collaboration mode](output/real/readme-03-collaboration-result.png)
+
+![Delegation card from the character](output/real/readme-08-delegation-card.png)
+
+![Delegation execution result](output/real/readme-07-delegation-result.png)
+
+Voice settings enable DashScope speech, auto-read and VAD. Listening state and VAD prompts appear next to the input area.
+
+![Voice settings and sponsor QR](output/real/readme-06-voice-settings.png)
+
+![Listening state prompt](output/real/readme-09-voice-listening.png)
+
+![VAD toggle prompt](output/real/readme-10-voice-vad.png)
 
 ## Live mode
 

@@ -7,7 +7,7 @@
 <p align="center">一条会话，两条工作轨。</p>
 
 <p align="center">
-  <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases"><img src="https://img.shields.io/badge/version-v0.3.0-E8B25C" alt="Version 0.3.0" /></a>
+  <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases"><img src="https://img.shields.io/badge/version-v0.3.1-E8B25C" alt="Version 0.3.1" /></a>
   <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/actions/workflows/ci.yml"><img src="https://github.com/Jonah-Wu23/HSR_Partner_Harness/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" /></a>
   <img src="https://img.shields.io/badge/platform-Windows%20x64-2F5D50" alt="Windows x64" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-5B6C8F" alt="Apache License 2.0" /></a>
@@ -42,13 +42,13 @@ HSR Partner Harness 将角色扮演对话与本地 AI 编程整合至同一个 W
 
 首次启动时选择本地项目文件夹。应用使用文件夹名称创建项目，后续可在项目栏更改名称或重新选择路径。
 
-![首次启动时选择项目文件夹](output/playwright/readme-01-first-launch.png)
+![首次启动时选择项目文件夹](output/real/readme-01-first-launch.png)
 
 ### 开始对话
 
 聊天模式由当前角色参与对话，适合整理需求或查看历史消息。每条会话独立保存所选搭档，切换会话时会同步更新头像与界面主题。
 
-![聊天模式中的角色对话](output/playwright/readme-05-chat-mode.png)
+![聊天模式中的角色对话](output/real/readme-05-chat-mode.png)
 
 ### 选择搭档
 
@@ -60,25 +60,35 @@ HSR Partner Harness 将角色扮演对话与本地 AI 编程整合至同一个 W
 | 流萤 | 萨姆 |
 | 三月七 | 第四面镜 |
 
-![多搭档协作界面](output/playwright/readme-02-multi-pair-overview.png)
+![多搭档协作界面](output/real/readme-02-multi-pair-overview.png)
 
 浅色主题根据当前搭档使用对应的界面配色。
 
-![切换搭档后的浅色主题](output/playwright/readme-04-switch-pair-light-theme.png)
+![切换搭档后的浅色主题](output/real/readme-04-switch-pair-light-theme.png)
 
 ### 执行任务
 
 协作模式在角色对话区旁呈现助手工作台。在输入区勾选“交给助手”后发送任务，工具调用与执行结果将以结构化卡片展示。
 
-![协作任务的工具调用与执行结果](output/playwright/readme-03-collaboration-result.png)
+![协作任务的工具调用与执行结果](output/real/readme-03-collaboration-result.png)
+
+角色可以直接发起委派：委派卡片标记任务来源，执行结果以结构化卡片回传，并保留在同一会话时间线中。
+
+![角色发起的委派卡片](output/real/readme-08-delegation-card.png)
+
+![委派任务的执行结果](output/real/readme-07-delegation-result.png)
 
 ### 设置语音
 
 语音设置页用于启用 DashScope 语音服务，也可设置自动朗读与 VAD。音色跟随当前会话的搭档切换，自然语言回复接入自动朗读通道。
 
-![语音设置与打赏二维码](output/playwright/readme-06-voice-settings.png)
+![语音设置与打赏二维码](output/real/readme-06-voice-settings.png)
 
-以上截图取自内置预览场景，用于说明操作位置与界面状态。完成模型配置后可运行真实协作任务。
+开启按键说话后，输入区下方显示聆听状态；开启 VAD 后无需按键即可直接说话。
+
+![聆听状态提示](output/real/readme-09-voice-listening.png)
+
+![开启 VAD 提示](output/real/readme-10-voice-vad.png)
 
 ## 工作模式
 
@@ -155,7 +165,7 @@ NSIS 安装包生成于 `desktop/src-tauri/target/release/bundle/nsis/`。编译
 
 ## 验证结果
 
-v0.3.0 当前源码已完成以下验证：
+v0.3.1 当前源码已完成以下验证：
 
 | 检查项 | 结果 |
 | --- | --- |
