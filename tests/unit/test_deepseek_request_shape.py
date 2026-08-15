@@ -69,7 +69,7 @@ async def test_deepseek_structured_dialogue_disables_thinking() -> None:
     assert body["thinking"] == {"type": "disabled"}
     assert body["response_format"] == {"type": "json_object"}
     assert "reasoning_effort" not in body  # 未指定档位不写入
-    assert body["temperature"] == 0.0
+    assert body["temperature"] == 1.0
     assert body["max_tokens"] == 8192
 
 
@@ -140,8 +140,8 @@ async def test_non_deepseek_host_keeps_standard_body() -> None:
 
 
 @pytest.mark.asyncio
-async def test_deepseek_structured_dialogue_uses_deterministic_sampling() -> None:
-    """结构化角色回合固定采样参数，避免服务端生成空白正文。"""
+async def test_deepseek_structured_dialogue_uses_configured_sampling() -> None:
+    """结构化角色回合按配置采样温度，不再固定为确定式采样。"""
     bodies: list[dict] = []
     client = AsyncClient(
         base_url="https://api.deepseek.com",
@@ -155,7 +155,7 @@ async def test_deepseek_structured_dialogue_uses_deterministic_sampling() -> Non
         temperature=1.0,
     )
     [event async for event in model.stream_reply(make_request())]
-    assert bodies[0]["temperature"] == 0.0
+    assert bodies[0]["temperature"] == 1.0
     assert bodies[0]["max_tokens"] == 8192
 
 
@@ -196,7 +196,7 @@ async def test_deepseek_collaboration_retries_missing_delegation() -> None:
         nonlocal calls
         calls += 1
         content = (
-            '{"speech":"交给搭档。"}'
+            '{"speech":"交给搭档。","delegate":true}'
             if calls == 1
             else '{"speech":"交给搭档。","delegation":{"type":"task","instructions":"检查项目文件"}}'
         )

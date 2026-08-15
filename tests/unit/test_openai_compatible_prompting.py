@@ -168,9 +168,9 @@ async def test_prompt_assembly_injects_role_card_partner_and_summaries(
     assert "白厄" in system and "翁法罗斯" in system
     # 搭档（助手）表达配置：按 pair_id 从 config/pairs 加载
     assert "神秘的古代机械" in system
-    # 输出格式约定（delegation JSON 形态）
+    # 输出格式约定（delegation JSON 形态与 delegate 自报字段）
     assert '"type": "task"' in system and '"type": "amendment"' in system
-    assert "介绍、查看、分析当前项目、仓库、目录或文件" in system
+    assert "delegate" in system
     # 近期角色对话：character → assistant
     assert {"role": "assistant", "content": "好，我陪着你弄。"} in messages
     # 进度与结果摘要注入
@@ -236,7 +236,8 @@ async def test_placeholder_speech_fails_instead_of_becoming_a_delegation_reply(
 
 
 @pytest.mark.asyncio
-async def test_failed_result_cannot_be_described_as_completed(fake_chat_server: str) -> None:
+async def test_result_turn_passes_through_verbatim(fake_chat_server: str) -> None:
+    """结果轮台词原样放行：代码不再改写，成败表述交给模型自己。"""
     _FakeChatHandler.scripts.append(
         {"stream": True, "chunks": ['{"speech":"我已经把文件删掉了。"}']}
     )
@@ -245,8 +246,7 @@ async def test_failed_result_cannot_be_described_as_completed(fake_chat_server: 
     turn = await run_turn(model, make_request(result_status="failed"))
 
     assert turn.delegation is None
-    assert "没做成" in turn.speech
-    assert "做完了" not in turn.speech
+    assert turn.speech == "我已经把文件删掉了。"
 
 
 @pytest.mark.asyncio
@@ -351,8 +351,8 @@ async def test_prose_with_json_tail_parses_and_prose_braces_kept(
     model = make_model(fake_chat_server)
 
     turn = await run_turn(model, make_request())
-    assert turn.speech.startswith("看过了。")
-    assert "古代机械" in turn.speech
+    # 台词不再被代码补全，原样保留模型输出
+    assert turn.speech == "看过了。"
     assert isinstance(turn.delegation, TaskRequestDraft)
 
     _FakeChatHandler.scripts.append({"stream": True, "chunks": ["用 {shutil} 库。"]})

@@ -16,7 +16,11 @@ from pair_harness.core.contracts import (
     ApprovalMode,
     CharacterTurn,
     DialogueEvent,
+    MessageKind,
+    MessageOrigin,
     MessageSource,
+    MessageStatus,
+    MessageTarget,
 )
 from pair_harness.desktop_backend.application_service import (
     ServiceError,
@@ -75,6 +79,58 @@ async def test_bootstrap_contains_projects_conversation_and_voice_shape(tmp_path
         assert next_snapshot["sequence"] == events[-1]["sequence"]
     finally:
         await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_sidecar_restart_restores_pair_and_finishes_orphaned_delegation(
+    tmp_path: Path,
+) -> None:
+    """Sidecar 重启不得用默认搭档覆盖当前聊天，也不得留下 processing 委派。"""
+    database = tmp_path / "data" / "pair_harness.db"
+    first = build_demo_service(
+        database=database,
+        project_root=tmp_path,
+        pair_id="march7_fourth_mirror",
+    )
+    conversation_id = first.current_conversation_id
+    delegation = first.orchestrator._message(
+        conversation_id=conversation_id,
+        source=MessageSource.USER,
+        kind=MessageKind.USER_TEXT,
+        text="查看并介绍项目",
+        target=MessageTarget.ASSISTANT,
+        origin=MessageOrigin.CHARACTER_DELEGATION,
+        delegation_id="orphan-task",
+        status=MessageStatus.PROCESSING,
+    )
+    queued = first.store.enqueue_queue_item(
+        conversation_id=conversation_id,
+        target="assistant",
+        text="队列中的任务",
+        intent="followup",
+        account_id=first.current_account_id,
+    )
+    first.store.set_queue_item_status(queued["queue_item_id"], "processing")
+    await first.shutdown()
+
+    # 重启调用方仍传入默认搭档，业务状态应以聊天记录为准。
+    second = build_demo_service(database=database, project_root=tmp_path)
+    try:
+        assert second.pair_config.pair_id == "march7_fourth_mirror"
+        assert second.orchestrator.pair_id == "march7_fourth_mirror"
+        snapshot = second.bootstrap()
+        assert snapshot["pair"]["pair_id"] == "march7_fourth_mirror"
+        assert snapshot["current_conversation"]["pair_id"] == "march7_fourth_mirror"
+        restored = next(
+            message
+            for message in snapshot["messages"]
+            if message["message_id"] == delegation.message_id
+        )
+        assert restored["status"] == "failed"
+        assert "Sidecar 在委派完成前断开" in restored["payload"]["error"]
+        assert second.store.list_queue_items(conversation_id)[0]["status"] == "queued"
+    finally:
+        await second.shutdown()
 
 
 @pytest.mark.asyncio
@@ -440,6 +496,9 @@ async def test_voice_commands_only_exchange_state_with_attached_runtime(tmp_path
         def stop_speaking(self) -> None:
             self.stopped = True
 
+        async def stop_speaking_async(self) -> None:
+            self.stop_speaking()
+
         async def shutdown(self) -> None:
             pass
 
@@ -584,6 +643,9 @@ async def test_voice_tts_play_skip_and_preview_commands(tmp_path: Path) -> None:
 
         def skip_playing(self) -> None:
             self.skips += 1
+
+        async def skip_playing_async(self) -> None:
+            self.skip_playing()
 
         def enqueue_text(self, text: str, *, voice_id: str | None = None) -> None:
             del voice_id

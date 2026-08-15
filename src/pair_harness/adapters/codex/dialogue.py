@@ -82,7 +82,13 @@ class CodexDialogueModel(DialogueModel):
                 if text:
                     raw.append(text)
         turn = self._parser._parse_output("".join(raw))
-        turn = self._parser._enforce_execution_boundary(turn, request)
+        if (
+            request.result_summary is None
+            and self._parser._needs_delegation_retry(request, turn)
+        ):
+            # 与 OpenAI 兼容路径同口径：模型自报委派却不提交结构即真实
+            # 失败标记，交给编排器向角色侧暴露，不静默当作普通聊天。
+            turn = turn.model_copy(update={"delegation_missed": True})
         yield DialogueEvent(type="character.final", turn=turn)
 
     async def generate_title(self, *, pair_id: str, context: tuple) -> str | None:

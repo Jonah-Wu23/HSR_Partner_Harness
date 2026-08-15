@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 from collections import deque
@@ -9,10 +10,19 @@ from collections.abc import AsyncIterator
 import numpy as np
 import sounddevice as sd
 
+logger = logging.getLogger(__name__)
+
+# PortAudio 维护的是进程级设备/流状态。输入流由事件循环线程管理，输出流
+# 由播放器线程管理，所有原生 stream 调用共用这把锁，避免开关两个设备时
+# 同时进入 PortAudio。
+_PORTAUDIO_LOCK = threading.RLock()
+
 
 def list_devices() -> tuple[str, ...]:
     """列出可用音频设备，供界面选择。"""
-    return tuple(f"{index}: {device['name']}" for index, device in enumerate(sd.query_devices()))
+    with _PORTAUDIO_LOCK:
+        devices = sd.query_devices()
+    return tuple(f"{index}: {device['name']}" for index, device in enumerate(devices))
 
 
 class MicrophoneCapture:
@@ -59,7 +69,8 @@ class MicrophoneCapture:
         candidates = _input_device_candidates()
         last_error: Exception | None = None
         for device in candidates:
-            info = sd.query_devices(device)
+            with _PORTAUDIO_LOCK:
+                info = sd.query_devices(device)
             max_channels = int(info["max_input_channels"])
             if max_channels <= 0:
                 continue
@@ -70,19 +81,28 @@ class MicrophoneCapture:
                 if self.block_size
                 else 0
             )
+            stream = None
             try:
-                self._stream = sd.RawInputStream(
-                    device=device,
-                    samplerate=source_rate,
-                    channels=source_channels,
-                    dtype="int16",
-                    blocksize=source_block_size,
-                    callback=callback,
-                )
-                self._stream.start()
+                with _PORTAUDIO_LOCK:
+                    stream = sd.RawInputStream(
+                        device=device,
+                        samplerate=source_rate,
+                        channels=source_channels,
+                        dtype="int16",
+                        blocksize=source_block_size,
+                        callback=callback,
+                    )
+                    stream.start()
+                self._stream = stream
                 break
             except Exception as exc:  # noqa: BLE001 - PortAudio errors vary by host API
                 last_error = exc
+                if stream is not None:
+                    with _PORTAUDIO_LOCK:
+                        try:
+                            stream.close()
+                        except Exception:  # noqa: BLE001 - 清理失败不掩盖原始建流错误
+                            logger.debug("failed to close input stream after startup error", exc_info=True)
                 self._stream = None
         else:
             raise RuntimeError(f"无法打开麦克风输入设备：{last_error}") from last_error
@@ -98,10 +118,17 @@ class MicrophoneCapture:
         self.close()
 
     def close(self) -> None:
-        if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            with _PORTAUDIO_LOCK:
+                try:
+                    stream.stop()
+                except Exception:  # noqa: BLE001 - 关闭阶段保留真实错误到日志
+                    logger.debug("failed to stop input stream", exc_info=True)
+                try:
+                    stream.close()
+                except Exception:  # noqa: BLE001 - 关闭阶段保留真实错误到日志
+                    logger.debug("failed to close input stream", exc_info=True)
         self._queue = None
 
 
@@ -116,7 +143,9 @@ def _input_device_candidates() -> tuple[int | None, ...]:
 
     preferred: list[int] = []
     remaining: list[int] = []
-    for index, info in enumerate(sd.query_devices()):
+    with _PORTAUDIO_LOCK:
+        devices = tuple(sd.query_devices())
+    for index, info in enumerate(devices):
         if int(info["max_input_channels"]) <= 0 or index == default:
             continue
         name = str(info["name"]).lower()
@@ -180,6 +209,8 @@ class AudioPlayer:
         self._closed = False
         self._stopped = False
         self._active_playback = False
+        self._generation = 0
+        self._stop_event = threading.Event()
 
     # ------------------------------------------------------------ 生命周期
 
@@ -189,6 +220,7 @@ class AudioPlayer:
             if self._closed:
                 return
             self._stopped = False
+            self._stop_event.clear()
             if self._running and self._thread is not None and self._thread.is_alive():
                 return
             self._running = True
@@ -203,6 +235,10 @@ class AudioPlayer:
         with self._cond:
             self._running = False
             self._closed = True
+            self._stopped = True
+            self._generation += 1
+            self._buffer.clear()
+            self._stop_event.set()
             self._cond.notify_all()
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=1.0)
@@ -214,13 +250,22 @@ class AudioPlayer:
         with self._cond:
             self._buffer.clear()
             self._stopped = True
+            self._generation += 1
+            self._stop_event.set()
             self._cond.notify_all()
+        # _play 持有同一把 _stream_lock 覆盖 stream.write；这里最多等当前
+        # 原生写入自然返回，再由本线程安全地 abort/close，不会跨线程关流。
         self._close_stream()
 
     def wait_until_idle(self) -> None:
         """等待输出缓冲与当前声块都排空。"""
         with self._cond:
-            while self._running and (self._buffer or self._active_playback):
+            while (
+                self._running
+                and not self._stopped
+                and not self._closed
+                and (self._buffer or self._active_playback)
+            ):
                 self._cond.wait(timeout=0.05)
 
     # ------------------------------------------------------------ 生产者
@@ -231,8 +276,12 @@ class AudioPlayer:
             return
         self.start()  # 幂等：未启动时惰性启动播放线程
         with self._cond:
-            while len(self._buffer) >= self.buffer_chunks:
-                self._cond.wait()
+            while (
+                len(self._buffer) >= self.buffer_chunks
+                and not self._closed
+                and not self._stopped
+            ):
+                self._cond.wait(timeout=0.05)
             if self._closed or self._stopped:
                 return  # stop/close 后到达的块：丢弃
             self._buffer.append(pcm)
@@ -249,11 +298,12 @@ class AudioPlayer:
                     if not self._running:
                         return
                     pcm = self._buffer.popleft()
+                    generation = self._generation
                     self._active_playback = True
                     # 腾出空间：唤醒等待入队的生产者（防止满缓冲死锁）
                     self._cond.notify_all()
                 try:
-                    self._play(pcm)
+                    self._play(pcm, generation)
                 finally:
                     with self._cond:
                         self._active_playback = False
@@ -264,41 +314,72 @@ class AudioPlayer:
                     self._active_playback = False
                     self._cond.notify_all()
 
-    def _play(self, pcm: bytes) -> None:
+    def _play(self, pcm: bytes, generation: int) -> None:
         """写流并按块时长近似节奏播放；设备异常时重建流，不中断线程。"""
         duration = len(pcm) / (self.sample_rate * self.channels * 2)
         start = time.monotonic()
-        stream = self._ensure_stream()
-        if stream is not None:
-            try:
-                stream.write(np.frombuffer(pcm, dtype=np.int16))
-            except Exception:  # noqa: BLE001 - 设备被 stop/拔出：丢弃本块，下次重建
-                self._close_stream()
+        # 同一把锁覆盖取流、Pa_WriteStream 和 Pa_CloseStream。停止请求若
+        # 正好落在 write 中，会等待该次写入返回，再安全地关闭流。
+        with self._stream_lock:
+            if self._closed or self._stopped or generation != self._generation:
+                return
+            stream = self._ensure_stream_locked()
+            if stream is not None:
+                with _PORTAUDIO_LOCK:
+                    try:
+                        stream.write(np.frombuffer(pcm, dtype=np.int16))
+                    except Exception:  # noqa: BLE001 - 设备被拔出时丢弃本块
+                        self._close_stream_locked()
+        if self._closed or self._stopped or generation != self._generation:
+            return
         elapsed = time.monotonic() - start
         remain = duration - elapsed
         if remain > 0:
-            time.sleep(remain)
+            self._stop_event.wait(remain)
 
     def _ensure_stream(self) -> sd.OutputStream | None:
         """惰性创建输出流；创建失败返回 None（本块静默丢弃，下块重试）。"""
         with self._stream_lock:
-            if self._stream is None:
-                try:
-                    self._stream = sd.OutputStream(
+            return self._ensure_stream_locked()
+
+    def _ensure_stream_locked(self) -> sd.OutputStream | None:
+        if self._stream is None:
+            stream = None
+            try:
+                with _PORTAUDIO_LOCK:
+                    stream = sd.OutputStream(
                         samplerate=self.sample_rate,
                         channels=self.channels,
                         dtype="int16",
                     )
-                    self._stream.start()
-                except Exception:  # noqa: BLE001 - PortAudio 错误类型不稳定
-                    self._stream = None
-            return self._stream
+                    stream.start()
+                self._stream = stream
+            except Exception:  # noqa: BLE001 - PortAudio 错误类型不稳定
+                if stream is not None:
+                    with _PORTAUDIO_LOCK:
+                        try:
+                            stream.close()
+                        except Exception:  # noqa: BLE001 - 保留建流错误
+                            logger.debug("failed to close output stream after startup error", exc_info=True)
+                self._stream = None
+        return self._stream
 
     def _close_stream(self) -> None:
         with self._stream_lock:
-            stream, self._stream = self._stream, None
-        if stream is not None:
+            self._close_stream_locked()
+
+    def _close_stream_locked(self) -> None:
+        stream, self._stream = self._stream, None
+        if stream is None:
+            return
+        with _PORTAUDIO_LOCK:
+            abort = getattr(stream, "abort", None)
+            if abort is not None:
+                try:
+                    abort()
+                except Exception:  # noqa: BLE001 - 关闭阶段保留真实错误到日志
+                    logger.debug("failed to abort output stream", exc_info=True)
             try:
                 stream.close()
-            except Exception:  # noqa: BLE001 - 关闭失败不阻塞后续重建
-                pass
+            except Exception:  # noqa: BLE001 - 关闭阶段保留真实错误到日志
+                logger.debug("failed to close output stream", exc_info=True)

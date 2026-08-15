@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import faulthandler
 import logging
 import os
 import sys
@@ -86,6 +87,7 @@ async def _run(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    faulthandler.enable(file=sys.stderr, all_threads=True)
     logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
     return asyncio.run(_run(args))
 

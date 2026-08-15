@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import types
 from collections.abc import Callable
 
@@ -16,6 +17,7 @@ import pytest
 
 from pair_harness.adapters.audio import qwen_asr
 from pair_harness.adapters.audio.qwen_asr import QwenAsrError, QwenStreamingRecognizer
+from pair_harness.adapters.audio import qwen_tts
 from pair_harness.adapters.audio.qwen_tts import QwenSpeechSynthesizer, QwenTtsError
 from pair_harness.core.contracts import SpeechRequest
 
@@ -223,6 +225,9 @@ class FakeTtsSynthesizer:
     instances: list["FakeTtsSynthesizer"] = []
     auto_complete: bool = True  # streaming_call 时立即回调音频 + complete
     error_on_call: str | None = None  # 非 None 时 streaming_call 触发 on_error
+    block_complete: bool = False
+    complete_started: threading.Event | None = None
+    complete_release: threading.Event | None = None
 
     def __init__(self, model, voice, format, callback, **kwargs):
         self.model = model
@@ -246,6 +251,11 @@ class FakeTtsSynthesizer:
 
     def streaming_complete(self, complete_timeout_millis=600000) -> None:
         self.completed = True
+        if type(self).block_complete:
+            if type(self).complete_started is not None:
+                type(self).complete_started.set()
+            if type(self).complete_release is not None:
+                type(self).complete_release.wait(timeout=2)
 
     def streaming_cancel(self) -> None:
         self.cancelled = True
@@ -258,6 +268,9 @@ def fake_tts_sdk(monkeypatch: pytest.MonkeyPatch) -> type[FakeTtsSynthesizer]:
     FakeTtsSynthesizer.instances.clear()
     FakeTtsSynthesizer.auto_complete = True
     FakeTtsSynthesizer.error_on_call = None
+    FakeTtsSynthesizer.block_complete = False
+    FakeTtsSynthesizer.complete_started = None
+    FakeTtsSynthesizer.complete_release = None
     monkeypatch.setattr(dashscope.audio.tts_v2, "SpeechSynthesizer", FakeTtsSynthesizer)
     monkeypatch.setattr(
         dashscope.audio.tts_v2,
@@ -331,6 +344,37 @@ async def test_tts_aclose_cancels_synthesis(fake_tts_sdk) -> None:
     fake = FakeTtsSynthesizer.instances[0]
     assert fake.cancelled is True
     assert fake.completed is False
+
+
+async def test_tts_aclose_does_not_wait_for_blocked_complete(
+    fake_tts_sdk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SDK 卡在 streaming_complete 时，aclose 仍应及时返回。"""
+    started = threading.Event()
+    release = threading.Event()
+    FakeTtsSynthesizer.auto_complete = False
+    FakeTtsSynthesizer.block_complete = True
+    FakeTtsSynthesizer.complete_started = started
+    FakeTtsSynthesizer.complete_release = release
+    monkeypatch.setattr(qwen_tts, "_CLOSE_WAIT_S", 0.05)
+
+    synthesizer = QwenSpeechSynthesizer()
+    agen = synthesizer.synthesize(_tts_request())
+    anext_task = asyncio.create_task(agen.__anext__())
+    for _ in range(200):
+        if started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert started.is_set()
+
+    started_at = asyncio.get_running_loop().time()
+    anext_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await anext_task
+    assert asyncio.get_running_loop().time() - started_at < 0.5
+
+    release.set()
+    await asyncio.sleep(0.05)
 
 
 async def test_tts_api_key_applied(fake_tts_sdk, monkeypatch: pytest.MonkeyPatch) -> None:

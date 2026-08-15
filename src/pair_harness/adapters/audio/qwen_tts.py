@@ -14,6 +14,7 @@ SDK 回调线程把 ``on_data``（PCM 帧）/ ``on_complete`` / ``on_error``
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import threading
 import time
@@ -22,6 +23,8 @@ from dataclasses import dataclass
 
 from pair_harness.core.contracts import AudioChunk, SpeechRequest
 from pair_harness.core.ports import SpeechSynthesizer
+
+logger = logging.getLogger(__name__)
 
 TTS_SAMPLE_RATE = 24_000
 # V0.2 问题 2：合成前兜底过滤的“不可读”字符（空白与标点）。
@@ -37,6 +40,9 @@ _CANCEL_WINDOW_S = 0.1
 # streaming_complete 内部的等待上限（毫秒）：避免服务端异常时不回 FINISHED
 # 导致底层线程无限阻塞（asyncio 侧 _TAIL_TIMEOUT_S 会先超时）
 _COMPLETE_TIMEOUT_MS = 20_000
+# aclose 不应把 VoiceRuntime 播放循环拖进 SDK 的完整收尾等待；超时后
+# 保留 executor 线程自行结束，播放状态先回到可继续处理的路径。
+_CLOSE_WAIT_S = 0.5
 
 
 class QwenTtsError(RuntimeError):
@@ -114,7 +120,13 @@ class QwenSpeechSynthesizer(SpeechSynthesizer):
         done = threading.Event()
 
         def _put(event: _TtsBridgeEvent) -> None:
-            loop.call_soon_threadsafe(bridge.put_nowait, event)
+            if closed.is_set():
+                return
+            try:
+                loop.call_soon_threadsafe(bridge.put_nowait, event)
+            except RuntimeError:
+                # 事件循环已经关闭时，SDK 回调线程只能结束自己的清理。
+                logger.debug("TTS callback arrived after event loop shutdown")
 
         class _Callback(ResultCallback):
             def on_data(self, data) -> None:
@@ -187,10 +199,23 @@ class QwenSpeechSynthesizer(SpeechSynthesizer):
                     return
                 yield AudioChunk(pcm=event.pcm, sample_rate=TTS_SAMPLE_RATE, channels=1)
         finally:
-            # 中断或异常：通知底层线程尽快 cancel；正常收尾时仅等待线程退出
+            # 中断或异常：通知底层线程尽快 cancel；正常收尾也只等待有限时间。
+            # streaming_complete 可能卡在 SDK 的 websocket 收尾，不能让
+            # VoiceRuntime 的播放循环跟着无限等待。
             closed.set()
             if task is not None:
                 try:
-                    await task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    await asyncio.wait_for(asyncio.shield(task), timeout=_CLOSE_WAIT_S)
+                except asyncio.TimeoutError:
+                    logger.warning("TTS synthesis thread did not stop within %.1fs", _CLOSE_WAIT_S)
+                except asyncio.CancelledError:
+                    # 保留上层取消语义；线程任务由 shield 保留，随后自行结束。
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(task), timeout=_CLOSE_WAIT_S
+                        )
+                    except BaseException:  # noqa: BLE001 - 取消收尾不覆盖原始取消
+                        pass
+                    raise
+                except Exception:  # noqa: BLE001 - 底层错误已由事件回传
                     pass

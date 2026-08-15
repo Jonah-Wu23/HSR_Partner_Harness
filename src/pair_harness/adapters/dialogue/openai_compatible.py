@@ -156,10 +156,11 @@ class OpenAICompatibleDialogueModel(DialogueModel):
                 {
                     "role": "system",
                     "content": (
-                        "上一轮输出缺少结构化 delegation。当前用户请求涉及项目、文件、"
-                        "目录、代码或命令操作；本轮必须返回 delegation.type=task，"
-                        "把真实任务写入 delegation.instructions。不要只在 speech 中说"
-                        "让搭档处理，也不要声称已经完成。"
+                        "上一轮输出不符合运行时输出协议：缺少 delegate 字段，"
+                        "或自报 delegate=true 却没有返回 delegation。请重新判断"
+                        "本轮用户请求：需要搭档动手执行就返回 delegate=true 并"
+                        "带完整的 delegation.type=task；不需要就返回 "
+                        "delegate=false。不要只在台词里答应，也不要声称已经完成。"
                     ),
                 }
             )
@@ -169,40 +170,37 @@ class OpenAICompatibleDialogueModel(DialogueModel):
                 {
                     "role": "user",
                     "content": (
-                        "请按运行时协议重新输出本轮结果：只输出一个 JSON 对象，必须包含"
-                        " speech 和 delegation.type=task；把当前用户要执行的真实操作写入"
-                        " delegation.instructions，不要只返回台词。"
+                        "请按运行时协议重新输出本轮结果：只输出一个完整 JSON "
+                        "对象，必须包含 speech 与 delegate；需要委派时同时带上"
+                        " delegation.type=task，把用户要执行的真实操作写入"
+                        " delegation.instructions。"
                     ),
                 }
             )
         return messages
 
-    def _enforce_execution_boundary(
-        self, turn: CharacterTurn, request: DialogueRequest
-    ) -> CharacterTurn:
-        """把模型输出收敛到角色/助手职责边界。
+    def _needs_delegation_retry(
+        self, request: DialogueRequest, turn: CharacterTurn
+    ) -> bool:
+        """纠偏条件：协作模式下模型没有给出 delegation，且协议不完整。
 
-        JSON 模式和提示词负责主要行为；这里仅保留职责边界：角色已经输出
-        delegation 时，角色不把助手任务说成自己执行。结果回应以
-        ExecutionReceipt 派生的状态为准，禁止成功/失败倒置。
+        两种协议不完整形态，都是结构一致性检查，不猜意图：
+        - 自报 delegate=true 却没返回 delegation（自相矛盾）；
+        - 连 delegate 字段都没输出（协议规定每轮必填；纯台词/旧格式
+          输出都算缺失）。
+        纠偏只要求模型按协议重新判断并补全输出，要不要委派仍由模型
+        决定。聊天模式与任务结果轮不纠偏。
         """
-        config = load_pair_config(request.pair_id, root=self._config_root)
-        assistant_name = config.assistant.name
-
-        if request.result_summary is not None:
-            speech = _truthful_result_speech(
-                turn.speech, request.result_summary.status, assistant_name
-            )
-            return turn.model_copy(update={"speech": speech, "delegation": None})
-
-        delegation = turn.delegation
-        speech = turn.speech
-        if isinstance(delegation, TaskRequestDraft) and _claims_self_execution(speech):
-            speech = f"这事得交给{assistant_name}来处理。{assistant_name}，麻烦你了。"
-        elif delegation is not None and not _mentions_assistant(speech, assistant_name):
-            speech = f"{speech.rstrip('。！？!?')}。{assistant_name}，麻烦你了。"
-
-        return turn.model_copy(update={"speech": speech, "delegation": delegation})
+        context = request.runtime_context
+        if (
+            context is None
+            or context.conversation_mode != "collaboration"
+            or request.result_summary is not None
+        ):
+            return False
+        if turn.delegation is not None:
+            return False
+        return turn.declares_delegation or not turn.delegate_field_present
 
     # ---- 输出解析（O3.2）----
 
@@ -224,7 +222,14 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             delegation = OpenAICompatibleDialogueModel._parse_delegation(
                 obj.get("delegation")
             )
-            return CharacterTurn(speech=speech, delegation=delegation)
+            field_present = "delegate" in obj or delegation is not None
+            declares = bool(obj.get("delegate", False)) or delegation is not None
+            return CharacterTurn(
+                speech=speech,
+                delegation=delegation,
+                declares_delegation=declares,
+                delegate_field_present=field_present,
+            )
         cleaned = OpenAICompatibleDialogueModel._strip_json_attempt(text)
         if _is_placeholder_speech(cleaned):
             raise ValueError("角色模型未返回可用 speech")
@@ -344,7 +349,7 @@ class OpenAICompatibleDialogueModel(DialogueModel):
                 "model": self.model,
                 "messages": messages,
                 "stream": False,
-                "temperature": 0.2,
+                "temperature": 0.5,
                 "max_tokens": max_tokens,
             }
             body.update(deepseek_request_extras(thinking=thinking, model=self.model))
@@ -408,7 +413,7 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         if deepseek_structured:
             # 结构化委派回合使用确定的采样参数；不改变供应商或模型，只避开
             # deepseek-v4-flash 在 thinking + JSON Output 下的空白正文响应。
-            payload["temperature"] = 0.0
+            payload["temperature"] = 1.0
             payload["max_tokens"] = 8192
         elif self.temperature is not None:
             payload["temperature"] = self.temperature
@@ -418,7 +423,7 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             # 空 content；重试时放宽供应商格式约束，仍由本地解析器和委派
             # 协议决定是否接受结果。
             payload.pop("response_format", None)
-            payload["temperature"] = 0.2
+            payload["temperature"] = 1.2
         # V0.2 M2（问题 10）：content 增量经 IncrementalJsonSpeechParser 只提取
         # 干净 speech 上屏（不再闪烁 JSON 键名）；reasoning_content 走独立通道。
         # 增量期间若字段尚未解析出来，界面显示“正在组织语言…”。
@@ -478,13 +483,13 @@ class OpenAICompatibleDialogueModel(DialogueModel):
                 return
             raise
         turn = turn.model_copy(update={"reasoning": "".join(reasoning_chunks).strip()})
-        turn = self._enforce_execution_boundary(turn, request)
         if (
-            deepseek_structured
-            and _attempt < 2
+            _attempt < 2
             and not _delegation_retry
-            and _needs_delegation_retry(request, turn)
+            and self._needs_delegation_retry(request, turn)
         ):
+            # 模型自报了委派意图却没给出 delegation：用运行时协议纠偏一次，
+            # 对全部供应商生效。
             async for retry_event in self.stream_reply(
                 request,
                 _attempt=1,
@@ -492,6 +497,10 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             ):
                 yield retry_event
             return
+        if request.result_summary is None and self._needs_delegation_retry(request, turn):
+            # 纠偏重试后（或重试额度已耗尽）模型仍自报委派却不提交结构：
+            # 真实失败标记，交给编排器向角色侧暴露，不静默当作普通聊天。
+            turn = turn.model_copy(update={"delegation_missed": True})
         yield DialogueEvent(type="character.final", turn=turn)
 
 
@@ -501,80 +510,33 @@ _OUTPUT_FORMAT_INSTRUCTION = """## 运行时输出协议（最高优先级）
 代码块。speech 只放会进入语音朗读的角色台词，不含舞台说明、括号、星号
 或心理描写。每轮几句话，说完就停。
 
+delegate 是每轮必填的布尔字段，由你判断：true 表示本轮用户请求需要
+搭档真正动手（本地文件、代码、命令、工具操作），false 表示纯聊天或
+你自己就能回答。判定以你对用户请求的理解为准，与用户怎么措辞无关。
+
 纯聊天：
 
-{"speech": "角色台词"}
+{"speech": "角色台词", "delegate": false}
 
-需要本地文件、代码、命令或工具操作时，角色本人不能执行，也不能说“我来
-执行”“我已经完成”。必须通过 delegation 交给搭档：
+需要委派时，delegate 必须为 true，且同一轮必须带上 delegation：
 
-{"speech": "角色台词", "delegation": {"type": "task", "instructions": "任务内容", "constraints": ["约束"]}}
+{"speech": "角色台词", "delegate": true, "delegation": {"type": "task", "instructions": "任务内容", "constraints": ["约束"]}}
 
-在协作模式下，用户要求介绍、查看、分析当前项目、仓库、目录或文件时，
-这就是需要本地文件的任务，必须返回上面的 delegation.type == "task"；不能
-只在 speech 里说“让搭档看看”。只有实际返回 delegation 才算委派。
+delegate 为 true 却漏了 delegation 属于协议违规，系统会要求你重发；
+只在台词里说“让搭档看看”不算委派，只有 delegation 才是任务。
 
 修改正在执行的任务：
 
-{"speech": "角色台词", "delegation": {"type": "amendment", "instructions": "修改内容", "target_task_id": "任务id", "revision": 2}}
+{"speech": "角色台词", "delegate": true, "delegation": {"type": "amendment", "instructions": "修改内容", "target_task_id": "任务id", "revision": 2}}
 
-收到任务结果系统消息时只依据给定状态回应，不带 delegation。未收到成功
-结果前，不得把任务描述成已执行或已完成。"""
-
-
-_SELF_EXECUTION_RE = re.compile(
-    r"我(?:来|去|现在|这就|马上)?(?:帮你|替你)?"
-    r"(?:创建|新建|删除|移除|重命名|移动|复制|修改|编辑|写入|追加|保存|运行|执行|安装|构建|编译|测试|检查|读取|打开|处理)"
-)
-_FAILURE_CUES = ("没做成", "失败", "未执行", "没有完成", "已取消", "取消了")
-_OPERATION_ACTION_RE = re.compile(
-    r"(?:创建|新建|删除|移除|重命名|移动|复制|修改|编辑|写入|追加|保存|运行|执行|安装|"
-    r"构建|编译|测试|检查|读取|打开|处理)"
-)
-_OPERATION_RESOURCE_RE = re.compile(r"(?:文件|目录|项目|仓库|代码|命令|脚本|测试)")
+收到任务结果系统消息时只依据给定状态回应。任务失败时，可以立即重新返回
+delegation.type == "task" 重试一次；重试仍未成功就如实说明，不再继续委派。
+任务成功或已取消时，delegate 为 false 且不带 delegation。未收到成功结果前，
+不得把任务描述成已执行或已完成。"""
 
 
 def _is_placeholder_speech(speech: str) -> bool:
     return not str(speech or "").strip(" \\t\\r\\n.…。!！?？")
-
-
-def _claims_self_execution(speech: str) -> bool:
-    return bool(_SELF_EXECUTION_RE.search(str(speech or "")))
-
-
-def _mentions_assistant(speech: str, assistant_name: str) -> bool:
-    aliases = {assistant_name, assistant_name.rsplit("的", 1)[-1]}
-    return any(alias and alias in speech for alias in aliases)
-
-
-def _needs_delegation_retry(request: DialogueRequest, turn: CharacterTurn) -> bool:
-    """只为明确的协作操作请求纠偏漏掉的结构化委派。"""
-    context = request.runtime_context
-    if (
-        context is None
-        or context.conversation_mode != "collaboration"
-        or request.result_summary is not None
-        or turn.delegation is not None
-    ):
-        return False
-    text = request.user_message.text
-    return bool(_OPERATION_ACTION_RE.search(text) and _OPERATION_RESOURCE_RE.search(text))
-
-
-def _truthful_result_speech(speech: str, status: str, assistant_name: str) -> str:
-    text = str(speech or "").strip()
-    says_failure = any(cue in text for cue in _FAILURE_CUES)
-    if status == "failed":
-        return f"这次没做成，{assistant_name}把原因记在执行记录里了。"
-    if status == "cancelled":
-        return f"任务已经取消，{assistant_name}没有继续执行。"
-    if status == "completed" and says_failure:
-        return f"做完了，{assistant_name}已经把结果整理好了。"
-    return text or (
-        f"做完了，{assistant_name}已经把结果整理好了。"
-        if status == "completed"
-        else f"{assistant_name}已经返回了任务状态。"
-    )
 
 
 def _first_markdown_section(prompt: str) -> str:
@@ -660,6 +622,11 @@ def _result_summary_text(result: CharacterResultSummary) -> str:
         f"状态：{result.status}",
         f"摘要：{result.summary}",
     ]
+    if result.status == "failed":
+        lines.append(
+            "任务失败了。你可以立即重新委派（delegation.type=task）重试一次，"
+            "或在台词里如实说明失败原因。"
+        )
     if result.user_visible_changes:
         lines.append("可见变更：" + "、".join(result.user_visible_changes))
     if result.limitations:

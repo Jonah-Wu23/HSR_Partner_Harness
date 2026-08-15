@@ -159,9 +159,22 @@ def test_stop_clears_buffer_immediately_and_rebuilds_stream() -> None:
     """stop 立即清空缓冲并关闭流（丢弃积压）；下次播放惰性重建新流。"""
 
     class SlowStream(FakeOutputStream):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.writing = False
+            self.closed_while_writing = False
+
         def write(self, samples) -> None:
-            time.sleep(0.05)
-            super().write(samples)
+            self.writing = True
+            try:
+                time.sleep(0.05)
+                super().write(samples)
+            finally:
+                self.writing = False
+
+        def close(self) -> None:
+            self.closed_while_writing |= self.writing
+            super().close()
 
     fake_sd.OutputStream = SlowStream
     player = AudioPlayer(sample_rate=16_000, channels=1, buffer_chunks=2)
@@ -177,6 +190,7 @@ def test_stop_clears_buffer_immediately_and_rebuilds_stream() -> None:
         assert time.monotonic() - started < 0.2  # 立即返回，不等慢消费
         assert len(player._buffer) == 0  # 缓冲被清空
         assert _wait_stream().closed  # 流被关闭（丢弃积压）
+        assert not _wait_stream().closed_while_writing  # close 不得与 write 并发
 
         # 停止后仍可播放：惰性重建新流
         player.play_blocking(_chunk())

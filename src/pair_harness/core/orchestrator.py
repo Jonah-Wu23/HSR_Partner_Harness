@@ -15,6 +15,7 @@ from .contracts import (
     ApprovalMode,
     CharacterProgressSummary,
     CharacterResultSummary,
+    CharacterTurn,
     DialogueEvent,
     DialogueRequest,
     EngineEvent,
@@ -51,6 +52,9 @@ class ConversationOutcome:
     tool_runs: tuple[ToolRun, ...] = ()
     task: TaskRequest | None = None
     receipt: ExecutionReceipt | None = None
+    # 任务失败的结果轮里角色立即重新委派的草稿。编排器据此自动重试
+    # 一次；达到重试上限时不再执行并给出可见系统提示。
+    retry_delegation: TaskRequestDraft | None = None
 
 
 @dataclass
@@ -115,6 +119,8 @@ class ConversationOrchestrator:
         # O3.3：活动任务的执行进度（_execute 期间填充，结束时清理）
         self._progress: dict[str, _TaskProgress] = {}
         self._active_lifecycle: TaskLifecycle | None = None
+        # 失败结果轮角色重新委派后的自动重试深度（0=首次，1=已重试一次）
+        self._delegation_retry_depth = 0
         # V0.2：按会话持久化的对话模式（chat/collaboration）。模式由
         # 后端权威保存；设置类命令不得回推覆盖（与推理档位/审批方式/
         # 发送对象互不覆盖的独立字段）。聊天模式是角色能力边界：不能委派。
@@ -567,6 +573,42 @@ class ConversationOrchestrator:
             )
             return ConversationOutcome(messages=tuple((*messages, notice)))
 
+        if character_turn.delegation_missed:
+            # 委派未形成：把失败信息回传角色，自动补一轮让它重新按协议
+            # 委派。只补一轮，重试后仍无结构化委派才落可见系统提示——
+            # 失败必须暴露，但不能让“交给搭档”的空口承诺静默通过。
+            retry_turn = await self._retry_character_delegation(
+                conversation_id=conversation_id,
+                user_message=user_message,
+            )
+            if retry_turn is not None and isinstance(
+                retry_turn.delegation, TaskRequestDraft
+            ):
+                character_turn = retry_turn
+                character = self._message(
+                    conversation_id=conversation_id,
+                    source=MessageSource.CHARACTER,
+                    kind=MessageKind.CHARACTER_SPEECH,
+                    text=retry_turn.speech,
+                    # 与主轮共用同一个气泡 id：最终消息覆盖临时流，
+                    # 时间线里只保留重试后的角色回复。
+                    message_id=f"speech:{conversation_id}:{user_message.message_id}",
+                    payload=(
+                        {"reasoning": retry_turn.reasoning}
+                        if retry_turn.reasoning
+                        else None
+                    ),
+                )
+                messages = [user_message, character]
+            else:
+                notice = self._message(
+                    conversation_id=conversation_id,
+                    source=MessageSource.SYSTEM,
+                    kind=MessageKind.SYSTEM_STATUS,
+                    text="角色未返回结构化委派，自动重试后仍未成功，本次没有任务交给助手执行。",
+                )
+                return ConversationOutcome(messages=tuple((*messages, notice)))
+
         if isinstance(character_turn.delegation, TaskRequestDraft):
             task = TaskRequest(
                 conversation_id=conversation_id,
@@ -613,6 +655,41 @@ class ConversationOrchestrator:
                 )
                 return ConversationOutcome(messages=(user_message, character, notice))
         return ConversationOutcome(messages=tuple(messages))
+
+    async def _retry_character_delegation(
+        self, *, conversation_id: str, user_message: Message
+    ) -> CharacterTurn | None:
+        """委派未形成后的自动补一轮：失败信息回传角色，让它重新按协议委派。
+
+        只补一轮，不无限循环；重试后仍无结构化委派就由调用方落系统提示。
+        """
+        synthetic = Message(
+            conversation_id=conversation_id,
+            pair_id=self.pair_id,
+            source=MessageSource.SYSTEM,
+            kind=MessageKind.SYSTEM_STATUS,
+            text=(
+                "上一轮委派未形成，没有任务交给助手执行。请按运行时输出协议"
+                "重新输出本轮结果：需要委派就返回 delegate=true 并带 "
+                "delegation.type=task，把真实任务写入 delegation.instructions；"
+                "不需要就返回 delegate=false。不要只在台词里答应让搭档做事。"
+            ),
+        )
+        request = DialogueRequest(
+            pair_id=self.pair_id,
+            conversation_id=conversation_id,
+            user_message=synthetic,
+            recent_messages=recent_roleplay_context(
+                self._history.get(conversation_id, [])
+            ),
+            runtime_context=self._build_runtime_context(conversation_id),
+        )
+        turn: CharacterTurn | None = None
+        async for event in self.dialogue_model.stream_reply(request):
+            self._forward_dialogue_event(conversation_id, user_message, event)
+            if event.type == "character.final":
+                turn = event.turn
+        return turn
 
     async def handle_direct_input(
         self, *, conversation_id: str, text: str, constraints: tuple[str, ...] = ()
@@ -753,7 +830,66 @@ class ConversationOrchestrator:
         delegation_id: str | None = None,
         origin: MessageOrigin | None = None,
     ) -> ConversationOutcome:
-        """执行一次助手任务。
+        """执行一次助手任务；失败且角色立即重新委派时自动重试一次。
+
+        重试是委派协议的一部分：失败结果回传角色后，角色在结果轮返回
+        ``delegation.type=task`` 即视为立即重试。只自动重试一次（上限），
+        重试后仍失败则不再执行新的委派，并留下可见系统提示——连续失败
+        必须如实暴露，不能无限循环，也不能静默丢弃角色的重试委派。
+        """
+        execution = await self._execute_once(
+            task, delegation_id=delegation_id, origin=origin
+        )
+        retry_draft = execution.retry_delegation
+        if retry_draft is None or (
+            execution.receipt is not None and execution.receipt.status != "failed"
+        ):
+            return execution
+        if self._delegation_retry_depth >= 1:
+            notice = self._message(
+                conversation_id=task.conversation_id,
+                source=MessageSource.SYSTEM,
+                kind=MessageKind.SYSTEM_STATUS,
+                text="已自动重试一次仍未成功，角色的再次委派没有执行。",
+            )
+            return ConversationOutcome(
+                messages=(*execution.messages, notice),
+                engine_events=execution.engine_events,
+                tool_runs=execution.tool_runs,
+                task=execution.task,
+                receipt=execution.receipt,
+            )
+        retry_task = TaskRequest(
+            conversation_id=task.conversation_id,
+            origin_message_id=task.origin_message_id,
+            instructions=retry_draft.instructions,
+            constraints=retry_draft.constraints,
+        )
+        self._delegation_retry_depth += 1
+        try:
+            retry_execution = await self._execute(
+                retry_task,
+                delegation_id=retry_task.task_id,
+                origin=origin,
+            )
+        finally:
+            self._delegation_retry_depth -= 1
+        return ConversationOutcome(
+            messages=(*execution.messages, *retry_execution.messages),
+            engine_events=(*execution.engine_events, *retry_execution.engine_events),
+            tool_runs=(*execution.tool_runs, *retry_execution.tool_runs),
+            task=retry_execution.task,
+            receipt=retry_execution.receipt,
+        )
+
+    async def _execute_once(
+        self,
+        task: TaskRequest,
+        *,
+        delegation_id: str | None = None,
+        origin: MessageOrigin | None = None,
+    ) -> ConversationOutcome:
+        """单次任务执行（不含失败重试路由）。
 
         V0.2：``delegation_id``/``origin`` 标记任务消息归属——角色委派产生
         的执行记录 origin=character_delegation 且带 delegation_id，直发
@@ -1181,7 +1317,11 @@ class ConversationOrchestrator:
                 pair_id=task_pair_id,
                 source=MessageSource.SYSTEM,
                 kind=MessageKind.SYSTEM_STATUS,
-                text="execution-result",
+                text=(
+                    "本轮任务已经结束，请阅读系统消息中的任务结果，以角色身份"
+                    "回应这次执行结果。结果成功或已取消就正常回应，不再发起新"
+                    "委派；结果失败时，可以立即重新委派重试一次。"
+                ),
             )
             dialogue_request = DialogueRequest(
                 pair_id=task_pair_id,
@@ -1228,6 +1368,15 @@ class ConversationOrchestrator:
                     delegation_status,
                     reason=receipt.errors[0] if receipt.errors else None,
                 )
+            # 失败结果轮里角色立即重新委派（delegation.type=task）→ 交给
+            # _execute 的重试路由执行一次；其余情况（成功/取消/修改草稿）
+            # 不触发重试。
+            retry_delegation = (
+                result_turn.delegation
+                if receipt.status == "failed"
+                and isinstance(result_turn.delegation, TaskRequestDraft)
+                else None
+            )
             # 本次执行的全部新消息：审批 system 卡片、助手说明与角色回应
             messages = self._history.get(task.conversation_id, [])[history_start:]
             return ConversationOutcome(
@@ -1236,6 +1385,7 @@ class ConversationOrchestrator:
                 tool_runs=tuple(tool_runs.values()),
                 task=task,
                 receipt=receipt,
+                retry_delegation=retry_delegation,
             )
         finally:
             # O3.3：任务结束清理进度，后续聊天轮不再注入摘要

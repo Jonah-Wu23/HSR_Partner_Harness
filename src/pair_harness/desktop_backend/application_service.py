@@ -527,7 +527,7 @@ class DesktopApplicationService:
             project.project_id,
             pair_id=pair_id,
         )
-        self._select_conversation_context(conversation.conversation_id, emit=True)
+        await self._select_conversation_context(conversation.conversation_id, emit=True)
         return self.bootstrap()
 
     async def _project_select(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -545,7 +545,7 @@ class DesktopApplicationService:
             conversation = conversations[0] if conversations else self._find_or_create_conversation(
                 project.project_id, pair_id=self.pair_config.pair_id
             )
-        self._select_conversation_context(conversation.conversation_id, emit=True)
+        await self._select_conversation_context(conversation.conversation_id, emit=True)
         return self.bootstrap()
 
     async def _project_update_settings(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -590,7 +590,7 @@ class DesktopApplicationService:
                 self.orchestrator.coding_engine.configure_reasoning(effort)
         if root_changed and project_id == self.current_project_id:
             # 重建运行时上下文（项目目录变化）但不回推整份快照
-            self._select_conversation_context(self.current_conversation_id, emit=False)
+            await self._select_conversation_context(self.current_conversation_id, emit=False)
         updated = self._project_payload(self.store.get_project(project_id))
         self.emitter.emit("project.changed", {"project": updated})
         # V0.2：设置类命令返回定向响应，不再用整份 bootstrap 覆盖未修改字段
@@ -616,7 +616,7 @@ class DesktopApplicationService:
                     remaining[0].project_id,
                     pair_id=self.pair_config.pair_id,
                 )
-                self._select_conversation_context(conversation.conversation_id, emit=True)
+                await self._select_conversation_context(conversation.conversation_id, emit=True)
             else:
                 if previous_conversation_id:
                     self.orchestrator.close_conversation(previous_conversation_id)
@@ -635,13 +635,13 @@ class DesktopApplicationService:
             title=title,
             account_id=self.current_account_id,
         )
-        self._select_conversation_context(conversation.conversation_id, emit=True)
+        await self._select_conversation_context(conversation.conversation_id, emit=True)
         return self.bootstrap()
 
     async def _conversation_select(self, params: Mapping[str, Any]) -> dict[str, Any]:
         conversation_id = self._required_string(params, "conversation_id")
         self._current_account_conversation(conversation_id)
-        self._select_conversation_context(conversation_id, emit=True)
+        await self._select_conversation_context(conversation_id, emit=True)
         return self.bootstrap()
 
     async def _conversation_rename(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -668,7 +668,7 @@ class DesktopApplicationService:
             )
             remaining = [created]
         if conversation_id == self.current_conversation_id:
-            self._select_conversation_context(remaining[0].conversation_id, emit=True)
+            await self._select_conversation_context(remaining[0].conversation_id, emit=True)
         else:
             self.emitter.emit("conversation.changed", {"conversation_id": conversation_id})
         return self.bootstrap()
@@ -697,7 +697,7 @@ class DesktopApplicationService:
                 raise ServiceError("mode 必须是 chat 或 collaboration", code="invalid_mode")
             self._set_conversation_mode(conversation_id, str(mode))
         if conversation_id != self.current_conversation_id:
-            self._select_conversation_context(conversation_id, emit=False)
+            await self._select_conversation_context(conversation_id, emit=False)
 
         # V0.2 M2（问题 9）：忙碌时提交先入队（followup 追加 / steer 置队首），
         # 先持久化再向前端确认；派发由回合完成后的自动派发链处理。
@@ -1008,7 +1008,9 @@ class DesktopApplicationService:
     async def _voice_tts_stop(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
         if self.voice_runtime is not None:
-            self.voice_runtime.stop_speaking()
+            # 停止可能需要等待播放器线程完成当前 PortAudio 写入；把同步
+            # 原生清理移出事件循环，避免按钮请求卡住 Sidecar 协议处理。
+            await self.voice_runtime.stop_speaking_async()
         self._voice_state["tts"] = "idle"
         self._emit_voice_changed()
         return {"voice": self._voice_snapshot()}
@@ -1083,7 +1085,7 @@ class DesktopApplicationService:
         del params
         if self.voice_runtime is None:
             raise ServiceError("语音运行时未启用", code="voice_unavailable")
-        self.voice_runtime.skip_playing()
+        await self.voice_runtime.skip_playing_async()
         return {"voice": self._voice_snapshot()}
 
     async def _voice_preview(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -1314,7 +1316,7 @@ class DesktopApplicationService:
             else:
                 # 关闭总开关：停止聆听并清空待播队列，避免后台继续出声。
                 await self.voice_runtime.stop_listening()
-                self.voice_runtime.stop_speaking()
+                await self.voice_runtime.stop_speaking_async()
         self._emit_voice_changed()
         return {"config": await self._config_get({})}
 
@@ -1988,8 +1990,17 @@ class DesktopApplicationService:
         self.orchestrator.restore_conversation(snapshot)
         for tool_run in snapshot["tool_runs"]:
             self._tool_runs[(tool_run.conversation_id, tool_run.tool_call_id)] = tool_run
+        # Sidecar 可能在真实委派或队列派发中途退出；进程内任务已经不存在，
+        # 遗留 processing 状态不能继续伪装成运行中。
+        self.orchestrator.mark_processing_delegations_failed(
+            self.current_conversation_id,
+            "Sidecar 在委派完成前断开，任务已停止，请重新发送。",
+        )
+        for item in self.store.list_queue_items(self.current_conversation_id):
+            if item["status"] == "processing":
+                self.store.set_queue_item_status(item["queue_item_id"], "queued")
 
-    def _select_conversation_context(self, conversation_id: str, *, emit: bool) -> None:
+    async def _select_conversation_context(self, conversation_id: str, *, emit: bool) -> None:
         conversation = self.store.get_conversation(conversation_id)
         if conversation.project_id is None:
             raise ServiceError("日常聊天尚未接入桌面迁移", code="daily_chat_unavailable")
@@ -2026,7 +2037,7 @@ class DesktopApplicationService:
             self.orchestrator.coding_engine.configure_reasoning(project.reasoning_effort)
         self._restore_current_conversation()
         if self.voice_runtime is not None:
-            self.voice_runtime.set_context(conversation_id, selected_pair)
+            await self.voice_runtime.set_context_async(conversation_id, selected_pair)
         if emit:
             self.emitter.emit("project.changed", {"project": self._project_payload(project)})
             self.emitter.emit(
@@ -2241,7 +2252,6 @@ def _build_service(
     demo: bool,
 ) -> DesktopApplicationService:
     pair_catalog = list_pair_configs()
-    pair_config = load_pair_config(pair_id)
     store = SQLiteStore(database)
     account_id = store.get_app_state("current_account_id") or "default-local"
     try:
@@ -2260,6 +2270,10 @@ def _build_service(
         if project is not None
         else None
     )
+    # Sidecar 重启时命令行只携带项目目录，不能用启动默认搭档覆盖已持久化
+    # 的当前聊天。聊天的 pair_id 是业务状态，必须先恢复它再构造编排器。
+    effective_pair_id = conversation.pair_id if conversation is not None else pair_id
+    pair_config = load_pair_config(effective_pair_id)
     emitter = EventEmitter(event_sink)
     broker = ApprovalBroker(emitter, lambda: service.approval_conversation_id())
     settings: Settings | None = None
@@ -2300,7 +2314,7 @@ def _build_service(
         )
 
     orchestrator = ConversationOrchestrator(
-        pair_id=pair_id,
+        pair_id=effective_pair_id,
         project=ProjectRef(
             project_id=project.project_id if project is not None else "",
             name=project.name if project is not None else "",

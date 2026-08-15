@@ -221,7 +221,7 @@ class VoiceRuntime:
 
     async def shutdown(self) -> None:
         """B2 UI 退出时关闭采集、识别与播放任务。"""
-        self.stop_speaking()
+        await self.stop_speaking_async()
         if self._asr_active:
             await self._end_asr(commit=False, target=self._ptt_target)
         commit_tasks = tuple(self._commit_tasks)
@@ -232,7 +232,9 @@ class VoiceRuntime:
         await self.stop_listening()
         await self._cancel_task(self._playback_task)
         self._playback_task = None
-        self._player.close()
+        # AudioPlayer.close 需要等待正在进行的原生写入完成；不要阻塞
+        # Sidecar 事件循环，避免 shutdown 与 JSONL 请求互相卡住。
+        await asyncio.to_thread(self._player.close)
 
     # ------------------------------------------------------------ 上行：采集分发
 
@@ -374,7 +376,7 @@ class VoiceRuntime:
 
     async def push_to_talk_start(self, target: str = "character") -> None:
         """按下说话键：先停 TTS，再开 ASR 会话直录（无 pre-roll）。"""
-        self.stop_speaking()
+        await self.stop_speaking_async()
         self._ptt_target = target
         self._ptt_active = True
         self._on_vad_state("speech_started")
@@ -483,6 +485,20 @@ class VoiceRuntime:
         self._conversation_id = conversation_id
         self._pair_config = pair_config
 
+    async def set_context_async(self, conversation_id: str, pair_config: PairConfig) -> None:
+        """异步切换语音上下文，避免在 Sidecar 事件循环中等待原生停流。"""
+        await self.stop_speaking_async()
+        self._preannounced_assistant_texts.clear()
+        self._conversation_id = conversation_id
+        self._pair_config = pair_config
+
+    async def stop_speaking_async(self) -> None:
+        """在事件循环中更新队列，再在线程中完成 PortAudio 停止。"""
+        self._queue.stop()
+        self._skip = False
+        self._preannounced_assistant_texts.clear()
+        await asyncio.to_thread(self._player.stop)
+
     def stop_speaking(self) -> None:
         """停止播放并清空待播队列（同步入口，供 UI 信号直接调用）。
 
@@ -506,6 +522,14 @@ class VoiceRuntime:
             return
         self._player.stop()
         self._skip = True
+        self._on_tts_state("skipping")
+
+    async def skip_playing_async(self) -> None:
+        """异步跳过当前句，避免等待 PortAudio 停流阻塞事件循环。"""
+        if not self._queue.playing:
+            return
+        self._skip = True
+        await asyncio.to_thread(self._player.stop)
         self._on_tts_state("skipping")
 
     async def run_playback_loop(self) -> None:

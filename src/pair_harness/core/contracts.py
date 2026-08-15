@@ -167,6 +167,17 @@ class CharacterTurn(FrozenModel):
     # 供应商实际返回、允许展示的思考文本。正文与思考分开持久化和渲染；
     # 不返回思考字段的供应商保持空字符串。
     reasoning: str = ""
+    # 模型按运行时协议自报的委派意图（JSON 的 delegate 字段）。意图判定
+    # 交给语言模型自己，代码只查一致性：declares_delegation 为真却没有
+    # delegation 即协议违规，触发纠偏重试或向角色侧暴露真实失败。
+    declares_delegation: bool = False
+    # 模型输出里是否包含 delegate 字段。协议规定每轮必填；协作模式下字段
+    # 缺失即输出不完整，同样触发纠偏（让模型重新判断并补全协议）。
+    delegate_field_present: bool = False
+    # 协作模式下模型自报需要委派，但经纠偏重试后仍未返回结构化
+    # delegation。编排器据此向角色侧暴露真实失败，不能让“交给搭档”的
+    # 空口承诺静默通过。
+    delegation_missed: bool = False
 
 
 class DialogueEvent(FrozenModel):

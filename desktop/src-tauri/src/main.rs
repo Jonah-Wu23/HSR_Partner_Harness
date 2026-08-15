@@ -1,9 +1,10 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 use std::collections::HashMap;
+use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -108,6 +109,33 @@ fn packaged_sidecar(app: &tauri::AppHandle) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn sidecar_stderr_log_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let data_dir = app.path().app_data_dir().ok()?;
+    std::fs::create_dir_all(&data_dir).ok()?;
+    Some(data_dir.join("sidecar.stderr.log"))
+}
+
+fn drain_sidecar_stderr(stderr: ChildStderr, log_path: Option<PathBuf>) {
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut log =
+            log_path.and_then(|path| OpenOptions::new().create(true).append(true).open(path).ok());
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            match reader.read_until(b'\n', &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if let Some(file) = log.as_mut() {
+                        let _ = file.write_all(&line);
+                        let _ = file.flush();
+                    }
+                }
+            }
+        }
+    });
 }
 
 fn packaged_codex(app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -228,6 +256,7 @@ fn launch_sidecar(
     let program = packaged.clone().unwrap_or_else(|| python_command(&root));
     let env_file = configured_env_file(app, &root);
     let real = use_real_backend(env_file.as_deref());
+    let stderr_log = sidecar_stderr_log_path(app);
     let mut command = Command::new(program);
     command.current_dir(&root);
     let mode = if real { "--real" } else { "--demo" };
@@ -249,7 +278,7 @@ fn launch_sidecar(
         .arg(&root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::piped());
 
     #[cfg(windows)]
     if !debug_console {
@@ -259,6 +288,9 @@ fn launch_sidecar(
     let mut child = command
         .spawn()
         .map_err(|error| format!("启动 Python Sidecar 失败：{error}"))?;
+    if let Some(stderr) = child.stderr.take() {
+        drain_sidecar_stderr(stderr, stderr_log);
+    }
     let stdin = child
         .stdin
         .take()

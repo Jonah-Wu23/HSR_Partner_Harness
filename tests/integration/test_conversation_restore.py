@@ -7,6 +7,7 @@ from pair_harness.core.contracts import (
     ApprovalMode,
     CharacterTurn,
     EngineSessionRef,
+    MessageOrigin,
     MessageSource,
     ProjectRef,
     TaskRequestDraft,
@@ -107,13 +108,14 @@ async def test_restored_orchestrator_backfills_history_and_session_ref(
     orchestrator.restore_conversation(snapshot)
 
     # 纯聊天轮：近期上下文包含全部历史角色对话（USER/CHARACTER，排除
-    # 助手与系统消息），角色不失忆
+    # 助手、系统消息与委派镜像卡），角色不失忆
     await orchestrator.handle_character_input(conversation_id="c", text="还记得刚才的事吗")
     request = model.requests[0]
     historical = [
         m
         for m in snapshot["messages"]
         if m.source in (MessageSource.USER, MessageSource.CHARACTER)
+        and m.origin != MessageOrigin.CHARACTER_DELEGATION
     ]
     assert [m.message_id for m in request.recent_messages] == [
         m.message_id for m in historical
