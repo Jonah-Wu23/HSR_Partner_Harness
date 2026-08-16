@@ -1,3 +1,5 @@
+import pytest
+
 from pair_harness.adapters.codex.codec import CodexCodec, EventBinding
 
 
@@ -96,21 +98,34 @@ def test_maps_failed_turn_and_ignores_other_turn() -> None:
     assert failed.payload["error"] == "boom"
 
 
-def test_maps_native_approval_cards() -> None:
+def test_maps_cancelled_turn_to_completed_cancelled_not_failed() -> None:
+    """M6.1：原生 turn/completed status=cancelled 映射为取消回执，不能 failed。"""
     event = CodexCodec().map_notification(
         {
-            "method": "item/approval/requested",
-            "params": {
-                "turnId": "turn",
-                "itemId": "tool-1",
-                "approvalId": "approval-1",
-                "reason": "needs confirmation",
-            },
+            "method": "turn/completed",
+            "params": {"turn": {"id": "turn", "status": "cancelled"}},
         },
         binding(),
     )
-    assert event.type == "approval.requested"
-    assert event.payload["approval_id"] == "approval-1"
+    assert event.type == "turn.completed"
+    assert event.payload["status"] == "cancelled"
+
+
+def test_rejects_non_numeric_native_approval_id() -> None:
+    """M1.5：缺失/非数字 approval_id 在 codec 阶段即协议失败。"""
+    with pytest.raises(ValueError, match="non-numeric approval_id"):
+        CodexCodec().map_notification(
+            {
+                "method": "item/approval/requested",
+                "params": {
+                    "turnId": "turn",
+                    "itemId": "tool-1",
+                    "approvalId": "approval-1",
+                    "reason": "needs confirmation",
+                },
+            },
+            binding(),
+        )
 
 
 def test_maps_server_initiated_request_approval_payload() -> None:

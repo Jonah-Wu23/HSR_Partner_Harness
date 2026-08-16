@@ -65,6 +65,10 @@ export interface DesktopState {
   configSnapshot: Record<string, unknown> | null;
   lastSequence: number;
   needsBootstrap: boolean;
+  /** M2.1：当前连接代次。业务事件和快照必须属于该代次才允许投影。 */
+  streamId: string | number | null;
+  /** M2.1：bootstrap/缺口期间暂存的同一代次业务事件，快照水合后核对重放。 */
+  eventBuffer: DesktopEvent[];
   hydrate(snapshot: DesktopSnapshot): void;
   applyEvents(events: DesktopEvent[]): void;
   setStatus(status: DesktopStatus, error?: string | null): void;
@@ -75,6 +79,7 @@ export interface DesktopState {
   setApprovalResolving(approvalId: string, resolving: boolean): void;
   setReviewStatus(active: boolean, text?: string | null): void;
   dismissToast(id: string): void;
+  pushToast(toast: StoreToast): void;
   setConfigSnapshot(snapshot: Record<string, unknown> | null): void;
 }
 
@@ -137,6 +142,7 @@ function createInitialState(): Omit<
   | "setApprovalResolving"
   | "setReviewStatus"
   | "dismissToast"
+  | "pushToast"
   | "setConfigSnapshot"
 > {
   return {
@@ -173,6 +179,8 @@ function createInitialState(): Omit<
     configSnapshot: null,
     lastSequence: -1,
     needsBootstrap: false,
+    streamId: null,
+    eventBuffer: [],
   };
 }
 
@@ -199,8 +207,9 @@ function indexSnapshot(snapshot: DesktopSnapshot) {
   const toolRunsById: Record<string, ToolRun> = {};
   const toolIdsByConversation: Record<string, string[]> = {};
   for (const toolRun of snapshot.tool_runs) {
-    toolRunsById[toolRun.tool_call_id] = toolRun;
-    (toolIdsByConversation[toolRun.conversation_id] ??= []).push(toolRun.tool_call_id);
+    const key = toolRunKey(toolRun);
+    toolRunsById[key] = toolRun;
+    (toolIdsByConversation[toolRun.conversation_id] ??= []).push(key);
   }
   const turnsById: Record<string, Turn> = {};
   const turnIdsByConversation: Record<string, string[]> = {};
@@ -241,6 +250,12 @@ function upsertIndexed<T>(
   };
 }
 
+/** M4.1：工具记录以 conversation_id + tool_call_id 复合键索引，
+    两个会话复用同一 tool_call_id 时互不覆盖。 */
+function toolRunKey(toolRun: ToolRun): string {
+  return `${toolRun.conversation_id}\u0000${toolRun.tool_call_id}`;
+}
+
 function pushToast(toasts: StoreToast[], toast: StoreToast): StoreToast[] {
   // V0.2 M4：同 code+message 去重（以 id 为准），最多保留 5 条
   if (toasts.some((item) => item.id === toast.id)) return toasts;
@@ -252,6 +267,16 @@ function snapshotMode(snapshot: DesktopSnapshot): "chat" | "collaboration" {
 }
 
 function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): DesktopState {
+  // M2.1：旧代次快照不能覆盖新代次状态。state.streamId 为空时是首次水合，
+  // 允许任意快照建立代次。直接 hydrate（测试/mock 等无 stream_id 的旧协议）
+  // 会清空代次，事件路径另行拒绝无 stream_id 的快照。
+  if (
+    state.streamId !== null &&
+    snapshot.stream_id !== undefined &&
+    snapshot.stream_id !== state.streamId
+  ) {
+    return state;
+  }
   // V0.2 模式独立（问题 3）：设置类命令的快照不得回推覆盖本地模式。
   // 只有首次水合（boot）或切换会话时才从后端 last_mode 采纳模式；
   // 其余增量快照（如推理档位/审批方式修改）保持当前模式不变。
@@ -272,34 +297,155 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
     pair: snapshot.pair,
     pairs: snapshot.pairs ?? (snapshot.pair ? [snapshot.pair] : []),
     activeTask: snapshot.active_task,
-    busy: snapshot.busy,
+    // M5.4：busy 区分“当前会话自己的任务”与“全局编程任务”。全局任务仍由
+    // activeTask 记录，但当前会话 busy 只在 activeTask 属于本会话时点亮，
+    // A 会话任务不会误画成 B 会话自己的任务。
+    busy: Boolean(snapshot.busy) && snapshot.active_task?.conversation_id === snapshot.current_conversation_id,
     approvals: snapshot.approvals,
     approvalResolvingById: {},
     reviewActive: false,
     reviewText: null,
     voice: snapshot.voice,
-    // V0.2 M4：快照水合（重启/重连/切换账号）重置本地 UI 缓存——
-    // Toast 与配置快照不属于后端快照，旧值不得跨水合残留
-    toasts: [],
-    configSnapshot: null,
+    // M5.4：快照水合保留仍有效的本地 Toast；configSnapshot 只在新快照显式
+    // 携带 config 字段时覆盖，否则继续使用 config.get 的结果。
+    toasts: state.toasts,
+    configSnapshot:
+      "config" in snapshot
+        ? (snapshot as DesktopSnapshot & { config?: Record<string, unknown> }).config ?? null
+        : state.configSnapshot,
     mode,
+    // M4.4：任何路径进入 chat 模式（含切换会话水合）都重置发送对象为角色。
+    composerTarget: mode === "chat" ? "character" : state.composerTarget,
     lastSequence: snapshot.sequence,
     needsBootstrap: false,
+    streamId: snapshot.stream_id ?? null,
+    eventBuffer: [],
   };
 }
 
+function applyErrorReported(state: DesktopState, event: DesktopEvent): DesktopState {
+  // V0.2 错误分级（问题 9）：fatal 接管整屏；recoverable/info 保留已加载
+  // 内容，入 Toast 队列（同 code+message 去重，最多 5 条）。
+  const payload = event.payload as { message?: string; severity?: string; code?: string };
+  const severity = payload.severity ?? "fatal";
+  if (severity === "fatal") {
+    return {
+      ...state,
+      status: "error",
+      error: String(payload.message ?? "桌面后端错误"),
+    };
+  }
+  const text = String(payload.message ?? "");
+  return {
+    ...state,
+    error: text,
+    toasts: pushToast(state.toasts, {
+      id: `${payload.code ?? "error"}:${text}`,
+      kind: severity === "info" ? "info" : "warning",
+      text,
+      hasDetails: Boolean(payload.code),
+    }),
+  };
+}
+
+function applyConnectionStatus(state: DesktopState, event: DesktopEvent): DesktopState {
+  const streamId = event.stream_id;
+  const status = String(event.payload.status ?? "");
+  // connected 总是权威：新代次到达时用它切换 streamId。
+  // disconnected 只接受当前代次；旧 reader 迟到的 disconnected 不能覆盖新连接。
+  if (status === "connected") {
+    return {
+      ...state,
+      streamId: streamId ?? state.streamId,
+      status: "booting",
+      needsBootstrap: true,
+      eventBuffer: [],
+    };
+  }
+  if (status === "disconnected") {
+    if (
+      state.streamId !== null &&
+      streamId !== undefined &&
+      streamId !== state.streamId
+    ) {
+      return state; // 旧代次的 disconnected
+    }
+    return { ...state, status: "disconnected", needsBootstrap: false, eventBuffer: [] };
+  }
+  return state;
+}
+
+function replayBufferedEvents(state: DesktopState): DesktopState {
+  const buffered = state.eventBuffer;
+  if (buffered.length === 0) return state;
+  let current: DesktopState = { ...state, eventBuffer: [] };
+  for (const event of buffered) {
+    current = applyEvent(current, event);
+  }
+  return current;
+}
+
 function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
+  // M2.1：连接控制事件在业务序号过滤前处理，并携带对应 stream_id。
+  if (event.event === "connection.status") {
+    return applyConnectionStatus(state, event);
+  }
   // 协议错误、旧插件事件等没有序号的消息不能参与快照序列校验。
   if (!Number.isFinite(event.sequence)) return state;
-  if (event.sequence <= state.lastSequence) return state;
+  // 旧代次事件直接丢弃，不参与当前业务投影。
+  if (event.stream_id !== undefined && state.streamId !== null && event.stream_id !== state.streamId) {
+    return state;
+  }
+  // 快照水合：旧代次快照被 hydrateSnapshotState 拒绝；水合后重放暂存事件。
+  if (event.event === "state.snapshot") {
+    const snapshot = event.payload as unknown as DesktopSnapshot;
+    // 事件路径下，当前已有代次时快照必须携带同一 stream_id；无 stream_id
+    // 的旧协议快照不能覆盖新代次状态。
+    if (
+      state.streamId !== null &&
+      (snapshot.stream_id === undefined || snapshot.stream_id !== state.streamId)
+    ) {
+      return state;
+    }
+    // 水合会清空 eventBuffer；先把待核对事件保留下来，水合后按快照序号重放。
+    const buffered = state.eventBuffer;
+    const hydrated = { ...hydrateSnapshotState(state, snapshot), eventBuffer: buffered };
+    return replayBufferedEvents(hydrated);
+  }
+  // error.reported 是控制/错误通道：即使正在 bootstrap 也不能被暂存，
+  // 否则致命启动错误在没有快照时会永远无法显示。
+  if (event.event === "error.reported") {
+    // 错误通道不参与业务序号过滤：bootstrap 期间/旧代次高序号之后都必须显示。
+    return applyErrorReported(state, event);
+  }
+  // 新代次 bootstrap 或序号缺口期间：暂存业务事件，等快照水合后核对重放。
+  if (state.needsBootstrap || state.status === "booting") {
+    return { ...state, eventBuffer: [...state.eventBuffer, event] };
+  }
+  if (event.sequence <= state.lastSequence) {
+    return state; // 同代次重复序号直接丢弃
+  }
   if (state.lastSequence >= 0 && event.sequence !== state.lastSequence + 1) {
-    return { ...state, needsBootstrap: true, lastSequence: event.sequence };
+    // 序号缺口：触发 bootstrap，并保留缺口后的事件等待快照核对。
+    return {
+      ...state,
+      needsBootstrap: true,
+      eventBuffer: [...state.eventBuffer, event],
+    };
   }
 
+  return applyBusinessEvent(state, event);
+}
+
+function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopState {
   const next: DesktopState = { ...state, lastSequence: event.sequence };
   switch (event.event) {
     case "backend.ready":
+      // M5.4：backend.ready 是新的 stream bootstrap 起点；等 state.snapshot
+      // 水合前先暂存业务事件，AppController 看到 needsBootstrap 会重新拉快照。
       next.status = "booting";
+      next.needsBootstrap = true;
+      next.eventBuffer = [];
       break;
     case "state.snapshot":
       return hydrateSnapshotState(next, event.payload as unknown as DesktopSnapshot);
@@ -317,12 +463,35 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
       break;
     }
     case "message.status_changed": {
-      // V0.2 消息生命周期推进：按真实 id 对账（失败保留文字，可重试）
-      const message = event.payload.message as Message;
-      const current = next.messagesById[message.message_id];
-      if (current) {
-        next.messagesById = { ...next.messagesById, [message.message_id]: message };
+      // V0.2 消息生命周期推进：按真实 id 对账（失败保留文字，可重试）。
+      // M5.4：完整 Message 执行 upsert（即使 status_changed 先于 message.created
+      // 到达也能落库）；缺少必要字段时触发 bootstrap，不能静默丢弃。
+      const message = event.payload.message as Partial<Message> | null | undefined;
+      const hasRequiredFields =
+        !!message &&
+        typeof message.message_id === "string" &&
+        typeof message.conversation_id === "string" &&
+        typeof message.pair_id === "string" &&
+        typeof message.source === "string" &&
+        typeof message.kind === "string" &&
+        typeof message.text === "string" &&
+        typeof message.created_at === "string";
+      if (!hasRequiredFields) {
+        return {
+          ...next,
+          needsBootstrap: true,
+          eventBuffer: [...next.eventBuffer, event],
+        };
       }
+      const indexed = upsertIndexed(
+        next.messagesById,
+        next.messageIdsByConversation,
+        message.conversation_id!,
+        message.message_id!,
+        message as Message,
+      );
+      next.messagesById = indexed.byId;
+      next.messageIdsByConversation = indexed.idsByConversation;
       break;
     }
     case "message.delta": {
@@ -389,11 +558,12 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
     }
     case "tool_run.upserted": {
       const toolRun = event.payload.tool_run as ToolRun;
+      const key = toolRunKey(toolRun);
       const indexed = upsertIndexed(
         next.toolRunsById,
         next.toolIdsByConversation,
         toolRun.conversation_id,
-        toolRun.tool_call_id,
+        key,
         toolRun,
       );
       next.toolRunsById = indexed.byId;
@@ -415,10 +585,13 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
       next.approvalResolvingById = remaining;
       break;
     }
-    case "task.busy_changed":
-      next.busy = Boolean(event.payload.busy);
-      next.activeTask = (event.payload.active_task as DesktopSnapshot["active_task"]) ?? null;
+    case "task.busy_changed": {
+      const activeTask = (event.payload.active_task as DesktopSnapshot["active_task"]) ?? null;
+      next.activeTask = activeTask;
+      // M5.4：当前会话 busy 只跟本会话 activeTask；全局任务仍保留在 activeTask。
+      next.busy = Boolean(event.payload.busy) && activeTask?.conversation_id === next.currentConversationId;
       break;
+    }
     case "turn.started":
     case "turn.status_changed": {
       // V0.2 M2：Turn 生命周期推进（started → running → completed/failed/cancelled）。
@@ -539,26 +712,8 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
       }
       break;
     }
-    case "error.reported": {
-      // V0.2 错误分级（问题 9）：fatal 接管整屏；recoverable/info 保留已加载
-      // 内容，入 Toast 队列（同 code+message 去重，最多 5 条）。
-      const payload = event.payload as { message?: string; severity?: string; code?: string };
-      const severity = payload.severity ?? "fatal";
-      if (severity === "fatal") {
-        next.status = "error";
-        next.error = String(payload.message ?? "桌面后端错误");
-      } else {
-        const text = String(payload.message ?? "");
-        next.error = text;
-        next.toasts = pushToast(next.toasts, {
-          id: `${payload.code ?? "error"}:${text}`,
-          kind: severity === "info" ? "info" : "warning",
-          text,
-          hasDetails: Boolean(payload.code),
-        });
-      }
-      break;
-    }
+    case "error.reported":
+      return applyErrorReported(next, event);
     case "account.changed": {
       // V0.2 M4：账号变更事件水合当前账号与账号列表（登录/注册/切换）
       const payload = event.payload as { account?: AccountRecord; accounts?: AccountListItem[] };
@@ -576,7 +731,12 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
 export const desktopStore = createStore<DesktopState>((set) => ({
   ...createInitialState(),
   hydrate(snapshot) {
-    set((state) => hydrateSnapshotState(state, snapshot));
+    set((state) => {
+      const hydrated = hydrateSnapshotState(state, snapshot);
+      if (hydrated === state) return state;
+      // 直接水合（app.bootstrap 响应）也要重放水合前暂存的同代次事件。
+      return replayBufferedEvents({ ...hydrated, eventBuffer: state.eventBuffer });
+    });
   },
   applyEvents(events) {
     set((state) => events.reduce(applyEvent, state));
@@ -588,7 +748,8 @@ export const desktopStore = createStore<DesktopState>((set) => ({
     set({ theme });
   },
   setMode(mode) {
-    set({ mode });
+    // M4.4：切回聊天时发送对象强制回到角色，store 是唯一状态源。
+    set(mode === "chat" ? { mode, composerTarget: "character" } : { mode });
   },
   setComposerTarget(target) {
     set({ composerTarget: target });
@@ -615,6 +776,9 @@ export const desktopStore = createStore<DesktopState>((set) => ({
   },
   dismissToast(id) {
     set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) }));
+  },
+  pushToast(toast) {
+    set((state) => ({ toasts: pushToast(state.toasts, toast) }));
   },
   setConfigSnapshot(snapshot) {
     set({ configSnapshot: snapshot });

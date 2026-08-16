@@ -133,6 +133,29 @@ class SubprocessJsonLineConnection:
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, ValueError) as exc:
             raise TransportClosed("Codex app-server connection lost") from exc
 
+    async def _terminate_tree(self) -> None:
+        """强制结束整个子进程树。
+
+        Windows 上 .cmd/.bat shim 只作为 cmd.exe 启动的包装，直接 kill 可能
+        只结束 cmd 而留下真实 app-server；用 taskkill /T 覆盖整棵进程树。
+        """
+        if os.name == "nt":
+            kill = await asyncio.create_subprocess_exec(
+                "taskkill",
+                "/PID",
+                str(self.process.pid),
+                "/T",
+                "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await kill.wait()
+        else:
+            try:
+                self.process.kill()
+            except ProcessLookupError:
+                pass
+
     async def close(self) -> None:
         if self.process.stdin is not None:
             self.process.stdin.close()
@@ -141,7 +164,21 @@ class SubprocessJsonLineConnection:
                 self.process.terminate()
             except ProcessLookupError:
                 pass
-        await self.process.wait()
+        try:
+            await asyncio.wait_for(self.process.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            # 普通 terminate 无效时进入强制结束；真实错误保留在日志里。
+            logger.warning(
+                "Codex app-server 未在 2s 内退出，强制结束进程树 (pid=%s)",
+                self.process.pid,
+            )
+            await self._terminate_tree()
+            try:
+                await asyncio.wait_for(self.process.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Codex app-server 强制结束后仍未退出 (pid=%s)", self.process.pid
+                )
         if self._stderr_task is not None:
             await asyncio.gather(self._stderr_task, return_exceptions=True)
 
@@ -165,7 +202,9 @@ class JsonlProcessTransport:
         self._connection: JsonLineConnection | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
+        self._pending_generation: dict[int, int] = {}
         self._notifications: asyncio.Queue[dict[str, Any] | BaseException] = asyncio.Queue()
+        self._generation = 0
         self._next_id = 1
         # 坏行容错计数（O1.3）：读循环跳过无法解析的行，不中断
         self.bad_line_count = 0
@@ -174,12 +213,20 @@ class JsonlProcessTransport:
     def is_running(self) -> bool:
         return self._reader_task is not None and not self._reader_task.done()
 
+    @property
+    def generation(self) -> int:
+        """连接代次。重连后递增，旧 reader 只归属旧代次。"""
+        return self._generation
+
     async def start(self) -> None:
         if self.is_running:
             return
         # 读循环已经结束时，先收掉旧管道，再创建新的 app-server 连接。
         if self._connection is not None:
             await self._close_connection()
+        self._generation += 1
+        # M1.3：每次重连使用新的通知队列；旧 reader 的异常只进旧队列。
+        self._notifications = asyncio.Queue()
         if self.connection_factory is not None:
             self._connection = await self.connection_factory()
         else:
@@ -200,12 +247,14 @@ class JsonlProcessTransport:
         self._next_id += 1
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
+        self._pending_generation[request_id] = self._generation
         message = {"id": request_id, "method": method, "params": params or {}}
         encoded = json.dumps(message, ensure_ascii=False).encode("utf-8") + b"\n"
         try:
             await self._connection.write_line(encoded)
         except BaseException as exc:
             self._pending.pop(request_id, None)
+            self._pending_generation.pop(request_id, None)
             if isinstance(exc, (TransportClosed, ConnectionError, ValueError)):
                 await self._close_connection()
                 if not isinstance(exc, TransportClosed):
@@ -219,6 +268,7 @@ class JsonlProcessTransport:
         except asyncio.TimeoutError:
             # 超时后移除挂起项，迟到的响应直接丢弃，避免污染后续请求
             self._pending.pop(request_id, None)
+            self._pending_generation.pop(request_id, None)
             raise
 
     async def next_notification(self) -> dict[str, Any]:
@@ -256,6 +306,8 @@ class JsonlProcessTransport:
 
     async def _read_loop(self) -> None:
         assert self._connection is not None
+        generation = self._generation
+        notifications = self._notifications
         failure: BaseException = TransportClosed("Codex app-server exited")
         try:
             while True:
@@ -277,9 +329,12 @@ class JsonlProcessTransport:
                     # O3.1：服务端发起的请求（如 item/commandExecution/requestApproval）
                     # 带 JSON-RPC id 与方法名，与通知同队列消费，由调用方
                     # （run_turn 循环）经 respond() 回复；不能当作客户端请求的响应。
-                    await self._notifications.put(message)
+                    await notifications.put(message)
                 elif "id" in message:
                     request_id = int(message["id"])
+                    if self._pending_generation.get(request_id) != generation:
+                        continue
+                    self._pending_generation.pop(request_id, None)
                     future = self._pending.pop(request_id, None)
                     if future is None:
                         continue
@@ -288,16 +343,20 @@ class JsonlProcessTransport:
                     else:
                         future.set_result(message.get("result", {}))
                 elif "method" in message:
-                    await self._notifications.put(message)
+                    await notifications.put(message)
         except asyncio.CancelledError:
             return
         except BaseException as exc:
             failure = exc
-            for future in self._pending.values():
+            for request_id, future in tuple(self._pending.items()):
+                if self._pending_generation.get(request_id) != generation:
+                    continue
+                self._pending_generation.pop(request_id, None)
+                self._pending.pop(request_id, None)
                 if not future.done():
                     future.set_exception(exc)
-            self._pending.clear()
-            await self._notifications.put(exc)
+            # 旧 reader 的异常只放进自己代次的通知队列，不影响新队列。
+            await notifications.put(exc)
 
     async def _close_connection(self) -> None:
         reader_task = self._reader_task

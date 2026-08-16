@@ -318,6 +318,14 @@ class ApprovalManager:
                 self._session_allow.add(self._signature(op))
         return op
 
+    def clear_pending(self) -> None:
+        """清空未决的本地审批项。
+
+        M1.5：任务取消/回调异常时调用，避免 ``_pending`` 残留悬挂项。
+        仅移除等待裁决的本地审批记录；已发出的 resolved 事件不受影响。
+        """
+        self._pending.clear()
+
     def clear_session_cache(self) -> None:
         """聊天结束/切换时清空“本对话内允许”缓存。
 

@@ -46,6 +46,24 @@ class CodexCodec:
             payload=payload or {},
         )
 
+    @staticmethod
+    def _native_approval_id(request_id: Any, fallback: Any) -> tuple[int, str]:
+        """校验原生审批请求的 approval_id 必须是数字。
+
+        M1.5：缺失或非数字 id 在 codec 阶段就变成可见协议失败，而不是等到
+        ``resolve_approval`` 的 ``int()`` 转换才崩溃。
+        """
+        raw = request_id if request_id is not None else fallback
+        if raw is None:
+            raise ValueError("Codex approval request is missing approval_id")
+        try:
+            numeric = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Codex approval request has non-numeric approval_id: {raw!r}"
+            ) from exc
+        return numeric, str(numeric)
+
     def map_notification(
         self, notification: dict[str, Any], binding: EventBinding
     ) -> EngineEvent | None:
@@ -141,6 +159,9 @@ class CodexCodec:
             # 能路由回挂起中的请求。字段名依据 codex app-server
             # generate-json-schema（0.147.0）确认；B1 联调以实际通知为准。
             request_id = notification.get("id")
+            numeric_id, approval_id = self._native_approval_id(
+                request_id, params.get("approvalId")
+            )
             tool_kind = {
                 "item/commandExecution/requestApproval": "shell",
                 "item/fileChange/requestApproval": "file_write",
@@ -155,12 +176,8 @@ class CodexCodec:
                 EngineEventType.APPROVAL_REQUESTED,
                 tool_call_id=item_id,
                 payload={
-                    "approval_id": (
-                        str(request_id)
-                        if request_id is not None
-                        else params.get("approvalId")
-                    ),
-                    "request_id": request_id,
+                    "approval_id": approval_id,
+                    "request_id": numeric_id,
                     "reason": params.get("reason", ""),
                     "summary": params.get("reason") or command or "工具操作",
                     "tool_kind": tool_kind,
@@ -171,12 +188,15 @@ class CodexCodec:
         if method == "item/approval/requested":
             # 旧协议兼容映射（O3.1 后不再作为交互卡片直透，
             # 统一由 orchestrator 裁决后经 resolve_approval 转发）。
+            _numeric_id, approval_id = self._native_approval_id(
+                notification.get("id"), params.get("approvalId")
+            )
             return self._event(
                 binding,
                 EngineEventType.APPROVAL_REQUESTED,
                 tool_call_id=item_id,
                 payload={
-                    "approval_id": params.get("approvalId"),
+                    "approval_id": approval_id,
                     "reason": params.get("reason", ""),
                 },
             )
@@ -194,6 +214,14 @@ class CodexCodec:
             status = turn.get("status") or params.get("status") or "completed"
             if status == "completed":
                 return self._event(binding, EngineEventType.TURN_COMPLETED)
+            if status == "cancelled":
+                # M6.1：原生 cancelled 必须映射为 completed 回执里的 cancelled
+                # 状态，不能降级成 failed；编排器据 payload.status 生成取消回执。
+                return self._event(
+                    binding,
+                    EngineEventType.TURN_COMPLETED,
+                    payload={"status": "cancelled"},
+                )
             return self._event(
                 binding,
                 EngineEventType.TURN_FAILED,

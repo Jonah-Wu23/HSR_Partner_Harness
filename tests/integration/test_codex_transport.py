@@ -3,9 +3,17 @@ import json
 
 import pytest
 
+from pair_harness.adapters.codex.dialogue import CodexDialogueModel
 from pair_harness.adapters.codex.engine import CodexAppServerEngine
 from pair_harness.adapters.codex.transport import JsonlProcessTransport, TransportClosed
-from pair_harness.core.contracts import ProjectRef, TaskRequest
+from pair_harness.core.contracts import (
+    DialogueRequest,
+    Message,
+    MessageKind,
+    MessageSource,
+    ProjectRef,
+    TaskRequest,
+)
 from tests.fixtures.fake_codex_app_server import FakeCodexAppServer, QueueJsonLineConnection
 
 
@@ -18,6 +26,19 @@ class ResetOnWriteConnection(QueueJsonLineConnection):
 class ExitedConnection(QueueJsonLineConnection):
     async def exit_description(self) -> str:
         return "Codex app-server exited (exit code 1): CODEX_HOME 不存在"
+
+
+class EofConnection:
+    """立即 EOF 的连接，用于制造旧 reader 的失败并结束旧代次。"""
+
+    async def read_line(self) -> bytes:
+        return b""
+
+    async def write_line(self, data: bytes) -> None:
+        del data
+
+    async def close(self) -> None:
+        pass
 
 
 @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
@@ -305,4 +326,118 @@ async def test_engine_repeats_initialize_after_transport_reconnect() -> None:
         "initialize",
         "thread/start",
     ]
+    await transport.close()
+
+
+@pytest.mark.asyncio
+async def test_run_turn_idle_timeout_requests_interrupt_then_fails() -> None:
+    """M1.3：app-server 存活但不发事件时，短超时先 interrupt 再 TURN_FAILED。"""
+    connection = QueueJsonLineConnection()
+
+    async def factory():
+        return connection
+
+    transport = JsonlProcessTransport("unused", connection_factory=factory)
+    engine = CodexAppServerEngine(transport, idle_timeout=0.05)
+    server = FakeCodexAppServer(connection)
+    session_ref = engine._encode_ref("thread-1")
+    task = TaskRequest(
+        conversation_id="conversation-1",
+        origin_message_id="message-1",
+        instructions="run",
+    )
+
+    async def collect_events():
+        return [event async for event in engine.run_turn(session_ref, task)]
+
+    collection = asyncio.create_task(collect_events())
+    turn_request = await server.serve_request({"turn": {"id": "turn-1"}})
+    assert turn_request["method"] == "turn/start"
+    interrupt_request = await server.serve_request({})
+    assert interrupt_request["method"] == "turn/interrupt"
+    assert interrupt_request["params"] == {"threadId": "thread-1", "turnId": "turn-1"}
+
+    events = await collection
+    assert events[-1].type == "turn.failed"
+    assert "idle timeout" in events[-1].payload["error"]
+    await transport.close()
+
+
+@pytest.mark.asyncio
+async def test_codex_dialogue_cancel_interrupts_engine_and_cleans_session() -> None:
+    """M6.1：Codex 角色对话流取消时向 app-server 发 interrupt 并清理 _sessions。"""
+    connection = QueueJsonLineConnection()
+
+    async def factory():
+        return connection
+
+    transport = JsonlProcessTransport("unused", connection_factory=factory)
+    model = CodexDialogueModel(transport)
+    server = FakeCodexAppServer(connection)
+    message = Message(
+        conversation_id="conversation-1",
+        pair_id="phainon_ancient_machine",
+        source=MessageSource.USER,
+        kind=MessageKind.USER_TEXT,
+        text="你好",
+    )
+    request = DialogueRequest(
+        pair_id="phainon_ancient_machine",
+        conversation_id="conversation-1",
+        user_message=message,
+    )
+    collected: list[object] = []
+
+    async def consume():
+        async for event in model.stream_reply(request):
+            collected.append(event)
+
+    stream_task = asyncio.create_task(consume())
+    await server.serve_request({"thread": {"id": "thread-1"}})
+    await server.serve_request({"turn": {"id": "turn-1"}})
+    await server.notify("turn/started", {"turn": {"id": "turn-1"}})
+    await server.notify(
+        "item/reasoning/summaryTextDelta",
+        {"turnId": "turn-1", "itemId": "r1", "delta": "思考中"},
+    )
+    for _ in range(200):
+        if collected:
+            break
+        await asyncio.sleep(0.01)
+    assert collected, "dialogue stream should have started consuming engine events"
+
+    stream_task.cancel()
+    # cancel_turn 是请求-响应调用：先让 fake server 应答 interrupt，
+    # 再等待被取消的流真正结束，避免双向等待。
+    interrupt = await server.serve_request({})
+    assert interrupt["method"] == "turn/interrupt"
+    assert interrupt["params"] == {"threadId": "thread-1", "turnId": "turn-1"}
+    with pytest.raises(asyncio.CancelledError):
+        await stream_task
+    assert request.conversation_id not in model._sessions
+    await transport.close()
+
+
+@pytest.mark.asyncio
+async def test_old_reader_exception_does_not_poison_new_notification_queue() -> None:
+    """M1.3：重连使用新通知队列，旧 reader 的 EOF 异常只结束旧队列。"""
+    connections: list[object] = []
+
+    async def factory():
+        connection = EofConnection() if not connections else QueueJsonLineConnection()
+        connections.append(connection)
+        return connection
+
+    transport = JsonlProcessTransport("unused", connection_factory=factory)
+    await transport.start()
+    while transport.is_running:
+        await asyncio.sleep(0)
+    assert transport.generation == 1
+
+    await transport.start()
+    assert transport.generation == 2
+
+    # 新队列不应收到旧 reader 的 TransportClosed，只应正常等待通知。
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(transport.next_notification(), timeout=0.05)
     await transport.close()

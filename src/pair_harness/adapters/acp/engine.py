@@ -64,6 +64,8 @@ class AcpCodingEngine(CodingEngine):
         self.transport = transport
         self.model = model or ""
         self._initialized = False
+        self._init_lock = asyncio.Lock()
+        self._transport_generation = getattr(transport, "generation", 0)
 
     @staticmethod
     def _encode_ref(acp_session_id: str) -> EngineSessionRef:
@@ -80,14 +82,24 @@ class AcpCodingEngine(CodingEngine):
         return str(data["acp_session_id"])
 
     async def _ensure_initialized(self) -> None:
-        if self._initialized:
-            return
-        await self.transport.start()
-        await self.transport.request(
-            "initialize",
-            {"clientInfo": {"name": "pair-harness", "version": "0.3.0"}},
-        )
-        self._initialized = True
+        async with self._init_lock:
+            generation = getattr(self.transport, "generation", 0)
+            if self._transport_generation != generation:
+                # M1.4：断线/重连后 transport 代次变化，必须重新 initialize。
+                self._initialized = False
+                self._transport_generation = generation
+            if self._initialized:
+                return
+            await self.transport.start()
+            generation = getattr(self.transport, "generation", 0)
+            if self._transport_generation != generation:
+                self._transport_generation = generation
+            await self.transport.request(
+                "initialize",
+                {"clientInfo": {"name": "pair-harness", "version": "0.3.0"}},
+            )
+            self._initialized = True
+            self._transport_generation = generation
 
     async def open_session(
         self,
@@ -152,6 +164,7 @@ class AcpCodingEngine(CodingEngine):
             "conversation_id": request.conversation_id,
             "task_id": request.task_id,
             "engine_turn_id": f"acp-{request.task_id}",
+            "acp_session_id": acp_session_id,
         }
         codec = AcpCodec()
         assistant_chunks: list[str] = []
@@ -168,6 +181,7 @@ class AcpCodingEngine(CodingEngine):
                 else:
                     tool_failed = True
 
+        notification_task: asyncio.Task[Any] | None = None
         try:
             while True:
                 if prompt_task.done():
@@ -200,39 +214,61 @@ class AcpCodingEngine(CodingEngine):
                     break
                 # 事件通知与 prompt 响应并发等待：逐条消费映射
                 notification_task = asyncio.create_task(self.transport.next_notification())
-                done, _ = await asyncio.wait(
-                    {prompt_task, notification_task}, return_when=asyncio.FIRST_COMPLETED
-                )
-                if prompt_task in done:
-                    if notification_task in done:
-                        # 通知与 prompt 同时到达：先消费通知，不丢事件
-                        event = codec.map_notification(notification_task.result(), binding)
-                        if event is not None:
-                            remember_event(event)
-                            yield event
-                    else:
-                        notification_task.cancel()
-                    continue
-                notification = notification_task.result()
-                event = codec.map_notification(notification, binding)
-                if event is None:
-                    continue
-                remember_event(event)
-                yield event
+                try:
+                    done, _ = await asyncio.wait(
+                        {prompt_task, notification_task}, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    if prompt_task in done:
+                        if notification_task in done:
+                            # 通知与 prompt 同时到达：先消费通知，不丢事件
+                            event = codec.map_notification(notification_task.result(), binding)
+                            if event is not None:
+                                remember_event(event)
+                                yield event
+                        else:
+                            notification_task.cancel()
+                        continue
+                    notification = notification_task.result()
+                    event = codec.map_notification(notification, binding)
+                    if event is None:
+                        continue
+                    remember_event(event)
+                    yield event
+                finally:
+                    # M1.4：每轮创建的 notification_task 必须取消并 await，
+                    # 不能留下 pending task 泄漏。
+                    if notification_task is not None:
+                        if not notification_task.done():
+                            notification_task.cancel()
+                        await asyncio.gather(notification_task, return_exceptions=True)
+                        notification_task = None
         except asyncio.CancelledError:
-            prompt_task.cancel()
+            if not prompt_task.done():
+                prompt_task.cancel()
+            await asyncio.gather(prompt_task, return_exceptions=True)
             raise
         except BaseException as exc:  # noqa: BLE001 - 传输断开按回合失败上报
-            prompt_task.cancel()
+            if not prompt_task.done():
+                prompt_task.cancel()
+            await asyncio.gather(prompt_task, return_exceptions=True)
             yield EngineEvent(
                 conversation_id=request.conversation_id,
                 task_id=request.task_id,
                 engine_turn_id=binding["engine_turn_id"],
                 sequence=0,
                 type=EngineEventType.TURN_FAILED,
-                payload={"error": str(exc)},
+                payload={"error": f"{type(exc).__name__}: {exc}"},
             )
             return
+        finally:
+            # 取消/异常路径也要结清 notification_task（外层防御）
+            if notification_task is not None:
+                if not notification_task.done():
+                    notification_task.cancel()
+                await asyncio.gather(notification_task, return_exceptions=True)
+            if not prompt_task.done():
+                prompt_task.cancel()
+                await asyncio.gather(prompt_task, return_exceptions=True)
         stop = await prompt_task
         stop_reason = str(stop.get("stopReason") or stop.get("stop_reason") or "")
         stop_error = (
@@ -431,6 +467,31 @@ class AcpCodec:
             "task_id": binding["task_id"],
             "engine_turn_id": binding["engine_turn_id"],
         }
+
+        # M1.4：能提供 session/turn 标识时核对归属；不匹配的事件记录协议
+        # 错误，不能投影到当前会话。
+        session_id = params.get("sessionId") or params.get("session_id")
+        expected_session = binding.get("acp_session_id")
+        if session_id is not None and expected_session is not None:
+            if str(session_id) != str(expected_session):
+                logger.warning(
+                    "ACP notification session mismatch: got %r expected %r",
+                    session_id,
+                    expected_session,
+                )
+                return None
+        turn_id = params.get("turnId") or params.get("turn_id")
+        if turn_id is not None and binding.get("engine_turn_id"):
+            # ACP 当前协议没有稳定 turnId 时，不额外投影；若服务端给出
+            # 明确不匹配的 turn 标识，同样按协议错误丢弃。
+            expected_turn = binding.get("acp_turn_id")
+            if expected_turn is not None and str(turn_id) != str(expected_turn):
+                logger.warning(
+                    "ACP notification turn mismatch: got %r expected %r",
+                    turn_id,
+                    expected_turn,
+                )
+                return None
 
         if method == "session/update":
             update = params.get("update")

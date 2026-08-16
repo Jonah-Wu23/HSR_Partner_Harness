@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import logging
 from collections.abc import AsyncIterator
+from typing import Any
 
 from pair_harness.core.contracts import (
     ApprovalDecision,
@@ -18,6 +21,8 @@ from pair_harness.core.ports import CodingEngine
 from .codec import CodexCodec, EventBinding
 from .transport import JsonlProcessTransport
 
+logger = logging.getLogger(__name__)
+
 
 class CodexAppServerEngine(CodingEngine):
     engine_type = "codex-app-server"
@@ -29,14 +34,20 @@ class CodexAppServerEngine(CodingEngine):
         *,
         model: str = "gpt-5.6-sol",
         reasoning_effort: str = "medium",
+        idle_timeout: float = 600.0,
     ) -> None:
         self.transport = transport
         self.model = model
-        self.reasoning_effort = reasoning_effort
+        # auto 在 Codex 端没有对应档位，沿用 configure_reasoning 的语义
+        # 归一化为 medium（F5 档位）。
+        self.reasoning_effort = "medium" if reasoning_effort == "auto" else reasoning_effort
         # B1 联调：app-server 协议要求连接后先发 initialize 握手，
         # 否则 thread/start 返回 {"code": -32600, "message": "Not initialized"}。
         # 每个引擎实例（每次连接）只需一次。
         self._initialized = False
+        self._transport_generation = transport.generation
+        # M1.3：当前 turn 连续无事件的最大空闲时间；超时先 interrupt 再失败。
+        self.idle_timeout = idle_timeout
 
     def configure_reasoning(self, effort: str) -> None:
         """设置 GPT-5.6 Sol 的真实 reasoning effort。"""
@@ -81,6 +92,10 @@ class CodexAppServerEngine(CodingEngine):
         """
         was_running = self.transport.is_running
         await self.transport.start()
+        # M1.3：transport 重连后连接代次变化，必须复位并重新 initialize。
+        if self._transport_generation != self.transport.generation:
+            self._initialized = False
+            self._transport_generation = self.transport.generation
         if not self._initialized or not was_running:
             await self.transport.request(
                 "initialize",
@@ -145,14 +160,86 @@ class CodexAppServerEngine(CodingEngine):
             engine_turn_id=turn_id,
         )
         codec = CodexCodec()
-        while True:
-            notification = await self.transport.next_notification()
-            event = codec.map_notification(notification, binding)
-            if event is None:
-                continue
-            yield event
-            if event.type in (EngineEventType.TURN_COMPLETED, EngineEventType.TURN_FAILED):
-                return
+        try:
+            while True:
+                try:
+                    notification = await asyncio.wait_for(
+                        self.transport.next_notification(), timeout=self.idle_timeout
+                    )
+                except asyncio.TimeoutError:
+                    # M1.3：空闲超时——先请求 interrupt，再产生带原始原因的失败。
+                    interrupt_error = None
+                    try:
+                        await self.transport.request(
+                            "turn/interrupt",
+                            {"threadId": thread_id, "turnId": turn_id},
+                        )
+                    except Exception as exc:  # noqa: BLE001 - interrupt 失败也记录
+                        interrupt_error = f"{type(exc).__name__}: {exc}"
+                        logger.error("Codex idle timeout interrupt failed: %s", exc)
+                    payload: dict[str, Any] = {
+                        "error": (
+                            f"Codex app-server idle timeout after "
+                            f"{self.idle_timeout}s"
+                        ),
+                        "original_error": "idle timeout",
+                    }
+                    if interrupt_error is not None:
+                        payload["interrupt_error"] = interrupt_error
+                    logger.error("Codex turn idle timeout: turn=%s", turn_id)
+                    yield EngineEvent(
+                        conversation_id=request.conversation_id,
+                        task_id=request.task_id,
+                        engine_turn_id=turn_id,
+                        sequence=0,
+                        type=EngineEventType.TURN_FAILED,
+                        payload=payload,
+                    )
+                    return
+                except Exception as exc:  # noqa: BLE001 - 传输失败转为回合终态
+                    # TransportClosed、EOF、reader 异常都保留类型和原文。
+                    logger.error("Codex transport notification failed: %s", exc)
+                    yield EngineEvent(
+                        conversation_id=request.conversation_id,
+                        task_id=request.task_id,
+                        engine_turn_id=turn_id,
+                        sequence=0,
+                        type=EngineEventType.TURN_FAILED,
+                        payload={
+                            "error": f"{type(exc).__name__}: {exc}",
+                            "original_error": f"{type(exc).__name__}: {exc}",
+                        },
+                    )
+                    return
+                try:
+                    event = codec.map_notification(notification, binding)
+                except Exception as exc:  # noqa: BLE001 - 协议错误转为失败终态
+                    logger.error("Codex protocol error: %s", exc)
+                    yield EngineEvent(
+                        conversation_id=request.conversation_id,
+                        task_id=request.task_id,
+                        engine_turn_id=turn_id,
+                        sequence=0,
+                        type=EngineEventType.TURN_FAILED,
+                        payload={
+                            "error": f"Codex protocol error: {exc}",
+                            "original_error": f"{type(exc).__name__}: {exc}",
+                        },
+                    )
+                    return
+                if event is None:
+                    continue
+                yield event
+                if event.type in (EngineEventType.TURN_COMPLETED, EngineEventType.TURN_FAILED):
+                    return
+        except asyncio.CancelledError:
+            # M6.1：对话流取消时也要让 app-server 侧回合结束；interrupt 失败
+            # 保留原始取消语义，不能把真实失败改写成成功。
+            try:
+                await self.cancel_turn(session_ref, turn_id)
+            except Exception as exc:  # noqa: BLE001 - 取消收尾失败仅记录
+                logger.error("Codex turn cancel failed after cancellation: %s", exc)
+            raise
 
     async def cancel_turn(self, session_ref: EngineSessionRef, turn_id: str) -> None:
         await self.transport.request(

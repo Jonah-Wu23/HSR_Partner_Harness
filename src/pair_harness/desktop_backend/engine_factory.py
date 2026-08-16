@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from pair_harness.adapters.codex.transport import (
     JsonlProcessTransport,
     SubprocessJsonLineConnection,
 )
+from pair_harness.config.providers import load_reasoning_preset, normalize_effort
 
 
 # 古代机械只需要项目文件和命令执行工具。工作流控制工具属于宿主会话，
@@ -89,13 +91,61 @@ def build_codex_dialogue_model(
     codex_auth: CodexAuthService,
     model: str,
     codex_bin: str | None = None,
+    reasoning_effort: str = "auto",
 ) -> "CodexDialogueModel":
     from pair_harness.adapters.codex.dialogue import CodexDialogueModel
 
     return CodexDialogueModel(
         build_codex_transport(codex_auth=codex_auth, codex_bin=codex_bin),
         model=model,
+        reasoning_effort=reasoning_effort,
     )
+
+
+def _toml_quote(value: str) -> str:
+    """TOML basic string 严格转义，防止引号/换行/反斜杠破坏配置。"""
+    escaped = (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\b", "\\b")
+        .replace("\f", "\\f")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+    return f'"{escaped}"'
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """同目录临时文件写入后原子替换（.env/config.toml 共用）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _normalize_reasonix_effort(base_url: str, model: str, effort: str) -> str:
+    """把角色模型配置的档位归一化为 Reasonix 支持的 effort 值。
+
+    Reasonix 的 provider ``effort`` 接受 ``auto`` 或后端支持的深度档位；
+    不支持的输入回落到 ``auto``（服务端默认），绝不硬塞非法值。
+    """
+    preset = load_reasoning_preset(base_url, model)
+    normalized = normalize_effort(effort, preset)
+    return normalized or "auto"
 
 
 def ensure_reasonix_home(
@@ -104,6 +154,7 @@ def ensure_reasonix_home(
     base_url: str,
     model: str,
     api_key: str,
+    reasoning_effort: str = "auto",
 ) -> Path:
     """为账号准备 reasonix 配置目录（``REASONIX_HOME/config.toml`` + ``.env``）。
 
@@ -114,29 +165,32 @@ def ensure_reasonix_home(
 
     每个本地账号独立目录，与 CODEX_HOME 同构
     （``base_dir/accounts/{account_id}/reasonix``），配置与密钥不串账号。
+    TOML 使用正式字符串转义，``.env``/``config.toml`` 都经同目录临时文件
+    原子替换，异常配置不会留下半写文件。
     """
     home = codex_auth.base_dir / "accounts" / codex_auth.account_id / "reasonix"
     home.mkdir(parents=True, exist_ok=True)
+    effort = _normalize_reasonix_effort(base_url, model, reasoning_effort)
     toml = (
-        f'default_model = "deepseek/{model}"\n\n'
+        f"default_model = {_toml_quote(f'deepseek/{model}')}\n\n"
         "[[providers]]\n"
-        'name = "deepseek"\n'
-        'kind = "openai"\n'
-        f'base_url = "{base_url}"\n'
-        f'model = "{model}"\n'
-        'api_key_env = "DEEPSEEK_API_KEY"\n'
+        f"name = {_toml_quote('deepseek')}\n"
+        f"kind = {_toml_quote('openai')}\n"
+        f"base_url = {_toml_quote(base_url)}\n"
+        f"model = {_toml_quote(model)}\n"
+        f"api_key_env = {_toml_quote('DEEPSEEK_API_KEY')}\n"
         "context_window = 1000000\n"
-        'effort = "high"\n'
+        f"effort = {_toml_quote(effort)}\n"
         "\n[tools]\n"
-        f"enabled = [{', '.join(repr(name) for name in REASONIX_EXECUTION_TOOLS)}]\n"
+        f"enabled = [{', '.join(_toml_quote(name) for name in REASONIX_EXECUTION_TOOLS)}]\n"
     )
     env_body = f"DEEPSEEK_API_KEY={api_key}\n" if api_key else ""
     config_path = home / "config.toml"
     if not config_path.exists() or config_path.read_text(encoding="utf-8") != toml:
-        config_path.write_text(toml, encoding="utf-8")
+        _atomic_write_text(config_path, toml)
     env_path = home / ".env"
     if not env_path.exists() or env_path.read_text(encoding="utf-8") != env_body:
-        env_path.write_text(env_body, encoding="utf-8")
+        _atomic_write_text(env_path, env_body)
     return home
 
 
@@ -181,8 +235,15 @@ def build_coding_engine(
     model: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
+    reasoning_effort: str = "auto",
+    codex_idle_timeout: float = 600.0,
 ) -> "CodexAppServerEngine | AcpCodingEngine":
-    """按统一供应商构建编程助手引擎；角色与助手共享模型参数。"""
+    """按统一供应商构建编程助手引擎；角色与助手共享模型参数。
+
+    ``reasoning_effort`` 是账号级 ``dialogue.reasoning_effort``，用于
+    Reasonix 生成配置与 Codex 回合请求。``codex_idle_timeout`` 是 Codex
+    app-server 回合连续无事件后的空闲超时（秒），默认 10 分钟。
+    """
     shared_env = _provider_env(base_url=base_url, api_key=api_key, model=model)
     if engine_choice == "deepseek":
         from pair_harness.adapters.acp.engine import AcpCodingEngine
@@ -195,6 +256,7 @@ def build_coding_engine(
                 base_url=base_url,
                 model=dialogue_model_name,
                 api_key=api_key or "",
+                reasoning_effort=reasoning_effort,
             )
             engine_env["REASONIX_HOME"] = str(reasonix_home)
 
@@ -220,4 +282,6 @@ def build_coding_engine(
     return CodexAppServerEngine(
         transport,
         model=model or "gpt-5.6-sol",
+        reasoning_effort=reasoning_effort,
+        idle_timeout=codex_idle_timeout,
     )
