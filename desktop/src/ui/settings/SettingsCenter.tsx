@@ -197,14 +197,14 @@ function AccountPage(props: SettingsCenterProps) {
         <input type="password" value={oldPassword} onChange={(event) => setOldPassword(event.target.value)} />
       </label>
       <label className="field">
-        <span className="field-label">新密码（至少 4 位）</span>
+        <span className="field-label">新密码（至少 6 位）</span>
         <input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
       </label>
       <div className="settings-row">
         <button
           type="button"
           className="btn btn-secondary"
-          disabled={!oldPassword || newPassword.length < 4}
+          disabled={!oldPassword || newPassword.length < 6}
           onClick={() => props.onChangePassword(oldPassword, newPassword)}
         >
           修改密码
@@ -368,17 +368,23 @@ function CharacterModelPage(props: SettingsCenterProps) {
           onChange={(event) => setApiKey(event.target.value)}
         />
       </label>
-      <label className="field">
-        <span className="field-label">推理等级</span>
-        <select
-          value={form.reasoningEffort}
-          onChange={(event) => setForm({ ...form, reasoningEffort: event.target.value })}
-        >
-          <option value="low">低</option>
-          <option value="medium">中</option>
-          <option value="high">高</option>
-        </select>
-      </label>
+      {form.provider === "deepseek" ? (
+        <label className="field">
+          <span className="field-label">推理等级</span>
+          <select
+            value={form.reasoningEffort}
+            onChange={(event) => setForm({ ...form, reasoningEffort: event.target.value })}
+          >
+            <option value="auto">自动</option>
+            <option value="low">低</option>
+            <option value="medium">中</option>
+            <option value="high">高</option>
+            <option value="max">最高</option>
+          </select>
+        </label>
+      ) : (
+        <p className="settings-hint">当前服务不支持自定义推理等级，由服务端默认决定。</p>
+      )}
 
       <details className="settings-advanced">
         <summary>高级设置</summary>

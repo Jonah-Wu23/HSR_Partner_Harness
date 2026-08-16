@@ -42,6 +42,15 @@ describe("MockDesktopBackend project and conversation flow", () => {
     }
   });
 
+  it("createProject 取消文件夹时返回 false，带路径创建时返回 true", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    const controller = createActionController(backend);
+    await controller.loadBootstrap();
+
+    await expect(controller.actions.createProject()).resolves.toBe(false);
+    await expect(controller.actions.createProject("C:/Projects/observatory")).resolves.toBe(true);
+  });
+
   it("uses the selected folder name for new projects and auto-names the first chat", async () => {
     const backend = new MockDesktopBackend("single-project");
     const controller = createActionController(backend);

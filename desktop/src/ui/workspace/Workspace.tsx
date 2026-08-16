@@ -120,6 +120,7 @@ export function Workspace({
         style={workbenchOpen ? { width: `${workbenchPct}%` } : undefined}
         aria-label="助手工作台"
         aria-hidden={!workbenchOpen}
+        inert={!workbenchOpen}
       >
         <div className="pane pane-workbench-inner">
           <div className="pane-header">

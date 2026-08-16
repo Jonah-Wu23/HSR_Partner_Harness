@@ -91,6 +91,9 @@ export function AppShell({ vm, actions }: AppShellProps) {
 
   const openSettings = () => {
     setSettingsOpen(true);
+    // M5.5：每次打开设置都清掉上一轮的测试/试听结果，避免残留状态误导。
+    setModelTest({ state: "idle" });
+    setVoicePreview({ state: "idle" });
     // V0.2 M4：打开时拉取 config.get；结果到达后重挂载表单水合最新配置
     void actions.getConfig().finally(() => setSettingsRevision((revision) => revision + 1));
   };
@@ -125,10 +128,8 @@ export function AppShell({ vm, actions }: AppShellProps) {
     // V0.2 M4：非默认账号且引导未完成 → 整屏首次引导
     body = (
       <Onboarding
-        onCreateProject={async () => {
-          await actions.createProject();
-          return true;
-        }}
+        onCreateProject={actions.createProject}
+        onCheckOAuthStatus={actions.codexOauthStatus}
         onSaveModelConfig={async ({ provider, apiKey, baseUrl, model }) => {
           if (provider === "OpenAI OAuth") {
             await actions.setConfig({
@@ -279,6 +280,12 @@ export function AppShell({ vm, actions }: AppShellProps) {
             "dialogue.model": config.model,
           };
           if (config.apiKey) updates["dialogue.api_key"] = config.apiKey;
+          // M5.2：角色模型推理等级写入 dialogue.reasoning_effort；编程助手
+          // 的 project.reasoning_effort 继续由 Composer 单独保存。只有 DeepSeek
+          // 端点在请求层有 Reasonix 档位语义，非 DeepSeek 不写无效配置。
+          if (config.provider === "deepseek") {
+            updates["dialogue.reasoning_effort"] = config.reasoningEffort;
+          }
           await actions.setConfig(updates);
           if (config.provider === "openai_oauth") await actions.codexOauthStart();
         }}

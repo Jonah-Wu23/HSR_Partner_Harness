@@ -35,7 +35,7 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
 
   it("single-project：导航、气泡与输入区完整渲染", async () => {
     const { controller, rerender, present } = await renderScenario("single-project");
-    controller.actions.switchMode("chat");
+    await controller.actions.switchMode("chat");
     rerender(<AppShell vm={present()} actions={controller.actions} />);
 
     expect(screen.getByTestId("app-shell")).toBeInTheDocument();
@@ -70,7 +70,7 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
 
   it("collaboration-running：双栏、工具卡片与取消任务", async () => {
     const { controller, rerender, present } = await renderScenario("collaboration-running");
-    controller.actions.switchMode("collaboration");
+    await controller.actions.switchMode("collaboration");
     rerender(<AppShell vm={present()} actions={controller.actions} />);
 
     expect(screen.getByLabelText("助手工作台")).toBeInTheDocument();
@@ -88,7 +88,7 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
     // mock 在 resolve 时同步广播 approval.resolved（审批被移除），
     // 每个决策用全新场景渲染验证接线与参数
     const clickAndExpect = async (buttonName: string, decision: string) => {
-      const { backend } = await renderScenario("approval-request");
+      const { backend, controller, rerender, present } = await renderScenario("approval-request");
       expect(screen.getByTestId("approval-bar")).toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: buttonName }));
       await waitFor(() => {
@@ -97,7 +97,12 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
         );
         expect(resolve?.params.decision).toBe(decision);
       });
-      // 本地收敛：已裁决的审批不再展示待审批操作
+      // M1.5：不再用组件内 resolvedIds 隐藏；等待 store 收到 approval.resolved
+      // 后审批条才从 pending 移除（AppShell 是受控组件，需要携带新 vm 重渲）。
+      await waitFor(() => {
+        expect(present().approval.pending).toEqual([]);
+      });
+      rerender(<AppShell vm={present()} actions={controller.actions} />);
       expect(screen.queryByRole("button", { name: buttonName })).not.toBeInTheDocument();
       cleanup();
     };
@@ -332,6 +337,33 @@ describe("AppShell V0.2 M4 接口接线", () => {
     await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: "设置" })).not.toBeInTheDocument();
     });
+  });
+
+  it("M5.2: 保存 DeepSeek 角色模型时写入 dialogue.reasoning_effort", async () => {
+    const { controller, rerender, present } = await renderScenario("single-project");
+    const setConfig = vi.fn().mockResolvedValue(undefined);
+    const testConnection = vi.fn().mockResolvedValue("连接正常（延迟 12 ms）");
+    const actions = { ...controller.actions, setConfig, testConnection };
+    rerender(<AppShell vm={present()} actions={actions} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    await waitFor(() => expect(screen.getByRole("dialog", { name: "设置" })).toBeInTheDocument());
+    await waitFor(() => expect(desktopStore.getState().configSnapshot).not.toBeNull());
+    rerender(<AppShell vm={present()} actions={actions} />);
+    fireEvent.click(screen.getByRole("button", { name: "角色对话模型" }));
+    await waitFor(() => expect(screen.getByLabelText("服务商")).toHaveValue("deepseek"));
+
+    fireEvent.change(screen.getByLabelText("模型"), { target: { value: "deepseek-reasoner" } });
+    fireEvent.change(screen.getByLabelText("推理等级"), { target: { value: "medium" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          "dialogue.reasoning_effort": "medium",
+        }),
+      ),
+    );
   });
 
   it("设置页从 DeepSeek 切到 OpenAI OAuth 时先保存再启动登录", async () => {

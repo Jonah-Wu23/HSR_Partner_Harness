@@ -31,14 +31,14 @@ describe("AccountGate", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /注册新账号/ }));
     fireEvent.change(screen.getByLabelText("显示名称"), { target: { value: "新伙伴" } });
-    fireEvent.change(screen.getByLabelText(/密码（至少 4 位）/), { target: { value: "abcd" } });
-    fireEvent.change(screen.getByLabelText("确认密码"), { target: { value: "abce" } });
+    fireEvent.change(screen.getByLabelText(/密码（至少 6 位）/), { target: { value: "abcdef" } });
+    fireEvent.change(screen.getByLabelText("确认密码"), { target: { value: "abcdeg" } });
     expect(screen.getByRole("alert")).toHaveTextContent("不一致");
     expect(screen.getByRole("button", { name: "注册并进入" })).toBeDisabled();
 
-    fireEvent.change(screen.getByLabelText("确认密码"), { target: { value: "abcd" } });
+    fireEvent.change(screen.getByLabelText("确认密码"), { target: { value: "abcdef" } });
     fireEvent.click(screen.getByRole("button", { name: "注册并进入" }));
-    expect(onRegister).toHaveBeenCalledWith("新伙伴", "abcd");
+    expect(onRegister).toHaveBeenCalledWith("新伙伴", "abcdef");
   });
 
   it("就地显示后端错误", () => {
@@ -68,6 +68,21 @@ describe("Onboarding", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "开始使用" }));
     expect(onFinish).toHaveBeenCalled();
+  });
+
+  it("取消选文件夹时停留在创建项目步骤", async () => {
+    const onCreateProject = vi.fn().mockResolvedValue(false);
+    render(
+      <Onboarding
+        onCreateProject={onCreateProject}
+        onSaveModelConfig={vi.fn()}
+        onFinish={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "选择文件夹" }));
+    expect(await screen.findByRole("heading", { name: "创建第一个项目" })).toBeInTheDocument();
+    expect(onCreateProject).toHaveBeenCalled();
   });
 
   it("角色模型连接成功后自动进入完成步骤", async () => {
@@ -177,7 +192,11 @@ describe("SettingsCenter", () => {
     fireEvent.click(save);
     await waitFor(() =>
       expect(props.onSaveModel).toHaveBeenCalledWith(
-        expect.objectContaining({ model: "deepseek-chat", apiKey: undefined }),
+        expect.objectContaining({
+          model: "deepseek-chat",
+          reasoningEffort: "medium",
+          apiKey: undefined,
+        }),
       ),
     );
     expect(props.onTestModel).toHaveBeenCalled();
@@ -292,7 +311,7 @@ describe("SettingsCenter", () => {
     fireEvent.click(screen.getByRole("button", { name: "保存资料" }));
     expect(props.onSaveProfile).toHaveBeenCalledWith("吴新名");
 
-    // 当前密码为空或新密码不足 4 位时改密禁用
+    // 当前密码为空或新密码不足 6 位时改密禁用
     const change = screen.getByRole("button", { name: "修改密码" });
     expect(change).toBeDisabled();
     fireEvent.change(screen.getByLabelText("当前密码"), { target: { value: "old-pass" } });

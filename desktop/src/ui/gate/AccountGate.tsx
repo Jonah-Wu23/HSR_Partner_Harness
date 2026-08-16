@@ -23,7 +23,7 @@ export function AccountGate({ accounts, error, busy, onLogin, onRegister }: Acco
   const [name, setName] = useState("");
   const [confirm, setConfirm] = useState("");
 
-  const registerInvalid = !name.trim() || password.length < 4 || password !== confirm;
+  const registerInvalid = !name.trim() || password.length < 6 || password !== confirm;
 
   return (
     <div className="account-gate">
@@ -102,7 +102,7 @@ export function AccountGate({ accounts, error, busy, onLogin, onRegister }: Acco
               <input value={name} onChange={(event) => setName(event.target.value)} autoFocus />
             </label>
             <label className="field">
-              <span className="field-label">密码（至少 4 位）</span>
+              <span className="field-label">密码（至少 6 位）</span>
               <input
                 type="password"
                 value={password}

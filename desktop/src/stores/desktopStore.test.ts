@@ -7,6 +7,16 @@ import { desktopStore } from "./desktopStore";
 
 describe("desktopStore event projection", () => {
   beforeEach(() => {
+    // M5.4 后 hydrate 会保留本地 Toast/config 缓存，且会重放水合前暂存事件；
+    // 单测之间显式清空这些跨用例状态，避免前一个用例污染后续断言。
+    desktopStore.setState({
+      toasts: [],
+      configSnapshot: null,
+      lastSequence: -1,
+      needsBootstrap: false,
+      eventBuffer: [],
+      streamId: null,
+    });
     desktopStore.getState().hydrate(createMockScenario("single-project").snapshot);
   });
 
@@ -47,8 +57,67 @@ describe("desktopStore event projection", () => {
 
     const state = desktopStore.getState();
     expect(state.messageIdsByConversation["other-conversation"]).toEqual(["stream-other"]);
-    expect(state.toolIdsByConversation["other-conversation"]).toEqual(["tool-1"]);
+    expect(state.toolIdsByConversation["other-conversation"]).toEqual([
+      "other-conversation\u0000tool-1",
+    ]);
     expect(state.messageIdsByConversation["conv-1"]).toEqual(["message-1", "message-2"]);
+  });
+
+  it("M4.4: 切回 chat 模式时 composerTarget 强制回到 character", () => {
+    desktopStore.getState().setMode("collaboration");
+    desktopStore.getState().setComposerTarget("assistant");
+    expect(desktopStore.getState().composerTarget).toBe("assistant");
+
+    desktopStore.getState().setMode("chat");
+    expect(desktopStore.getState().mode).toBe("chat");
+    expect(desktopStore.getState().composerTarget).toBe("character");
+  });
+
+  it("M4.1: 两个会话复用同一 tool_call_id 时互不覆盖", () => {
+    const base = createMockScenario("single-project").snapshot;
+    desktopStore.getState().hydrate({ ...base, sequence: 0 });
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "tool_run.upserted",
+        sequence: 1,
+        payload: {
+          tool_run: {
+            tool_call_id: "tool-dup",
+            conversation_id: "conv-1",
+            task_id: "task-1",
+            engine_turn_id: "turn-1",
+            sequence: 1,
+            status: "running",
+            title: "A 会话工具",
+            summary: "",
+            details: "",
+          } satisfies ToolRun,
+        },
+      },
+      {
+        kind: "event",
+        event: "tool_run.upserted",
+        sequence: 2,
+        payload: {
+          tool_run: {
+            tool_call_id: "tool-dup",
+            conversation_id: "conv-2",
+            task_id: "task-2",
+            engine_turn_id: "turn-2",
+            sequence: 1,
+            status: "denied",
+            title: "B 会话工具",
+            summary: "沙箱拦截",
+            details: "沙箱拦截",
+          } satisfies ToolRun,
+        },
+      },
+    ]);
+    const state = desktopStore.getState();
+    expect(state.toolRunsById["conv-1\u0000tool-dup"]?.conversation_id).toBe("conv-1");
+    expect(state.toolRunsById["conv-2\u0000tool-dup"]?.conversation_id).toBe("conv-2");
+    expect(state.toolRunsById["tool-dup"]).toBeUndefined();
   });
 
   it("把角色思考与正文合并到同一条流式消息", () => {
@@ -548,5 +617,279 @@ describe("desktopStore event projection", () => {
     desktopStore.getState().hydrate(withoutPairs as unknown as DesktopSnapshot);
     expect(desktopStore.getState().pairs).toHaveLength(1);
     expect(desktopStore.getState().pairs[0].pair_id).toBe(scenario.snapshot.pair.pair_id);
+  });
+
+  it("M2.1: 新代次缓存业务事件，快照水合后只重放快照序号之后的事件", () => {
+    const base = createMockScenario("single-project").snapshot;
+    desktopStore.getState().hydrate({ ...base, stream_id: "old-stream", sequence: 2 });
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "connection.status",
+        sequence: 99,
+        stream_id: "new-stream",
+        payload: { status: "connected", stream_id: "new-stream" },
+      },
+      {
+        kind: "event",
+        event: "message.created",
+        sequence: 3,
+        stream_id: "new-stream",
+        payload: {
+          message: {
+            message_id: "stream-msg-3",
+            conversation_id: "conv-1",
+            pair_id: "pair-1",
+            engine_turn_id: null,
+            source: "assistant",
+            kind: "assistant.natural_language",
+            text: "新代次消息 3",
+            payload: {},
+            tts_eligible: true,
+            created_at: "2026-08-14T00:00:00Z",
+          },
+        },
+      },
+      {
+        kind: "event",
+        event: "message.created",
+        sequence: 4,
+        stream_id: "new-stream",
+        payload: {
+          message: {
+            message_id: "stream-msg-4",
+            conversation_id: "conv-1",
+            pair_id: "pair-1",
+            engine_turn_id: null,
+            source: "assistant",
+            kind: "assistant.natural_language",
+            text: "新代次消息 4",
+            payload: {},
+            tts_eligible: true,
+            created_at: "2026-08-14T00:00:00Z",
+          },
+        },
+      },
+    ]);
+    let state = desktopStore.getState();
+    expect(state.streamId).toBe("new-stream");
+    expect(state.needsBootstrap).toBe(true);
+    expect(state.messagesById["stream-msg-3"]).toBeUndefined();
+
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "state.snapshot",
+        sequence: 2,
+        stream_id: "new-stream",
+        payload: { ...base, stream_id: "new-stream", sequence: 2 },
+      },
+    ]);
+    state = desktopStore.getState();
+    expect(state.status).toBe("ready");
+    expect(state.needsBootstrap).toBe(false);
+    expect(state.messagesById["stream-msg-3"]?.text).toBe("新代次消息 3");
+    expect(state.messagesById["stream-msg-4"]?.text).toBe("新代次消息 4");
+  });
+
+  it("M2.1: 旧代次快照不能覆盖新代次状态", () => {
+    const base = createMockScenario("single-project").snapshot;
+    desktopStore.getState().hydrate({ ...base, stream_id: "new-stream", sequence: 2 });
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "state.snapshot",
+        sequence: 5,
+        stream_id: "old-stream",
+        payload: { ...base, stream_id: "old-stream", sequence: 5 },
+      },
+    ]);
+    const state = desktopStore.getState();
+    expect(state.streamId).toBe("new-stream");
+    expect(state.status).toBe("ready");
+    expect(state.currentConversationId).toBe("conv-1");
+  });
+
+  it("M2.1: 同代次重复序号直接丢弃", () => {
+    const base = createMockScenario("single-project").snapshot;
+    desktopStore.getState().hydrate({ ...base, stream_id: "s1", sequence: 2 });
+    const event = (sequence: number): DesktopEvent => ({
+      kind: "event",
+      event: "message.created",
+      sequence,
+      stream_id: "s1",
+      payload: {
+        message: {
+          message_id: "dup-msg",
+          conversation_id: "conv-1",
+          pair_id: "pair-1",
+          engine_turn_id: null,
+          source: "assistant",
+          kind: "assistant.natural_language",
+          text: `重复 ${sequence}`,
+          payload: {},
+          tts_eligible: true,
+          created_at: "2026-08-14T00:00:00Z",
+        },
+      },
+    });
+    desktopStore.getState().applyEvents([event(3), event(3)]);
+    expect(desktopStore.getState().messagesById["dup-msg"]?.text).toBe("重复 3");
+    expect(desktopStore.getState().lastSequence).toBe(3);
+  });
+
+  it("M2.1: 序号缺口触发 bootstrap 并暂存后续事件，快照核对后重放", () => {
+    const base = createMockScenario("single-project").snapshot;
+    desktopStore.getState().hydrate({ ...base, stream_id: "s1", sequence: 2 });
+    const messageEvent = (sequence: number, messageId: string): DesktopEvent => ({
+      kind: "event",
+      event: "message.created",
+      sequence,
+      stream_id: "s1",
+      payload: {
+        message: {
+          message_id: messageId,
+          conversation_id: "conv-1",
+          pair_id: "pair-1",
+          engine_turn_id: null,
+          source: "assistant",
+          kind: "assistant.natural_language",
+          text: `消息 ${sequence}`,
+          payload: {},
+          tts_eligible: true,
+          created_at: "2026-08-14T00:00:00Z",
+        },
+      },
+    });
+    desktopStore.getState().applyEvents([messageEvent(4, "gap-msg-4")]);
+    expect(desktopStore.getState().needsBootstrap).toBe(true);
+    expect(desktopStore.getState().messagesById["gap-msg-4"]).toBeUndefined();
+
+    desktopStore.getState().applyEvents([messageEvent(5, "gap-msg-5")]);
+    expect(desktopStore.getState().eventBuffer).toHaveLength(2);
+
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "state.snapshot",
+        sequence: 3,
+        stream_id: "s1",
+        payload: { ...base, stream_id: "s1", sequence: 3 },
+      },
+    ]);
+    const state = desktopStore.getState();
+    expect(state.needsBootstrap).toBe(false);
+    expect(state.messagesById["gap-msg-4"]?.text).toBe("消息 4");
+    expect(state.messagesById["gap-msg-5"]?.text).toBe("消息 5");
+  });
+
+  it("M5.4: message.status_changed 携带完整 Message 时先于 message.created 也能 upsert", () => {
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "message.status_changed",
+        sequence: 1,
+        payload: {
+          message: {
+            message_id: "early-status",
+            conversation_id: "conv-1",
+            pair_id: "pair-1",
+            engine_turn_id: null,
+            source: "user",
+            kind: "user.text",
+            text: "状态先到",
+            payload: {},
+            tts_eligible: false,
+            created_at: "2026-08-15T00:00:00Z",
+            status: "received",
+          },
+        },
+      },
+    ]);
+    const state = desktopStore.getState();
+    expect(state.messagesById["early-status"]?.text).toBe("状态先到");
+    expect(state.messagesById["early-status"]?.status).toBe("received");
+    expect(state.messageIdsByConversation["conv-1"]).toContain("early-status");
+  });
+
+  it("M5.4: message.status_changed 缺少必要字段时触发 bootstrap 而不是静默丢弃", () => {
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "message.status_changed",
+        sequence: 1,
+        payload: { message: { message_id: "incomplete" } },
+      },
+    ]);
+    const state = desktopStore.getState();
+    expect(state.needsBootstrap).toBe(true);
+    expect(state.messagesById["incomplete"]).toBeUndefined();
+  });
+
+  it("M5.4: backend.ready 进入新 stream bootstrap 流程", () => {
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "backend.ready",
+        sequence: 1,
+        payload: { pid: 1234 },
+      },
+    ]);
+    const state = desktopStore.getState();
+    expect(state.status).toBe("booting");
+    expect(state.needsBootstrap).toBe(true);
+  });
+
+  it("M5.4: state.snapshot 水合保留仍有效的 Toast 与 config 缓存", () => {
+    desktopStore.getState().pushToast({
+      id: "keep:toast",
+      kind: "error",
+      text: "保留我",
+      hasDetails: true,
+    });
+    desktopStore.getState().setConfigSnapshot({ engine: "deepseek" });
+    desktopStore.getState().hydrate({
+      ...createMockScenario("single-project").snapshot,
+      sequence: 5,
+    });
+    const state = desktopStore.getState();
+    expect(state.toasts).toHaveLength(1);
+    expect(state.toasts[0]?.text).toBe("保留我");
+    expect(state.configSnapshot).toEqual({ engine: "deepseek" });
+  });
+
+  it("M5.4: A 会话任务不会让 B 会话显示为自己的 busy", () => {
+    const base = createMockScenario("single-project").snapshot;
+    const project = base.projects[0];
+    const otherConversation = {
+      ...project.conversations[0],
+      conversation_id: "conv-b",
+      title: "B 会话",
+    };
+    desktopStore.getState().hydrate({
+      ...base,
+      projects: [{ ...project, conversations: [otherConversation] }],
+      current_conversation_id: "conv-b",
+      current_conversation: otherConversation,
+      sequence: 3,
+    });
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "task.busy_changed",
+        sequence: 4,
+        payload: {
+          busy: true,
+          active_task: {
+            project_id: "project-1",
+            conversation_id: "conv-1",
+            task_id: "task-a",
+            engine_turn_id: null,
+          },
+        },
+      },
+    ]);
+    expect(desktopStore.getState().busy).toBe(false);
+    expect(desktopStore.getState().activeTask?.conversation_id).toBe("conv-1");
   });
 });

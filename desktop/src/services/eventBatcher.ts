@@ -26,7 +26,12 @@ export function createEventBatcher(
     dispose() {
       if (timer !== undefined) clearTimeout(timer);
       timer = undefined;
-      pending = [];
+      // M5.5：StrictMode 卸载前同步 flush 最后一批事件，避免 pending 被丢弃。
+      if (pending.length > 0) {
+        const batch = pending;
+        pending = [];
+        flush(batch);
+      }
     },
   };
 }

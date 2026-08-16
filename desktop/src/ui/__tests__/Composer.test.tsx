@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { HarnessActions } from "../../contracts/actions";
@@ -87,5 +87,33 @@ describe("Composer 语音按钮组", () => {
     expect(actions.stopPushToTalk).not.toHaveBeenCalled();
     fireEvent.keyDown(window, { code: "AltRight", key: "Alt", location: 2 });
     expect(actions.stopPushToTalk).toHaveBeenCalled();
+  });
+});
+
+describe("Composer M5.3 发送失败保留草稿", () => {
+  it("请求失败时保留输入文字并显示错误", async () => {
+    const actions = stubActions();
+    actions.submitMessage = vi.fn().mockRejectedValue(new Error("Sidecar 已断开"));
+    render(<Composer composer={composer} voice={voice} mode="chat" actions={actions} />);
+
+    const textarea = screen.getByLabelText("消息输入");
+    fireEvent.change(textarea, { target: { value: "这句话不能丢" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Sidecar 已断开"));
+    expect(textarea).toHaveValue("这句话不能丢");
+  });
+
+  it("收到 accepted/queued 回执后才清空草稿", async () => {
+    const actions = stubActions();
+    actions.submitMessage = vi.fn().mockResolvedValue({ status: "received" });
+    render(<Composer composer={composer} voice={voice} mode="chat" actions={actions} />);
+
+    const textarea = screen.getByLabelText("消息输入");
+    fireEvent.change(textarea, { target: { value: "发送成功" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(textarea).toHaveValue(""));
+    expect(actions.submitMessage).toHaveBeenCalledWith("发送成功", "character");
   });
 });
