@@ -21,6 +21,7 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
+from pair_harness.core.audio import DASHSCOPE_CONFIG_LOCK
 from pair_harness.core.contracts import AudioChunk, SpeechRequest
 from pair_harness.core.ports import SpeechSynthesizer
 
@@ -85,10 +86,11 @@ class QwenSpeechSynthesizer(SpeechSynthesizer):
         except ImportError as exc:
             raise QwenTtsError('未安装 dashscope SDK（pip install -e ".[voice]"）') from exc
 
-        if self.ws_url:
-            dashscope.base_websocket_api_url = self.ws_url
-        if self.api_key:
-            dashscope.api_key = self.api_key
+        with DASHSCOPE_CONFIG_LOCK:
+            if self.ws_url:
+                dashscope.base_websocket_api_url = self.ws_url
+            if self.api_key:
+                dashscope.api_key = self.api_key
         return SynthCls(
             model=self.model,
             voice=voice_id,
@@ -213,6 +215,11 @@ class QwenSpeechSynthesizer(SpeechSynthesizer):
                     try:
                         await asyncio.wait_for(
                             asyncio.shield(task), timeout=_CLOSE_WAIT_S
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "TTS synthesis thread did not stop within %.1fs after cancel",
+                            _CLOSE_WAIT_S,
                         )
                     except BaseException:  # noqa: BLE001 - 取消收尾不覆盖原始取消
                         pass

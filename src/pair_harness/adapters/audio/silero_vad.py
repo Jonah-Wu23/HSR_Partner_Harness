@@ -8,8 +8,9 @@
   不进线程池——避免过度设计）；
 - 状态机产出 ``VadEvent``：``listening`` / ``speech_started`` /
   ``speech_ended`` / ``false_trigger``，参数语义沿用旧项目
-  ``vad-config.ts``（阈值 0.45、开口前保留 8 帧、结束等待约 1 秒、
-  最短语音 4 帧）。
+  ``vad-config.ts``（阈值 0.45、结束等待约 1 秒、最短语音 4 帧）。
+  开口前的 pre-roll 补发由 VoiceRuntime 自己维护，Silero 适配器不保存
+  未消费的 pre-roll 状态。
 
 模型文件缺失或 onnxruntime 不可用时，构造阶段抛
 :class:`VadUnavailableError`；VoiceRuntime 捕获后退回按键说话。
@@ -45,13 +46,11 @@ class SileroVoiceActivityDetector(VoiceActivityDetector):
         model_path: Path,
         *,
         threshold: float = 0.45,
-        pre_speech_pad_frames: int = 8,
         redemption_frames: int = DEFAULT_REDEMPTION_FRAMES,
         min_speech_frames: int = 4,
     ) -> None:
         self.model_path = Path(model_path)
         self.threshold = threshold
-        self.pre_speech_pad_frames = pre_speech_pad_frames
         self.redemption_frames = redemption_frames
         self.min_speech_frames = min_speech_frames
         self._session = self._load_session(self.model_path)
@@ -100,8 +99,6 @@ class SileroVoiceActivityDetector(VoiceActivityDetector):
         state_name = "listening"  # listening | speech
         speech_frames = 0
         silence_frames = 0
-        # 开口前保留的 pre-roll 帧（环形缓冲，speech_started 时一并交给调用方）
-        pre_roll: list[bytes] = []
 
         async for chunk in pcm_stream:
             if not chunk:
@@ -118,11 +115,6 @@ class SileroVoiceActivityDetector(VoiceActivityDetector):
                         speech_frames = 1
                         silence_frames = 0
                         yield VadEvent(type="speech_started")
-                    else:
-                        # 未开口的静音帧进 pre-roll，超容量丢弃最旧帧
-                        pre_roll.append(frame)
-                        if len(pre_roll) > self.pre_speech_pad_frames:
-                            pre_roll.pop(0)
                     continue
 
                 # state_name == "speech"
@@ -139,7 +131,6 @@ class SileroVoiceActivityDetector(VoiceActivityDetector):
                     state_name = "listening"
                     speech_frames = 0
                     silence_frames = 0
-                    pre_roll = []
 
         # 输入流结束：未闭合的语音段按已说话帧数判定
         if state_name == "speech":
@@ -147,12 +138,6 @@ class SileroVoiceActivityDetector(VoiceActivityDetector):
                 yield VadEvent(type="speech_ended")
             else:
                 yield VadEvent(type="false_trigger")
-
-    @property
-    def pre_roll_bytes(self) -> int:
-        """开口前保留的 pre-roll 字节数（供 VoiceRuntime 补发 ASR）。"""
-        return self.pre_speech_pad_frames * FRAME_BYTES
-
 
 def copy_reference_model(source: Path, dest: Path) -> None:
     """把旧项目的 silero_vad_v5.onnx 复制到项目 assets/models/。"""

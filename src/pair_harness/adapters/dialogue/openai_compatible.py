@@ -119,7 +119,7 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         section = _first_markdown_section(prompt)
         return f"## 你的搭档（助手）\n{section}"
 
-    def _build_messages(
+    def build_messages(
         self, request: DialogueRequest, *, delegation_retry: bool = False
     ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = [
@@ -201,6 +201,24 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         if turn.delegation is not None:
             return False
         return turn.declares_delegation or not turn.delegate_field_present
+
+    def parse_output(
+        self, raw_text: str, *, request: DialogueRequest | None = None
+    ) -> CharacterTurn:
+        """公开共享解析入口：解析并应用委派纠偏标记。
+
+        供 OpenAI 兼容流与 Codex 对话适配器共用，覆盖空正文/截断 JSON
+        （解析失败继续抛出原始错误）以及委派自报不一致时的
+        ``delegation_missed`` 真实标记。
+        """
+        turn = self._parse_output(raw_text)
+        if (
+            request is not None
+            and request.result_summary is None
+            and self._needs_delegation_retry(request, turn)
+        ):
+            turn = turn.model_copy(update={"delegation_missed": True})
+        return turn
 
     # ---- 输出解析（O3.2）----
 
@@ -404,7 +422,7 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         client = self._client_or_raise()
         payload = {
             "model": self.model,
-            "messages": self._build_messages(
+            "messages": self.build_messages(
                 request, delegation_retry=_delegation_retry
             ),
             "stream": True,
@@ -470,14 +488,16 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             yield DialogueEvent(type="speech.completed", raw="".join(text_chunks))
         raw_text = "".join(text_chunks)
         try:
-            turn = self._parse_output(raw_text)
+            turn = self.parse_output(raw_text, request=request)
         except ValueError:
             # DeepSeek 结构化 JSON 偶发返回空 content。没有产生任何 speech
             # 增量时可以安全重试两次；不会用占位台词掩盖失败，也不会重放
             # 已经展示过的半截正文。
             if deepseek_structured and _attempt < 2 and not speech_started:
                 async for retry_event in self.stream_reply(
-                    request, _attempt=_attempt + 1
+                    request,
+                    _attempt=_attempt + 1,
+                    _delegation_retry=_delegation_retry,
                 ):
                     yield retry_event
                 return
@@ -497,10 +517,6 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             ):
                 yield retry_event
             return
-        if request.result_summary is None and self._needs_delegation_retry(request, turn):
-            # 纠偏重试后（或重试额度已耗尽）模型仍自报委派却不提交结构：
-            # 真实失败标记，交给编排器向角色侧暴露，不静默当作普通聊天。
-            turn = turn.model_copy(update={"delegation_missed": True})
         yield DialogueEvent(type="character.final", turn=turn)
 
 

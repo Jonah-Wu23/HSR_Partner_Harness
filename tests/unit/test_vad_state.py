@@ -171,17 +171,6 @@ async def test_arbitrary_chunk_sizes_are_stitched(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# pre-roll
-# ---------------------------------------------------------------------------
-
-
-def test_pre_roll_bytes_matches_pad_frames() -> None:
-    detector = SileroVoiceActivityDetector.__new__(SileroVoiceActivityDetector)
-    detector.pre_speech_pad_frames = 8
-    assert detector.pre_roll_bytes == 8 * FRAME_BYTES
-
-
-# ---------------------------------------------------------------------------
 # 构造与模型文件
 # ---------------------------------------------------------------------------
 

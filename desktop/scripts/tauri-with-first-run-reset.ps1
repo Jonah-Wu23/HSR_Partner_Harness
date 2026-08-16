@@ -36,7 +36,7 @@ function Reset-FirstRunState {
     $webviewPath = Get-FullPath $webViewRoot
     $webviewProcesses = @(
         Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.CommandLine -and $_.CommandLine.Contains($webviewPath) }
+            Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($webviewPath, [StringComparison]::OrdinalIgnoreCase) -ge 0 }
     )
     if ($running.Count -gt 0 -or $webviewProcesses.Count -gt 0) {
         throw "HSR Partner Harness is still running. Close the exe before resetting first-run state."

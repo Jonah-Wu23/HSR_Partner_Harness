@@ -161,6 +161,45 @@ async def test_generate_title_retries_when_content_empty() -> None:
     await client.aclose()
 
 
+def test_public_parse_output_marks_delegation_missed_for_protocol_breach() -> None:
+    """M6.1：公开解析入口对自报 delegate=true 却无 delegation 打真实失败标记。"""
+    from pair_harness.core.contracts import ProjectRuntimeContext
+
+    model = OpenAICompatibleDialogueModel(
+        base_url="http://test", api_key="test-key", model="test-model"
+    )
+    message = Message(
+        conversation_id="c",
+        pair_id="phainon_ancient_machine",
+        source=MessageSource.USER,
+        kind=MessageKind.USER_TEXT,
+        text="请让搭档检查项目文件",
+    )
+    request = DialogueRequest(
+        pair_id="phainon_ancient_machine",
+        conversation_id="c",
+        user_message=message,
+        runtime_context=ProjectRuntimeContext(
+            project_name="项目",
+            project_abs_dir="C:/project",
+            conversation_mode="collaboration",
+        ),
+    )
+    turn = model.parse_output(
+        '{"speech":"交给搭档。","delegate":true}', request=request
+    )
+    assert turn.delegation_missed is True
+    assert turn.speech == "交给搭档。"
+
+
+def test_public_parse_output_keeps_empty_body_failure() -> None:
+    model = OpenAICompatibleDialogueModel(
+        base_url="http://test", api_key="test-key", model="test-model"
+    )
+    with pytest.raises(ValueError, match="可用 speech"):
+        model.parse_output("   ")
+
+
 @pytest.mark.parametrize(
     "raw, expected_instructions",
     [

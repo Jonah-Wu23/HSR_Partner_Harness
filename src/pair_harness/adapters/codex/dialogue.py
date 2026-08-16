@@ -6,6 +6,8 @@ app-server 会话链，模型名与编程助手共用账号配置。
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from collections.abc import AsyncIterator
 
@@ -22,6 +24,8 @@ from pair_harness.core.ports import DialogueModel
 
 from .engine import CodexAppServerEngine
 from .transport import JsonlProcessTransport
+
+logger = logging.getLogger(__name__)
 
 
 class CodexDialogueModel(DialogueModel):
@@ -59,7 +63,7 @@ class CodexDialogueModel(DialogueModel):
             ),
         )
         self._sessions[request.conversation_id] = session
-        messages = self._parser._build_messages(request)
+        messages = self._parser.build_messages(request)
         prompt = "\n\n".join(
             f"[{message['role']}]\n{message['content']}" for message in messages
         )
@@ -72,23 +76,24 @@ class CodexDialogueModel(DialogueModel):
             ),
         )
         raw: list[str] = []
-        async for event in self.engine.run_turn(session, task):
-            if event.type == EngineEventType.ASSISTANT_REASONING_DELTA:
-                text = str(event.payload.get("text") or "")
-                if text:
-                    yield DialogueEvent(type="reasoning.delta", delta=text)
-            elif event.type == EngineEventType.ASSISTANT_DELTA:
-                text = str(event.payload.get("text") or "")
-                if text:
-                    raw.append(text)
-        turn = self._parser._parse_output("".join(raw))
-        if (
-            request.result_summary is None
-            and self._parser._needs_delegation_retry(request, turn)
-        ):
-            # 与 OpenAI 兼容路径同口径：模型自报委派却不提交结构即真实
-            # 失败标记，交给编排器向角色侧暴露，不静默当作普通聊天。
-            turn = turn.model_copy(update={"delegation_missed": True})
+        try:
+            async for event in self.engine.run_turn(session, task):
+                if event.type == EngineEventType.ASSISTANT_REASONING_DELTA:
+                    text = str(event.payload.get("text") or "")
+                    if text:
+                        yield DialogueEvent(type="reasoning.delta", delta=text)
+                elif event.type == EngineEventType.ASSISTANT_DELTA:
+                    text = str(event.payload.get("text") or "")
+                    if text:
+                        raw.append(text)
+        except asyncio.CancelledError:
+            # 取消后线程可能已处于半中断状态，下一次对话应新开线程而不是
+            # 恢复可能被 interrupt 打断的旧线程。
+            self._sessions.pop(request.conversation_id, None)
+            raise
+        # 与 OpenAI 兼容路径共用公开解析入口：空正文/截断 JSON 继续抛出
+        # 原始错误；委派自报不一致时由解析入口统一打 delegation_missed。
+        turn = self._parser.parse_output("".join(raw), request=request)
         yield DialogueEvent(type="character.final", turn=turn)
 
     async def generate_title(self, *, pair_id: str, context: tuple) -> str | None:

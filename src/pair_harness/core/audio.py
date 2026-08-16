@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import threading
 from collections import deque
 
 from pair_harness.core.contracts import SpeechRequest
+
+# DashScope SDK 的 api_key / base_websocket_api_url 是进程级全局变量；
+# ASR 与 TTS 工作线程可能同时构造 SDK，必须共用同一把进程级锁，避免
+# 一个账号/端点的配置被另一个正在初始化的 SDK 覆盖。
+DASHSCOPE_CONFIG_LOCK = threading.Lock()
 
 
 class SpeechQueue:

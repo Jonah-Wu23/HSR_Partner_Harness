@@ -21,6 +21,7 @@ from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
+from pair_harness.core.audio import DASHSCOPE_CONFIG_LOCK
 from pair_harness.core.contracts import AsrEvent
 from pair_harness.core.ports import SpeechRecognizer
 
@@ -192,10 +193,11 @@ class QwenStreamingRecognizer(SpeechRecognizer):
         except ImportError as exc:
             raise QwenAsrError("未安装 dashscope SDK（pip install -e \".[voice]\"）") from exc
 
-        if self.ws_url:
-            dashscope.base_websocket_api_url = self.ws_url
-        if self.api_key:
-            dashscope.api_key = self.api_key
+        with DASHSCOPE_CONFIG_LOCK:
+            if self.ws_url:
+                dashscope.base_websocket_api_url = self.ws_url
+            if self.api_key:
+                dashscope.api_key = self.api_key
 
         class _Callback(RecognitionCallback):
             def on_event(self, result) -> None:
