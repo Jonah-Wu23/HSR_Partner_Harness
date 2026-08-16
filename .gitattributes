@@ -1,0 +1,11 @@
+# 文本文件统一以 LF 存储与检出，消除 autocrlf 引起的幻影修改噪声
+* text=auto eol=lf
+
+# 二进制资源，禁止任何行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.icns binary
+*.wav binary
+*.onnx binary
