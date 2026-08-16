@@ -12,6 +12,7 @@ import {
 import { Menu } from "../primitives/Menu";
 import { VoiceMiniPlayer } from "./VoiceMiniPlayer";
 import type { VoiceMiniPlayerView } from "./VoiceMiniPlayer";
+import { desktopStore } from "../../stores/desktopStore";
 
 const APPROVAL_LABEL: Record<ApprovalMode, string> = {
   request_approval: "请求批准",
@@ -104,8 +105,10 @@ export function Composer({
   voiceMiniPlayer,
   draftSeed,
 }: ComposerProps) {
-  const [target, setTarget] = useState<"character" | "assistant">(composer.target);
+  // M4.4：store 是 composer target 的唯一来源，不再在组件内保存一次性副本。
+  const target = composer.target;
   const [draft, setDraft] = useState("");
+  const [sendError, setSendError] = useState<string | null>(null);
   const [pttRequested, setPttRequested] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const lastSeedNonce = useRef<number | null>(null);
@@ -185,11 +188,22 @@ export function Composer({
 
   const canSend = composer.enabled && draft.trim().length > 0;
 
-  const submit = () => {
+  const submit = async () => {
     const text = draft.trim();
     if (!composer.enabled || !text) return;
-    setDraft("");
-    void actions.submitMessage(text, target);
+    setSendError(null);
+    try {
+      // M5.3：只在后端明确接受（快速接受 status=received）或入队（queued）
+      // 后才清空草稿；失败时原文字和 target 都保留。
+      const result = await actions.submitMessage(text, target);
+      if (result?.queued || result?.status === "received" || result?.status === "accepted") {
+        setDraft("");
+      } else {
+        setSendError("消息未确认发送，请重试");
+      }
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : String(error));
+    }
   };
 
   const asrText = voice.asr_partial || composer.asrPartial;
@@ -217,7 +231,7 @@ export function Composer({
               role="tab"
               aria-selected={target === "character"}
               className={`segmented-item${target === "character" ? " is-selected" : ""}`}
-              onClick={() => setTarget("character")}
+              onClick={() => desktopStore.getState().setComposerTarget("character")}
             >
               对角色说
             </button>
@@ -228,7 +242,7 @@ export function Composer({
               className={`segmented-item${target === "assistant" ? " is-selected" : ""}`}
               disabled={mode !== "collaboration"}
               title={mode !== "collaboration" ? "切换到协作模式后可直接交给助手" : undefined}
-              onClick={() => setTarget("assistant")}
+              onClick={() => desktopStore.getState().setComposerTarget("assistant")}
             >
               交给助手
             </button>
@@ -262,6 +276,12 @@ export function Composer({
           发送
         </button>
       </div>
+
+      {sendError ? (
+        <p className="field-error composer-error" role="alert">
+          {sendError}
+        </p>
+      ) : null}
 
       <div className="composer-toolbar">
         <Menu

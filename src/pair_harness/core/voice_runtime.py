@@ -114,6 +114,9 @@ class VoiceRuntime:
         self._pre_roll: deque[bytes] = deque(maxlen=PRE_ROLL_BLOCKS)
         self._ptt_active = False
         self._ptt_target = "character"
+        # M4.3：PTT 开始时捕获会话，避免录音期间切换 VoiceRuntime 上下文后
+        # 直接提交路径把文本送进错误会话。
+        self._ptt_conversation_id = conversation_id
         self._commit_tasks: set[asyncio.Task[None]] = set()
         self._started = False
         self._vad_enabled = False
@@ -342,22 +345,37 @@ class VoiceRuntime:
             self._on_asr_partial("")  # 空转写/误触发：清空回显，不提交
         return text
 
-    async def _commit(self, text: str, target: str) -> None:
+    async def _commit(
+        self,
+        text: str,
+        target: str,
+        conversation_id: str | None = None,
+    ) -> None:
         self._on_asr_partial("")  # final 已提交，清空输入区回显
+        # PTT 提交必须使用开始录音时捕获的会话；VAD/未显式传入时使用当前上下文。
+        commit_conversation_id = conversation_id or self._conversation_id
         if self._on_text_input is not None:
             await self._on_text_input(text, target)
         elif target == "assistant":
             await self._orchestrator.handle_direct_input(
-                conversation_id=self._conversation_id, text=text
+                conversation_id=commit_conversation_id, text=text
             )
         else:
             await self._orchestrator.handle_character_input(
-                conversation_id=self._conversation_id, text=text
+                conversation_id=commit_conversation_id, text=text
             )
 
-    def _schedule_commit(self, text: str, target: str) -> None:
+    def _schedule_commit(
+        self,
+        text: str,
+        target: str,
+        conversation_id: str | None = None,
+    ) -> None:
         """后台提交 PTT 文本；停止聆听不能等待模型或工具回合。"""
-        task = asyncio.create_task(self._commit(text, target), name="voice:commit")
+        task = asyncio.create_task(
+            self._commit(text, target, conversation_id=conversation_id),
+            name="voice:commit",
+        )
         self._commit_tasks.add(task)
 
         def on_done(completed: asyncio.Task[None]) -> None:
@@ -375,9 +393,13 @@ class VoiceRuntime:
     # ------------------------------------------------------------ 上行：按键说话
 
     async def push_to_talk_start(self, target: str = "character") -> None:
-        """按下说话键：先停 TTS，再开 ASR 会话直录（无 pre-roll）。"""
+        """按下说话键：先停 TTS，再开 ASR 会话直录（无 pre-roll）。
+
+        M4.3：会话上下文在开始时刻固定，提交时不随 set_context 漂移。
+        """
         await self.stop_speaking_async()
         self._ptt_target = target
+        self._ptt_conversation_id = self._conversation_id
         self._ptt_active = True
         self._on_vad_state("speech_started")
         await self._begin_asr(pre_roll=False)
@@ -389,7 +411,11 @@ class VoiceRuntime:
         self._ptt_active = False
         text = await self._end_asr(commit=False, target=self._ptt_target)
         if text:
-            self._schedule_commit(text, self._ptt_target)
+            self._schedule_commit(
+                text,
+                self._ptt_target,
+                conversation_id=self._ptt_conversation_id,
+            )
 
     # ------------------------------------------------------------ 下行：TTS
 

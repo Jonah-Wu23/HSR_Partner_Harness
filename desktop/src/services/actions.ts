@@ -1,4 +1,4 @@
-import type { HarnessActions } from "../contracts/actions";
+import type { HarnessActions, SubmitMessageResult, CodexOAuthStatus } from "../contracts/actions";
 import type {
   ApprovalMode,
   DesktopCommand,
@@ -38,8 +38,9 @@ export function createActionController(backend: DesktopBackend): ActionControlle
   const actions: HarnessActions = {
     async createProject(rootPath, name) {
       const selectedRoot = rootPath?.trim() || (await backend.pickFolder("选择项目文件夹"));
-      if (!selectedRoot) return;
+      if (!selectedRoot) return false;
       await request("project.create", { root_path: selectedRoot, name });
+      return true;
     },
     async renameProject(projectId, name) {
       await request("project.update_settings", { project_id: projectId, name });
@@ -75,17 +76,25 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       await request("conversation.archive", { conversation_id: conversationId });
     },
     async switchMode(mode) {
-      // V0.2 模式独立（问题 3）：模式由后端按会话持久化，走独立命令。
-      // 先同步更新本地模式（工作台开合动画即时反馈），再异步持久化；
-      // 不依赖某次 settings 快照顺便覆盖，也不被推理档位/审批方式重置。
-      desktopStore.getState().setMode(mode);
+      // V0.2 模式独立：模式由后端按会话持久化，走独立命令。
+      // M5.3：先持久化成功再切换本地模式；失败恢复原模式并保留真实错误。
+      const previous = desktopStore.getState().mode;
       const conversationId = desktopStore.getState().currentConversationId;
-      if (conversationId) {
-        try {
+      try {
+        if (conversationId) {
           await request("conversation.set_mode", { conversation_id: conversationId, mode });
-        } catch {
-          // 持久化失败不回滚 UI；下次快照按后端 last_mode 为准
         }
+        desktopStore.getState().setMode(mode);
+      } catch (error) {
+        desktopStore.getState().setMode(previous);
+        const message = error instanceof Error ? error.message : String(error);
+        desktopStore.getState().pushToast({
+          id: `mode:${message}`,
+          kind: "error",
+          text: `模式切换保存失败：${message}`,
+          hasDetails: true,
+        });
+        throw error;
       }
     },
     switchTheme(theme) {
@@ -95,8 +104,9 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async submitMessage(text, target, intent) {
       const state = desktopStore.getState();
       const actualTarget = target ?? state.composerTarget;
-      desktopStore.getState().setComposerDraft("");
-      await request("chat.submit", {
+      // M5.3：草稿由 Composer 在收到 accepted/queued 回执后清除；这里不清空，
+      // 请求失败时输入文字与 target 都保留。
+      return request<SubmitMessageResult>("chat.submit", {
         conversation_id: state.currentConversationId,
         target: actualTarget,
         mode: state.mode,
@@ -213,6 +223,9 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async codexOauthStart() {
       const result = await request<{ config?: Record<string, unknown> }>("codex.oauth_start");
       if (result?.config) desktopStore.getState().setConfigSnapshot(result.config);
+    },
+    async codexOauthStatus() {
+      return request<CodexOAuthStatus>("codex.oauth_status");
     },
     async codexApiLogin(apiKey) {
       await request("codex.api_login", { api_key: apiKey });
