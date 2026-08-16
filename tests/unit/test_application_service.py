@@ -82,6 +82,31 @@ async def test_bootstrap_contains_projects_conversation_and_voice_shape(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_track_turn_task_rejects_overwriting_unfinished_task(tmp_path: Path) -> None:
+    """M1.1：同一会话已有未完成任务时禁止覆盖任务引用。"""
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        blocking = asyncio.Event()
+        async def never() -> None:
+            await blocking.wait()
+
+        first = asyncio.create_task(never())
+        service._track_turn_task("conversation-1", first)
+        second = asyncio.create_task(never())
+        with pytest.raises(RuntimeError, match="unfinished turn task"):
+            service._track_turn_task("conversation-1", second)
+        second.cancel()
+        await asyncio.gather(second, return_exceptions=True)
+        blocking.set()
+        await asyncio.gather(first, return_exceptions=True)
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_sidecar_restart_restores_pair_and_finishes_orphaned_delegation(
     tmp_path: Path,
 ) -> None:
@@ -193,6 +218,7 @@ async def test_chat_submit_emits_messages_and_direct_task_tool_updates(tmp_path:
                 "chat.submit",
                 conversation_id=conversation_id,
                 target="assistant",
+                mode="collaboration",
                 text="请检查这个项目",
             )
         )
@@ -807,6 +833,7 @@ async def test_failed_turn_marks_turn_failed_and_message_failed(tmp_path: Path) 
                 "chat.submit",
                 conversation_id=conversation_id,
                 target="assistant",
+                mode="collaboration",
                 text="检查项目",
             )
         )
@@ -1199,6 +1226,28 @@ async def test_config_get_set_masks_secrets(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_config_get_returns_saved_dialogue_reasoning_effort(tmp_path: Path) -> None:
+    """M5.2：config.get 必须回读保存的 dialogue.reasoning_effort，不能硬编码 auto。"""
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        await service.handle_command(
+            command(
+                "set-1",
+                "config.set",
+                updates={"dialogue.reasoning_effort": "high"},
+            )
+        )
+        config = await service.handle_command(command("get-1", "config.get"))
+        assert config["dialogue"]["reasoning_effort"] == "high"
+        assert service._load_account_config()["dialogue.reasoning_effort"] == "high"
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_config_set_rejects_voice_credential_keys(tmp_path: Path) -> None:
     """V0.2 M5：语音 API Key/模型/音色/服务地址由应用内置，客户端一律禁止写入。"""
     service = build_demo_service(
@@ -1329,6 +1378,8 @@ async def test_oauth_switch_from_deepseek_persists_before_starting_login(
                 "dialogue.provider": "openai_oauth",
                 "dialogue.base_url": "https://api.openai.com/v1",
                 "dialogue.model": "gpt-5.6-sol",
+                # 切换供应商时显式清空上一家已保存的 Key，防止环境变量补回。
+                "dialogue.api_key": "",
             }
         ]
         assert service.store.get_secret(service.current_account_id, "dialogue.api_key") == ""
@@ -1388,6 +1439,7 @@ async def test_queue_item_failure_returns_to_queued_for_retry(tmp_path: Path) ->
                 "chat.submit",
                 conversation_id=conversation_id,
                 target="assistant",
+                mode="collaboration",
                 text="排队任务",
             )
         )
@@ -1402,6 +1454,7 @@ async def test_queue_item_failure_returns_to_queued_for_retry(tmp_path: Path) ->
                 "chat.submit",
                 conversation_id=conversation_id,
                 target="assistant",
+                mode="collaboration",
                 text="现在有空了",
             )
         )
@@ -1469,6 +1522,7 @@ async def test_api_key_never_appears_in_logs(tmp_path: Path, caplog) -> None:
                     "chat.submit",
                     conversation_id=conversation_id,
                     target="assistant",
+                    mode="collaboration",
                     text="检查项目",
                 )
             )
@@ -1578,7 +1632,7 @@ async def test_rebuild_runtime_for_account_switches_engine_immediately(tmp_path:
             "dialogue.model": "gpt-5.6-sol",
         }
 
-        service._rebuild_runtime_for_account({**base_config, "engine": "codex"})
+        await service._rebuild_runtime_for_account({**base_config, "engine": "codex"})
         assert isinstance(service.coding_engine, CodexAppServerEngine)
         assert isinstance(service.orchestrator.coding_engine, CodexAppServerEngine)
         assert isinstance(service.dialogue_model, OpenAICompatibleDialogueModel)
@@ -1590,12 +1644,14 @@ async def test_rebuild_runtime_for_account_switches_engine_immediately(tmp_path:
             "dialogue.base_url": "https://api.deepseek.com",
             "dialogue.api_key": "sk-deepseek-test",
             "dialogue.model": "deepseek-v4-flash",
+            "dialogue.reasoning_effort": "max",
         }
-        service._rebuild_runtime_for_account(deepseek_config)
+        await service._rebuild_runtime_for_account(deepseek_config)
         assert isinstance(service.coding_engine, AcpCodingEngine)
         assert isinstance(service.orchestrator.coding_engine, AcpCodingEngine)
         assert service.coding_engine.model == "deepseek-v4-flash"
         assert service.dialogue_model.model == "deepseek-v4-flash"
+        assert service.dialogue_model.reasoning_effort == "max"
         # 审查智能体跟随新对话模型重建
         assert service.orchestrator.reviewer is not None
         assert service.orchestrator.reviewer._model is service.dialogue_model
@@ -1623,6 +1679,7 @@ async def test_conversation_and_engine_data_isolated_per_account(tmp_path: Path)
                 "chat.submit",
                 conversation_id=default_conv,
                 target="assistant",
+                mode="collaboration",
                 text="检查项目",
             )
         )
@@ -1845,6 +1902,144 @@ async def test_new_conversation_belongs_to_current_account(tmp_path: Path) -> No
             for project in snapshot["projects"]
             for conv in project["conversations"]
         )
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_account_switch_failure_keeps_original_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M3.1：目标账号候选运行时构建失败时，当前账号/上下文保持不变。"""
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        original_account_id = service.current_account_id
+        original_project_id = service.current_project_id
+        original_conversation_id = service.current_conversation_id
+        service._demo = False
+
+        def broken_candidate(*args, **kwargs):
+            raise ServiceError("目标账号配置损坏", code="config_corrupt")
+
+        monkeypatch.setattr(service, "_build_runtime_candidate", broken_candidate)
+        with pytest.raises(ServiceError, match="配置损坏"):
+            await service.handle_command(
+                command(
+                    "reg-bad",
+                    "account.register",
+                    username="broken-user",
+                    display_name="损坏账号",
+                    password="broken-pass-1",
+                )
+            )
+
+        assert service.current_account_id == original_account_id
+        assert service.store.get_app_state("current_account_id") in (
+            None,
+            original_account_id,
+        )
+        assert service.current_project_id == original_project_id
+        assert service.current_conversation_id == original_conversation_id
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_config_set_failure_keeps_database_old_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M3.3：候选运行时构建失败时配置不落库，旧配置继续可用。"""
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        service._demo = False
+
+        def broken_candidate(*args, **kwargs):
+            raise ServiceError("候选运行时不可用", code="runtime_build_failed")
+
+        monkeypatch.setattr(service, "_build_runtime_candidate", broken_candidate)
+        with pytest.raises(ServiceError, match="候选运行时不可用"):
+            await service.handle_command(
+                command(
+                    "set-bad",
+                    "config.set",
+                    updates={
+                        "engine": "deepseek",
+                        "dialogue.provider": "deepseek",
+                        "dialogue.base_url": "https://api.deepseek.com",
+                        "dialogue.model": "deepseek-v4-flash",
+                        "dialogue.api_key": "sk-new",
+                    },
+                )
+            )
+
+        assert service.store.get_config(service.current_account_id, "engine") is None
+        assert service.store.get_secret(service.current_account_id, "dialogue.api_key") is None
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_explicit_cleared_api_key_blocks_environment_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M3.3：显式清空已保存 API Key 后，环境变量不能把旧值悄悄补回。"""
+    monkeypatch.setenv("PAIR_HARNESS_DIALOGUE_API_KEY", "sk-env-default")
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        # 从未保存时环境变量可作为默认来源。
+        never_saved = service._load_account_config()
+        assert "dialogue.api_key" not in never_saved
+        _, _, env_key, _ = service._dialogue_runtime_settings(never_saved)
+        assert env_key == "sk-env-default"
+
+        # 用户显式清空保存的 Key。
+        await service.handle_command(
+            command("clear-key", "config.set", updates={"dialogue.api_key": ""})
+        )
+        saved = service._load_account_config()
+        assert saved["dialogue.api_key"] == ""
+        _, _, runtime_key, _ = service._dialogue_runtime_settings(saved)
+        assert runtime_key == ""
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_runtime_rebuild_invalidates_engine_session_refs(tmp_path: Path) -> None:
+    """M3.2：供应商/引擎切换后旧 EngineSessionRef 失效，下一次任务新开 session。"""
+    from pair_harness.core.contracts import EngineSessionRef
+
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        conversation_id = service.current_conversation_id
+        service.store.save_engine_session(
+            conversation_id,
+            EngineSessionRef(engine_type="scripted", opaque_ref="old-session"),
+        )
+        service._demo = False
+        deepseek_config = {
+            "engine": "deepseek",
+            "dialogue.provider": "deepseek",
+            "dialogue.base_url": "https://api.deepseek.com",
+            "dialogue.api_key": "sk-deepseek-test",
+            "dialogue.model": "deepseek-v4-flash",
+        }
+        await service._rebuild_runtime_for_account(deepseek_config)
+
+        assert service.store.load_conversation(conversation_id)["engine_session"] is None
+        assert conversation_id not in service.orchestrator._sessions
     finally:
         await service.shutdown()
 

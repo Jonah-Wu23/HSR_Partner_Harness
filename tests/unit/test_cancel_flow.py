@@ -160,24 +160,39 @@ async def test_cancel_active_task_without_active_turn_returns_false() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cancel_before_engine_turn_bound_returns_false() -> None:
-    """O2.3：引擎 turn 尚未绑定（未收到任何事件）时取消无效。"""
+async def test_cancel_before_engine_turn_bound_records_intent_and_interrupts_after_bind() -> None:
+    """M1.2：引擎 turn 尚未绑定时取消记录意图，绑定后立即发送 interrupt。"""
     engine = BlockedEngine(entered=asyncio.Event(), release=asyncio.Event())
     orchestrator = _make_orchestrator(engine)
-    task = asyncio.create_task(
-        orchestrator.handle_character_input(conversation_id="c", text="跑一下测试")
-    )
+    captured: dict = {}
+
+    async def run() -> None:
+        captured["outcome"] = await orchestrator.handle_character_input(
+            conversation_id="c", text="跑一下测试"
+        )
+
+    task = asyncio.create_task(run())
     try:
         await asyncio.wait_for(engine._entered.wait(), timeout=5)
         assert orchestrator.state.active is not None
         assert orchestrator.state.active.engine_turn_id is None
 
-        assert await orchestrator.cancel_active_task() is False
+        # 未绑定也可以取消：生命周期先到 CANCELLED，记录取消意图。
+        assert await orchestrator.cancel_active_task() is True
+        assert orchestrator._active_lifecycle is not None
+        assert orchestrator._active_lifecycle.status == TaskStatus.CANCELLED
+        assert orchestrator.state.active is not None
+        assert orchestrator.state.active.cancellation_requested is True
         assert engine.cancelled == []
     finally:
         engine._release.set()
         await task
 
-    # 未取消的任务正常完成
+    # 首个事件到达后绑定 turn id，并立即补发 interrupt；回执为 cancelled。
     assert engine.requests
+    assert len(engine.cancelled) == 1
+    assert engine.cancelled[0][0].engine_type == "scripted"
+    assert engine.cancelled[0][1]
     assert orchestrator.state.active is None
+    assert captured["outcome"].receipt is not None
+    assert captured["outcome"].receipt.status == "cancelled"

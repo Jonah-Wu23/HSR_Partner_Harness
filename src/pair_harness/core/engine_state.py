@@ -45,6 +45,7 @@ class ActiveTurn:
     conversation_id: str
     task_id: str
     engine_turn_id: str | None = None
+    cancellation_requested: bool = False
 
 
 class GlobalEngineState:
@@ -72,6 +73,29 @@ class GlobalEngineState:
             conversation_id=self.active.conversation_id,
             task_id=self.active.task_id,
             engine_turn_id=engine_turn_id,
+            cancellation_requested=self.active.cancellation_requested,
+        )
+
+    def request_cancel(self) -> None:
+        if self.active is None:
+            raise RuntimeError("no active turn")
+        self.active = ActiveTurn(
+            project_id=self.active.project_id,
+            conversation_id=self.active.conversation_id,
+            task_id=self.active.task_id,
+            engine_turn_id=self.active.engine_turn_id,
+            cancellation_requested=True,
+        )
+
+    def mark_cancel_sent(self) -> None:
+        if self.active is None:
+            return
+        self.active = ActiveTurn(
+            project_id=self.active.project_id,
+            conversation_id=self.active.conversation_id,
+            task_id=self.active.task_id,
+            engine_turn_id=self.active.engine_turn_id,
+            cancellation_requested=False,
         )
 
     def finish(self, task_id: str) -> None:
