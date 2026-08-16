@@ -36,11 +36,29 @@ async def _run(args: argparse.Namespace) -> int:
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
             reconfigure(encoding="utf-8", errors="replace")
+    stream_id = os.getenv("PAIR_HARNESS_STREAM_ID", "local")
     writer = JsonlWriter(sys.stdout)
     service = None
 
     def sink(message: dict) -> None:
         writer.write(message)
+
+    def report_startup_error(code: str, message: str) -> None:
+        writer.write(
+            {
+                "kind": "event",
+                "event": "error.reported",
+                "stream_id": stream_id,
+                "sequence": 0,
+                "payload": {
+                    "code": code,
+                    "message": message,
+                    "severity": "fatal",
+                    "fatal": True,
+                    "source": "sidecar",
+                },
+            }
+        )
 
     try:
         service = build_configured_service(
@@ -49,28 +67,15 @@ async def _run(args: argparse.Namespace) -> int:
             pair_id=args.pair,
             event_sink=sink,
             demo=not args.real,
+            stream_id=stream_id,
         )
     except ServiceError as exc:
-        writer.write(
-            {
-                "kind": "event",
-                "event": "error.reported",
-                "sequence": 0,
-                "payload": {"code": exc.code, "message": str(exc)},
-            }
-        )
-        return 1
+        report_startup_error(exc.code, str(exc))
+        return 2
     except Exception as exc:  # noqa: BLE001 - 启动失败仍输出可识别事件
         logging.getLogger(__name__).exception("sidecar startup failed")
-        writer.write(
-            {
-                "kind": "event",
-                "event": "error.reported",
-                "sequence": 0,
-                "payload": {"code": "startup_error", "message": str(exc)},
-            }
-        )
-        return 1
+        report_startup_error("startup_error", str(exc))
+        return 2
 
     service.emitter.emit(
         "backend.ready",
@@ -78,7 +83,7 @@ async def _run(args: argparse.Namespace) -> int:
     )
     await service.start_voice()
     try:
-        await run_stdin(service, stdin=sys.stdin, stdout=sys.stdout)
+        await run_stdin(service, writer=writer, stdin=sys.stdin)
     finally:
         if service is not None and not service._shutdown:
             await service.shutdown()

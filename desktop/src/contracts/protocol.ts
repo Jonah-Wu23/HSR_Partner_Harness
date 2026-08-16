@@ -234,6 +234,8 @@ export interface DesktopSnapshot {
   pair: PairRecord;
   pairs: PairSummary[];
   sequence: number;
+  /** M2.1：快照所属连接代次；旧代次快照不能覆盖新代次状态。 */
+  stream_id?: string | number;
 }
 
 export type DesktopCommandMethod =
@@ -308,23 +310,22 @@ export type DesktopEventName =
   | "review.failed"
   | "turn.started"
   | "turn.status_changed"
-  | "turn.completed"
   | "queue.changed"
   | "task.busy_changed"
   | "conversation.changed"
   | "project.changed"
   | "account.changed"
-  | "config.changed"
   | "voice.asr_partial"
   | "voice.state_changed"
   | "connection.status"
-  | "connection.restored"
   | "error.reported";
 
 export interface DesktopEvent<T = Record<string, unknown>> {
   kind: "event";
   event: DesktopEventName;
   sequence: number;
+  /** M2.1：连接代次标识；业务事件按 (stream_id, sequence) 去重和查缺。 */
+  stream_id?: string | number;
   payload: T;
 }
 

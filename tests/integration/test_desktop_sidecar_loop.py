@@ -46,6 +46,7 @@ async def test_demo_sidecar_survives_bad_json_and_processes_valid_requests(
         ready = await _read_json_line(process.stdout)
         assert ready["kind"] == "event"
         assert ready["event"] == "backend.ready"
+        assert ready["stream_id"] == "local"
 
         process.stdin.write(b"not-json\n")
         await process.stdin.drain()

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -16,6 +16,9 @@ use serde_json::{json, Value};
 use tauri::{Emitter, Manager, State};
 
 type PendingMap = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<Value>>>>;
+
+/// 桌面请求等待 Sidecar 响应的默认上限。
+const REQUEST_TIMEOUT_SECS: u64 = 30;
 
 /// 自动重连退避起点（秒）：首次立即重试，失败后按 1s → 2s → 4s → 8s → 15s 递增。
 const BACKOFF_START_SECS: u64 = 1;
@@ -41,6 +44,8 @@ enum ExitClass {
     CleanExit,
     /// 异常退出（非零退出码，或子进程被外力取走）：通知前端并自动重连。
     Crash(Option<i32>),
+    /// 致命启动配置错误（Python 退出码 2）：停止自动重连，由启动失败页接管。
+    Fatal(i32),
 }
 
 fn classify_exit(shutdown: bool, status: Option<ExitStatus>) -> ExitClass {
@@ -49,6 +54,7 @@ fn classify_exit(shutdown: bool, status: Option<ExitStatus>) -> ExitClass {
     }
     match status {
         Some(status) if status.success() => ExitClass::CleanExit,
+        Some(status) if status.code() == Some(2) => ExitClass::Fatal(2),
         _ => ExitClass::Crash(status.and_then(|status| status.code())),
     }
 }
@@ -60,6 +66,8 @@ struct BackendState {
     child: Mutex<Option<Child>>,
     stdin: Mutex<Option<ChildStdin>>,
     pending: PendingMap,
+    /// 当前连接代次；每次拉起 Sidecar 都会换成新的 stream_id。
+    current_stream_id: Mutex<u64>,
     /// stop_backend 置位后不再自动重连。
     shutdown: AtomicBool,
     /// 是否有恢复循环正在运行（EOF 触发与手动重连互斥，避免重复 spawn）。
@@ -84,6 +92,11 @@ fn repository_root() -> PathBuf {
                 .join("..")
                 .join("..")
         })
+}
+
+fn next_stream_id() -> u64 {
+    static NEXT_STREAM_ID: AtomicU64 = AtomicU64::new(0);
+    NEXT_STREAM_ID.fetch_add(1, Ordering::SeqCst) + 1
 }
 
 fn python_command(root: &PathBuf) -> PathBuf {
@@ -238,14 +251,19 @@ fn use_real_backend(env_file: Option<&Path>) -> bool {
 }
 
 /// 拉起一个 Sidecar 进程并取回它的 stdin/stdout 句柄（不启动读取线程）。
+///
+/// M2.1：每次启动都生成新的 `stream_id` 并通过环境变量传给 Python，事件按代次隔离。
+/// M2.5：`runtime_root`（进程工作目录/可执行文件位置）与 `initial_project_root`
+/// （首次启动默认项目根，必须位于可写的 app_data_dir）分开，不再复用同一个 root。
 fn launch_sidecar(
     app: &tauri::AppHandle,
     debug_console: bool,
+    stream_id: u64,
 ) -> Result<(Child, ChildStdin, ChildStdout), String> {
     let packaged = packaged_sidecar(app);
     let bundled_codex = packaged_codex(app);
     let bundled_reasonix = packaged_reasonix(app);
-    let root = std::env::var_os("PAIR_HARNESS_ROOT")
+    let runtime_root = std::env::var_os("PAIR_HARNESS_ROOT")
         .map(PathBuf::from)
         .or_else(|| {
             packaged
@@ -253,18 +271,33 @@ fn launch_sidecar(
                 .and_then(|path| path.parent().map(PathBuf::from))
         })
         .unwrap_or_else(repository_root);
-    let program = packaged.clone().unwrap_or_else(|| python_command(&root));
-    let env_file = configured_env_file(app, &root);
+    let initial_project_root = app
+        .path()
+        .app_data_dir()
+        .map(|data_dir| data_dir.join("projects").join("initial-project"))
+        .map_err(|error| format!("读取应用数据目录失败：{error}"))?;
+    std::fs::create_dir_all(&initial_project_root)
+        .map_err(|error| format!("创建初始项目根失败：{error}"))?;
+    let program = packaged
+        .clone()
+        .unwrap_or_else(|| python_command(&runtime_root));
+    let env_file = configured_env_file(app, &runtime_root);
     let real = use_real_backend(env_file.as_deref());
     let stderr_log = sidecar_stderr_log_path(app);
     let mut command = Command::new(program);
-    command.current_dir(&root);
+    command.current_dir(&runtime_root);
     let mode = if real { "--real" } else { "--demo" };
     if packaged.is_some() {
-        command.args([mode, "--project"]);
+        command
+            .arg(mode)
+            .arg("--project")
+            .arg(&initial_project_root);
     } else {
-        command.args(["-m", "pair_harness.desktop_backend", mode, "--project"]);
+        command
+            .args(["-m", "pair_harness.desktop_backend", mode, "--project"])
+            .arg(&initial_project_root);
     }
+    command.env("PAIR_HARNESS_STREAM_ID", stream_id.to_string());
     if let Some(env_file) = env_file {
         command.env("PAIR_HARNESS_ENV_FILE", env_file);
     }
@@ -275,7 +308,6 @@ fn launch_sidecar(
         command.env("PAIR_HARNESS_BUNDLED_REASONIX_BIN", reasonix);
     }
     command
-        .arg(&root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -310,6 +342,7 @@ impl BackendState {
 
     /// 断开广播：connection.status disconnected + error.reported（recoverable）。
     fn publish_disconnected(&self, message: &str) {
+        let stream_id = *self.current_stream_id.lock().unwrap();
         let _ = self.connection.send(false);
         let _ = self.app.emit(
             "sidecar://event",
@@ -317,7 +350,8 @@ impl BackendState {
                 "kind": "event",
                 "event": "connection.status",
                 "sequence": self.next_event_sequence(),
-                "payload": {"status": "disconnected"}
+                "stream_id": stream_id,
+                "payload": {"status": "disconnected", "stream_id": stream_id}
             }),
         );
         let _ = self.app.emit(
@@ -326,6 +360,7 @@ impl BackendState {
                 "kind": "event",
                 "event": "error.reported",
                 "sequence": self.next_event_sequence(),
+                "stream_id": stream_id,
                 "payload": {
                     "code": "backend_disconnected",
                     "message": message,
@@ -338,6 +373,7 @@ impl BackendState {
 
     /// 恢复广播：connection.status connected，前端随后重新 bootstrap。
     fn publish_connected(&self) {
+        let stream_id = *self.current_stream_id.lock().unwrap();
         let _ = self.connection.send(true);
         let _ = self.app.emit(
             "sidecar://event",
@@ -345,14 +381,17 @@ impl BackendState {
                 "kind": "event",
                 "event": "connection.status",
                 "sequence": self.next_event_sequence(),
-                "payload": {"status": "connected"}
+                "stream_id": stream_id,
+                "payload": {"status": "connected", "stream_id": stream_id}
             }),
         );
     }
 
     /// 重新拉起 Sidecar：成功后新旧 stdin/child 已交换，失败返回原因。
     fn respawn(&self) -> Result<ChildStdout, String> {
-        let (child, stdin, stdout) = launch_sidecar(&self.app, self.debug_console)?;
+        let stream_id = next_stream_id();
+        let (child, stdin, stdout) = launch_sidecar(&self.app, self.debug_console, stream_id)?;
+        *self.current_stream_id.lock().unwrap() = stream_id;
         *self.stdin.lock().unwrap() = Some(stdin);
         *self.child.lock().unwrap() = Some(child);
         Ok(stdout)
@@ -375,8 +414,9 @@ impl BackendState {
             }
             match self.respawn() {
                 Ok(stdout) => {
+                    let stream_id = *self.current_stream_id.lock().unwrap();
                     self.publish_connected();
-                    start_reader(self, stdout);
+                    start_reader(self, stdout, stream_id);
                     break;
                 }
                 Err(error) => {
@@ -404,7 +444,8 @@ impl BackendState {
 }
 
 fn spawn_backend(app: &tauri::AppHandle, debug_console: bool) -> Result<Arc<BackendState>, String> {
-    let (child, stdin, stdout) = launch_sidecar(app, debug_console)?;
+    let stream_id = next_stream_id();
+    let (child, stdin, stdout) = launch_sidecar(app, debug_console, stream_id)?;
     let (connection, _) = tokio::sync::watch::channel(true);
     let state = Arc::new(BackendState {
         app: app.clone(),
@@ -412,6 +453,7 @@ fn spawn_backend(app: &tauri::AppHandle, debug_console: bool) -> Result<Arc<Back
         child: Mutex::new(Some(child)),
         stdin: Mutex::new(Some(stdin)),
         pending: Arc::new(Mutex::new(HashMap::new())),
+        current_stream_id: Mutex::new(stream_id),
         shutdown: AtomicBool::new(false),
         reconnecting: AtomicBool::new(false),
         connection,
@@ -419,31 +461,44 @@ fn spawn_backend(app: &tauri::AppHandle, debug_console: bool) -> Result<Arc<Back
         crash_streak: Mutex::new(0),
         last_sequence: AtomicU64::new(0),
     });
-    start_reader(&state, stdout);
+    start_reader(&state, stdout, stream_id);
     Ok(state)
 }
 
 /// 读取线程：把 Sidecar 的 stdout JSONL 转发为 sidecar://event，EOF 时按退出原因处理。
-fn start_reader(state: &Arc<BackendState>, stdout: ChildStdout) {
+///
+/// M2.1：每个读取线程绑定自己的 `stream_id`；一旦当前代次已经换成新进程，
+/// 旧 reader 必须立即退出，不能转发迟到事件或把新连接标成 disconnected。
+fn start_reader(state: &Arc<BackendState>, stdout: ChildStdout, stream_id: u64) {
     let state = Arc::clone(state);
     std::thread::spawn(move || {
         let reader = BufReader::new(stdout);
         for line in reader.lines() {
+            if *state.current_stream_id.lock().unwrap() != stream_id {
+                break; // 旧代次 reader 不得再处理本进程任何输出
+            }
             let Ok(line) = line else { break };
             // 进程吐出合法输出说明已稳定存活，清零连续崩溃计数
             *state.crash_streak.lock().unwrap() = 0;
             let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                if *state.current_stream_id.lock().unwrap() != stream_id {
+                    break;
+                }
                 let _ = state.app.emit(
                     "sidecar://event",
                     json!({
                         "kind": "event",
                         "event": "error.reported",
                         "sequence": state.next_event_sequence(),
+                        "stream_id": stream_id,
                         "payload": {"code": "invalid_sidecar_json", "message": "Sidecar 输出不是合法 JSON"}
                     }),
                 );
                 continue;
             };
+            if *state.current_stream_id.lock().unwrap() != stream_id {
+                break;
+            }
             if let Some(sequence) = value.get("sequence").and_then(Value::as_u64) {
                 let _ = state.last_sequence.fetch_max(sequence, Ordering::SeqCst);
             }
@@ -473,7 +528,10 @@ fn start_reader(state: &Arc<BackendState>, stdout: ChildStdout) {
                 let _ = state.app.emit("sidecar://event", value);
             }
         }
-        // ---- EOF：先清掉所有在途请求，再按退出原因分类处理 ----
+        // EOF：只有当前代次的 reader 才能清 pending、取退出状态和广播。
+        if *state.current_stream_id.lock().unwrap() != stream_id {
+            return;
+        }
         fail_pending(&state.pending, "Python Sidecar 已断开");
         let exit_status = state
             .child
@@ -493,16 +551,24 @@ fn start_reader(state: &Arc<BackendState>, stdout: ChildStdout) {
                 state.publish_disconnected("Python Sidecar 已断开，正在重连…");
                 state.ensure_reconnect_loop();
             }
+            ExitClass::Fatal(code) => {
+                let message = format!("Sidecar 启动配置错误，已停止自动重连（退出码 {code}）");
+                *state.last_error.lock().unwrap() = Some(message.clone());
+                eprintln!("[sidecar] 致命启动失败：{message}");
+                // Python 侧已发出带 fatal 的 error.reported；这里只把连接观察值
+                // 置为断开，避免前端等待重连。自动重连不启动。
+                let _ = state.connection.send(false);
+            }
         }
     });
 }
 
 fn fail_pending(pending: &PendingMap, message: &str) {
     let mut pending = pending.lock().unwrap();
-    for (_, sender) in pending.drain() {
+    for (id, sender) in pending.drain() {
         let _ = sender.send(json!({
             "kind": "response",
-            "id": null,
+            "id": id,
             "ok": false,
             "error": {"code": "backend_disconnected", "message": message}
         }));
@@ -530,8 +596,11 @@ async fn desktop_request(
     let (sender, receiver) = tokio::sync::oneshot::channel();
     state.pending.lock().unwrap().insert(id.clone(), sender);
 
-    let write_result = {
-        let mut stdin = state.stdin.lock().unwrap();
+    // M1.6：阻塞 stdin 写入移出 Tokio worker。写入任务在 blocking 线程池里
+    // 持有 Mutex，避免事件循环被管道写入卡住。
+    let write_state = Arc::clone(&state);
+    let write_result = match tokio::task::spawn_blocking(move || {
+        let mut stdin = write_state.stdin.lock().unwrap();
         match stdin.as_mut() {
             Some(stream) => stream
                 .write_all(&line)
@@ -539,15 +608,35 @@ async fn desktop_request(
                 .map_err(|error| format!("写入 Sidecar stdin 失败：{error}")),
             None => Err("Sidecar 已断开：等待自动重连或点击立即重连".to_string()),
         }
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            state.pending.lock().unwrap().remove(&id);
+            return Err(format!("Sidecar 写入任务失败：{error}"));
+        }
     };
+
     if let Err(error) = write_result {
         state.pending.lock().unwrap().remove(&id);
+        state.publish_disconnected(&error);
         return Err(error);
     }
 
-    receiver
-        .await
-        .map_err(|_| "等待 Sidecar 响应失败：响应通道已关闭".to_string())
+    match tokio::time::timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), receiver).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(_)) => {
+            state.pending.lock().unwrap().remove(&id);
+            Err("等待 Sidecar 响应失败：响应通道已关闭".to_string())
+        }
+        Err(_) => {
+            state.pending.lock().unwrap().remove(&id);
+            Err(format!(
+                "backend_timeout: 等待 Sidecar 响应超过 {REQUEST_TIMEOUT_SECS} 秒（id={id}）"
+            ))
+        }
+    }
 }
 
 /// 前端「立即重连」：强制终止现有 Sidecar 并立即重启（重置退避），
@@ -557,6 +646,11 @@ async fn sidecar_reconnect(state: State<'_, Arc<BackendState>>) -> Result<Value,
     if state.shutdown.load(Ordering::SeqCst) {
         return Err("应用正在退出，无法重连".to_string());
     }
+    // M2.3：手动重连先把当前连接状态置为 false，再启动新代次。
+    // 不能读取旧 watch 值提前返回成功。
+    let _ = state.connection.send(false);
+    // 让旧 reader 立刻失效，防止其迟到的 EOF 覆盖新连接状态。
+    *state.current_stream_id.lock().unwrap() = u64::MAX;
     // 手动重连重置退避：即使此前连续崩溃，也立即尝试一次
     *state.crash_streak.lock().unwrap() = 0;
     // 强制终止现有进程（若有）；其 EOF 或恢复循环负责立即重启
@@ -567,9 +661,10 @@ async fn sidecar_reconnect(state: State<'_, Arc<BackendState>>) -> Result<Value,
     let _ = state.stdin.lock().unwrap().take();
     state.ensure_reconnect_loop();
 
-    // 等待恢复循环发出 connected；先消费当前值，避免错过已完成的恢复
+    // 订阅在发送 false 之后进行；此时若已经变为 true，只能是新代次发布
+    // connected（旧 reader 已失效，不会反向写 false）。
     let mut receiver = state.connection.subscribe();
-    if *receiver.borrow() {
+    if *receiver.borrow_and_update() {
         return Ok(json!({ "reconnected": true }));
     }
     tokio::time::timeout(Duration::from_secs(30), async move {
@@ -600,9 +695,20 @@ fn stop_backend(state: &BackendState) {
             let _ = stdin.flush();
         }
     }
+    let deadline = Instant::now() + Duration::from_secs(5);
     if let Some(mut child) = state.child.lock().unwrap().take() {
-        let _ = child.kill();
-        let _ = child.wait();
+        // M2.4：先给 Python 有限时间优雅退出，超时再强制结束。
+        loop {
+            if let Ok(Some(_status)) = child.try_wait() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 }
 
@@ -695,6 +801,7 @@ mod tests {
         fail_pending(&pending, "断开");
         let value = receiver.await.unwrap();
         assert_eq!(value["ok"], false);
+        assert_eq!(value["id"], "r1");
         assert_eq!(value["error"]["code"], "backend_disconnected");
     }
 
@@ -729,11 +836,24 @@ mod tests {
             ExitClass::Crash(Some(1))
         );
         assert_eq!(
-            classify_exit(false, Some(ExitStatus::from_raw(2))),
-            ExitClass::Crash(Some(2))
+            classify_exit(false, Some(ExitStatus::from_raw(3))),
+            ExitClass::Crash(Some(3))
         );
         // 子进程被外力取走（无法取得退出码）也按异常处理
         assert_eq!(classify_exit(false, None), ExitClass::Crash(None));
+    }
+
+    #[test]
+    fn fatal_config_exit_code_stops_reconnect() {
+        assert_eq!(
+            classify_exit(false, Some(ExitStatus::from_raw(2))),
+            ExitClass::Fatal(2)
+        );
+        // 主动关闭优先级最高，不因退出码 2 改变分类
+        assert_eq!(
+            classify_exit(true, Some(ExitStatus::from_raw(2))),
+            ExitClass::Shutdown
+        );
     }
 
     #[test]

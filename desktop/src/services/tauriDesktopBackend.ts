@@ -20,7 +20,9 @@ export class TauriDesktopBackend implements DesktopBackend {
         kind?: string;
         sequence?: unknown;
       };
-      if (payload.kind !== "event" || !Number.isFinite(payload.sequence)) return;
+      // M6.3：sequence 是 stream_id 代次内的整数序号，始终处于 JS 安全
+      // 整数范围；用 Number.isSafeInteger 对齐新协议，而不是宽松的 isFinite。
+      if (payload.kind !== "event" || !Number.isSafeInteger(payload.sequence)) return;
       for (const listener of this.listeners) listener(event.payload);
     });
   }

@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 import threading
-from typing import Any, TextIO
+from typing import Any, Callable, TextIO
 
 from .application_service import DesktopApplicationService, ServiceError
 from .protocol import (
@@ -19,17 +20,50 @@ logger = logging.getLogger(__name__)
 
 
 class JsonlWriter:
-    """stdout 协议写入器；每次写入都是一行完整 JSON。"""
+    """stdout 协议写入器；每次写入都是一行完整 JSON。
 
-    def __init__(self, stream: TextIO) -> None:
+    整个 Sidecar 只允许创建一个实例，事件发射器与 Router 共用同一把锁。
+    BrokenPipeError 视为传输已经关闭：原子标记 closed、通知主循环执行
+    关闭流程，并把真实错误写入 stderr。
+    """
+
+    def __init__(
+        self,
+        stream: TextIO,
+        *,
+        on_broken_pipe: Callable[[], None] | None = None,
+    ) -> None:
         self.stream = stream
         self._lock = threading.Lock()
+        self._closed = False
+        self.on_broken_pipe = on_broken_pipe
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     def write(self, message: dict[str, Any]) -> None:
+        encoded = encode_message(message)
         with self._lock:
-            self.stream.write(encode_message(message))
-            self.stream.write("\n")
-            self.stream.flush()
+            if self._closed:
+                return
+            try:
+                self.stream.write(encoded)
+                self.stream.write("\n")
+                self.stream.flush()
+            except BrokenPipeError:
+                self._closed = True
+                print(
+                    "Sidecar stdout 已关闭（BrokenPipeError），正在有序退出。",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                callback = self.on_broken_pipe
+                if callback is not None:
+                    try:
+                        callback()
+                    except Exception:  # noqa: BLE001 - 关闭通知失败不能掩盖原始 BrokenPipe
+                        logger.exception("stdout BrokenPipeError 关闭通知回调失败")
 
 
 class SidecarRouter:
@@ -48,6 +82,11 @@ class SidecarRouter:
 
     async def wait_stopped(self) -> None:
         await self._stop_event.wait()
+
+    def request_stop(self) -> None:
+        """通知主循环退出（stdout 断开等传输级关闭路径）。"""
+        self.stop_requested = True
+        self._stop_event.set()
 
     async def wait_for_tasks(self) -> None:
         while self._tasks:
@@ -88,15 +127,16 @@ class SidecarRouter:
 
 
 async def run_stdin(
-    service: DesktopApplicationService, *, stdin: TextIO, stdout: TextIO
+    service: DesktopApplicationService, *, writer: JsonlWriter, stdin: TextIO
 ) -> None:
     """运行 Sidecar 主循环。
 
     Windows 控制台 stdin 不是 asyncio 原生异步流，使用线程读取单行，
-    不阻塞事件循环中的模型、审批和语音任务。
+    不阻塞事件循环中的模型、审批和语音任务。stdout 写入器由 __main__
+    创建并传入，避免出现第二把写入锁。
     """
-    writer = JsonlWriter(stdout)
     router = SidecarRouter(service, writer)
+    writer.on_broken_pipe = router.request_stop
     lines: asyncio.Queue[str] = asyncio.Queue()
     loop = asyncio.get_running_loop()
 
@@ -131,6 +171,10 @@ async def run_stdin(
             router.dispatch(line)
             line_task = asyncio.create_task(lines.get())
     finally:
+        # M2.2：stdout 断开时先执行 Sidecar 关闭流程（取消业务任务、结清
+        # 审批、关闭运行时），不能无限等待仍在运行的后台任务。
+        if writer.closed and not service._shutdown:
+            await service.shutdown()
         if not stop_task.done():
             stop_task.cancel()
         if not line_task.done():

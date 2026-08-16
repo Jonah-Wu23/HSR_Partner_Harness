@@ -32,20 +32,26 @@ EventSink = Callable[[dict[str, Any]], None]
 
 
 class EventEmitter:
-    """Sidecar 事件出口；所有事件在此处分配单调递增序号。"""
+    """Sidecar 事件出口；所有事件在此处分配代次内单调递增序号并携带 stream_id。"""
 
-    def __init__(self, sink: EventSink) -> None:
+    def __init__(self, sink: EventSink, *, stream_id: str = "local") -> None:
         self._sink = sink
         self._sequence = 0
+        self._stream_id = stream_id
 
     @property
     def next_sequence(self) -> int:
         return self._sequence
 
+    @property
+    def stream_id(self) -> str:
+        return self._stream_id
+
     def emit(self, event: str, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
         envelope = {
             "kind": "event",
             "event": event,
+            "stream_id": self._stream_id,
             "sequence": self._sequence,
             "payload": to_jsonable(payload or {}),
         }
