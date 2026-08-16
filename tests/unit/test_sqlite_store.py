@@ -2,6 +2,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from pair_harness.core.contracts import (
     EngineSessionRef,
     Message,
@@ -428,6 +430,71 @@ def test_conversation_account_id_is_written_and_filters(tmp_path: Path) -> None:
         ] == [account_b.conversation_id]
         # 不传账号时不过滤（兼容旧调用）
         assert len(store.list_conversations(project.project_id)) == 2
+
+
+def test_set_configs_and_secrets_is_atomic_on_failure(tmp_path: Path) -> None:
+    """M3.3：批量配置/密钥写入任一条失败时整批回滚。"""
+    store = SQLiteStore(tmp_path / "db.sqlite")
+    try:
+        # 第一条 provider_configs 插入成功、第二条被触发器拒绝；事务必须回滚。
+        store.connection.execute(
+            """
+            CREATE TRIGGER fail_second_config
+            BEFORE INSERT ON provider_configs
+            WHEN (SELECT COUNT(*) FROM provider_configs) >= 1
+            BEGIN
+                SELECT RAISE(ABORT, 'second write failed');
+            END
+            """
+        )
+        store.connection.commit()
+        with pytest.raises(sqlite3.IntegrityError, match="second write failed"):
+            store.set_configs_and_secrets(
+                "default-local",
+                {"dialogue.model": "first", "engine": "second"},
+                {"dialogue.api_key": "sk-secret"},
+            )
+
+        # 事务回滚：第一条配置也不落库。
+        assert store.get_config("default-local", "dialogue.model") is None
+        assert store.get_config("default-local", "engine") is None
+        assert store.get_secret("default-local", "dialogue.api_key") is None
+    finally:
+        store.close()
+
+
+def test_clear_engine_sessions_invalidates_only_target_account(tmp_path: Path) -> None:
+    """M3.2：运行时替换后按账号清空持久化 EngineSessionRef。"""
+    store = SQLiteStore(tmp_path / "db.sqlite")
+    try:
+        store.create_project(project_id="p", name="P", root_path=str(tmp_path))
+        store.create_conversation(
+            project_id="p",
+            pair_id="phainon_ancient_machine",
+            conversation_id="acc-a-conv",
+            account_id="acc-a",
+        )
+        store.create_conversation(
+            project_id="p",
+            pair_id="phainon_ancient_machine",
+            conversation_id="acc-b-conv",
+            account_id="acc-b",
+        )
+        store.save_engine_session(
+            "acc-a-conv", EngineSessionRef(engine_type="codex-app-server", opaque_ref="old-a")
+        )
+        store.save_engine_session(
+            "acc-b-conv", EngineSessionRef(engine_type="codex-app-server", opaque_ref="old-b")
+        )
+
+        store.clear_engine_sessions("acc-a")
+
+        assert store.load_conversation("acc-a-conv")["engine_session"] is None
+        assert store.load_conversation("acc-b-conv")["engine_session"] == EngineSessionRef(
+            engine_type="codex-app-server", opaque_ref="old-b"
+        )
+    finally:
+        store.close()
 
 
 def test_migration_v7_backfills_conversation_account_from_project(tmp_path: Path) -> None:

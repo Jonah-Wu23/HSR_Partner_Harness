@@ -277,14 +277,19 @@ class SQLiteStore(StateStore):
     def list_projects(self, *, include_archived: bool = False) -> list[Project]:
         where = "" if include_archived else "WHERE archived = 0"
         rows = self.connection.execute(
-            f"SELECT project_id FROM projects {where} ORDER BY last_opened_at DESC"
+            f"SELECT project_id FROM projects {where} "
+            "ORDER BY julianday(last_opened_at) DESC"
         ).fetchall()
         return [self.get_project(row["project_id"]) for row in rows]
 
     def find_project_by_root_path(self, root_path: str) -> Project | None:
-        """按规范化目录查找项目，避免同一目录重复创建项目记录。"""
+        """按规范化目录查找项目，避免同一目录重复创建项目记录。
+
+        M4.5：必须检查所有项目（含已归档），否则再次选择已归档目录会
+        静默创建第二条同根记录。
+        """
         wanted = str(Path(root_path).resolve())
-        for project in self.list_projects():
+        for project in self.list_projects(include_archived=True):
             try:
                 current = str(Path(project.root_path).resolve())
             except OSError:
@@ -354,26 +359,26 @@ class SQLiteStore(StateStore):
                 rows = self.connection.execute(
                     f"""SELECT conversation_id FROM conversations
                     WHERE project_id IS NULL AND account_id = ? {archived_clause}
-                    ORDER BY updated_at DESC""",
+                    ORDER BY julianday(updated_at) DESC""",
                     (account_id,),
                 ).fetchall()
             else:
                 rows = self.connection.execute(
                     f"""SELECT conversation_id FROM conversations
-                    WHERE project_id IS NULL {archived_clause} ORDER BY updated_at DESC"""
+                    WHERE project_id IS NULL {archived_clause} ORDER BY julianday(updated_at) DESC"""
                 ).fetchall()
         else:
             if account_id:
                 rows = self.connection.execute(
                     f"""SELECT conversation_id FROM conversations
                     WHERE project_id = ? AND account_id = ? {archived_clause}
-                    ORDER BY updated_at DESC""",
+                    ORDER BY julianday(updated_at) DESC""",
                     (project_id, account_id),
                 ).fetchall()
             else:
                 rows = self.connection.execute(
                     f"""SELECT conversation_id FROM conversations
-                    WHERE project_id = ? {archived_clause} ORDER BY updated_at DESC""",
+                    WHERE project_id = ? {archived_clause} ORDER BY julianday(updated_at) DESC""",
                     (project_id,),
                 ).fetchall()
         return [self.get_conversation(row["conversation_id"]) for row in rows]
@@ -444,6 +449,23 @@ class SQLiteStore(StateStore):
                 _now(),
             ),
         )
+        self.connection.commit()
+
+    def clear_engine_sessions(self, account_id: str | None = None) -> None:
+        """使指定账号（缺省全部）的引擎会话引用失效。
+
+        运行时替换（供应商/引擎/项目根变化）后，旧 session 不能在新
+        transport 上 resume；删除持久化引用后下一次任务会新开 session。
+        """
+        if account_id is None:
+            self.connection.execute("DELETE FROM engine_sessions")
+        else:
+            self.connection.execute(
+                "DELETE FROM engine_sessions WHERE conversation_id IN ("
+                "SELECT conversation_id FROM conversations WHERE account_id = ?"
+                ")",
+                (account_id,),
+            )
         self.connection.commit()
 
     def load_conversation(self, conversation_id: str) -> dict:
@@ -536,6 +558,19 @@ class SQLiteStore(StateStore):
             "UPDATE conversations SET archived = 1 WHERE project_id = ?", (project_id,)
         )
         self.connection.commit()
+
+    def unarchive_project(self, project_id: str) -> Project:
+        """M4.5：恢复已归档项目（含其聊天），供再次选择同一目录时复用旧记录。"""
+        self.connection.execute(
+            "UPDATE projects SET archived = 0, last_opened_at = ? WHERE project_id = ?",
+            (_now(), project_id),
+        )
+        self.connection.execute(
+            "UPDATE conversations SET archived = 0 WHERE project_id = ?",
+            (project_id,),
+        )
+        self.connection.commit()
+        return self.get_project(project_id)
 
     # ------------------------------------------------------------------ V0.2 M2 会话队列
 
@@ -846,6 +881,35 @@ class SQLiteStore(StateStore):
     def set_secret(self, account_id: str, key: str, secret: str) -> None:
         self._set_account_config("secret_refs", "secret", account_id, key, secret)
 
+    def set_configs_and_secrets(
+        self,
+        account_id: str,
+        config_updates: dict[str, str] | None = None,
+        secret_updates: dict[str, str] | None = None,
+    ) -> None:
+        """在一个 SQLite 事务里写入全部配置与密钥。
+
+        任一条写入失败都会回滚整个事务，调用方数据库保持旧值；成功后才
+        提交，供配置保存的“先验证后提交”流程使用。
+        """
+        config_updates = config_updates or {}
+        secret_updates = secret_updates or {}
+        with self.connection:
+            for key, value in config_updates.items():
+                self.connection.execute(
+                    "INSERT INTO provider_configs(account_id, key, value) "
+                    "VALUES (?, ?, ?) "
+                    "ON CONFLICT(account_id, key) DO UPDATE SET value = excluded.value",
+                    (account_id, key, value),
+                )
+            for key, value in secret_updates.items():
+                self.connection.execute(
+                    "INSERT INTO secret_refs(account_id, key, secret) "
+                    "VALUES (?, ?, ?) "
+                    "ON CONFLICT(account_id, key) DO UPDATE SET secret = excluded.secret",
+                    (account_id, key, value),
+                )
+
     def get_preference(self, account_id: str, key: str) -> str | None:
         row = self.connection.execute(
             f"SELECT {key} FROM account_preferences WHERE account_id = ?",
@@ -880,7 +944,7 @@ class SQLiteStore(StateStore):
     def list_projects_for_account(self, account_id: str) -> list[Project]:
         rows = self.connection.execute(
             "SELECT * FROM projects WHERE account_id = ? AND archived = 0 "
-            "ORDER BY last_opened_at DESC",
+            "ORDER BY julianday(last_opened_at) DESC",
             (account_id,),
         ).fetchall()
         return [self._project_from_row(row) for row in rows]
