@@ -385,14 +385,15 @@ async def test_push_to_talk_stops_playback_then_commits() -> None:
         assert ctx.recognizer.received_audio == [[BLOCK, BLOCK]]  # 无 pre-roll
     finally:
         hold.set()
-        # 播放循环恢复后重开 VAD 会话（_start_vad_loop 新建 detect 会话）。
-        # 等待目标用确定性信号 sessions==2，超时放宽到 15s；
+        # 播放循环被 stop_speaking 中断后要恢复：hold 放行合成收尾，
+        # 播放循环重开 VAD 会话（_start_vad_loop 新建 detect 会话）。
+        # 等待目标只用单调递增的 vad.sessions（==2 表示已重启）：
+        # 播放循环可能在本测试的 push_to_talk_start 之前就 break 于
+        # playing 检查而提前恢复，此时恢复后的 listening 会被后续的
+        # speech_started 覆盖，states[-1] 不可作为最终条件。
         # 超时后 dump 运行时状态，定位 CI 慢环境下的卡点。
         try:
-            await wait_until(
-                lambda: ctx.vad.sessions == 2 and ctx.states[-1] == "listening",
-                timeout=15,
-            )
+            await wait_until(lambda: ctx.vad.sessions == 2, timeout=15)
         except TimeoutError:
             print("\n=== VOICE RECOVERY TIMEOUT DIAGNOSTICS ===")
             print("states:", ctx.states)
