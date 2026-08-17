@@ -386,12 +386,51 @@ async def test_push_to_talk_stops_playback_then_commits() -> None:
     finally:
         hold.set()
         # 播放循环恢复后重开 VAD 会话（_start_vad_loop 新建 detect 会话）。
-        # 慢 CI 上恢复链整体可能延迟：以确定性信号 sessions==2 为等待目标，
-        # 超时放宽到 15s，不再依赖 states[-1] 的状态序列。
-        await wait_until(
-            lambda: ctx.vad.sessions == 2 and ctx.states[-1] == "listening",
-            timeout=15,
-        )
+        # 等待目标用确定性信号 sessions==2，超时放宽到 15s；
+        # 超时后 dump 运行时状态，定位 CI 慢环境下的卡点。
+        try:
+            await wait_until(
+                lambda: ctx.vad.sessions == 2 and ctx.states[-1] == "listening",
+                timeout=15,
+            )
+        except TimeoutError:
+            print("\n=== VOICE RECOVERY TIMEOUT DIAGNOSTICS ===")
+            print("states:", ctx.states)
+            print("tts_states:", ctx.tts_states)
+            print(
+                "playback done:",
+                playback.done(),
+                "cancelled:",
+                playback.cancelled(),
+            )
+            if playback.done() and playback.exception() is not None:
+                print("playback exception:", playback.exception())
+            print("vad_task:", runtime._vad_task)
+            print(
+                "vad_task done:",
+                runtime._vad_task is not None and runtime._vad_task.done(),
+            )
+            print("vad_sessions:", ctx.vad.sessions)
+            print("queue.playing:", queue.playing, "pending:", queue.pending)
+            print(
+                "ptt_active:",
+                runtime._ptt_active,
+                "asr_active:",
+                runtime._asr_active,
+            )
+            print(
+                "started:",
+                runtime._started,
+                "vad_enabled:",
+                runtime._vad_enabled,
+            )
+            print(
+                "player.played:",
+                len(ctx.player.played),
+                "stopped:",
+                ctx.player.stopped,
+            )
+            raise
         playback.cancel()
         try:
             await playback
