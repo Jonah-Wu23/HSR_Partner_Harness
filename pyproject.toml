@@ -4,7 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pair-harness"
-version = "0.3.2-patch1"
+# 对外版本为 v0.3.2-patch1；PEP 440 不接受 `-patch1` 段，
+# Python 包内部版本用等价的 post1 形式（Rust/npm/tauri 保持 0.3.2-patch1）
+version = "0.3.2.post1"
 description = "Desktop roleplay and coding harness research MVP"
 requires-python = ">=3.11"
 dependencies = [
