@@ -123,13 +123,16 @@ async def test_cancel_active_task_marks_cancelled_receipt_and_reply() -> None:
     task = asyncio.create_task(run())
     try:
         await asyncio.wait_for(engine._started.wait(), timeout=5)
-        assert orchestrator.state.active is not None
-        assert orchestrator.state.active.engine_turn_id == "turn-cancel-1"
+        active = orchestrator.state.get_for_conversation("c")
+        assert active is not None
+        assert active.engine_turn_id == "turn-cancel-1"
 
-        assert await orchestrator.cancel_active_task() is True
+        # V0.3.2 M4：定向取消按聊天 + 任务双参
+        assert await orchestrator.cancel_active_task("c", active.task_id) is True
         # 生命周期先行落到 CANCELLED（终态），后续收尾不重复转移
-        assert orchestrator._active_lifecycle is not None
-        assert orchestrator._active_lifecycle.status == TaskStatus.CANCELLED
+        lifecycle = orchestrator._active_lifecycles.get(active.task_id)
+        assert lifecycle is not None
+        assert lifecycle.status == TaskStatus.CANCELLED
         # 引擎收到 turn/interrupt 对应参数
         assert len(engine.cancelled) == 1
         session_ref, turn_id = engine.cancelled[0]
@@ -140,7 +143,7 @@ async def test_cancel_active_task_marks_cancelled_receipt_and_reply() -> None:
         await task
 
     outcome = captured["outcome"]
-    assert orchestrator.state.active is None
+    assert orchestrator.state.get_for_conversation("c") is None
     assert outcome.receipt is not None
     assert outcome.receipt.status == "cancelled"
     assert outcome.receipt.summary == "任务已取消"
@@ -174,15 +177,18 @@ async def test_cancel_before_engine_turn_bound_records_intent_and_interrupts_aft
     task = asyncio.create_task(run())
     try:
         await asyncio.wait_for(engine._entered.wait(), timeout=5)
-        assert orchestrator.state.active is not None
-        assert orchestrator.state.active.engine_turn_id is None
+        active = orchestrator.state.get_for_conversation("c")
+        assert active is not None
+        assert active.engine_turn_id is None
 
         # 未绑定也可以取消：生命周期先到 CANCELLED，记录取消意图。
-        assert await orchestrator.cancel_active_task() is True
-        assert orchestrator._active_lifecycle is not None
-        assert orchestrator._active_lifecycle.status == TaskStatus.CANCELLED
-        assert orchestrator.state.active is not None
-        assert orchestrator.state.active.cancellation_requested is True
+        assert await orchestrator.cancel_active_task("c", active.task_id) is True
+        lifecycle = orchestrator._active_lifecycles.get(active.task_id)
+        assert lifecycle is not None
+        assert lifecycle.status == TaskStatus.CANCELLED
+        active = orchestrator.state.get_for_conversation("c")
+        assert active is not None
+        assert active.cancellation_requested is True
         assert engine.cancelled == []
     finally:
         engine._release.set()
@@ -193,6 +199,6 @@ async def test_cancel_before_engine_turn_bound_records_intent_and_interrupts_aft
     assert len(engine.cancelled) == 1
     assert engine.cancelled[0][0].engine_type == "scripted"
     assert engine.cancelled[0][1]
-    assert orchestrator.state.active is None
+    assert orchestrator.state.get_for_conversation("c") is None
     assert captured["outcome"].receipt is not None
     assert captured["outcome"].receipt.status == "cancelled"

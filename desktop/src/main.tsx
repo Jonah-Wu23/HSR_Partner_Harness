@@ -65,10 +65,20 @@ class ErrorBoundary extends Component<
   }
 }
 
+/** V0.3.2 M5：独立聊天窗口的启动参数——Rust open_chat_window 创建窗口时在
+    URL query 携带 conversation_id 与 view_id；view_id 由 store 初始化时读取，
+    这里只取 conversation_id 驱动首次 conversation.open 装载。 */
+function readInitialConversationId(): string | null {
+  if (typeof window === "undefined") return null;
+  const value = new URLSearchParams(window.location.search).get("conversation_id");
+  return value && value.length > 0 ? value : null;
+}
+
 const backend: DesktopBackend = isTauriRuntime()
   ? new TauriDesktopBackend()
   : new MockDesktopBackend("single-project");
 const controller = createActionController(backend);
+const initialConversationId = readInitialConversationId();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
@@ -77,6 +87,8 @@ createRoot(document.getElementById("root")!).render(
         backend={backend}
         actions={controller.actions}
         loadBootstrap={controller.loadBootstrap}
+        conversationOpen={controller.conversationOpen}
+        initialConversationId={initialConversationId}
       />
     </ErrorBoundary>
   </StrictMode>,

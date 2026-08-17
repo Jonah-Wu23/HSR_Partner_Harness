@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pair_harness.core.audio import DASHSCOPE_CONFIG_LOCK
 from pair_harness.core.contracts import AudioChunk, SpeechRequest
 from pair_harness.core.ports import SpeechSynthesizer
+from pair_harness.voice_models import VOICE_TTS_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +70,14 @@ class QwenSpeechSynthesizer(SpeechSynthesizer):
         *,
         api_key: str | None = None,
         ws_url: str | None = None,
-        model: str = "qwen-audio-3.0-tts-flash",
+        model: str | None = None,
     ) -> None:
+        # ``model`` remains accepted for old callers, but the production
+        # adapter always uses the V0.3.2 product model.
+        del model
         self.api_key = api_key
         self.ws_url = ws_url
-        self.model = model
+        self.model = VOICE_TTS_MODEL
 
     def _make_synthesizer(self, voice_id: str, callback):
         try:

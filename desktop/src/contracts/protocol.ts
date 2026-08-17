@@ -38,6 +38,9 @@ export interface Message {
   origin?: MessageOrigin;
   delegation_id?: string | null;
   status?: MessageStatus;
+  /** V0.3.2 M1：助手 segment 归属的任务与统一时间线序号；旧记录为空。 */
+  task_id?: string | null;
+  timeline_order?: number | null;
 }
 
 export type ToolRunStatus = "running" | "succeeded" | "failed" | "denied";
@@ -52,6 +55,8 @@ export interface ToolRun {
   title: string;
   summary: string;
   details: string;
+  /** V0.3.2 M1：首次观察到工具事件时分配一次，更新沿用原序号。 */
+  timeline_order?: number | null;
 }
 
 export type ApprovalMode = "request_approval" | "review" | "full_auto";
@@ -192,6 +197,8 @@ export interface PendingApproval {
     summary: string;
   };
   reason: string;
+  /** V0.3.2 M5：审批归属的任务 id（approval.requested/resolved 载荷新增）。 */
+  task_id?: string;
 }
 
 export interface VoiceState {
@@ -228,6 +235,9 @@ export interface DesktopSnapshot {
   turns: Turn[];
   queue_items: QueueItem[];
   active_task: ActiveTask | null;
+  /** V0.3.2 M5：全账号活动任务全量集合（同聊天一次只有一个活动任务）；
+      旧协议快照缺省时前端回退用 active_task 建立单条目集合。 */
+  active_tasks?: ActiveTask[];
   busy: boolean;
   approvals: PendingApproval[];
   voice: VoiceState;
@@ -236,6 +246,19 @@ export interface DesktopSnapshot {
   sequence: number;
   /** M2.1：快照所属连接代次；旧代次快照不能覆盖新代次状态。 */
   stream_id?: string | number;
+}
+
+/** V0.3.2 M5：conversation.open 的只读装载结果——只装载指定聊天，
+    不改变后端全局当前聊天，也不影响其他窗口的导航状态。 */
+export interface ConversationOpenResult {
+  conversation: ConversationRecord;
+  project: (Omit<ProjectRecord, "conversations"> & { conversations?: ConversationRecord[] }) | null;
+  pair: PairRecord;
+  messages: Message[];
+  tool_runs: ToolRun[];
+  turns: Turn[];
+  queue_items: QueueItem[];
+  active_task: ActiveTask | null;
 }
 
 export type DesktopCommandMethod =
@@ -248,6 +271,7 @@ export type DesktopCommandMethod =
   | "project.archive"
   | "conversation.create"
   | "conversation.select"
+  | "conversation.open"
   | "conversation.rename"
   | "conversation.archive"
   | "conversation.set_mode"
@@ -264,6 +288,7 @@ export type DesktopCommandMethod =
   | "voice.tts_play"
   | "voice.tts_skip"
   | "voice.preview"
+  | "voice.provision"
   | "account.list"
   | "account.register"
   | "account.login"
@@ -285,6 +310,8 @@ export interface DesktopCommand {
   id: string;
   method: DesktopCommandMethod;
   params: Record<string, unknown>;
+  /** V0.3.2 M5：发起请求的前端窗口视图命名空间。旧调用可省略。 */
+  view_id?: string;
 }
 
 export interface DesktopResponse<T = unknown> {
@@ -317,6 +344,7 @@ export type DesktopEventName =
   | "account.changed"
   | "voice.asr_partial"
   | "voice.state_changed"
+  | "voice.provision_changed"
   | "connection.status"
   | "error.reported";
 
@@ -332,9 +360,24 @@ export interface DesktopEvent<T = Record<string, unknown>> {
 export interface MessageDeltaPayload {
   message_id: string;
   conversation_id: string;
+  pair_id?: string;
   source: "assistant" | "character";
   kind: string;
   delta: string;
   task_id?: string;
   channel?: string;
+  /** V0.3.2 M1：助手 segment 的段号与工作台序号。 */
+  segment_index?: number | null;
+  timeline_order?: number | null;
+}
+
+/** V0.3.2 M6：voice.provision_changed 事件载荷（不含 Key/Authorization）。 */
+export interface VoiceProvisionEventPayload {
+  account_id: string;
+  speaker_id: string;
+  state: "pending" | "creating" | "completed" | "failed" | string;
+  completed: number;
+  total: number;
+  error: string | null;
+  voice_id?: string | null;
 }

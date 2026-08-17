@@ -69,7 +69,7 @@ async def test_request_approval_callback_allows_tool(tmp_path) -> None:
     )
     engine = RecordingCodingEngine(tool_payload={"tool_kind": "shell", "command": "ls"})
 
-    async def allow(op, approval_id: str, reason: str) -> ApprovalDecision:
+    async def allow(op, approval_id: str, reason: str, conversation_id: str = "", task_id: str = "") -> ApprovalDecision:
         return ApprovalDecision.ALLOW
 
     orchestrator = ConversationOrchestrator(
@@ -148,7 +148,7 @@ async def test_allow_for_conversation_caches_same_signature(tmp_path) -> None:
     engine = RecordingCodingEngine(tool_payload={"tool_kind": "shell", "command": "ls"})
     calls = []
 
-    async def allow_once(op, approval_id: str, reason: str) -> ApprovalDecision:
+    async def allow_once(op, approval_id: str, reason: str, conversation_id: str = "", task_id: str = "") -> ApprovalDecision:
         calls.append((op, approval_id, reason))
         if len(calls) == 1:
             return ApprovalDecision.ALLOW_FOR_CONVERSATION
@@ -399,7 +399,7 @@ async def test_engine_policy_on_request_mode_maps_to_untrusted(tmp_path) -> None
     )
     engine = RecordingCodingEngine(tool_payload={"tool_kind": "shell", "command": "ls"})
 
-    async def allow(op, approval_id: str, reason: str) -> ApprovalDecision:
+    async def allow(op, approval_id: str, reason: str, conversation_id: str = "", task_id: str = "") -> ApprovalDecision:
         return ApprovalDecision.ALLOW
 
     orchestrator = ConversationOrchestrator(

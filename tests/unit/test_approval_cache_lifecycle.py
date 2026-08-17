@@ -44,7 +44,11 @@ async def test_close_conversation_invalidates_session_allow_cache() -> None:
     calls: list[str] = []
 
     async def ask(
-        op: PendingOperation, approval_id: str, reason: str
+        op: PendingOperation,
+        approval_id: str,
+        reason: str,
+        conversation_id: str = "",
+        task_id: str = "",
     ) -> ApprovalDecision:
         calls.append(approval_id)
         return ApprovalDecision.ALLOW_FOR_CONVERSATION
@@ -88,7 +92,11 @@ async def test_close_conversation_unknown_id_is_noop() -> None:
     calls: list[str] = []
 
     async def ask(
-        op: PendingOperation, approval_id: str, reason: str
+        op: PendingOperation,
+        approval_id: str,
+        reason: str,
+        conversation_id: str = "",
+        task_id: str = "",
     ) -> ApprovalDecision:
         calls.append(approval_id)
         return ApprovalDecision.ALLOW_FOR_CONVERSATION

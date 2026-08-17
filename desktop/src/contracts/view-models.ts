@@ -26,12 +26,33 @@ import type {
 
 export interface ProjectViewModel extends ProjectRecord {
   isCurrent: boolean;
+  /** V0.3.2 M5：该项目下任一聊天有活动任务即为真（多活动任务集合推导）。 */
   isBusy: boolean;
+  /** V0.3.2 M5：该项目下运行中的聊天数（项目级活动标记可附数量）。 */
+  activeTaskCount: number;
 }
 
 export interface ConversationViewModel extends ConversationRecord {
   isCurrent: boolean;
+  /** V0.3.2 M5：该聊天在 activeTasksByConversation 中（运行中）。 */
+  isRunning: boolean;
+  /** 兼容旧字段：与 isRunning 同值（任务源聊天标记）。 */
   isTaskOrigin: boolean;
+}
+
+/** V0.3.2 M5：聊天标签视图——标题随 conversation.changed 实时更新，
+    状态点反映该聊天自己的运行/排队/待审批状态。 */
+export interface ChatTabsViewModel {
+  conversationId: string;
+  title: string;
+  isRunning: boolean;
+  /** queueItemsByConversation 有未撤回项。 */
+  isQueued: boolean;
+  /** approvals 中存在该聊天的待审批项。 */
+  isWaitingApproval: boolean;
+  isActive: boolean;
+  /** 由容器（AppShell）注入的关闭回调；presenters 保持纯数据投影。 */
+  onClose?: () => void;
 }
 
 export interface NavigationViewModel {
@@ -48,10 +69,17 @@ export interface ConversationTimelineViewModel {
   isStreaming: boolean;
 }
 
+/** V0.3.2 M1：工作台统一时间线条目——助手 segment 与工具卡按真实事件顺序混排。 */
+export type WorkbenchItem =
+  | { kind: "message"; order: number | null; message: Message }
+  | { kind: "tool"; order: number | null; run: ToolRun };
+
 export interface AssistantWorkbenchViewModel {
   conversationId: string;
   messages: Message[];
   toolRuns: ToolRun[];
+  /** V0.3.2 M1：统一混排时间线（Workspace 唯一渲染来源）。 */
+  items: WorkbenchItem[];
   busy: boolean;
   activeTask: ActiveTask | null;
 }
@@ -107,6 +135,8 @@ export interface AppShellViewModel {
   currentPairId: string;
   navigation: NavigationViewModel | null;
   workspace: WorkspaceViewModel | null;
+  /** V0.3.2 M5：本窗口聊天标签（顺序即标签顺序；无标签为空数组）。 */
+  chatTabs: ChatTabsViewModel[];
   composer: ComposerViewModel;
   approval: ApprovalViewModel;
   voice: VoiceViewModel;

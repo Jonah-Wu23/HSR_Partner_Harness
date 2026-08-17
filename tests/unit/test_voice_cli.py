@@ -6,6 +6,13 @@ from pathlib import Path
 
 import pytest
 
+from pair_harness.adapters.audio.qwen_voice_customization import (
+    VoiceCustomizationError,
+    build_clone_payload,
+    build_design_payload,
+    extract_voice_id,
+)
+
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 SPEC = importlib.util.spec_from_file_location("create_qwen_voice", SCRIPTS / "create_qwen_voice.py")
 cli = importlib.util.module_from_spec(SPEC)
@@ -24,24 +31,25 @@ def _make_wav(path: Path, frames: int, framerate: int = 48000) -> None:
 # ---------------------------------------------------------------- normalize_prefix
 
 def test_normalize_prefix_lowercases_and_strips() -> None:
-    assert cli.normalize_prefix("Phainon_01!") == "phainon01"
+    assert cli.normalize_prefix(" Phainon01 ") == "phainon01"
 
 
-def test_normalize_prefix_truncates_to_10() -> None:
-    assert cli.normalize_prefix("ancient_machine") == "ancientmac"
+def test_normalize_prefix_rejects_more_than_10_characters() -> None:
+    with pytest.raises(VoiceCustomizationError):
+        cli.normalize_prefix("ancientmachine")
 
 
 def test_normalize_prefix_rejects_empty() -> None:
-    with pytest.raises(cli.VoiceCliError):
-        cli.normalize_prefix("!!!")
-    with pytest.raises(cli.VoiceCliError):
+    with pytest.raises(VoiceCustomizationError):
+        cli.normalize_prefix("Phainon_01!")
+    with pytest.raises(VoiceCustomizationError):
         cli.normalize_prefix("")
 
 
 # ---------------------------------------------------------------- payload 构造
 
 def test_build_clone_payload_shape() -> None:
-    payload = cli.build_clone_payload("phainon", "https://example.com/a.wav")
+    payload = build_clone_payload(prefix="phainon", url="https://example.com/a.wav")
     assert payload["model"] == "voice-enrollment"
     assert payload["input"] == {
         "action": "create_voice",
@@ -52,26 +60,15 @@ def test_build_clone_payload_shape() -> None:
 
 
 def test_build_design_payload_voice_enrollment_form() -> None:
-    payload = cli.build_design_payload(
-        "ancientmachine", "中年男性声音", "试听文本", "qwen-audio-3.0-tts-flash"
+    payload = build_design_payload(
+        prefix="ancientmac", voice_prompt="中年男性声音", preview_text="试听文本"
     )
     assert payload["model"] == "voice-enrollment"
     assert payload["input"]["action"] == "create_voice"
-    assert payload["input"]["prefix"] == "ancientmachine"
+    assert payload["input"]["prefix"] == "ancientmac"
     assert payload["input"]["voice_prompt"] == "中年男性声音"
     assert payload["parameters"] == {"sample_rate": 24000, "response_format": "wav"}
     assert "preferred_name" not in payload["input"]
-
-
-def test_build_design_payload_qwen_voice_design_form() -> None:
-    payload = cli.build_design_payload(
-        "custom", "描述", "试听", "qwen3-tts-vd-2026-01-26",
-        model="qwen-voice-design", action="create",
-    )
-    assert payload["model"] == "qwen-voice-design"
-    assert payload["input"]["action"] == "create"
-    assert payload["input"]["preferred_name"] == "custom"
-    assert "prefix" not in payload["input"]
 
 
 # ---------------------------------------------------------------- WAV 选择与拼接
@@ -121,19 +118,21 @@ def test_data_uri_for_wav(tmp_path) -> None:
     assert uri.startswith("data:audio/wav;base64,")
 
 
+def test_data_uri_rejects_unknown_audio_extension(tmp_path) -> None:
+    src = tmp_path / "x.ogg"
+    src.write_bytes(b"audio")
+    with pytest.raises(VoiceCustomizationError, match="格式不支持"):
+        cli.data_uri_for(src)
+
+
 def test_extract_voice_id_from_voice_enrollment() -> None:
     result = {"output": {"voice_id": "qwen-audio-3.0-tts-flash-phainon-abc"}}
-    assert cli.extract_voice_id(result, "voice-enrollment") == "qwen-audio-3.0-tts-flash-phainon-abc"
-
-
-def test_extract_voice_id_from_qwen_voice_design() -> None:
-    result = {"output": {"voice": "qwen3-tts-vd-custom-xyz"}}
-    assert cli.extract_voice_id(result, "qwen-voice-design") == "qwen3-tts-vd-custom-xyz"
+    assert extract_voice_id(result) == "qwen-audio-3.0-tts-flash-phainon-abc"
 
 
 def test_extract_voice_id_missing_raises() -> None:
-    with pytest.raises(cli.VoiceCliError, match="voice_id"):
-        cli.extract_voice_id({"output": {}}, "voice-enrollment")
+    with pytest.raises(VoiceCustomizationError, match="voice_id"):
+        extract_voice_id({"output": {}})
 
 
 def test_save_preview_audio_writes_file(tmp_path) -> None:

@@ -72,15 +72,22 @@ async def test_stream_order_delegation_then_tools_then_summary_then_reply() -> N
     assert first_character < first_tool_started
     # 工具生命周期顺序
     assert stream.index("event:tool.started") < stream.index("event:tool.finished")
-    # 助手总结（自然语言消息）在 assistant.final 之后
-    assistant_msg = stream.index(f"message:{enum_value(MessageKind.ASSISTANT_NATURAL_LANGUAGE)}")
-    assert stream.index("event:assistant.final") < assistant_msg
+    # V0.3.2 M1：助手输出按工具边界拆段——工具前的说明段在 tool.started
+    # 之前定稿；工具后的最终正文段在 assistant.final 之后定稿
+    assistant_msgs = [
+        i
+        for i, item in enumerate(stream)
+        if item == f"message:{enum_value(MessageKind.ASSISTANT_NATURAL_LANGUAGE)}"
+    ]
+    assert len(assistant_msgs) == 2
+    assert assistant_msgs[0] < stream.index("event:tool.started")
+    assert stream.index("event:assistant.final") < assistant_msgs[1]
     # 角色结果回应是最后一条消息，位于助手总结之后
     character_msgs = [
         i for i, item in enumerate(stream) if item == f"message:{enum_value(MessageKind.CHARACTER_SPEECH)}"
     ]
     assert len(character_msgs) == 2
-    assert character_msgs[1] > assistant_msg
+    assert character_msgs[1] > assistant_msgs[1]
     assert character_msgs[1] == len(stream) - 1
 
 
@@ -90,7 +97,9 @@ async def test_stream_order_tool_started_before_approval_events() -> None:
     engine = ScriptedCodingEngine(tool_payload={"tool_kind": "shell", "command": "ls"})
     orchestrator = _make_orchestrator(engine, mode=ApprovalMode.REQUEST_APPROVAL)
 
-    async def allow(op, approval_id: str, reason: str) -> ApprovalDecision:
+    async def allow(
+        op, approval_id: str, reason: str, conversation_id: str = "", task_id: str = ""
+    ) -> ApprovalDecision:
         return ApprovalDecision.ALLOW
 
     orchestrator.approval_callback = allow

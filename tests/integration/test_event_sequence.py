@@ -72,7 +72,7 @@ async def test_native_approval_flow_sequence_contiguous(tmp_path) -> None:
         CharacterTurn(speech="完成了。"),
     )
 
-    async def allow(op, approval_id: str, reason: str) -> ApprovalDecision:
+    async def allow(op, approval_id: str, reason: str, conversation_id: str = "", task_id: str = "") -> ApprovalDecision:
         return ApprovalDecision.ALLOW
 
     orchestrator = make_orchestrator(
@@ -198,7 +198,7 @@ async def test_gate_path_user_deny_sequence_contiguous(tmp_path) -> None:
         CharacterTurn(speech="被否决了。"),
     )
 
-    async def deny(op, approval_id: str, reason: str) -> ApprovalDecision:
+    async def deny(op, approval_id: str, reason: str, conversation_id: str = "", task_id: str = "") -> ApprovalDecision:
         return ApprovalDecision.DENY
 
     orchestrator = make_orchestrator(

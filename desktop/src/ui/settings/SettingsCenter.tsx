@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
-import sponsorQr from "../../assets/sponsor/qrcode.png";
-import { CloseIcon, HeartIcon } from "../../assets/icons/icons";
+import { CloseIcon } from "../../assets/icons/icons";
 import type {
   AccountPageView,
   CharacterModelPageView,
   CodingAssistantPageView,
   TestResult,
+  VoiceProvisionResult,
   VoicePageView,
+  VoiceSpeakerStatus,
 } from "./types";
 
 export type SettingsPage = "account" | "coding" | "model" | "voice";
@@ -30,13 +31,21 @@ interface SettingsCenterProps {
   onCodexApiLogin: (apiKey: string) => void;
   onSaveModel: (config: CharacterModelPageView & { apiKey?: string }) => void | Promise<void>;
   onTestModel: () => void;
-  /** 语音页开关改动即保存，无独立保存按钮。 */
+  /** 保存当前本地账号的语音配置与开关偏好。 */
   onSaveVoice: (config: {
     enabled: boolean;
     assistantVoiceEnabled: boolean;
     vadEnabled: boolean;
-  }) => void;
+    baseUrl?: string;
+    /** 只接受当前输入框的新 Key；已保存 Key 不会从 view 回传。 */
+    apiKey?: string;
+  }) => void | Promise<void>;
   onPreviewVoice: (voiceId: string, voiceName: string) => void;
+  /** 当前窗口的 voice.provision 调用；未接入时保留真实错误，不伪造成功。 */
+  onProvisionVoices?: (
+    speakerIds: string[],
+    replaceExisting?: boolean,
+  ) => void | Promise<VoiceProvisionResult>;
 }
 
 const NAV: Array<{ id: SettingsPage; label: string }> = [
@@ -64,46 +73,53 @@ function TestResultNote({ result, okClass, testingLabel }: TestResultNoteProps) 
   );
 }
 
-interface VoicePreviewFieldProps {
-  label: string;
-  voiceId: string;
-  voiceName: string;
-  fallbackName: string;
-  onPreview: () => void;
+const FIXED_ASR_MODEL = "qwen-audio-3.0-asr-flash-streaming";
+const FIXED_TTS_MODEL = "qwen-audio-3.0-tts-flash";
+
+const VOICE_SPEAKER_DEFINITIONS: Array<
+  Pick<VoiceSpeakerStatus, "speakerId" | "name" | "method">
+> = [
+  { speakerId: "phainon", name: "白厄", method: "clone" },
+  { speakerId: "firefly", name: "流萤", method: "clone" },
+  { speakerId: "sam", name: "萨姆", method: "clone" },
+  { speakerId: "march7", name: "三月七", method: "clone" },
+  { speakerId: "fourth_mirror", name: "第四面镜", method: "clone" },
+  { speakerId: "ancient_machine", name: "神秘的古代机械", method: "design" },
+];
+
+function normalizeSpeakerState(
+  state: string | undefined,
+): VoiceSpeakerStatus["state"] {
+  if (state === "creating" || state === "completed" || state === "failed") return state;
+  return "not_generated";
 }
 
-function VoicePreviewField({
-  label,
-  voiceId,
-  voiceName,
-  fallbackName,
-  onPreview,
-}: VoicePreviewFieldProps) {
-  const isPlaceholder = !voiceId || voiceId.startsWith("demo-");
-  return (
-    <div className="field">
-      <span className="field-label">{label}</span>
-      <span className="settings-voice-info">
-        <span>
-          <span className="settings-voice-info-name">{voiceName || fallbackName}</span>
-          {isPlaceholder ? (
-            <div className="settings-voice-info-id settings-voice-unconfigured">音色未配置</div>
-          ) : voiceId ? (
-            <div className="settings-voice-info-id">{voiceId}</div>
-          ) : null}
-        </span>
-        <button
-          type="button"
-          className="btn btn-outline"
-          onClick={onPreview}
-          disabled={isPlaceholder}
-          title={isPlaceholder ? "音色未配置" : "试听音色"}
-        >
-          试听
-        </button>
-      </span>
-    </div>
-  );
+function speakerStateLabel(state: VoiceSpeakerStatus["state"]): string {
+  if (state === "creating") return "生成中";
+  if (state === "completed") return "已生成";
+  if (state === "failed") return "失败";
+  return "未生成";
+}
+
+function speakerMethodLabel(method: VoiceSpeakerStatus["method"]): string {
+  return method === "design" ? "声音设计" : "声音复刻";
+}
+
+function endpointsForBaseUrl(baseUrl: string): {
+  customization: string;
+  ws: string;
+} {
+  try {
+    const parsed = new URL(baseUrl.trim());
+    const base = `${parsed.protocol}//${parsed.host}`;
+    const wsProtocol = parsed.protocol === "http:" ? "ws:" : "wss:";
+    return {
+      customization: `${base}/api/v1/services/audio/tts/customization`,
+      ws: `${wsProtocol}//${parsed.host}/api-ws/v1/inference`,
+    };
+  } catch {
+    return { customization: "", ws: "" };
+  }
 }
 
 function vadStatusLabel(status: VoicePageView["vadStatus"]): string {
@@ -428,130 +444,358 @@ function CharacterModelPage(props: SettingsCenterProps) {
 
 function VoicePage(props: SettingsCenterProps) {
   const { voice } = props;
+
+  const [baseUrl, setBaseUrl] = useState(voice.baseUrl ?? "");
+  const [apiKey, setApiKey] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
+  const [provisionError, setProvisionError] = useState<string | null>(null);
+  const [provisioningIds, setProvisioningIds] = useState<string[]>([]);
+  const [localSpeakers, setLocalSpeakers] = useState<
+    Record<string, Partial<VoiceSpeakerStatus>>
+  >({});
+
+  useEffect(() => {
+    setBaseUrl(voice.baseUrl ?? "");
+    setApiKey("");
+    setSaveError(null);
+    setSaveNotice(null);
+  }, [voice.baseUrl, voice.apiKeyMasked]);
+
+  const draftEndpoints = endpointsForBaseUrl(baseUrl);
+  const customizationEndpoint = draftEndpoints.customization || voice.customizationEndpoint || "";
+  const wsUrl = draftEndpoints.ws || voice.wsUrl || "";
+  const hasSavedKey = Boolean(voice.apiKeyMasked);
+  const hasConfig = Boolean(baseUrl.trim()) && Boolean(apiKey.trim() || hasSavedKey);
+  const asrAvailable = voice.asrAvailable ?? hasConfig;
+
+  const serverSpeakers = new Map(
+    (voice.speakers ?? []).map((speaker) => [speaker.speakerId, speaker]),
+  );
+  const speakers = VOICE_SPEAKER_DEFINITIONS.map((definition) => {
+    const serverSpeaker = serverSpeakers.get(definition.speakerId);
+    const localSpeaker = localSpeakers[definition.speakerId];
+    return {
+      ...definition,
+      ...localSpeaker,
+      ...serverSpeaker,
+      voiceId: serverSpeaker?.voiceId ?? localSpeaker?.voiceId,
+      error: serverSpeaker?.error ?? localSpeaker?.error ?? null,
+      state: normalizeSpeakerState(serverSpeaker?.state ?? localSpeaker?.state),
+    };
+  });
+
+  const failedSpeakerIds = speakers
+    .filter((speaker) => speaker.state === "failed")
+    .map((speaker) => speaker.speakerId);
+  const provisionTargetIds = (
+    failedSpeakerIds.length > 0
+      ? failedSpeakerIds
+      : speakers
+          .filter((speaker) => speaker.state === "not_generated")
+          .map((speaker) => speaker.speakerId)
+  ).filter((speakerId) => !provisioningIds.includes(speakerId));
+  const completedCount = speakers.filter((speaker) => speaker.state === "completed").length;
+  const provisioning = provisioningIds.length > 0;
+
+  const savePreferences = async (config: {
+    enabled?: boolean;
+    assistantVoiceEnabled?: boolean;
+    vadEnabled?: boolean;
+  }) => {
+    setSaveError(null);
+    try {
+      await props.onSaveVoice({
+        enabled: config.enabled ?? voice.enabled,
+        assistantVoiceEnabled: config.assistantVoiceEnabled ?? voice.assistantVoiceEnabled,
+        vadEnabled: config.vadEnabled ?? voice.vadEnabled,
+        baseUrl: baseUrl.trim() || undefined,
+      });
+    } catch (error: unknown) {
+      setSaveError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const saveVoiceAccount = async () => {
+    const nextBaseUrl = baseUrl.trim();
+    const nextApiKey = apiKey.trim();
+    if (!nextBaseUrl || (!nextApiKey && !hasSavedKey)) {
+      setSaveError("请填写 DashScope API Key 和服务地址后再保存。");
+      return;
+    }
+    setSaving(true);
+    setSaveError(null);
+    setSaveNotice(null);
+    try {
+      await props.onSaveVoice({
+        enabled: voice.enabled,
+        assistantVoiceEnabled: voice.assistantVoiceEnabled,
+        vadEnabled: voice.vadEnabled,
+        baseUrl: nextBaseUrl,
+        ...(nextApiKey ? { apiKey: nextApiKey } : {}),
+      });
+      setApiKey("");
+      setSaveNotice("语音配置已提交保存；Key 仅保存在当前本地账号。");
+    } catch (error: unknown) {
+      setSaveError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const provisionVoices = async (speakerIds: string[], replaceExisting = false) => {
+    setProvisionError(null);
+    if (!props.onProvisionVoices) {
+      setProvisionError("当前窗口尚未接入 voice.provision 调用，未伪造生成结果。");
+      return;
+    }
+    setProvisioningIds((current) => [...new Set([...current, ...speakerIds])]);
+    setLocalSpeakers((current) => {
+      const next = { ...current };
+      speakerIds.forEach((speakerId) => {
+        next[speakerId] = { ...next[speakerId], state: "creating", error: null };
+      });
+      return next;
+    });
+    try {
+      const result = await props.onProvisionVoices(speakerIds, replaceExisting);
+      if (result?.results) {
+        setLocalSpeakers((current) => {
+          const next = { ...current };
+          result.results?.forEach((item) => {
+            const previous = next[item.speaker_id] ?? {};
+            next[item.speaker_id] = {
+              ...previous,
+              state: normalizeSpeakerState(item.state),
+              ...(item.voice_id ? { voiceId: item.voice_id } : {}),
+              error: item.error ?? null,
+            };
+          });
+          return next;
+        });
+      }
+    } catch (error: unknown) {
+      setProvisionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setProvisioningIds((current) => current.filter((id) => !speakerIds.includes(id)));
+    }
+  };
+
   return (
     <section className="settings-page">
-      {/* 语音总开关：与赞助无关，跳过赞助可直接开启；关闭后输入区语音按钮整体隐藏 */}
+      <p className="settings-hint">
+        语音直接使用你自己的 DashScope 账号。Key 只写入当前本地账号的密钥引用，不会显示明文；保存配置不会自动创建音色。
+      </p>
+
+      <h3 className="settings-subhead">DashScope 账号配置</h3>
+      <label className="field">
+        <span className="field-label">
+          API Key
+          <span className="field-note">
+            {voice.credentialSource === "account" && voice.apiKeyMasked
+              ? `当前账号已保存 ${voice.apiKeyMasked}`
+              : voice.credentialSource === "development_env"
+                ? "开发环境 .env Key 可用，尚未保存到当前账号"
+                : "当前账号尚未保存"}
+          </span>
+        </span>
+        <input
+          type="password"
+          value={apiKey}
+          autoComplete="new-password"
+          placeholder={voice.apiKeyMasked ? `留空保留当前 ${voice.apiKeyMasked}` : "填写自己的 DashScope API Key"}
+          onChange={(event) => setApiKey(event.target.value)}
+        />
+      </label>
+      <label className="field">
+        <span className="field-label">
+          服务地址
+          <span className="field-note">北京 Key 配北京地址，新加坡 Key 配新加坡地址</span>
+        </span>
+        <input
+          value={baseUrl}
+          placeholder="https://dashscope.aliyuncs.com/api/v1"
+          onChange={(event) => setBaseUrl(event.target.value)}
+        />
+      </label>
+
+      <div className="settings-endpoint-card">
+        <div>
+          <span className="field-label">音色创建接口</span>
+          <code>{customizationEndpoint || "填写有效服务地址后显示"}</code>
+        </div>
+        <div>
+          <span className="field-label">ASR WebSocket 接口</span>
+          <code>{wsUrl || "填写有效服务地址后显示"}</code>
+        </div>
+      </div>
+
+      <div className="settings-fixed-models" aria-label="固定语音模型">
+        <div>
+          <span className="field-label">ASR 模型</span>
+          <code>{FIXED_ASR_MODEL}</code>
+        </div>
+        <div>
+          <span className="field-label">TTS 模型</span>
+          <code>{FIXED_TTS_MODEL}</code>
+        </div>
+      </div>
+
+      {saveError ? <p className="field-error" role="alert">{saveError}</p> : null}
+      {saveNotice ? <p className="field-ok" role="status">{saveNotice}</p> : null}
+      <div className="settings-row">
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={saving || !baseUrl.trim() || (!apiKey.trim() && !hasSavedKey)}
+          onClick={() => void saveVoiceAccount()}
+        >
+          {saving ? "正在保存…" : "保存语音配置"}
+        </button>
+      </div>
+
+      <h3 className="settings-subhead">专属音色</h3>
+      <p className="settings-hint">
+        当前账号将依次提交 5 次声音复刻和 1 次声音设计。生成请求使用当前百炼账号的额度；是否计费以该账号页面和真实响应为准。
+      </p>
+      <div className="settings-voice-progress" role="status" aria-live="polite">
+        <span>进度：{completedCount}/6 项已生成</span>
+        <span>{voice.voicesSource === "env_author" ? "开发机兼容音色" : "当前账号音色"}</span>
+      </div>
+      <div className="settings-row">
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={provisioning || provisionTargetIds.length === 0}
+          onClick={() => void provisionVoices(provisionTargetIds)}
+        >
+          {provisioning
+            ? "正在生成…"
+            : failedSpeakerIds.length > 0
+              ? "重试失败项"
+              : completedCount > 0
+                ? "继续生成剩余音色"
+                : "生成 6 个专属音色"}
+        </button>
+      </div>
+      {provisionError ? <p className="field-error" role="alert">{provisionError}</p> : null}
+
+      <div className="settings-voice-speakers">
+        {speakers.map((speaker) => {
+          const isBusy = provisioningIds.includes(speaker.speakerId);
+          const canPreview = Boolean(speaker.voiceId);
+          return (
+            <article
+              key={speaker.speakerId}
+              className={`settings-voice-speaker settings-voice-state-${speaker.state}`}
+            >
+              <div className="settings-voice-speaker-head">
+                <div>
+                  <strong>{speaker.name}</strong>
+                  <span className="settings-voice-method">{speakerMethodLabel(speaker.method)}</span>
+                </div>
+                <span className="settings-voice-state-label">
+                  {isBusy ? "生成中" : speakerStateLabel(speaker.state)}
+                </span>
+              </div>
+              {speaker.voiceId ? (
+                <code className="settings-voice-id">{speaker.voiceId}</code>
+              ) : (
+                <span className="settings-voice-id settings-voice-unconfigured">
+                  尚未生成音色 ID
+                </span>
+              )}
+              {speaker.error ? <p className="field-error">{speaker.error}</p> : null}
+              <div className="settings-voice-actions">
+                {canPreview ? (
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    onClick={() => props.onPreviewVoice(speaker.voiceId ?? "", speaker.name)}
+                  >
+                    试听
+                  </button>
+                ) : null}
+                {speaker.state === "completed" ? (
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    disabled={isBusy}
+                    onClick={() => void provisionVoices([speaker.speakerId], true)}
+                  >
+                    重新生成
+                  </button>
+                ) : speaker.state === "failed" ? (
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    disabled={isBusy}
+                    onClick={() => void provisionVoices([speaker.speakerId])}
+                  >
+                    重试
+                  </button>
+                ) : null}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+
       <label className="settings-switch">
         <input
           type="checkbox"
           checked={voice.enabled}
-          onChange={(event) =>
-            props.onSaveVoice({
-              enabled: event.target.checked,
-              assistantVoiceEnabled: voice.assistantVoiceEnabled,
-              vadEnabled: voice.vadEnabled,
-            })
-          }
+          disabled={!voice.enabled && !hasConfig}
+          onChange={(event) => void savePreferences({ enabled: event.target.checked })}
         />
         语音功能
-        <span className="field-note">关闭后输入区的语音按钮整体隐藏</span>
+        <span className="field-note">
+          {voice.credentialSource === "account"
+            ? "当前账号 BYOK 已配置"
+            : voice.credentialSource === "development_env"
+              ? "开发环境 .env 凭据可用（未保存到账号）"
+              : asrAvailable
+                ? "ASR 已具备配置条件"
+                : "保存 Key 和服务地址后可开启"}
+        </span>
       </label>
 
       <label className="settings-switch">
         <input
           type="checkbox"
           checked={voice.assistantVoiceEnabled}
+          disabled={!voice.enabled || !voice.assistantVoiceId}
           onChange={(event) =>
-            props.onSaveVoice({
-              enabled: voice.enabled,
-              assistantVoiceEnabled: event.target.checked,
-              vadEnabled: voice.vadEnabled,
-            })
+            void savePreferences({ assistantVoiceEnabled: event.target.checked })
           }
         />
         {voice.assistantVoiceName ? `${voice.assistantVoiceName}（助手）语音` : "助手语音"}
         <span className="field-note">
-          默认关闭；开启后自动朗读{voice.assistantVoiceName || "助手"}的回复
+          {voice.assistantVoiceId
+            ? "开启后自动朗读助手的自然语言回复"
+            : "当前搭档音色未生成，试听和自动朗读不可用"}
         </span>
       </label>
 
-      {/* 自愿赞助卡：语音服务由作者自费提供，二维码为微信收款码 */}
-      <div className="settings-sponsor">
-        <span className="settings-sponsor-head" aria-hidden="true">
-          <HeartIcon />
+      <label className="settings-switch">
+        <input
+          type="checkbox"
+          checked={voice.vadEnabled}
+          disabled={!voice.enabled || !hasConfig}
+          onChange={(event) => void savePreferences({ vadEnabled: event.target.checked })}
+        />
+        语音自动聆听（VAD）
+        <span className={`voice-vad-pill voice-vad-${voice.vadStatus}`}>
+          {vadStatusLabel(voice.vadStatus)}
         </span>
-        <p className="settings-sponsor-title">喜欢这个语音功能的话，请给作者一点支持</p>
-        <p className="settings-sponsor-copy">
-          语音服务由作者自费提供，服务器与模型费用需要持续投入。一杯咖啡的赞助能让它继续运转。
-        </p>
-        <div className="settings-sponsor-qr">
-          <img src={sponsorQr} alt="微信收款二维码" width={148} />
-        </div>
-        <span className="settings-sponsor-meta">微信支付 · 扫码打赏</span>
-        <span className="settings-sponsor-payee">请认准收款人：天小可</span>
-        <span className="settings-sponsor-amount">
-          <strong>10元</strong>建议赞助金额
-        </span>
-        <div className="settings-sponsor-actions">
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={voice.enabled}
-            onClick={() =>
-              props.onSaveVoice({
-                enabled: true,
-                assistantVoiceEnabled: voice.assistantVoiceEnabled,
-                vadEnabled: voice.vadEnabled,
-              })
-            }
-          >
-            我已打赏，开启语音
-          </button>
-          <p className="settings-sponsor-note">
-            无论是否打赏，都可以直接开启语音。打赏完全自愿，感谢每一份心意。
-          </p>
-        </div>
-      </div>
+      </label>
 
-      {voice.enabled ? (
-        <>
-          {/* 内置音色只读展示：音色由作者预先复刻/设计，随应用分发 */}
-          <div className="settings-grid">
-            <VoicePreviewField
-              label="角色音色"
-              voiceId={voice.characterVoiceId}
-              voiceName={voice.characterVoiceName}
-              fallbackName="角色"
-              onPreview={() =>
-                props.onPreviewVoice(voice.characterVoiceId, voice.characterVoiceName)
-              }
-            />
-            <VoicePreviewField
-              label="助手音色"
-              voiceId={voice.assistantVoiceId}
-              voiceName={voice.assistantVoiceName}
-              fallbackName="助手"
-              onPreview={() =>
-                props.onPreviewVoice(voice.assistantVoiceId, voice.assistantVoiceName)
-              }
-            />
-          </div>
-
-          <TestResultNote
-            result={props.voicePreview}
-            okClass="settings-hint"
-            testingLabel="正在合成试听…"
-          />
-
-          <label className="settings-switch">
-            <input
-              type="checkbox"
-              checked={voice.vadEnabled}
-              onChange={(event) =>
-                props.onSaveVoice({
-                  enabled: voice.enabled,
-                  assistantVoiceEnabled: voice.assistantVoiceEnabled,
-                  vadEnabled: event.target.checked,
-                })
-              }
-            />
-            语音自动聆听（VAD）
-            <span className={`voice-vad-pill voice-vad-${voice.vadStatus}`}>
-              {vadStatusLabel(voice.vadStatus)}
-            </span>
-          </label>
-        </>
-      ) : null}
+      <TestResultNote
+        result={props.voicePreview}
+        okClass="settings-hint"
+        testingLabel="正在合成试听…"
+      />
     </section>
   );
 }

@@ -810,6 +810,9 @@ def test_replay_message_ignores_tts_eligibility() -> None:
         user.model_copy(update={"conversation_id": "conv-other"})
     )
     assert ctx.queue.pop_next() is None
+    # 同一聊天 ID 下也不能拿其他搭档的音色朗读错配消息。
+    runtime.replay_message(user.model_copy(update={"pair_id": "firefly_sam"}))
+    assert ctx.queue.pop_next() is None
 
 
 def test_assistant_progress_is_spoken_once_when_final_message_arrives() -> None:
@@ -830,6 +833,15 @@ def test_assistant_progress_is_spoken_once_when_final_message_arrives() -> None:
             text="我来读取项目目录。",
             message_id="assistant:conv-1:task-1",
         )
+    )
+    assert ctx.queue.pop_next() is None
+
+
+def test_assistant_progress_from_background_conversation_stays_silent() -> None:
+    runtime, ctx = make_runtime(vad=None)
+    runtime.set_assistant_voice_enabled(True)
+    runtime.enqueue_assistant_progress(
+        "另一个聊天的进度。", conversation_id="conv-other"
     )
     assert ctx.queue.pop_next() is None
 

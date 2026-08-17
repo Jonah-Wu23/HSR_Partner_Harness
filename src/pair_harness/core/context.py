@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
+from typing import Literal
 
-from .contracts import Message, MessageOrigin, MessageSource
+from .contracts import ApprovalMode, Message, MessageOrigin, MessageSource, ProjectRef
 
 
 def recent_roleplay_context(messages: Iterable[Message], limit: int = 12) -> tuple[Message, ...]:
@@ -19,3 +21,22 @@ def recent_roleplay_context(messages: Iterable[Message], limit: int = 12) -> tup
     ]
     return tuple(eligible[-limit:])
 
+
+@dataclass(frozen=True)
+class ExecutionContext:
+    """V0.3.2 M4：不可变执行上下文。
+
+    提交被接受时从 SQLite 与搭档目录一次性解析，随该 Turn 传递到角色
+    回合、直发助手与任务执行；切换界面当前聊天只更新视图状态，不影响
+    已经运行的 Turn。项目根、pair 提示词、审批模式与推理档位都来自本
+    上下文，执行路径不再读取可变全局 ``self.project``。
+    """
+
+    account_id: str
+    project: ProjectRef
+    conversation_id: str
+    pair_id: str
+    conversation_mode: Literal["chat", "collaboration"] = "collaboration"
+    approval_mode: ApprovalMode = ApprovalMode.REQUEST_APPROVAL
+    reasoning_effort: str = "low"
+    assistant_instructions: str = ""

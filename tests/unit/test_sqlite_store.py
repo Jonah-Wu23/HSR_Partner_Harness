@@ -355,6 +355,12 @@ def test_old_database_is_migrated_on_open(tmp_path: Path) -> None:
 
     with SQLiteStore(database) as store:
         assert store.connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert "account_id" in _table_columns(store.connection, "conversations")
+        row = store.connection.execute(
+            "SELECT account_id FROM conversations WHERE conversation_id = ?", ("c",)
+        ).fetchone()
+        # 项目经迁移 5 归入 default-local；聊天经迁移 7 跟随项目归属
+        assert row is not None and row[0] == "default-local"
         # 迁移 1：projects 补 approval_mode（默认 request_approval）
         assert store.get_project("p").approval_mode == "request_approval"
         assert store.get_project("p").reasoning_effort == "low"
@@ -520,9 +526,29 @@ def test_migration_v7_backfills_conversation_account_from_project(tmp_path: Path
 
     with SQLiteStore(database) as store:
         assert store.connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert "account_id" in _table_columns(store.connection, "conversations")
-        row = store.connection.execute(
-            "SELECT account_id FROM conversations WHERE conversation_id = ?", ("c",)
-        ).fetchone()
-        # 项目经迁移 5 归入 default-local；聊天经迁移 7 跟随项目归属
-        assert row is not None and row[0] == "default-local"
+
+
+def test_migration_v8_repairs_message_pair_id_from_conversation(tmp_path: Path) -> None:
+    database = tmp_path / "pair-mismatch.db"
+    with SQLiteStore(database) as store:
+        project = store.create_project(name="P", root_path=str(tmp_path))
+        conversation = store.create_conversation(
+            project_id=project.project_id,
+            pair_id="march7_fourth_mirror",
+            title="C",
+        )
+        message = Message(
+            conversation_id=conversation.conversation_id,
+            pair_id="firefly_sam",
+            source="user",
+            kind="user.text",
+            text="你好",
+        )
+        store.save_message(message)
+        store.connection.execute("PRAGMA user_version = 7")
+        store.connection.commit()
+
+    with SQLiteStore(database) as migrated:
+        messages = migrated.load_conversation(conversation.conversation_id)["messages"]
+        assert messages[0].pair_id == "march7_fourth_mirror"
+        assert migrated.connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION

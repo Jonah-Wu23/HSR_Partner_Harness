@@ -99,7 +99,7 @@ class CodexAppServerEngine(CodingEngine):
         if not self._initialized or not was_running:
             await self.transport.request(
                 "initialize",
-                {"clientInfo": {"name": "pair-harness", "version": "0.3.0"}},
+                {"clientInfo": {"name": "pair-harness", "version": "0.3.2"}},
             )
             self._initialized = True
         if stored_ref is not None:

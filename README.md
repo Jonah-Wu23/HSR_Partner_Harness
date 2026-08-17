@@ -7,7 +7,7 @@
 <p align="center">一条会话，两条工作轨。</p>
 
 <p align="center">
-  <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases"><img src="https://img.shields.io/badge/version-v0.3.1-E8B25C" alt="Version 0.3.1" /></a>
+  <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases"><img src="https://img.shields.io/badge/version-v0.3.2-E8B25C" alt="Version 0.3.2" /></a>
   <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/actions/workflows/ci.yml"><img src="https://github.com/Jonah-Wu23/HSR_Partner_Harness/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" /></a>
   <img src="https://img.shields.io/badge/platform-Windows%20x64-2F5D50" alt="Windows x64" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-5B6C8F" alt="Apache License 2.0" /></a>
@@ -80,9 +80,7 @@ HSR Partner Harness 将角色扮演对话与本地 AI 编程整合至同一个 W
 
 ### 设置语音
 
-语音设置页用于启用 DashScope 语音服务，也可设置自动朗读与 VAD。音色跟随当前会话的搭档切换，自然语言回复接入自动朗读通道。
-
-![语音设置与打赏二维码](output/real/readme-06-voice-settings.png)
+语音设置页使用你自己的 DashScope 账号，可保存服务地址和 API Key，并生成当前账号专属的五个复刻音色与一个声音设计音色。ASR/TTS 模型固定显示，音色生成失败时可以只重试失败项。自然语言回复接入自动朗读通道。
 
 开启按键说话后，输入区下方显示聆听状态；开启 VAD 后无需按键即可直接说话。
 
@@ -134,7 +132,7 @@ Windows x64 安装包发布于 [GitHub Releases](https://github.com/Jonah-Wu23/H
 | `DASHSCOPE_API_KEY` | DashScope 语音密钥。 |
 | `PAIR_HARNESS_DASHSCOPE_HOST` | DashScope 工作空间域名。 |
 
-搭档资料与音色 ID 位于 `config/pairs/*.yaml`。自定义 DashScope 账号需要填入当前账号支持的音色 ID。
+参考音频和声音设计提示词随项目资源分发，音色生成结果按本地账号保存。用户只需在语音设置页填写自己的 DashScope API Key 与服务地址；API Key 只显示掩码，不写入 README 或事件日志。
 
 通过环境变量 `PAIR_HARNESS_REAL=1` 启用真实模式，`PAIR_HARNESS_DEMO=1` 启用预览模式。
 
@@ -163,9 +161,9 @@ npm run tauri:build
 
 NSIS 安装包生成于 `desktop/src-tauri/target/release/bundle/nsis/`。编译后的可执行程序位于 `desktop/src-tauri/target/release/hsr-partner-harness.exe`。
 
-## 验证结果
+## 验证记录
 
-v0.3.1 当前源码已完成以下验证：
+以下是 v0.3.1 基线记录；V0.3.2 的前端、语音和真实提供商联调由当前使用者在本地完成，未把尚未运行的结果写成通过：
 
 | 检查项 | 结果 |
 | --- | --- |
@@ -207,13 +205,9 @@ cargo test
 
 Python Sidecar 管理业务状态，桌面端通过 JSONL 协议与其通信。本地持久化数据存储于 SQLite。
 
-## 项目支持
+## 语音费用与账号
 
-语音服务由项目作者持续提供。自愿支持项目可使用下方二维码。
-
-<p align="center">
-  <img src="desktop/src/assets/sponsor/qrcode.png" alt="项目打赏二维码" width="220" />
-</p>
+语音请求直接使用用户自己配置的 DashScope 账号、服务地址和额度。本项目不代存作者 Key，也不提供作者承担费用的语音服务器。
 
 ## 参与项目
 

@@ -1522,3 +1522,106 @@
   color: var(--text-muted);
   font-size: 13px;
 }
+
+/* ========== V0.3.2 M5：聊天标签栏 ========== */
+
+.chat-tabs-wrap {
+  flex: none;
+  display: flex;
+  min-width: 0;
+}
+
+.chat-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-1);
+  min-height: 34px;
+  padding: var(--space-1) var(--space-2) 0;
+  border-bottom: 1px solid var(--separator);
+  overflow-x: auto;
+  flex: none;
+}
+
+.chat-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 200px;
+  padding: 0 var(--space-1) 0 var(--space-2);
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: transparent;
+}
+
+.chat-tab:hover { background: var(--fill-hover); }
+
+.chat-tab.is-active {
+  background: var(--bg-panel);
+  border-color: var(--separator);
+}
+
+.chat-tab-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 0;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: var(--text-b2-size);
+  cursor: pointer;
+}
+
+.chat-tab.is-active .chat-tab-main {
+  font-weight: 600;
+}
+
+.chat-tab-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-tab-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.chat-tab-dot.is-running {
+  background: var(--running);
+  animation: ph-pulse 1.6s ease-in-out infinite;
+}
+
+.chat-tab-dot.is-approval { background: var(--warning); }
+.chat-tab-dot.is-queued { background: var(--text-muted); }
+
+.chat-tab-close {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xxs);
+  color: var(--text-muted);
+}
+
+.chat-tab-close:hover { background: var(--fill-active); color: var(--text-primary); }
+.chat-tab-close svg { width: 12px; height: 12px; }
+
+.chat-tab-window {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.chat-tab-window:hover { background: var(--fill-active); color: var(--text-primary); }

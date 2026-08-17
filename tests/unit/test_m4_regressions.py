@@ -58,7 +58,7 @@ async def test_m41_denied_tool_run_is_persisted(tmp_path: Path) -> None:
             conversation_id="c",
         )
 
-        async def deny_callback(_op, _approval_id, _reason):
+        async def deny_callback(_op, _approval_id, _reason, _conversation_id="", _task_id=""):
             return ApprovalDecision.DENY
 
         orchestrator = _make_orchestrator(
@@ -163,7 +163,7 @@ async def test_m44_chat_mode_rejects_assistant_target(tmp_path: Path) -> None:
                 )
             )
         assert exc_info.value.code == "assistant_not_allowed_in_chat_mode"
-        assert service.orchestrator.state.active is None
+        assert service.orchestrator.state.active_tasks() == []
         assert service.store.load_conversation(conversation_id)["messages"] == ()
     finally:
         await service.shutdown()

@@ -106,7 +106,7 @@ async def test_request_approval_forwards_decision_via_resolve_approval(tmp_path)
     )
     calls = []
 
-    async def allow(op, approval_id: str, reason: str) -> ApprovalDecision:
+    async def allow(op, approval_id: str, reason: str, conversation_id: str = "", task_id: str = "") -> ApprovalDecision:
         calls.append((approval_id, reason))
         return ApprovalDecision.ALLOW
 

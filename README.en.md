@@ -4,7 +4,7 @@
 
 [![Website](https://img.shields.io/badge/website-jonah--wu23.github.io-E8B25C)](https://jonah-wu23.github.io/HSR_Partner_Harness/)
 [![GitHub Pages](https://img.shields.io/github/deployments/Jonah-Wu23/HSR_Partner_Harness/github-pages?label=pages)](https://jonah-wu23.github.io/HSR_Partner_Harness/)
-[![Version](https://img.shields.io/badge/version-v0.3.1-E8B25C)](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases)
+[![Version](https://img.shields.io/badge/version-v0.3.2-E8B25C)](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases)
 [![CI](https://github.com/Jonah-Wu23/HSR_Partner_Harness/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Jonah-Wu23/HSR_Partner_Harness/actions/workflows/ci.yml)
 
 Project website: <https://jonah-wu23.github.io/HSR_Partner_Harness/>
@@ -101,9 +101,7 @@ Collaboration mode shows the assistant workspace next to the character chat. Del
 
 ![Delegation execution result](output/real/readme-07-delegation-result.png)
 
-Voice settings enable DashScope speech, auto-read and VAD. Listening state and VAD prompts appear next to the input area.
-
-![Voice settings and sponsor QR](output/real/readme-06-voice-settings.png)
+Voice settings use your own DashScope account: save the service base URL and API Key, then generate five cloned voices and one sound-design voice for the current account. The ASR/TTS models are shown as fixed values, and failed voice generations can be retried individually. Natural-language replies feed into the auto-read channel. Listening state and VAD prompts appear next to the input area.
 
 ![Listening state prompt](output/real/readme-09-voice-listening.png)
 
@@ -133,7 +131,7 @@ The dialogue model works with DeepSeek and OpenAI-compatible endpoints. The vari
 | `DASHSCOPE_API_KEY` | DashScope API key for voice. |
 | `PAIR_HARNESS_DASHSCOPE_HOST` | DashScope workspace host. |
 
-Voice IDs are set in [phainon_ancient_machine.yaml](config/pairs/phainon_ancient_machine.yaml). If you use your own DashScope account, replace them with voices that account can use.
+Reference audio and sound-design prompts ship with the project resources, and generated voice IDs are saved per local account. Users only fill in their own DashScope API Key and service base URL on the voice settings page; the API Key is masked and never written into the README or event logs.
 
 ## Run from source
 

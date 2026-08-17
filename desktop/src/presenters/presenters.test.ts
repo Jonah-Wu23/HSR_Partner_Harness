@@ -14,6 +14,7 @@ function presentScenario(name: "single-project" | "gate-default" | "onboarding-p
 describe("presenters V0.2 M4 视觉接口映射", () => {
   beforeEach(() => {
     desktopStore.getState().hydrate(createMockScenario("single-project").snapshot);
+    desktopStore.getState().setConfigSnapshot(null);
   });
 
   it("queueItems：未撤回项按 position 排序，摘要单行截断，position 从 1 开始", () => {
@@ -381,9 +382,9 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
     expect(mapped.settings.voice).toMatchObject({
       enabled: true,
       assistantVoiceEnabled: false,
-      characterVoiceId: "demo-phainon",
+      characterVoiceId: "longxiaoyu",
       characterVoiceName: "白厄",
-      assistantVoiceId: "demo-ancient-machine",
+      assistantVoiceId: "longxiaoyu",
       assistantVoiceName: "神秘的古代机械",
       vadEnabled: true,
     });
@@ -432,6 +433,7 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
       ...createMockScenario("multi-pair").snapshot,
       current_conversation_id: "conv-march7",
     });
+    desktopStore.getState().openConversationTab("conv-march7");
     const march7Vm = presentAppShell(desktopStore.getState());
     expect(march7Vm.currentPairId).toBe("march7_fourth_mirror");
     expect(march7Vm.settings.voice.characterVoiceName).toBe("三月七");
@@ -442,9 +444,157 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
       ...createMockScenario("multi-pair").snapshot,
       current_conversation_id: "conv-phainon",
     });
+    desktopStore.getState().openConversationTab("conv-phainon");
     const phainonVm = presentAppShell(desktopStore.getState());
     expect(phainonVm.currentPairId).toBe("phainon_ancient_machine");
     expect(phainonVm.settings.voice.characterVoiceName).toBe("白厄");
     expect(phainonVm.settings.voice.assistantVoiceName).toBe("神秘的古代机械");
+  });
+
+  it("V0.3.2 M1：工作台 items 按 timeline_order 混排 assistant segment 与工具卡", () => {
+    const state = desktopStore.getState();
+    state.hydrate(createMockScenario("single-project").snapshot);
+    state.applyEvents([
+      {
+        kind: "event",
+        event: "message.created",
+        sequence: 1,
+        payload: {
+          message: {
+            message_id: "assistant:conv-1:task-1:0",
+            conversation_id: "conv-1",
+            pair_id: "phainon_ancient_machine",
+            engine_turn_id: "turn-1",
+            source: "assistant",
+            kind: "assistant.natural_language",
+            text: "我先查看 src 目录。",
+            payload: {},
+            tts_eligible: true,
+            created_at: "2026-08-11T00:00:00+00:00",
+            task_id: "task-1",
+            timeline_order: 7,
+          },
+        },
+      },
+      {
+        kind: "event",
+        event: "tool_run.upserted",
+        sequence: 2,
+        payload: {
+          tool_run: {
+            tool_call_id: "tool-a",
+            conversation_id: "conv-1",
+            task_id: "task-1",
+            engine_turn_id: "turn-1",
+            sequence: 3,
+            status: "succeeded",
+            title: "list src",
+            summary: "",
+            details: "",
+            timeline_order: 8,
+          },
+        },
+      },
+      {
+        kind: "event",
+        event: "message.created",
+        sequence: 3,
+        payload: {
+          message: {
+            message_id: "assistant:conv-1:task-1:1",
+            conversation_id: "conv-1",
+            pair_id: "phainon_ancient_machine",
+            engine_turn_id: "turn-1",
+            source: "assistant",
+            kind: "assistant.natural_language",
+            text: "src 分为核心与适配层。",
+            payload: {},
+            tts_eligible: true,
+            created_at: "2026-08-11T00:00:01+00:00",
+            task_id: "task-1",
+            timeline_order: 9,
+          },
+        },
+      },
+      {
+        kind: "event",
+        event: "tool_run.upserted",
+        sequence: 4,
+        payload: {
+          tool_run: {
+            tool_call_id: "tool-b",
+            conversation_id: "conv-1",
+            task_id: "task-1",
+            engine_turn_id: "turn-1",
+            sequence: 5,
+            status: "succeeded",
+            title: "list tests",
+            summary: "",
+            details: "",
+            timeline_order: 10,
+          },
+        },
+      },
+      {
+        kind: "event",
+        event: "message.created",
+        sequence: 5,
+        payload: {
+          message: {
+            message_id: "assistant:conv-1:task-1:2",
+            conversation_id: "conv-1",
+            pair_id: "phainon_ancient_machine",
+            engine_turn_id: "turn-1",
+            source: "assistant",
+            kind: "assistant.natural_language",
+            text: "测试分三层。",
+            payload: {},
+            tts_eligible: true,
+            created_at: "2026-08-11T00:00:02+00:00",
+            task_id: "task-1",
+            timeline_order: 11,
+          },
+        },
+      },
+      {
+        kind: "event",
+        event: "tool_run.upserted",
+        sequence: 6,
+        payload: {
+          tool_run: {
+            tool_call_id: "mock-tool-1",
+            conversation_id: "conv-1",
+            task_id: "legacy-task",
+            engine_turn_id: "legacy-turn",
+            sequence: 9,
+            status: "succeeded",
+            title: "旧版工具记录",
+            summary: "",
+            details: "",
+          },
+        },
+      },
+    ]);
+    const vm = presentAppShell(desktopStore.getState());
+    const items = vm.workspace?.assistant.items ?? [];
+    const orderedKeys = items
+      .filter((item) => item.order !== null)
+      .map((item) =>
+        item.kind === "message" ? item.message.message_id : item.run.tool_call_id,
+      );
+    expect(orderedKeys).toEqual([
+      "assistant:conv-1:task-1:0",
+      "tool-a",
+      "assistant:conv-1:task-1:1",
+      "tool-b",
+      "assistant:conv-1:task-1:2",
+    ]);
+    // legacy 无序号工具卡保持在序号块之前（旧版分组展示语义）
+    const firstOrderedIndex = items.findIndex((item) => item.order !== null);
+    const legacyIndex = items.findIndex(
+      (item) => item.kind === "tool" && item.run.tool_call_id === "mock-tool-1",
+    );
+    expect(legacyIndex).toBeGreaterThanOrEqual(0);
+    expect(legacyIndex).toBeLessThan(firstOrderedIndex);
   });
 });

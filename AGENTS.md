@@ -79,7 +79,7 @@ npm run build:sidecar
 npm run tauri -- build --bundles nsis
 ```
 
-发布节奏：开发迭代只更新 `desktop/src-tauri/target/release/hsr-partner-harness.exe`，不重新生成或上传安装包。当前已经生成的安装包保持现状，下一次安装包更新安排在 v0.3.0。
+发布节奏：开发迭代只更新 `desktop/src-tauri/target/release/hsr-partner-harness.exe`，不重新生成或上传安装包。v0.3.2 已重新生成并上传 NSIS 安装包；下一次安装包更新安排在 v0.4.0。
 
 ## 外部代码
 

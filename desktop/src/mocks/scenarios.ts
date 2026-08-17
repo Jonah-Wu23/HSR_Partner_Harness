@@ -15,6 +15,8 @@ export const MOCK_SCENARIO_NAMES = [
   "invalid-path",
   "chat-streaming",
   "collaboration-running",
+  "dual-chat-running",
+  "tabbed-window",
   "task-succeeded",
   "task-failed",
   "task-cancelled",
@@ -37,6 +39,13 @@ export interface MockScenario {
   label: string;
   snapshot: DesktopSnapshot;
   submitEvents: DesktopEvent[];
+  /** V0.3.2 M5：窗口视图状态示例（tabbed-window 等多标签场景）；
+      测试/演示用它播种 store 的 viewId/openConversationIds/activeConversationId。 */
+  viewState?: {
+    viewId: string;
+    openConversationIds: string[];
+    activeConversationId: string | null;
+  };
 }
 
 export const MOCK_PAIRS: PairRecord[] = [
@@ -184,17 +193,19 @@ export function message(
 function toolRun(
   conversationId: string,
   status: ToolRun["status"] = "running",
+  taskId = "mock-task-1",
 ): ToolRun {
   return {
-    tool_call_id: "mock-tool-1",
+    tool_call_id: `mock-tool-${taskId}`,
     conversation_id: conversationId,
-    task_id: "mock-task-1",
-    engine_turn_id: "mock-turn-1",
+    task_id: taskId,
+    engine_turn_id: `mock-turn-${taskId}`,
     sequence: 2,
     status,
     title: "检查项目文件",
     summary: status === "running" ? "正在读取项目状态" : "项目检查已完成",
     details: "mock backend 记录；不访问真实文件系统。",
+    timeline_order: status === "running" ? 2 : null,
   };
 }
 
@@ -249,6 +260,8 @@ function baseSnapshot(
     turns: [],
     queue_items: [],
     active_task: null,
+    // V0.3.2 M5：新协议快照始终携带 active_tasks 全量集合（与 active_task/busy 一致）
+    active_tasks: [],
     busy: false,
     approvals: [],
     voice: {
@@ -406,6 +419,7 @@ export function createMockScenario(name: MockScenarioName): MockScenario {
       task_id: "mock-task-1",
       engine_turn_id: "mock-turn-1",
     };
+    snapshot.active_tasks = [snapshot.active_task];
   } else if (name === "task-succeeded" || name === "task-failed" || name === "task-cancelled") {
     const status: ToolRun["status"] = name === "task-succeeded" ? "succeeded" : "failed";
     tools = [toolRun(firstConversation.conversation_id, status)];

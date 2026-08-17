@@ -34,6 +34,14 @@ export class TauriDesktopBackend implements DesktopBackend {
     return unwrapResponse(response);
   }
 
+  async openChatWindow(conversationId: string, projectId: string, title: string): Promise<string> {
+    return invoke<string>("open_chat_window", {
+      conversation_id: conversationId,
+      project_id: projectId,
+      title,
+    });
+  }
+
   async pickFolder(title = "选择项目文件夹"): Promise<string | null> {
     const selected = await open({ directory: true, multiple: false, title });
     return typeof selected === "string" ? selected : null;

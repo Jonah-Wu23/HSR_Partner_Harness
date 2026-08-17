@@ -115,8 +115,8 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
 
   const groups = useMemo(() => {
     const now = new Date();
-    const running = filtered.filter((conversation) => conversation.isTaskOrigin);
-    const rest = filtered.filter((conversation) => !conversation.isTaskOrigin);
+    const running = filtered.filter((conversation) => conversation.isRunning);
+    const rest = filtered.filter((conversation) => !conversation.isRunning);
     const today = rest.filter((conversation) => isSameDay(new Date(conversation.updated_at), now));
     const earlier = rest.filter((conversation) => !isSameDay(new Date(conversation.updated_at), now));
     return [
@@ -201,11 +201,15 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
             <button
               type="button"
               className="conversation-row-main"
-              onClick={() => void actions.selectConversation(conversation.conversation_id)}
+              onClick={() =>
+                // V0.3.2 M5：点击聊天打开（或聚焦）本窗口标签；不再直接用全局
+                // conversation.select 驱动其他窗口的导航。
+                void actions.openConversationTab(conversation.conversation_id)
+              }
               aria-current={conversation.isCurrent ? "page" : undefined}
             >
               <div className="conv-title-row">
-                {conversation.isTaskOrigin ? <span className="conv-running-dot" aria-hidden /> : null}
+                {conversation.isRunning ? <span className="conv-running-dot" aria-hidden /> : null}
                 <span className="conv-title">{conversation.title}</span>
               </div>
               {meta}

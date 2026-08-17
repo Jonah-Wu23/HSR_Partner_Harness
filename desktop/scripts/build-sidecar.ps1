@@ -18,6 +18,7 @@ $codexResourceRoot = Join-Path $resourceRoot "codex"
 $workRoot = Join-Path $desktopRoot ".pyinstaller-work"
 $specRoot = Join-Path $desktopRoot ".pyinstaller-spec"
 $configRoot = Join-Path $desktopRoot ".pyinstaller-config"
+$script:bundledReasonix = Join-Path $resourceRoot "reasonix\bin\reasonix.exe"
 
 if (-not (Test-Path -LiteralPath $python)) {
     throw "项目虚拟环境不存在：$python"
@@ -105,34 +106,58 @@ Write-Host "Bundled Codex prepared: $bundledCodex"
 
 # 把 Reasonix CLI 的 Windows 原生二进制（reasonix.exe，DeepSeek 编程助手）
 # 放进 Tauri resources，供 DeepSeek 引擎的 reasonix acp 子进程使用。
-# 来源：显式指定 > npm 全局安装（npm i -g reasonix）。
-$reasonixCandidates = @()
+New-Item -ItemType Directory -Path (Split-Path -Parent $script:bundledReasonix) -Force | Out-Null
+$reasonixSource = $null
+
 if ($env:PAIR_HARNESS_REASONIX_NATIVE_ROOT) {
-    $reasonixCandidates += ,(Join-Path $env:PAIR_HARNESS_REASONIX_NATIVE_ROOT "reasonix.exe")
-}
-if ($npmRoot) {
-    # npm i -g reasonix 的平台二进制位于嵌套 node_modules（optionalDependencies）
-    $reasonixCandidates += ,(Join-Path $npmRoot "reasonix\node_modules\@reasonix\cli-win32-x64\bin\reasonix.exe")
-}
-$reasonixShim = Get-Command reasonix.cmd -ErrorAction SilentlyContinue
-if ($reasonixShim) {
-    $shimRoot = Split-Path -Parent $reasonixShim.Source
-    if ($shimRoot) {
-        $reasonixCandidates += ,(Join-Path $shimRoot "node_modules\reasonix\node_modules\@reasonix\cli-win32-x64\bin\reasonix.exe")
+    $explicitReasonix = Join-Path $env:PAIR_HARNESS_REASONIX_NATIVE_ROOT "reasonix.exe"
+    if (-not (Test-Path -LiteralPath $explicitReasonix -PathType Leaf)) {
+        throw "PAIR_HARNESS_REASONIX_NATIVE_ROOT does not contain reasonix.exe: $explicitReasonix"
+    }
+    Copy-Item -LiteralPath $explicitReasonix -Destination $script:bundledReasonix -Force
+    $reasonixSource = $explicitReasonix
+} else {
+    $localReasonixRoot = Join-Path $repoRoot "DeepSeek-Reasonix"
+    $localReasonixModule = Join-Path $localReasonixRoot "go.mod"
+    if (Test-Path -LiteralPath $localReasonixModule -PathType Leaf) {
+        $goCommand = Get-Command go -ErrorAction SilentlyContinue
+        if (-not $goCommand) {
+            throw "Local DeepSeek-Reasonix source exists, but Go is unavailable. Install/provide Go and rebuild; refusing to bundle a stale npm binary."
+        }
+        Push-Location $localReasonixRoot
+        try {
+            & $goCommand.Source build -trimpath -o $script:bundledReasonix ./cmd/reasonix
+            $reasonixBuildExitCode = $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+        if ($reasonixBuildExitCode -ne 0 -or -not (Test-Path -LiteralPath $script:bundledReasonix -PathType Leaf)) {
+            throw "Building local DeepSeek-Reasonix failed with exit code $reasonixBuildExitCode."
+        }
+        $reasonixSource = "$localReasonixRoot (local source build)"
+    } else {
+        $reasonixCandidates = @()
+        if ($npmRoot) {
+            $reasonixCandidates += ,(Join-Path $npmRoot "reasonix\node_modules\@reasonix\cli-win32-x64\bin\reasonix.exe")
+        }
+        $reasonixShim = Get-Command reasonix.cmd -ErrorAction SilentlyContinue
+        if ($reasonixShim) {
+            $shimRoot = Split-Path -Parent $reasonixShim.Source
+            if ($shimRoot) {
+                $reasonixCandidates += ,(Join-Path $shimRoot "node_modules\reasonix\node_modules\@reasonix\cli-win32-x64\bin\reasonix.exe")
+            }
+        }
+        foreach ($candidate in $reasonixCandidates) {
+            if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+                Copy-Item -LiteralPath $candidate -Destination $script:bundledReasonix -Force
+                $reasonixSource = $candidate
+                break
+            }
+        }
+        if (-not $reasonixSource) {
+            throw "Reasonix Windows native binary not found. Install it with 'npm i -g reasonix' or set PAIR_HARNESS_REASONIX_NATIVE_ROOT."
+        }
     }
 }
-$reasonixBin = $null
-foreach ($candidate in $reasonixCandidates) {
-    if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
-        $reasonixBin = $candidate
-        break
-    }
-}
-if (-not $reasonixBin) {
-    throw "Reasonix Windows native binary not found. Install it with 'npm i -g reasonix' or set PAIR_HARNESS_REASONIX_NATIVE_ROOT."
-}
-$reasonixResourceRoot = Join-Path $resourceRoot "reasonix\bin"
-New-Item -ItemType Directory -Path $reasonixResourceRoot -Force | Out-Null
-$bundledReasonix = Join-Path $reasonixResourceRoot "reasonix.exe"
-Copy-Item -LiteralPath $reasonixBin -Destination $bundledReasonix -Force
-Write-Host "Bundled Reasonix prepared: $bundledReasonix"
+
+Write-Host "Bundled Reasonix prepared from $reasonixSource`: $script:bundledReasonix"

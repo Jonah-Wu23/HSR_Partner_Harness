@@ -64,7 +64,7 @@ async def test_request_approval_asks_decision_and_synthesizes_resolved() -> None
     )
     calls = []
 
-    async def decide(op, approval_id: str, reason: str) -> ApprovalDecision:
+    async def decide(op, approval_id: str, reason: str, conversation_id: str = "", task_id: str = "") -> ApprovalDecision:
         calls.append((op, approval_id, reason))
         return ApprovalDecision.ALLOW
 
@@ -120,7 +120,7 @@ async def test_allow_for_conversation_writes_cache_then_hits() -> None:
     )
     calls = []
 
-    async def allow_once(op, approval_id: str, reason: str) -> ApprovalDecision:
+    async def allow_once(op, approval_id: str, reason: str, conversation_id: str = "", task_id: str = "") -> ApprovalDecision:
         calls.append(approval_id)
         return ApprovalDecision.ALLOW_FOR_CONVERSATION
 
@@ -155,7 +155,7 @@ async def test_high_risk_never_cached_via_adjudicate() -> None:
         rules=default_risk_rules(),
     )
 
-    async def allow(op, approval_id: str, reason: str) -> ApprovalDecision:
+    async def allow(op, approval_id: str, reason: str, conversation_id: str = "", task_id: str = "") -> ApprovalDecision:
         return ApprovalDecision.ALLOW_FOR_CONVERSATION
 
     first = await manager.adjudicate(

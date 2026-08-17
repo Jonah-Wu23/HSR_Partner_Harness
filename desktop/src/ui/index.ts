@@ -1,4 +1,5 @@
 export { AppShell } from "./AppShell";
+export { ChatTabs } from "./ChatTabs";
 export { ConnectionPill } from "./status/ConnectionPill";
 export { ToastStack } from "./status/ToastStack";
 export { TechDetailsDrawer } from "./status/TechDetailsDrawer";

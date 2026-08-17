@@ -5,6 +5,7 @@ import type {
   DesktopSnapshot,
   Message,
   PendingApproval,
+  PairRecord,
   ProjectRecord,
   QueueItem,
   ToolRun,
@@ -62,6 +63,8 @@ export class MockDesktopBackend implements DesktopBackend {
         return this.createConversation(command.params) as T;
       case "conversation.select":
         return this.selectConversation(command.params) as T;
+      case "conversation.open":
+        return this.openConversation(command.params) as T;
       case "conversation.rename":
         return this.renameConversation(command.params) as T;
       case "conversation.archive":
@@ -77,8 +80,7 @@ export class MockDesktopBackend implements DesktopBackend {
       case "queue.prioritize":
         return this.prioritizeQueueItem(command.params) as T;
       case "task.cancel":
-        this.emit("task.busy_changed", { busy: false, active_task: null });
-        return { cancelled: true } as T;
+        return this.cancelTask(command.params) as T;
       case "approval.resolve":
         this.emit("approval.resolved", {
           approval_id: String(command.params.approval_id ?? ""),
@@ -128,6 +130,8 @@ export class MockDesktopBackend implements DesktopBackend {
         return { status: "logged_in", account_label: "OpenAI API Key" } as T;
       case "voice.preview":
         return { voice: this.scenario.snapshot.voice } as T;
+      case "voice.provision":
+        throw new Error("Mock 后端不提供真实音色生成；请在 Tauri + Python Sidecar 中联调");
       default:
         // 尚未实现的 V0.2 命令在 mock 中返回空对象（不阻断前端流程）
         return {} as T;
@@ -136,6 +140,10 @@ export class MockDesktopBackend implements DesktopBackend {
 
   async pickFolder(): Promise<string | null> {
     return null;
+  }
+
+  async openChatWindow(_conversationId: string, _projectId: string, _title: string): Promise<string> {
+    throw new Error("独立聊天窗口需要在 Tauri 桌面运行时打开");
   }
 
   async reconnectSidecar(): Promise<void> {
@@ -294,6 +302,79 @@ export class MockDesktopBackend implements DesktopBackend {
       }
     }
     return this.snapshotResult<DesktopSnapshot>();
+  }
+
+  private openConversation(params: Record<string, unknown>): {
+    conversation: ConversationRecord;
+    project: ProjectRecord;
+    pair: PairRecord;
+    messages: Message[];
+    tool_runs: ToolRun[];
+    turns: Turn[];
+    queue_items: QueueItem[];
+    active_task: DesktopSnapshot["active_task"];
+  } {
+    const conversationId = String(params.conversation_id ?? "");
+    const selectedProject = this.scenario.snapshot.projects.find((candidate) =>
+      candidate.conversations.some((item) => item.conversation_id === conversationId),
+    );
+    const selectedConversation = selectedProject?.conversations.find(
+      (item) => item.conversation_id === conversationId,
+    );
+    if (!selectedProject || !selectedConversation) {
+      throw new Error(`找不到聊天 ${conversationId}`);
+    }
+    const selectedPair =
+      this.scenario.snapshot.pairs.find((item) => item.pair_id === selectedConversation.pair_id) ??
+      this.scenario.snapshot.pair;
+    const activeTasks = this.scenario.snapshot.active_tasks ?? [];
+    return {
+      conversation: this.clone(selectedConversation),
+      project: this.clone(selectedProject),
+      pair: this.clone(selectedPair),
+      messages: this.clone(
+        this.scenario.snapshot.messages.filter((item) => item.conversation_id === conversationId),
+      ),
+      tool_runs: this.clone(
+        this.scenario.snapshot.tool_runs.filter((item) => item.conversation_id === conversationId),
+      ),
+      turns: this.clone(
+        this.scenario.snapshot.turns.filter((item) => item.conversation_id === conversationId),
+      ),
+      queue_items: this.clone(
+        this.scenario.snapshot.queue_items.filter((item) => item.conversation_id === conversationId),
+      ),
+      active_task: this.clone(
+        activeTasks.find((item) => item.conversation_id === conversationId) ?? null,
+      ),
+    };
+  }
+
+  private cancelTask(params: Record<string, unknown>): { cancelled: true; conversation_id: string; task_id: string } {
+    const conversationId = String(params.conversation_id ?? "");
+    const taskId = String(params.task_id ?? "");
+    const activeTasks = this.scenario.snapshot.active_tasks ?? [];
+    const active = activeTasks.find(
+      (item) => item.conversation_id === conversationId && item.task_id === taskId,
+    );
+    if (!active) {
+      throw new Error("当前聊天没有匹配的活动任务");
+    }
+    this.scenario.snapshot.active_tasks = activeTasks.filter(
+      (item) => item.task_id !== taskId,
+    );
+    if (this.scenario.snapshot.active_task?.task_id === taskId) {
+      this.scenario.snapshot.active_task = null;
+    }
+    this.scenario.snapshot.busy = this.scenario.snapshot.active_tasks.length > 0;
+    this.emit("task.busy_changed", {
+      busy: this.scenario.snapshot.busy,
+      conversation_id: conversationId,
+      task_id: taskId,
+      active_task: null,
+      active_tasks: this.scenario.snapshot.active_tasks,
+    });
+    return { cancelled: true, conversation_id: conversationId, task_id: taskId };
   }
 
   private renameConversation(params: Record<string, unknown>): DesktopSnapshot {
@@ -708,6 +789,13 @@ export class MockDesktopBackend implements DesktopBackend {
     } else if (event.event === "task.busy_changed") {
       snapshot.busy = Boolean(event.payload.busy);
       snapshot.active_task = (event.payload.active_task as DesktopSnapshot["active_task"]) ?? null;
+      if (Array.isArray(event.payload.active_tasks)) {
+        snapshot.active_tasks = event.payload.active_tasks as DesktopSnapshot["active_tasks"];
+      } else if (snapshot.active_task) {
+        snapshot.active_tasks = [snapshot.active_task];
+      } else if (!snapshot.busy) {
+        snapshot.active_tasks = [];
+      }
     } else if (event.event === "approval.requested") {
       snapshot.approvals = [
         ...snapshot.approvals,

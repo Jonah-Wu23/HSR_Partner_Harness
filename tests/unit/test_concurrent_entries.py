@@ -212,7 +212,11 @@ async def test_chat_rounds_and_amendment_during_execution() -> None:
 
 
 @pytest.mark.asyncio
-async def test_direct_input_from_other_conversation_does_not_amend_active_task() -> None:
+async def test_direct_input_from_other_conversation_runs_concurrently() -> None:
+    """V0.3.2 M4：并发单位是 conversation。
+
+    聊天 A 的任务运行中，聊天 B 的直发输入立即启动自己的任务——不再被
+    全局单任务闸门拒绝，也不会归一为 A 的 amendment。"""
     engine = PausingEngine(started=asyncio.Event(), release=asyncio.Event())
     orchestrator = _make_orchestrator(
         engine,
@@ -220,20 +224,32 @@ async def test_direct_input_from_other_conversation_does_not_amend_active_task()
             speech="任务开始了。",
             delegation=TaskRequestDraft(instructions="跑测试"),
         ),
-        CharacterTurn(speech="做完了。"),
+        CharacterTurn(speech="A 做完了。"),
+        CharacterTurn(speech="B 结果收到。"),
     )
     running = asyncio.create_task(
         orchestrator.handle_character_input(conversation_id="chat-a", text="开始")
     )
     try:
         await asyncio.wait_for(engine._started.wait(), timeout=5)
-        outcome = await orchestrator.handle_direct_input(
-            conversation_id="chat-b", text="改成只跑单测"
+        direct = asyncio.create_task(
+            orchestrator.handle_direct_input(
+                conversation_id="chat-b", text="改成只跑单测"
+            )
         )
+        # B 的回合推进到自己的工具事件（同一 started 事件第二次置位）
+        await asyncio.wait_for(engine._started.wait(), timeout=5)
+        assert orchestrator.state.get_for_conversation("chat-a") is not None
+        assert orchestrator.state.get_for_conversation("chat-b") is not None
+        engine._release.set()
+        outcome_b = await asyncio.wait_for(direct, timeout=5)
+        outcome_a = await running
         assert engine.amendments == []
-        assert len(outcome.messages) == 2
-        assert outcome.messages[-1].source == MessageSource.SYSTEM
-        assert "另一聊天" in outcome.messages[-1].text
+        assert outcome_b.receipt is not None
+        assert outcome_a.receipt is not None
+        # 各自的历史互不串线
+        assert {m.conversation_id for m in outcome_b.messages} == {"chat-b"}
+        assert {m.conversation_id for m in outcome_a.messages} <= {"chat-a"}
     finally:
         engine._release.set()
         await running

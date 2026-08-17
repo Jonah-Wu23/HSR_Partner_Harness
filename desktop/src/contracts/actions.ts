@@ -23,6 +23,14 @@ export interface HarnessActions {
   archiveProject(projectId: string): Promise<void>;
   createConversation(projectId?: string, title?: string, pairId?: string): Promise<void>;
   selectConversation(conversationId: string): Promise<void>;
+  /** V0.3.2 M5：打开（或聚焦）本窗口聊天标签；同时把本窗口当前聊天切到该会话
+      （使用只读 conversation.open，不改 Sidecar 全局导航）。 */
+  openConversationTab(conversationId: string): Promise<void>;
+  /** V0.3.2 M5：关闭本窗口聊天标签——只移除视图，不取消任务、不关闭会话；
+      关闭活动标签后相邻标签接替为本窗口当前聊天。 */
+  closeConversationTab(conversationId: string): void;
+  /** V0.3.2 M5：在新的 Tauri 窗口打开一份聊天视图。 */
+  openConversationWindow(conversationId: string): Promise<void>;
   renameConversation(conversationId: string, title: string): Promise<void>;
   archiveConversation(conversationId: string): Promise<void>;
   switchMode(mode: "chat" | "collaboration"): Promise<void>;
@@ -37,6 +45,7 @@ export interface HarnessActions {
   prioritizeQueueItem(queueItemId: string): Promise<void>;
   /** 队列条「编辑」：撤回该项并返回原文（拉回输入区用）；不存在返回 null。 */
   editQueueFromStrip(queueItemId: string): Promise<string | null>;
+  /** V0.3.2 M5：定向取消——携带本窗口当前聊天 conversation_id 与其活动任务 task_id。 */
   cancelTask(): Promise<void>;
   resolveApproval(approvalId: string, decision: string): Promise<void>;
   setApprovalMode(mode: ApprovalMode): Promise<void>;
@@ -68,6 +77,23 @@ export interface HarnessActions {
   codexOauthStatus(): Promise<CodexOAuthStatus>;
   codexApiLogin(apiKey: string): Promise<void>;
   codexLogout(): Promise<void>;
-  /** 试听内置音色：text 试听文本，voiceId 缺省/非内置时用角色音色。 */
+  /** 试听音色：text 试听文本，voiceId 缺省/非当前有效音色时用角色音色；
+      V0.3.2 M6 音色来自当前账号生成结果（或开发机作者 Key）。 */
   voicePreview(text: string, voiceId?: string): Promise<void>;
+  /** V0.3.2 M6：在当前账号的百炼下生成专属音色（5 复刻 + 1 设计）。
+      speakerIds 缺省表示全部缺失项；replaceExisting=true 用于显式重新生成。 */
+  provisionVoices(speakerIds?: string[], replaceExisting?: boolean): Promise<VoiceProvisionResult>;
+}
+
+/** voice.provision 的真实返回：completed 或 partial_failed + 每项结果。 */
+export interface VoiceProvisionResult {
+  status?: "completed" | "partial_failed" | string;
+  completed?: number;
+  total?: number;
+  results?: Array<{
+    speaker_id: string;
+    state: string;
+    voice_id?: string | null;
+    error?: string | null;
+  }>;
 }

@@ -428,6 +428,8 @@ class VoiceRuntime:
         """
         if message.conversation_id != self._conversation_id:
             return
+        if message.pair_id != self._pair_config.pair_id:
+            return
         if not is_tts_eligible(message.source, message.kind):
             return
         if message.source == MessageSource.ASSISTANT and not self._assistant_voice_enabled:
@@ -442,29 +444,41 @@ class VoiceRuntime:
         """
         if message.conversation_id != self._conversation_id:
             return
+        if message.pair_id != self._pair_config.pair_id:
+            return
         self._enqueue_for_playback(message)
 
     def enqueue_text(self, text: str, *, voice_id: str | None = None) -> None:
-        """直接按文本入队（voice.preview 试听）；voice_id 缺省取角色音色。"""
+        """直接按文本入队（voice.preview 试听）；voice_id 缺省取角色音色。
+
+        V0.3.2 M6：有效音色为空（说话方未生成、且无开发机作者 Key）时
+        不入队——不能用空 ID 或作者 ID 调 DashScope；显式试听由命令层
+        返回 voice_not_provisioned。
+        """
         text = text.strip()
         if not is_readable_text(text):
             return
+        effective_voice = voice_id or self._pair_config.character.voice_id
+        if not effective_voice:
+            return
         self._queue.enqueue(
-            SpeechRequest(
-                text=text,
-                voice_id=voice_id or self._pair_config.character.voice_id,
-                message_id="preview",
-            )
+            SpeechRequest(text=text, voice_id=effective_voice, message_id="preview")
         )
 
     def _enqueue_for_playback(self, message: Message) -> None:
-        """按消息来源选音色/分段，过滤不可读文本后入队。"""
+        """按消息来源选音色/分段，过滤不可读文本后入队。
+
+        V0.3.2 M6：说话方有效音色为空（账号未生成且无开发机作者 Key）
+        时跳过该消息——TTS 未开通，不得拿空 ID 或作者 ID 调 DashScope。
+        """
         if message.source == MessageSource.ASSISTANT:
             voice_id = self._pair_config.assistant.voice_id
             segments = extract_speech_segments(message.text)
         else:
             voice_id = self._pair_config.character.voice_id
             segments = [message.text]
+        if not voice_id:
+            return
         for segment in segments:
             text = segment.strip()
             # V0.2 问题 2：入队前再次检查有效自然语言——省略号/纯标点
@@ -486,9 +500,18 @@ class VoiceRuntime:
     def _speech_key(text: str) -> str:
         return " ".join(str(text).split())
 
-    def enqueue_assistant_progress(self, text: str) -> None:
-        """把古代机械的阶段性说明立即送入语音队列。"""
+    def enqueue_assistant_progress(
+        self, text: str, *, conversation_id: str | None = None
+    ) -> None:
+        """把古代机械的阶段性说明立即送入语音队列。
+
+        V0.3.2 M6：助手有效音色为空时直接跳过（音色未生成，TTS 不可用）。
+        """
+        if conversation_id is not None and conversation_id != self._conversation_id:
+            return
         if not self._assistant_voice_enabled:
+            return
+        if not self._pair_config.assistant.voice_id:
             return
         text = str(text or "").strip()
         if not is_readable_text(text):
@@ -513,6 +536,11 @@ class VoiceRuntime:
 
     async def set_context_async(self, conversation_id: str, pair_config: PairConfig) -> None:
         """异步切换语音上下文，避免在 Sidecar 事件循环中等待原生停流。"""
+        if (
+            self._conversation_id == conversation_id
+            and self._pair_config == pair_config
+        ):
+            return
         await self.stop_speaking_async()
         self._preannounced_assistant_texts.clear()
         self._conversation_id = conversation_id

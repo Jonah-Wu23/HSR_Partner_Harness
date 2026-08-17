@@ -96,7 +96,7 @@ class AcpCodingEngine(CodingEngine):
                 self._transport_generation = generation
             await self.transport.request(
                 "initialize",
-                {"clientInfo": {"name": "pair-harness", "version": "0.3.0"}},
+                {"clientInfo": {"name": "pair-harness", "version": "0.3.2"}},
             )
             self._initialized = True
             self._transport_generation = generation
@@ -115,11 +115,27 @@ class AcpCodingEngine(CodingEngine):
         del approvals_reviewer
         await self._ensure_initialized()
         if stored_ref is not None:
-            # ACP session/resume 恢复会话（不重放 transcript）
+            # ACP session/resume 恢复会话（不重放 transcript）。V0.3.2 M3：
+            # 恢复期间的会话事件用临时订阅器隔离并排空——历史以 SQLite 为
+            # 准，replay 不得写入消息历史，也不得流入通用通知队列。
             acp_session_id = self._decode_ref(stored_ref)
-            await self.transport.request(
-                "session/resume", {"sessionId": acp_session_id, "cwd": project.root_path}
-            )
+            resume_subscription = self.transport.subscribe_session(acp_session_id)
+            try:
+                await self.transport.request(
+                    "session/resume",
+                    {"sessionId": acp_session_id, "cwd": project.root_path},
+                )
+                loop = asyncio.get_running_loop()
+                resume_deadline = loop.time() + 1.0
+                while loop.time() < resume_deadline:
+                    try:
+                        await asyncio.wait_for(
+                            resume_subscription.next(), timeout=0.1
+                        )
+                    except asyncio.TimeoutError:
+                        break
+            finally:
+                resume_subscription.close()
             return self._encode_ref(acp_session_id)
         params: dict[str, Any] = {"cwd": project.root_path}
         if self.model:
@@ -151,6 +167,10 @@ class AcpCodingEngine(CodingEngine):
         if request.constraints:
             constraints = "\n".join(f"- {item}" for item in request.constraints)
             task_text = f"{task_text}\n\n本次任务约束：\n{constraints}"
+        # V0.3.2 M3：先订阅本 session 的通知，再发送 session/prompt——
+        # 订阅建立前到达的事件会进入诊断缓冲而不是本回合，顺序不可颠倒。
+        # 共享 transport 上多个 session 并发运行时各自拿到自己的事件流。
+        subscription = self.transport.subscribe_session(acp_session_id)
         prompt_task = asyncio.create_task(
             self.transport.request(
                 "session/prompt",
@@ -197,7 +217,7 @@ class AcpCodingEngine(CodingEngine):
                         )
                         try:
                             notification = await asyncio.wait_for(
-                                self.transport.next_notification(), timeout=timeout
+                                subscription.next(), timeout=timeout
                             )
                         except asyncio.TimeoutError:
                             break
@@ -213,7 +233,7 @@ class AcpCodingEngine(CodingEngine):
                         )
                     break
                 # 事件通知与 prompt 响应并发等待：逐条消费映射
-                notification_task = asyncio.create_task(self.transport.next_notification())
+                notification_task = asyncio.create_task(subscription.next())
                 try:
                     done, _ = await asyncio.wait(
                         {prompt_task, notification_task}, return_when=asyncio.FIRST_COMPLETED
@@ -261,6 +281,8 @@ class AcpCodingEngine(CodingEngine):
             )
             return
         finally:
+            # V0.3.2 M3：订阅器随回合结束归还，session 路由槽位释放。
+            subscription.close()
             # 取消/异常路径也要结清 notification_task（外层防御）
             if notification_task is not None:
                 if not notification_task.done():

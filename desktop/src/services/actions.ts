@@ -1,6 +1,12 @@
-import type { HarnessActions, SubmitMessageResult, CodexOAuthStatus } from "../contracts/actions";
+import type {
+  CodexOAuthStatus,
+  HarnessActions,
+  SubmitMessageResult,
+  VoiceProvisionResult,
+} from "../contracts/actions";
 import type {
   ApprovalMode,
+  ConversationOpenResult,
   DesktopCommand,
   DesktopCommandMethod,
   DesktopSnapshot,
@@ -9,18 +15,32 @@ import type {
 import type { DesktopBackend } from "./backend";
 import { RequestIdFactory } from "./backend";
 import { isDesktopSnapshot } from "./mockDesktopBackend";
-import { desktopStore } from "../stores/desktopStore";
+import {
+  desktopStore,
+  selectWindowConversationId,
+  selectWindowProjectId,
+} from "../stores/desktopStore";
 
 export interface ActionController {
   actions: HarnessActions;
   loadBootstrap(): Promise<void>;
+  /** V0.3.2 M5：conversation.open 只读装载指定聊天并打开其标签（不改全局当前聊天）。 */
+  conversationOpen(conversationId: string): Promise<void>;
 }
 
 export function createActionController(backend: DesktopBackend): ActionController {
-  const ids = new RequestIdFactory();
+  // V0.3.2 M5：请求 id 携带本窗口 viewId（多窗口全应用唯一），失败如常上抛。
+  const ids = new RequestIdFactory(() => desktopStore.getState().viewId);
 
   async function request<T>(method: DesktopCommandMethod, params: Record<string, unknown> = {}): Promise<T> {
-    const command: DesktopCommand = { kind: "request", id: ids.next(), method, params };
+    const viewId = desktopStore.getState().viewId;
+    const command: DesktopCommand = {
+      kind: "request",
+      id: ids.next(),
+      method,
+      params,
+      view_id: viewId,
+    };
     const result = await backend.request<T>(command);
     if (isDesktopSnapshot(result)) desktopStore.getState().hydrate(result);
     return result;
@@ -35,11 +55,28 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     }
   };
 
+  // V0.3.2 M5：只读装载指定聊天——参数携带本窗口 view_id；结果合并进
+  // 各会话索引并打开该聊天的标签，不改变后端全局当前聊天。
+  const conversationOpen = async (conversationId: string) => {
+    const result = await request<ConversationOpenResult>("conversation.open", {
+      conversation_id: conversationId,
+      view_id: desktopStore.getState().viewId,
+    });
+    desktopStore.getState().hydrateConversationView(result);
+  };
+
+  /** 后端选择/创建成功后，把本窗口焦点同步到新的当前聊天。 */
+  const focusBackendConversation = () => {
+    const conversationId = desktopStore.getState().currentConversationId;
+    if (conversationId) desktopStore.getState().openConversationTab(conversationId);
+  };
+
   const actions: HarnessActions = {
     async createProject(rootPath, name) {
       const selectedRoot = rootPath?.trim() || (await backend.pickFolder("选择项目文件夹"));
       if (!selectedRoot) return false;
       await request("project.create", { root_path: selectedRoot, name });
+      focusBackendConversation();
       return true;
     },
     async renameProject(projectId, name) {
@@ -65,9 +102,41 @@ export function createActionController(backend: DesktopBackend): ActionControlle
         title,
         ...(pairId ? { pair_id: pairId } : {}),
       });
+      focusBackendConversation();
     },
     async selectConversation(conversationId) {
       await request("conversation.select", { conversation_id: conversationId });
+      focusBackendConversation();
+    },
+    async openConversationTab(conversationId) {
+      // 每次聚焦都重新读取该会话的权威快照，同时让共享的
+      // 物理语音运行时切到该聊天；conversation.open 不改 Sidecar 全局导航。
+      await conversationOpen(conversationId);
+    },
+    closeConversationTab(conversationId) {
+      // V0.3.2 M5：只移除本窗口标签；标签已有完整缓存，切到相邻标签
+      // 不需要 conversation.select，也绝不取消任务或关闭会话。
+      desktopStore.getState().closeConversationTab(conversationId);
+    },
+    async openConversationWindow(conversationId) {
+      const state = desktopStore.getState();
+      const conversation = state.conversationsById[conversationId];
+      const projectId = conversation?.project_id;
+      if (!conversation || !projectId) {
+        throw new Error(`找不到聊天 ${conversationId} 的项目上下文`);
+      }
+      try {
+        await backend.openChatWindow(conversationId, projectId, conversation.title);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        desktopStore.getState().pushToast({
+          id: `open-chat-window:${conversationId}:${message}`,
+          kind: "error",
+          text: `打开独立聊天窗口失败：${message}`,
+          hasDetails: true,
+        });
+        throw error;
+      }
     },
     async renameConversation(conversationId, title) {
       await request("conversation.rename", { conversation_id: conversationId, title });
@@ -79,7 +148,8 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       // V0.2 模式独立：模式由后端按会话持久化，走独立命令。
       // M5.3：先持久化成功再切换本地模式；失败恢复原模式并保留真实错误。
       const previous = desktopStore.getState().mode;
-      const conversationId = desktopStore.getState().currentConversationId;
+      // V0.3.2 M5：模式保存到本窗口当前聊天（活动标签优先）。
+      const conversationId = selectWindowConversationId(desktopStore.getState());
       try {
         if (conversationId) {
           await request("conversation.set_mode", { conversation_id: conversationId, mode });
@@ -106,8 +176,9 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       const actualTarget = target ?? state.composerTarget;
       // M5.3：草稿由 Composer 在收到 accepted/queued 回执后清除；这里不清空，
       // 请求失败时输入文字与 target 都保留。
+      // V0.3.2 M5：提交到本窗口当前聊天（活动标签优先），其他窗口不受影响。
       return request<SubmitMessageResult>("chat.submit", {
-        conversation_id: state.currentConversationId,
+        conversation_id: selectWindowConversationId(state),
         target: actualTarget,
         mode: state.mode,
         text,
@@ -123,7 +194,9 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async editQueueFromStrip(queueItemId) {
       // V0.2 M4：QueueStrip「编辑」= 撤回该项并返回原文（拉回输入区）
       const state = desktopStore.getState();
-      const item = (state.queueItemsByConversation[state.currentConversationId] ?? []).find(
+      const conversationId = selectWindowConversationId(state);
+      if (!conversationId) return null;
+      const item = (state.queueItemsByConversation[conversationId] ?? []).find(
         (candidate) => candidate.queue_item_id === queueItemId,
       );
       if (!item || item.status !== "queued") return null;
@@ -134,7 +207,20 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       await request("queue.prioritize", { queue_item_id: queueItemId });
     },
     async cancelTask() {
-      await request("task.cancel");
+      // V0.3.2 M5：定向取消必须携带本窗口当前聊天的 conversation_id 与
+      // 该聊天活动任务的 task_id；缺少任一项时不发送模糊的旧式全局取消。
+      const state = desktopStore.getState();
+      const conversationId = selectWindowConversationId(state);
+      const activeTask = conversationId
+        ? state.activeTasksByConversation[conversationId]
+        : undefined;
+      if (!conversationId || !activeTask) {
+        throw new Error("当前聊天没有可取消的活动任务");
+      }
+      await request("task.cancel", {
+        conversation_id: conversationId,
+        task_id: activeTask.task_id,
+      });
     },
     async resolveApproval(approvalId, decision) {
       const state = desktopStore.getState();
@@ -148,18 +234,25 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       }
     },
     async setApprovalMode(mode: ApprovalMode) {
-      const projectId = desktopStore.getState().currentProjectId;
+      const projectId = selectWindowProjectId(desktopStore.getState());
+      if (!projectId) throw new Error("当前窗口没有项目上下文");
       await request("project.update_settings", { project_id: projectId, approval_mode: mode });
     },
     async setReasoningEffort(effort: ReasoningEffort) {
-      const projectId = desktopStore.getState().currentProjectId;
+      const projectId = selectWindowProjectId(desktopStore.getState());
+      if (!projectId) throw new Error("当前窗口没有项目上下文");
       await request("project.update_settings", { project_id: projectId, reasoning_effort: effort });
     },
     async setVadEnabled(enabled) {
       await request("voice.vad_set", { enabled });
     },
     async startPushToTalk(target) {
-      await request("voice.ptt_start", { target: target ?? desktopStore.getState().composerTarget });
+      const state = desktopStore.getState();
+      const conversationId = selectWindowConversationId(state);
+      await request("voice.ptt_start", {
+        target: target ?? state.composerTarget,
+        ...(conversationId ? { conversation_id: conversationId } : {}),
+      });
     },
     async stopPushToTalk() {
       await request("voice.ptt_stop");
@@ -236,10 +329,21 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async voicePreview(text, voiceId) {
       await request("voice.preview", { text, ...(voiceId ? { voice_id: voiceId } : {}) });
     },
+    async provisionVoices(speakerIds, replaceExisting) {
+      const params: Record<string, unknown> = {};
+      if (speakerIds !== undefined) params.speaker_ids = speakerIds;
+      if (replaceExisting !== undefined) params.replace_existing = replaceExisting;
+      const result = await request<VoiceProvisionResult>("voice.provision", params);
+      // voice.provision 的逐项事件用于实时状态；命令完成后再取一次权威配置，
+      // 确保成功项已从 SQLite 水合到设置页，且失败项仍保留真实状态。
+      const config = await request<Record<string, unknown>>("config.get");
+      desktopStore.getState().setConfigSnapshot(config);
+      return result;
+    },
     dismissToast(id) {
       // V0.2 M4：Toast 是本地 UI 状态，不经过后端
       desktopStore.getState().dismissToast(id);
     },
   };
-  return { actions, loadBootstrap };
+  return { actions, loadBootstrap, conversationOpen };
 }

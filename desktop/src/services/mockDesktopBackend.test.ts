@@ -106,4 +106,54 @@ describe("MockDesktopBackend project and conversation flow", () => {
     expect(state.currentConversationId).toBe("");
     expect(state.projectsById).toEqual({});
   });
+
+  it("opens another chat through conversation.open without global selection", async () => {
+    const backend = new MockDesktopBackend("multi-pair");
+    const controller = createActionController(backend);
+    await controller.loadBootstrap();
+
+    expect(desktopStore.getState().currentConversationId).toBe("conv-firefly");
+    await controller.actions.openConversationTab("conv-phainon");
+
+    const state = desktopStore.getState();
+    // conversation.open 只打开并聚焦本窗口标签，不改 Sidecar 全局当前聊天。
+    expect(state.currentConversationId).toBe("conv-firefly");
+    expect(state.activeConversationId).toBe("conv-phainon");
+    expect(state.openConversationIds).toContain("conv-firefly");
+    expect(state.openConversationIds).toContain("conv-phainon");
+    expect(backend.recordedRequests.at(-1)?.method).toBe("conversation.open");
+    expect(backend.recordedRequests.at(-1)?.params).toMatchObject({
+      conversation_id: "conv-phainon",
+    });
+    expect(backend.recordedRequests.some((item) => item.method === "conversation.select")).toBe(
+      false,
+    );
+
+    // 已打开的标签再次聚焦也要取权威快照，不能只切本地 ID。
+    await controller.actions.openConversationTab("conv-firefly");
+    expect(backend.recordedRequests.at(-1)?.method).toBe("conversation.open");
+    expect(backend.recordedRequests.at(-1)?.params).toMatchObject({
+      conversation_id: "conv-firefly",
+    });
+  });
+
+  it("cancels only the matching conversation task in the mock protocol", async () => {
+    const backend = new MockDesktopBackend("collaboration-running");
+    const controller = createActionController(backend);
+    const unsubscribe = backend.subscribe((event) => desktopStore.getState().applyEvents([event]));
+    try {
+      await controller.loadBootstrap();
+      await controller.actions.cancelTask();
+
+      const request = backend.recordedRequests.at(-1);
+      expect(request?.method).toBe("task.cancel");
+      expect(request?.params).toEqual({
+        conversation_id: "conv-1",
+        task_id: "mock-task-1",
+      });
+      expect(desktopStore.getState().activeTask).toBeNull();
+    } finally {
+      unsubscribe();
+    }
+  });
 });

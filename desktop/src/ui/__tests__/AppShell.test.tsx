@@ -42,10 +42,13 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
     // 项目轨道 + 聊天栏
     expect(screen.getByRole("navigation", { name: "项目轨道" })).toBeInTheDocument();
     expect(screen.getByText("星穹项目")).toBeInTheDocument();
-    expect(screen.getByText("奥赫玛的项目聊天")).toBeInTheDocument();
+    expect(screen.getAllByText("奥赫玛的项目聊天")).toHaveLength(2);
     expect(screen.getByRole("button", { name: /新建聊天/ })).toBeEnabled();
-    const conversationButton = screen.getByRole("button", { name: /奥赫玛的项目聊天/ });
-    expect(conversationButton.closest(".conversation-row")?.getAttribute("role")).toBeNull();
+    const conversationButton = document.querySelector<HTMLButtonElement>(
+      ".conversation-row-main",
+    );
+    expect(conversationButton).not.toBeNull();
+    expect(conversationButton!.closest(".conversation-row")?.getAttribute("role")).toBeNull();
     expect(screen.getAllByRole("button", { name: "更多操作" }).length).toBeGreaterThan(0);
     // 角色气泡与用户气泡
     expect(
@@ -542,7 +545,7 @@ describe("AppShell QueueStrip 接线（V0.2 M4）", () => {
       current_conversation_id: "conv-1",
     });
     rerender(<AppShell vm={present()} actions={createActionController(new MockDesktopBackend()).actions} />);
-    expect(screen.getByText("历史遗留未知搭档聊天")).toBeInTheDocument();
+    expect(screen.getAllByText("历史遗留未知搭档聊天")).toHaveLength(2);
     expect(screen.getByTitle("unknown_custom_pair")).toBeInTheDocument();
   });
 });

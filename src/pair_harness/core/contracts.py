@@ -134,12 +134,17 @@ class Message(FrozenModel):
     payload: Mapping[str, Any] = Field(default_factory=dict)
     tts_eligible: bool = False
     created_at: datetime = Field(default_factory=utc_now)
-    # V0.2：消息空间归属与生命周期状态。target/origin/delegation_id
+    # V0.3.2：消息空间归属与生命周期状态。target/origin/delegation_id
     # 由编排器在创建消息时填写；status 由提交/处理路径推进。
     target: MessageTarget | None = None
     origin: MessageOrigin = MessageOrigin.USER
     delegation_id: str | None = None
     status: MessageStatus = MessageStatus.DONE
+    # V0.3.2 工作台分段模型：助手 segment 归属的任务与统一时间线序号。
+    # 两者保存在 message_json 内（不新增 SQLite 表/列）；旧记录为 None，
+    # 前端按 legacy 分组展示，不推测原始交错顺序。
+    task_id: str | None = None
+    timeline_order: int | None = None
 
     @field_validator("text", "payload", mode="before")
     @classmethod
@@ -371,6 +376,9 @@ class ToolRun(FrozenModel):
     title: str
     summary: str = ""
     details: str = ""
+    # V0.3.2：首次观察到工具事件时分配一次，后续更新沿用原序号，
+    # 与助手 segment 在同一时间线上混排。
+    timeline_order: int | None = None
 
 
 class EngineSessionRef(FrozenModel):

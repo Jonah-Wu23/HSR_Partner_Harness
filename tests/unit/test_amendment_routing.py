@@ -94,7 +94,7 @@ async def test_direct_input_while_busy_becomes_user_amendment() -> None:
     )
     try:
         await asyncio.wait_for(engine._started.wait(), timeout=5)
-        active = orchestrator.state.active
+        active = orchestrator.state.get_for_conversation("c")
         assert active is not None and active.engine_turn_id is not None
 
         outcome = await orchestrator.handle_direct_input(
@@ -114,8 +114,9 @@ async def test_direct_input_while_busy_becomes_user_amendment() -> None:
         assert amendment.origin_message_id == outcome.messages[0].message_id
         assert amendment.revision == 1
         # 生命周期回落 RUNNING，任务继续执行
-        assert orchestrator._active_lifecycle is not None
-        assert orchestrator._active_lifecycle.status == TaskStatus.RUNNING
+        lifecycle = orchestrator._active_lifecycles.get(active.task_id)
+        assert lifecycle is not None
+        assert lifecycle.status == TaskStatus.RUNNING
     finally:
         engine._release.set()
         await first
@@ -211,8 +212,9 @@ async def test_direct_input_while_turn_unbound_shows_visible_notice() -> None:
     )
     try:
         await asyncio.wait_for(engine._entered.wait(), timeout=5)
-        assert orchestrator.state.active is not None
-        assert orchestrator.state.active.engine_turn_id is None
+        active = orchestrator.state.get_for_conversation("c")
+        assert active is not None
+        assert active.engine_turn_id is None
 
         outcome = await orchestrator.handle_direct_input(
             conversation_id="c", text="改成先跑冒烟"

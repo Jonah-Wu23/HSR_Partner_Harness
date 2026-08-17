@@ -43,14 +43,24 @@ class FakeAcpConnection:
 
 
 class FakeTransport(JsonlProcessTransport):
-    """接管连接与请求/通知分发，模拟 ACP 服务端。"""
+    """接管连接与请求/通知分发，模拟 ACP 服务端。
+
+    V0.3.2 M3：通知按真实协议携带 ``params.sessionId``，经
+    ``_emit_notification`` 走 transport 的 session 路由；无 session
+    标识的旧形状继续进入通用队列。
+    """
 
     def __init__(self) -> None:
+        super().__init__("unused", connection_factory=None)
         self.connection = FakeAcpConnection()
         self._next_request = 1
         self._pending: dict[int, asyncio.Future] = {}
         self._notifications: asyncio.Queue = asyncio.Queue()
         self.server: "FakeAcpServer | None" = None
+
+    async def _emit_notification(self, message: dict) -> None:
+        if not self._route_session_message(message):
+            await self._notifications.put(message)
 
     async def start(self) -> None:
         return
@@ -91,16 +101,19 @@ class FakeAcpServer:
         self.notifications: list[tuple[str, dict]] = []
         self.responses: list[tuple[int, dict]] = []
         self.sessions: dict[str, str] = {}
+        self.current_session = ""
         self.delayed_completion_task: asyncio.Task | None = None
         self.completion_delay = 0.0
 
     async def _put_completion(self) -> None:
         if self.completion_delay:
             await asyncio.sleep(self.completion_delay)
-        await self.transport._notifications.put(
+        session_id = self.current_session
+        await self.transport._emit_notification(
             {
                 "method": "session/update",
                 "params": {
+                    "sessionId": session_id,
                     "update": {
                         "sessionUpdate": "tool_call_update",
                         "toolCallId": "tool-1",
@@ -127,11 +140,13 @@ class FakeAcpServer:
             return {"configOptions": []}
         if method == "session/prompt":
             session_id = str(params.get("sessionId") or "")
+            self.current_session = session_id
             # 脚本：先推消息与工具事件（session/update 形状），再返回 stop reason
-            await self.transport._notifications.put(
+            await self.transport._emit_notification(
                 {
                     "method": "session/update",
                     "params": {
+                        "sessionId": session_id,
                         "update": {
                             "sessionUpdate": "agent_message_chunk",
                             "content": {"type": "text", "text": "我先看一下项目结构。"},
@@ -139,10 +154,11 @@ class FakeAcpServer:
                     },
                 }
             )
-            await self.transport._notifications.put(
+            await self.transport._emit_notification(
                 {
                     "method": "session/update",
                     "params": {
+                        "sessionId": session_id,
                         "update": {
                             "sessionUpdate": "tool_call",
                             "toolCallId": "tool-1",
@@ -264,10 +280,12 @@ class LegacyShapedServer(FakeAcpServer):
     async def handle_request(self, method: str, params: dict) -> dict:
         if method == "session/prompt":
             session_id = str(params.get("sessionId") or "")
-            await self.transport._notifications.put(
+            self.current_session = session_id
+            await self.transport._emit_notification(
                 {
                     "method": "session/update",
                     "params": {
+                        "sessionId": session_id,
                         "update": {
                             "sessionUpdate": "tool_call",
                             "tool_call_id": "tool-legacy-1",
@@ -278,10 +296,11 @@ class LegacyShapedServer(FakeAcpServer):
                     },
                 }
             )
-            await self.transport._notifications.put(
+            await self.transport._emit_notification(
                 {
                     "method": "session/update",
                     "params": {
+                        "sessionId": session_id,
                         "update": {
                             "sessionUpdate": "tool_call_update",
                             "tool_call_id": "tool-legacy-1",
@@ -395,7 +414,7 @@ async def test_run_turn_maps_permission_request(engine_and_server) -> None:
 
     async def inject_permission() -> None:
         await asyncio.sleep(0.01)
-        await transport._notifications.put(
+        await transport._emit_notification(
             {
                 "id": 42,
                 "method": "session/request_permission",

@@ -28,7 +28,7 @@ def _dt(value: str) -> datetime:
 # O4.3：数据库结构版本。新库由 schema.sql 一次建全，直接标记为该版本；
 # 旧库（user_version=0）按 MIGRATIONS 逐级升级。每次结构变更 +1，
 # 并在 MIGRATIONS 里补对应迁移步骤。
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # 索引 i 对应“从版本 i 升到 i+1”的迁移步骤（每级一条或多条 SQL）。
 MIGRATIONS: tuple[tuple[str, ...], ...] = (
@@ -116,6 +116,20 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         "UPDATE conversations SET account_id = COALESCE("
         "(SELECT account_id FROM projects WHERE projects.project_id = conversations.project_id), "
         "'default-local') WHERE account_id = ''",
+    ),
+    # 版本 8：V0.3.2 多聊天切换期间，旧实现曾用可变全局
+    # pair_id 写消息。会话本身的 pair_id 是固定权威值，据此
+    # 修复已经落库的串搭档记录。
+    (
+        "UPDATE messages SET message_json = json_set("
+        "message_json, '$.pair_id', (SELECT pair_id FROM conversations "
+        "WHERE conversations.conversation_id = messages.conversation_id)) "
+        "WHERE json_valid(message_json) "
+        "AND EXISTS (SELECT 1 FROM conversations "
+        "WHERE conversations.conversation_id = messages.conversation_id) "
+        "AND COALESCE(json_extract(message_json, '$.pair_id'), '') <> "
+        "(SELECT pair_id FROM conversations "
+        "WHERE conversations.conversation_id = messages.conversation_id)",
     ),
 )
 

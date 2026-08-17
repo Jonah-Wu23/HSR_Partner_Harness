@@ -4,6 +4,8 @@ import { useStore } from "zustand";
 import type {
   AccountListItem,
   AccountRecord,
+  ActiveTask,
+  ConversationOpenResult,
   ConversationRecord,
   DesktopEvent,
   DesktopSnapshot,
@@ -53,6 +55,9 @@ export interface DesktopState {
   pair: PairRecord | null;
   pairs: PairSummary[];
   activeTask: DesktopSnapshot["active_task"];
+  /** V0.3.2 M5：全账号活动任务集合（按 conversation_id 索引，同聊天一次只一个活动任务）。
+      busy/activeTask 由本窗口活动聊天在该集合中的条目推导。 */
+  activeTasksByConversation: Record<string, ActiveTask>;
   busy: boolean;
   approvals: PendingApproval[];
   approvalResolvingById: Record<string, boolean>;
@@ -66,11 +71,29 @@ export interface DesktopState {
   lastSequence: number;
   needsBootstrap: boolean;
   /** M2.1：当前连接代次。业务事件和快照必须属于该代次才允许投影。 */
-  streamId: string | number | null;
+  streamId: string | null;
   /** M2.1：bootstrap/缺口期间暂存的同一代次业务事件，快照水合后核对重放。 */
   eventBuffer: DesktopEvent[];
+  /** V0.3.2 M5：本窗口视图 id——多窗口请求 id 与 conversation.open 的 view_id。 */
+  viewId: string;
+  /** V0.3.2 M5：本窗口打开的聊天标签（顺序即标签顺序）。 */
+  openConversationIds: string[];
+  /** V0.3.2 M5：本窗口当前活动标签；全部关闭后为 null（工作区显示空状态）。 */
+  activeConversationId: string | null;
+  /** V0.3.2 M5：本窗口当前标签所属项目；不随 Sidecar 全局导航指针变化。 */
+  activeProjectId: string | null;
   hydrate(snapshot: DesktopSnapshot): void;
   applyEvents(events: DesktopEvent[]): void;
+  /** V0.3.2 M5：装载 conversation.open 的只读结果并打开对应标签（不改全局当前聊天）。 */
+  hydrateConversationView(result: ConversationOpenResult): void;
+  setViewId(viewId: string): void;
+  /** V0.3.2 M5：打开（或聚焦）本窗口标签；已开则聚焦，未开则追加并聚焦。 */
+  openConversationTab(conversationId: string): void;
+  /** V0.3.2 M5：只移除本窗口标签；关闭活动标签后选右侧相邻、无右侧选左侧，
+      最后一个标签关闭后 activeConversationId 为 null。绝不触发后端关闭/取消。 */
+  closeConversationTab(conversationId: string): void;
+  /** V0.3.2 M5：聚焦本窗口已打开的标签。 */
+  setActiveConversation(conversationId: string): void;
   setStatus(status: DesktopStatus, error?: string | null): void;
   setTheme(theme: "dark" | "light"): void;
   setMode(mode: "chat" | "collaboration"): void;
@@ -108,6 +131,7 @@ export type DesktopRenderState = Pick<
   | "pair"
   | "pairs"
   | "activeTask"
+  | "activeTasksByConversation"
   | "busy"
   | "approvals"
   | "approvalResolvingById"
@@ -116,6 +140,10 @@ export type DesktopRenderState = Pick<
   | "voice"
   | "toasts"
   | "configSnapshot"
+  | "viewId"
+  | "openConversationIds"
+  | "activeConversationId"
+  | "activeProjectId"
 >;
 
 const emptyVoice: VoiceState = {
@@ -130,10 +158,33 @@ const emptyVoice: VoiceState = {
   speech_queue_len: 0,
 };
 
+/** V0.3.2 M5：启动 URL 中的窗口参数（独立聊天窗口由 Rust 带 query 创建）。 */
+function readUrlParam(name: string): string | null {
+  if (typeof window === "undefined") return null;
+  const value = new URLSearchParams(window.location.search).get(name);
+  return value && value.length > 0 ? value : null;
+}
+
+function randomViewId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  // 非安全上下文（旧测试环境）下的降级生成器；只要求进程内唯一。
+  return `view-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** 聊天窗口启动时携带的会话 id；有值时首次水合不播种标签，等 conversation.open 打开。 */
+const initialUrlConversationId = readUrlParam("conversation_id");
+
 function createInitialState(): Omit<
   DesktopState,
   | "hydrate"
+  | "hydrateConversationView"
   | "applyEvents"
+  | "setViewId"
+  | "openConversationTab"
+  | "closeConversationTab"
+  | "setActiveConversation"
   | "setStatus"
   | "setTheme"
   | "setMode"
@@ -169,6 +220,7 @@ function createInitialState(): Omit<
     pair: null,
     pairs: [],
     activeTask: null,
+    activeTasksByConversation: {},
     busy: false,
     approvals: [],
     approvalResolvingById: {},
@@ -181,6 +233,10 @@ function createInitialState(): Omit<
     needsBootstrap: false,
     streamId: null,
     eventBuffer: [],
+    viewId: readUrlParam("view_id") ?? randomViewId(),
+    openConversationIds: [],
+    activeConversationId: null,
+    activeProjectId: null,
   };
 }
 
@@ -234,6 +290,25 @@ function indexSnapshot(snapshot: DesktopSnapshot) {
   };
 }
 
+function mergeIndexedConversationCache<T>(
+  existingById: Record<string, T>,
+  existingIdsByConversation: Record<string, string[]>,
+  incomingById: Record<string, T>,
+  incomingIdsByConversation: Record<string, string[]>,
+  replacedConversationIds: string[],
+): { byId: Record<string, T>; idsByConversation: Record<string, string[]> } {
+  const byId = { ...existingById };
+  const idsByConversation = { ...existingIdsByConversation };
+  for (const conversationId of replacedConversationIds) {
+    for (const id of existingIdsByConversation[conversationId] ?? []) {
+      delete byId[id];
+    }
+    idsByConversation[conversationId] = incomingIdsByConversation[conversationId] ?? [];
+  }
+  Object.assign(byId, incomingById);
+  return { byId, idsByConversation };
+}
+
 function upsertIndexed<T>(
   byId: Record<string, T>,
   idsByConversation: Record<string, string[]>,
@@ -256,6 +331,69 @@ function toolRunKey(toolRun: ToolRun): string {
   return `${toolRun.conversation_id}\u0000${toolRun.tool_call_id}`;
 }
 
+/** V0.3.2 M5：从快照建立活动任务集合——active_tasks（新协议全量集合）优先，
+    旧协议只有单值 active_task 时回退为单条目集合。 */
+function activeTasksFromSnapshot(snapshot: DesktopSnapshot): Record<string, ActiveTask> {
+  const map: Record<string, ActiveTask> = {};
+  if (Array.isArray(snapshot.active_tasks)) {
+    for (const task of snapshot.active_tasks) {
+      map[task.conversation_id] = task;
+    }
+    return map;
+  }
+  if (snapshot.active_task) {
+    map[snapshot.active_task.conversation_id] = snapshot.active_task;
+  }
+  return map;
+}
+
+/** V0.3.2 M5：窗口 busy/activeTask 派生——本窗口活动聊天（无标签时回退全局当前聊天）
+    在 activeTasksByConversation 中有任务才算忙；activeTask 只保留本窗口聊天的任务。 */
+function refreshWindowTask(state: {
+  activeConversationId: string | null;
+  activeTasksByConversation: Record<string, ActiveTask>;
+}): { busy: boolean; activeTask: ActiveTask | null } {
+  const conversationId = state.activeConversationId;
+  const activeTask = conversationId
+    ? (state.activeTasksByConversation[conversationId] ?? null)
+    : null;
+  return { busy: activeTask !== null, activeTask };
+}
+
+/** V0.3.2 M5：移除标签后的相邻选择——先右侧相邻，无右侧取左侧，全空为 null。 */
+function closeTabOn(
+  ids: string[],
+  active: string | null,
+  conversationId: string,
+): { ids: string[]; active: string | null } {
+  const index = ids.indexOf(conversationId);
+  if (index === -1) return { ids, active };
+  const nextIds = ids.filter((id) => id !== conversationId);
+  let nextActive = active;
+  if (active === conversationId) {
+    nextActive = nextIds[index] ?? nextIds[index - 1] ?? null;
+  }
+  return { ids: nextIds, active: nextActive };
+}
+
+/** V0.3.2 M5：按当前已知会话修剪标签——会话消失或已归档的标签移除，
+    活动标签被修剪时沿用相邻选择规则。 */
+function pruneOpenTabs(
+  state: Pick<DesktopState, "openConversationIds" | "activeConversationId" | "conversationsById">,
+): { openConversationIds: string[]; activeConversationId: string | null } {
+  let ids = state.openConversationIds;
+  let active = state.activeConversationId;
+  for (const id of state.openConversationIds) {
+    const conversation = state.conversationsById[id];
+    if (conversation === undefined || conversation.archived) {
+      const closed = closeTabOn(ids, active, id);
+      ids = closed.ids;
+      active = closed.active;
+    }
+  }
+  return { openConversationIds: ids, activeConversationId: active };
+}
+
 function pushToast(toasts: StoreToast[], toast: StoreToast): StoreToast[] {
   // V0.2 M4：同 code+message 去重（以 id 为准），最多保留 5 条
   if (toasts.some((item) => item.id === toast.id)) return toasts;
@@ -266,27 +404,118 @@ function snapshotMode(snapshot: DesktopSnapshot): "chat" | "collaboration" {
   return snapshot.current_conversation.last_mode === "collaboration" ? "collaboration" : "chat";
 }
 
+function normalizeStreamId(value: unknown): string | undefined {
+  if (typeof value === "string" || typeof value === "number") {
+    return String(value);
+  }
+  return undefined;
+}
+
 function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): DesktopState {
   // M2.1：旧代次快照不能覆盖新代次状态。state.streamId 为空时是首次水合，
   // 允许任意快照建立代次。直接 hydrate（测试/mock 等无 stream_id 的旧协议）
   // 会清空代次，事件路径另行拒绝无 stream_id 的快照。
+  const snapshotStreamId = normalizeStreamId(snapshot.stream_id);
   if (
     state.streamId !== null &&
-    snapshot.stream_id !== undefined &&
-    snapshot.stream_id !== state.streamId
+    snapshotStreamId !== undefined &&
+    snapshotStreamId !== state.streamId
   ) {
     return state;
   }
-  // V0.2 模式独立（问题 3）：设置类命令的快照不得回推覆盖本地模式。
-  // 只有首次水合（boot）或切换会话时才从后端 last_mode 采纳模式；
-  // 其余增量快照（如推理档位/审批方式修改）保持当前模式不变。
-  const conversationChanged =
-    state.lastSequence >= 0 && state.currentConversationId !== snapshot.current_conversation_id;
-  const mode =
-    state.lastSequence === -1 || conversationChanged ? snapshotMode(snapshot) : state.mode;
-  return {
+  let indexed = indexSnapshot(snapshot);
+  const sameAccount =
+    state.currentAccountId === "" || state.currentAccountId === snapshot.current_account_id;
+  if (sameAccount) {
+    // Sidecar 快照只携带全局当前聊天的消息详情。保留本窗口其他
+    // 已打开标签的缓存，只替换快照明确覆盖的聊天。
+    const replacedConversationIds = Array.from(
+      new Set(
+        [
+          snapshot.current_conversation_id,
+          ...Object.keys(indexed.messageIdsByConversation),
+          ...Object.keys(indexed.toolIdsByConversation),
+          ...Object.keys(indexed.turnIdsByConversation),
+          ...Object.keys(indexed.queueItemsByConversation),
+        ].filter(Boolean),
+      ),
+    );
+    const messages = mergeIndexedConversationCache(
+      state.messagesById,
+      state.messageIdsByConversation,
+      indexed.messagesById,
+      indexed.messageIdsByConversation,
+      replacedConversationIds,
+    );
+    const tools = mergeIndexedConversationCache(
+      state.toolRunsById,
+      state.toolIdsByConversation,
+      indexed.toolRunsById,
+      indexed.toolIdsByConversation,
+      replacedConversationIds,
+    );
+    const turns = mergeIndexedConversationCache(
+      state.turnsById,
+      state.turnIdsByConversation,
+      indexed.turnsById,
+      indexed.turnIdsByConversation,
+      replacedConversationIds,
+    );
+    const queueItemsByConversation = { ...state.queueItemsByConversation };
+    for (const conversationId of replacedConversationIds) {
+      queueItemsByConversation[conversationId] =
+        indexed.queueItemsByConversation[conversationId] ?? [];
+    }
+    indexed = {
+      ...indexed,
+      messagesById: messages.byId,
+      messageIdsByConversation: messages.idsByConversation,
+      toolRunsById: tools.byId,
+      toolIdsByConversation: tools.idsByConversation,
+      turnsById: turns.byId,
+      turnIdsByConversation: turns.idsByConversation,
+      queueItemsByConversation,
+    };
+  }
+  // V0.3.2 M5：快照重建全账号会话目录后修剪标签（已归档/消失的会话关闭标签）。
+  const pruned = pruneOpenTabs({
+    openConversationIds: state.openConversationIds,
+    activeConversationId: state.activeConversationId,
+    conversationsById: indexed.conversationsById,
+  });
+  // 播种初始标签：本窗口没有打开任何标签且非聊天窗口（URL 带 conversation_id
+  // 时等 conversation.open）时，跟随全局当前聊天打开一个标签。这保证主窗口
+  // bootstrap/重连后工作区始终有内容；用户主动关闭全部标签后的下一次水合会
+  // 重新播种一个标签（V0.3.2 已知取舍，见计划 5.9.5 的后续按标签恢复）。
+  const seedInitialTab =
+    pruned.openConversationIds.length === 0 &&
+    initialUrlConversationId === null &&
+    snapshot.current_conversation_id !== "";
+  const openConversationIds = seedInitialTab
+    ? [snapshot.current_conversation_id]
+    : pruned.openConversationIds;
+  const activeConversationId = seedInitialTab
+    ? snapshot.current_conversation_id
+    : pruned.activeConversationId;
+  // V0.3.2 M5：模式和项目上下文跟随本窗口活动标签，而不是跟随
+  // Sidecar 可能被另一个窗口改写的 current_conversation_id。
+  const selectedConversation = activeConversationId
+    ? indexed.conversationsById[activeConversationId]
+    : undefined;
+  const mode = selectedConversation
+    ? selectedConversation.last_mode === "collaboration"
+      ? "collaboration"
+      : "chat"
+    : state.mode;
+  const pairs = snapshot.pairs ?? (snapshot.pair ? [snapshot.pair] : []);
+  const selectedPair = selectedConversation
+    ? pairs.find((item) => item.pair_id === selectedConversation.pair_id) ??
+      state.pairs.find((item) => item.pair_id === selectedConversation.pair_id) ??
+      snapshot.pair
+    : snapshot.pair;
+  const hydrated: DesktopState = {
     ...state,
-    ...indexSnapshot(snapshot),
+    ...indexed,
     status: "ready",
     error: null,
     currentAccountId: snapshot.current_account_id,
@@ -294,19 +523,16 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
     accounts: snapshot.accounts ?? [],
     currentProjectId: snapshot.current_project_id,
     currentConversationId: snapshot.current_conversation_id,
-    pair: snapshot.pair,
-    pairs: snapshot.pairs ?? (snapshot.pair ? [snapshot.pair] : []),
-    activeTask: snapshot.active_task,
-    // M5.4：busy 区分“当前会话自己的任务”与“全局编程任务”。全局任务仍由
-    // activeTask 记录，但当前会话 busy 只在 activeTask 属于本会话时点亮，
-    // A 会话任务不会误画成 B 会话自己的任务。
-    busy: Boolean(snapshot.busy) && snapshot.active_task?.conversation_id === snapshot.current_conversation_id,
+    pair: selectedPair,
+    pairs,
+    // V0.3.2 M5：活动任务集合按快照全量替换；busy/activeTask 由本窗口活动聊天推导。
+    activeTasksByConversation: activeTasksFromSnapshot(snapshot),
     approvals: snapshot.approvals,
     approvalResolvingById: {},
     reviewActive: false,
     reviewText: null,
     voice: snapshot.voice,
-    // M5.4：快照水合保留仍有效的本地 Toast；configSnapshot 只在新快照显式
+    // V0.2 M4：快照水合保留仍有效的本地 Toast；configSnapshot 只在新快照显式
     // 携带 config 字段时覆盖，否则继续使用 config.get 的结果。
     toasts: state.toasts,
     configSnapshot:
@@ -318,9 +544,15 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
     composerTarget: mode === "chat" ? "character" : state.composerTarget,
     lastSequence: snapshot.sequence,
     needsBootstrap: false,
-    streamId: snapshot.stream_id ?? null,
+    streamId: snapshotStreamId ?? null,
     eventBuffer: [],
+    openConversationIds,
+    activeConversationId,
+    activeProjectId:
+      selectedConversation?.project_id ??
+      (activeConversationId ? state.activeProjectId : null),
   };
+  return { ...hydrated, ...refreshWindowTask(hydrated) };
 }
 
 function applyErrorReported(state: DesktopState, event: DesktopEvent): DesktopState {
@@ -349,7 +581,7 @@ function applyErrorReported(state: DesktopState, event: DesktopEvent): DesktopSt
 }
 
 function applyConnectionStatus(state: DesktopState, event: DesktopEvent): DesktopState {
-  const streamId = event.stream_id;
+  const streamId = normalizeStreamId(event.stream_id);
   const status = String(event.payload.status ?? "");
   // connected 总是权威：新代次到达时用它切换 streamId。
   // disconnected 只接受当前代次；旧 reader 迟到的 disconnected 不能覆盖新连接。
@@ -393,17 +625,19 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
   // 协议错误、旧插件事件等没有序号的消息不能参与快照序列校验。
   if (!Number.isFinite(event.sequence)) return state;
   // 旧代次事件直接丢弃，不参与当前业务投影。
-  if (event.stream_id !== undefined && state.streamId !== null && event.stream_id !== state.streamId) {
+  const eventStreamId = normalizeStreamId(event.stream_id);
+  if (eventStreamId !== undefined && state.streamId !== null && eventStreamId !== state.streamId) {
     return state;
   }
   // 快照水合：旧代次快照被 hydrateSnapshotState 拒绝；水合后重放暂存事件。
   if (event.event === "state.snapshot") {
     const snapshot = event.payload as unknown as DesktopSnapshot;
+    const snapshotStreamId = normalizeStreamId(snapshot.stream_id);
     // 事件路径下，当前已有代次时快照必须携带同一 stream_id；无 stream_id
     // 的旧协议快照不能覆盖新代次状态。
     if (
       state.streamId !== null &&
-      (snapshot.stream_id === undefined || snapshot.stream_id !== state.streamId)
+      (snapshotStreamId === undefined || snapshotStreamId !== state.streamId)
     ) {
       return state;
     }
@@ -498,6 +732,7 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
       const payload = event.payload as unknown as {
         message_id: string;
         conversation_id: string;
+        pair_id?: string;
         source: Message["source"];
         kind: Message["kind"];
         delta?: string;
@@ -505,6 +740,9 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
         started?: boolean;
         completed?: boolean;
         reasoning_streaming?: boolean;
+        task_id?: string | null;
+        segment_index?: number | null;
+        timeline_order?: number | null;
       };
       const current = next.messagesById[payload.message_id];
       const delta = String(payload.delta ?? "");
@@ -515,6 +753,9 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
       let text = current?.text ?? "";
       if (payload.reasoning_streaming !== undefined) {
         messagePayload.reasoning_streaming = payload.reasoning_streaming;
+      }
+      if (payload.timeline_order !== undefined && payload.timeline_order !== null) {
+        messagePayload.timeline_order = payload.timeline_order;
       }
       if (reasoningDelta) {
         const reasoning = typeof messagePayload.reasoning === "string" ? messagePayload.reasoning : "";
@@ -530,7 +771,11 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
         : {
             message_id: payload.message_id,
             conversation_id: payload.conversation_id,
-            pair_id: next.pair?.pair_id ?? "",
+            pair_id:
+              payload.pair_id ??
+              next.conversationsById[payload.conversation_id]?.pair_id ??
+              next.pair?.pair_id ??
+              "",
             engine_turn_id: null,
             source: payload.source,
             kind: payload.kind,
@@ -539,6 +784,8 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
             tts_eligible: payload.source === "character" || payload.source === "assistant",
             created_at: new Date().toISOString(),
             streaming: true,
+            task_id: payload.task_id ?? null,
+            timeline_order: payload.timeline_order ?? null,
           };
       next.messagesById = { ...next.messagesById, [message.message_id]: message };
       const ids = next.messageIdsByConversation[payload.conversation_id] ?? [];
@@ -586,10 +833,34 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
       break;
     }
     case "task.busy_changed": {
-      const activeTask = (event.payload.active_task as DesktopSnapshot["active_task"]) ?? null;
-      next.activeTask = activeTask;
-      // M5.4：当前会话 busy 只跟本会话 activeTask；全局任务仍保留在 activeTask。
-      next.busy = Boolean(event.payload.busy) && activeTask?.conversation_id === next.currentConversationId;
+      // V0.3.2 M5：active_tasks 是事件发生后的完整权威集合，整体替换，
+      // 避免增删事件丢失后形成幽灵忙碌状态；旧协议只带单值 active_task 时
+      // 回退为单条目集合。
+      const payload = event.payload as {
+        busy?: boolean;
+        active_task?: DesktopSnapshot["active_task"];
+        active_tasks?: DesktopSnapshot["active_tasks"];
+      };
+      const map: Record<string, ActiveTask> = { ...next.activeTasksByConversation };
+      if (Array.isArray(payload.active_tasks)) {
+        // 新协议：事件携带事件发生后的完整权威集合，直接替换。
+        for (const conversationId of Object.keys(map)) delete map[conversationId];
+        for (const task of payload.active_tasks) {
+          map[task.conversation_id] = task;
+        }
+      } else if (payload.active_task) {
+        // 旧协议兼容：只更新它明确携带的任务，不抹掉其他聊天的活动状态。
+        map[payload.active_task.conversation_id] = payload.active_task;
+      } else if (payload.busy === false) {
+        const conversationId = String(event.payload.conversation_id ?? "");
+        if (conversationId) delete map[conversationId];
+        else {
+          // 没有归属字段的旧全局事件只能按旧语义清空全部活动任务。
+          for (const id of Object.keys(map)) delete map[id];
+        }
+      }
+      next.activeTasksByConversation = map;
+      Object.assign(next, refreshWindowTask(next));
       break;
     }
     case "turn.started":
@@ -665,10 +936,36 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
       // 设置类命令（审批模式/推理档位）的 project.changed 只携带项目字段，
       // 不含 conversations；与现有记录合并，避免渲染层对 undefined 调用 map 白屏。
       const existing = next.projectsById[project.project_id];
+      const merged = existing ? { ...existing, ...project } : project;
       next.projectsById = {
         ...next.projectsById,
-        [project.project_id]: existing ? { ...existing, ...project } : project,
+        [project.project_id]: merged,
       };
+      // V0.3.2 M5：项目归档或其会话被移除/归档时，本窗口相关标签同步清理。
+      const knownConversationIds = new Set(
+        (merged.conversations ?? []).map((item) => item.conversation_id),
+      );
+      if (merged.archived || Array.isArray(project.conversations)) {
+        for (const id of next.openConversationIds) {
+          const conversation = next.conversationsById[id];
+          const belongsToProject =
+            conversation?.project_id === merged.project_id || knownConversationIds.has(id);
+          const shouldClose =
+            belongsToProject &&
+            (merged.archived ||
+              conversation?.archived === true ||
+              (Array.isArray(project.conversations) && !knownConversationIds.has(id)));
+          if (shouldClose) {
+            const closed = closeTabOn(next.openConversationIds, next.activeConversationId, id);
+            next.openConversationIds = closed.ids;
+            next.activeConversationId = closed.active;
+          }
+        }
+        next.activeProjectId = next.activeConversationId
+          ? next.conversationsById[next.activeConversationId]?.project_id ?? null
+          : null;
+        Object.assign(next, refreshWindowTask(next));
+      }
       break;
     }
     case "conversation.changed": {
@@ -690,6 +987,20 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
           const conversations = exists ? replaced : [...replaced, conversation];
           next.projectsById = { ...next.projectsById, [projectId]: { ...project, conversations } };
         }
+        // V0.3.2 M5：会话被归档时关闭本窗口对应标签（只关视图，不取消任务）。
+        if (conversation.archived) {
+          const closed = closeTabOn(
+            next.openConversationIds,
+            next.activeConversationId,
+            conversation.conversation_id,
+          );
+          next.openConversationIds = closed.ids;
+          next.activeConversationId = closed.active;
+          next.activeProjectId = next.activeConversationId
+            ? next.conversationsById[next.activeConversationId]?.project_id ?? null
+            : null;
+          Object.assign(next, refreshWindowTask(next));
+        }
       }
       break;
     }
@@ -699,6 +1010,61 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
     case "voice.state_changed":
       next.voice = { ...next.voice, ...(event.payload.voice as Partial<VoiceState>) };
       break;
+    case "voice.provision_changed": {
+      // V0.3.2 M6：逐项进度直接投影到 configSnapshot.voice.speakers；
+      // 设置页无需猜测请求是否成功，命令结束后仍会再取一次 config.get。
+      const payload = event.payload as {
+        account_id?: string;
+        speaker_id?: string;
+        state?: string;
+        completed?: number;
+        total?: number;
+        error?: string | null;
+        voice_id?: string | null;
+      };
+      if (
+        payload.account_id &&
+        next.currentAccountId &&
+        payload.account_id !== next.currentAccountId
+      ) {
+        // 账号切换后，旧账号的迟到进度事件不能污染新账号的音色状态。
+        break;
+      }
+      const speakerId = String(payload.speaker_id ?? "");
+      if (speakerId) {
+        const config = next.configSnapshot ?? {};
+        const currentVoice =
+          config.voice && typeof config.voice === "object" && !Array.isArray(config.voice)
+            ? (config.voice as Record<string, unknown>)
+            : {};
+        const currentSpeakers = Array.isArray(currentVoice.speakers)
+          ? [...currentVoice.speakers]
+          : [];
+        const index = currentSpeakers.findIndex(
+          (item) =>
+            item &&
+            typeof item === "object" &&
+            String((item as Record<string, unknown>).speaker_id ?? "") === speakerId,
+        );
+        const previous = index >= 0 ? currentSpeakers[index] : {};
+        const updated = {
+          ...(previous && typeof previous === "object" ? previous : {}),
+          speaker_id: speakerId,
+          ...(payload.state !== undefined ? { state: payload.state } : {}),
+          ...(payload.completed !== undefined ? { completed: payload.completed } : {}),
+          ...(payload.total !== undefined ? { total: payload.total } : {}),
+          ...(payload.voice_id !== undefined ? { voice_id: payload.voice_id ?? "" } : {}),
+          error: payload.error ?? null,
+        };
+        if (index >= 0) currentSpeakers[index] = updated;
+        else currentSpeakers.push(updated);
+        next.configSnapshot = {
+          ...config,
+          voice: { ...currentVoice, speakers: currentSpeakers },
+        };
+      }
+      break;
+    }
     case "connection.status": {
       // V0.2 M2-5 连接恢复（问题 12）：断线保留已加载内容（不整屏接管），
       // 恢复后进入 booting 并请求重新 bootstrap 水合最新快照。
@@ -718,6 +1084,21 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
       // V0.2 M4：账号变更事件水合当前账号与账号列表（登录/注册/切换）
       const payload = event.payload as { account?: AccountRecord; accounts?: AccountListItem[] };
       if (payload.account) {
+        // V0.3.2 M5：账号切换（account_id 变化）清空本窗口全部标签；
+        // 同账号的资料更新不影响标签。
+        if (
+          next.currentAccountId !== "" &&
+          payload.account.account_id !== next.currentAccountId
+        ) {
+          next.openConversationIds = [];
+          next.activeConversationId = null;
+          next.activeProjectId = null;
+          next.activeTasksByConversation = {};
+          // 账号切换后不能继续展示上一个账号的语音 Key 掩码、音色 ID
+          // 或模型配置；设置页重新打开时会从新账号 config.get 水合。
+          next.configSnapshot = null;
+          Object.assign(next, refreshWindowTask(next));
+        }
         next.currentAccountId = payload.account.account_id;
         next.currentAccount = payload.account;
       }
@@ -736,6 +1117,158 @@ export const desktopStore = createStore<DesktopState>((set) => ({
       if (hydrated === state) return state;
       // 直接水合（app.bootstrap 响应）也要重放水合前暂存的同代次事件。
       return replayBufferedEvents({ ...hydrated, eventBuffer: state.eventBuffer });
+    });
+  },
+  hydrateConversationView(result) {
+    set((state) => {
+      const conversation = result.conversation;
+      const conversationId = conversation.conversation_id;
+      // 会话目录：只读装载不改变全局当前聊天，仅合并该会话与其项目条目。
+      const conversationsById = {
+        ...state.conversationsById,
+        [conversationId]: conversation,
+      };
+      const projectId = conversation.project_id ?? result.project?.project_id ?? "";
+      let projectsById = state.projectsById;
+      if (projectId) {
+        const existing = projectsById[projectId];
+        const baseConversations =
+          existing?.conversations ?? result.project?.conversations ?? [];
+        const conversations = baseConversations.some(
+          (item) => item.conversation_id === conversationId,
+        )
+          ? baseConversations.map((item) =>
+              item.conversation_id === conversationId ? conversation : item,
+            )
+          : [...baseConversations, conversation];
+        const projectRecord = {
+          ...(result.project as ProjectRecord),
+          conversations,
+        };
+        projectsById = { ...projectsById, [projectId]: projectRecord };
+      }
+      // 消息/工具/Turn/队列按会话整体替换为本次装载结果（全量装载语义），
+      // 其他会话的缓存不受影响。
+      const messagesById = { ...state.messagesById };
+      for (const item of result.messages ?? []) {
+        messagesById[item.message_id] = item;
+      }
+      const messageIdsByConversation = {
+        ...state.messageIdsByConversation,
+        [conversationId]: (result.messages ?? []).map((item) => item.message_id),
+      };
+      const toolRunsById = { ...state.toolRunsById };
+      const toolKeys: string[] = [];
+      for (const run of result.tool_runs ?? []) {
+        const key = toolRunKey(run);
+        toolRunsById[key] = run;
+        toolKeys.push(key);
+      }
+      const toolIdsByConversation = {
+        ...state.toolIdsByConversation,
+        [conversationId]: toolKeys,
+      };
+      const turnsById = { ...state.turnsById };
+      for (const turn of result.turns ?? []) {
+        turnsById[turn.turn_id] = turn;
+      }
+      const turnIdsByConversation = {
+        ...state.turnIdsByConversation,
+        [conversationId]: (result.turns ?? []).map((item) => item.turn_id),
+      };
+      const queueItemsByConversation = {
+        ...state.queueItemsByConversation,
+        [conversationId]: result.queue_items ?? [],
+      };
+      // 活动任务集合只更新本会话条目；其余聊天的运行中任务不受影响。
+      const activeTasksByConversation = { ...state.activeTasksByConversation };
+      if (result.active_task) {
+        activeTasksByConversation[conversationId] = result.active_task;
+      } else {
+        delete activeTasksByConversation[conversationId];
+      }
+      // 打开本窗口标签并聚焦；模式随该会话的 last_mode 采纳。
+      const openConversationIds = state.openConversationIds.includes(conversationId)
+        ? state.openConversationIds
+        : [...state.openConversationIds, conversationId];
+      const mode =
+        conversation.last_mode === "collaboration" ? "collaboration" : "chat";
+      const next: DesktopState = {
+        ...state,
+        conversationsById,
+        projectsById,
+        messagesById,
+        messageIdsByConversation,
+        toolRunsById,
+        toolIdsByConversation,
+        turnsById,
+        turnIdsByConversation,
+        queueItemsByConversation,
+        activeTasksByConversation,
+        openConversationIds,
+        activeConversationId: conversationId,
+        activeProjectId: projectId || null,
+        pair: result.pair ?? state.pair,
+        pairs:
+          result.pair && !state.pairs.some((item) => item.pair_id === result.pair!.pair_id)
+            ? [...state.pairs, result.pair]
+            : state.pairs,
+        mode,
+        // M4.4：进入 chat 模式时发送对象重置为角色。
+        composerTarget: mode === "chat" ? "character" : state.composerTarget,
+      };
+      return { ...next, ...refreshWindowTask(next) };
+    });
+  },
+  setViewId(viewId) {
+    set({ viewId });
+  },
+  openConversationTab(conversationId) {
+    set((state) => {
+      const openConversationIds = state.openConversationIds.includes(conversationId)
+        ? state.openConversationIds
+        : [...state.openConversationIds, conversationId];
+      const activeProjectId =
+        state.conversationsById[conversationId]?.project_id ?? state.activeProjectId;
+      const derived = refreshWindowTask({
+        ...state,
+        activeConversationId: conversationId,
+      });
+      return { openConversationIds, activeConversationId: conversationId, activeProjectId, ...derived };
+    });
+  },
+  closeConversationTab(conversationId) {
+    set((state) => {
+      const closed = closeTabOn(
+        state.openConversationIds,
+        state.activeConversationId,
+        conversationId,
+      );
+      const activeProjectId = closed.active
+        ? state.conversationsById[closed.active]?.project_id ?? null
+        : null;
+      const next = {
+        ...state,
+        openConversationIds: closed.ids,
+        activeConversationId: closed.active,
+        activeProjectId,
+      };
+      return { ...next, ...refreshWindowTask(next) };
+    });
+  },
+  setActiveConversation(conversationId) {
+    set((state) => {
+      // 只允许聚焦已打开的标签；未打开的标签必须走 openConversationTab。
+      if (!state.openConversationIds.includes(conversationId)) return state;
+      const derived = refreshWindowTask({
+        ...state,
+        activeConversationId: conversationId,
+      });
+      return {
+        activeConversationId: conversationId,
+        activeProjectId: state.conversationsById[conversationId]?.project_id ?? null,
+        ...derived,
+      };
     });
   },
   applyEvents(events) {
@@ -794,6 +1327,14 @@ export const selectCurrentProject = (state: DesktopState) =>
 export const selectCurrentConversation = (state: DesktopState) =>
   state.conversationsById[state.currentConversationId];
 
+/** V0.3.2 M5：本窗口当前聊天只由活动标签决定；无标签时返回 null。 */
+export const selectWindowConversationId = (state: DesktopState): string | null =>
+  state.activeConversationId;
+
+/** V0.3.2 M5：本窗口当前项目由活动标签所属项目决定，最后回退到后端快照指针。 */
+export const selectWindowProjectId = (state: DesktopState): string | null =>
+  state.activeProjectId ?? (state.currentProjectId || null);
+
 export const selectDesktopRenderState = (state: DesktopState): DesktopRenderState => ({
   status: state.status,
   error: state.error,
@@ -818,6 +1359,7 @@ export const selectDesktopRenderState = (state: DesktopState): DesktopRenderStat
   pair: state.pair,
   pairs: state.pairs,
   activeTask: state.activeTask,
+  activeTasksByConversation: state.activeTasksByConversation,
   busy: state.busy,
   approvals: state.approvals,
   approvalResolvingById: state.approvalResolvingById,
@@ -826,4 +1368,8 @@ export const selectDesktopRenderState = (state: DesktopState): DesktopRenderStat
   voice: state.voice,
   toasts: state.toasts,
   configSnapshot: state.configSnapshot,
+  viewId: state.viewId,
+  openConversationIds: state.openConversationIds,
+  activeConversationId: state.activeConversationId,
+  activeProjectId: state.activeProjectId,
 });

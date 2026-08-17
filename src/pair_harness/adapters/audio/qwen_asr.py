@@ -24,6 +24,7 @@ from typing import Any
 from pair_harness.core.audio import DASHSCOPE_CONFIG_LOCK
 from pair_harness.core.contracts import AsrEvent
 from pair_harness.core.ports import SpeechRecognizer
+from pair_harness.voice_models import VOICE_ASR_MODEL
 
 # stop() 后等待 SDK 收尾哨兵的超时（秒）
 _TAIL_TIMEOUT_S = 5.0
@@ -178,12 +179,16 @@ class QwenStreamingRecognizer(SpeechRecognizer):
         *,
         api_key: str | None = None,
         ws_url: str | None = None,
-        model: str = "qwen-audio-3.0-asr-flash-streaming",
+        model: str | None = None,
         sample_rate: int = 16_000,
     ) -> None:
+        # ``model`` remains accepted for source compatibility with the old
+        # live-test helper, but it is intentionally ignored.  M6 has one ASR
+        # model and no caller may redirect this adapter to another model.
+        del model
         self.api_key = api_key
         self.ws_url = ws_url
-        self.model = model
+        self.model = VOICE_ASR_MODEL
         self.sample_rate = sample_rate
 
     def _make_sdk(self, bridge_queue: asyncio.Queue[_BridgeEvent], loop: asyncio.AbstractEventLoop):

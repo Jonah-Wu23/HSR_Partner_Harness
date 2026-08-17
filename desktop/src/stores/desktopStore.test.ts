@@ -619,6 +619,61 @@ describe("desktopStore event projection", () => {
     expect(desktopStore.getState().pairs[0].pair_id).toBe(scenario.snapshot.pair.pair_id);
   });
 
+  it("M5: 全局快照不丢失其他已打开聊天的记录与搭档", () => {
+    const scenario = createMockScenario("multi-pair");
+    const baseSequence = scenario.snapshot.sequence;
+    desktopStore.getState().hydrate(scenario.snapshot);
+    desktopStore.getState().openConversationTab("conv-phainon");
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "message.created",
+        sequence: baseSequence + 1,
+        payload: {
+          message: {
+            message_id: "cached-phainon-message",
+            conversation_id: "conv-phainon",
+            pair_id: "phainon_ancient_machine",
+            engine_turn_id: null,
+            source: "character",
+            kind: "character.speech",
+            text: "应保留的白厄聊天记录",
+            payload: {},
+            tts_eligible: true,
+            created_at: "2026-08-17T00:00:00Z",
+          },
+        },
+      },
+    ]);
+
+    // Sidecar 的全局快照仍指向流萤，但本窗口正聚焦白厄标签。
+    desktopStore.getState().hydrate({
+      ...scenario.snapshot,
+      messages: scenario.snapshot.messages.filter(
+        (message) => message.conversation_id === scenario.snapshot.current_conversation_id,
+      ),
+      tool_runs: scenario.snapshot.tool_runs.filter(
+        (run) => run.conversation_id === scenario.snapshot.current_conversation_id,
+      ),
+      turns: scenario.snapshot.turns.filter(
+        (turn) => turn.conversation_id === scenario.snapshot.current_conversation_id,
+      ),
+      queue_items: scenario.snapshot.queue_items.filter(
+        (item) => item.conversation_id === scenario.snapshot.current_conversation_id,
+      ),
+      sequence: baseSequence + 2,
+    });
+    const state = desktopStore.getState();
+    expect(state.messageIdsByConversation["conv-phainon"]).toContain(
+      "cached-phainon-message",
+    );
+    expect(state.messagesById["cached-phainon-message"]?.text).toBe(
+      "应保留的白厄聊天记录",
+    );
+    expect(state.activeConversationId).toBe("conv-phainon");
+    expect(state.pair?.pair_id).toBe("phainon_ancient_machine");
+  });
+
   it("M2.1: 新代次缓存业务事件，快照水合后只重放快照序号之后的事件", () => {
     const base = createMockScenario("single-project").snapshot;
     desktopStore.getState().hydrate({ ...base, stream_id: "old-stream", sequence: 2 });
@@ -708,6 +763,52 @@ describe("desktopStore event projection", () => {
     expect(state.streamId).toBe("new-stream");
     expect(state.status).toBe("ready");
     expect(state.currentConversationId).toBe("conv-1");
+  });
+
+  it("M2.1: Rust 数字代次与 Python 字符串代次归一到同一连接", () => {
+    const base = createMockScenario("single-project").snapshot;
+    desktopStore.getState().hydrate({ ...base, stream_id: "1", sequence: 2 });
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "connection.status",
+        sequence: 10,
+        stream_id: 2,
+        payload: { status: "connected", stream_id: 2 },
+      },
+      {
+        kind: "event",
+        event: "state.snapshot",
+        sequence: 2,
+        stream_id: "2",
+        payload: { ...base, stream_id: "2", sequence: 2 },
+      },
+      {
+        kind: "event",
+        event: "message.created",
+        sequence: 3,
+        stream_id: "2",
+        payload: {
+          message: {
+            message_id: "mixed-stream-msg",
+            conversation_id: "conv-1",
+            pair_id: "pair-1",
+            engine_turn_id: null,
+            source: "assistant",
+            kind: "assistant.natural_language",
+            text: "代次类型一致",
+            payload: {},
+            tts_eligible: true,
+            created_at: "2026-08-14T00:00:00Z",
+          },
+        },
+      },
+    ]);
+
+    const state = desktopStore.getState();
+    expect(state.streamId).toBe("2");
+    expect(state.status).toBe("ready");
+    expect(state.messagesById["mixed-stream-msg"]?.text).toBe("代次类型一致");
   });
 
   it("M2.1: 同代次重复序号直接丢弃", () => {
@@ -890,6 +991,63 @@ describe("desktopStore event projection", () => {
       },
     ]);
     expect(desktopStore.getState().busy).toBe(false);
-    expect(desktopStore.getState().activeTask?.conversation_id).toBe("conv-1");
+    expect(desktopStore.getState().activeTask).toBeNull();
+    expect(desktopStore.getState().activeTasksByConversation["conv-1"]?.conversation_id).toBe(
+      "conv-1",
+    );
+  });
+
+  it("M6: 账号切换后忽略旧账号迟到的音色进度事件", () => {
+    const current = desktopStore.getState().currentAccount;
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "account.changed",
+        sequence: 1,
+        payload: {
+          account: { ...current, account_id: "account-b" },
+        },
+      },
+      {
+        kind: "event",
+        event: "voice.provision_changed",
+        sequence: 2,
+        payload: {
+          account_id: "demo-account",
+          speaker_id: "phainon",
+          state: "completed",
+          completed: 1,
+          total: 6,
+          error: null,
+        },
+      },
+    ]);
+    expect(desktopStore.getState().configSnapshot).toBeNull();
+
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "voice.provision_changed",
+        sequence: 3,
+        payload: {
+          account_id: "account-b",
+          speaker_id: "phainon",
+          state: "creating",
+          completed: 0,
+          total: 6,
+          error: null,
+          voice_id: "voice-phainon",
+        },
+      },
+    ]);
+    expect(desktopStore.getState().configSnapshot?.voice).toMatchObject({
+      speakers: [
+        {
+          speaker_id: "phainon",
+          state: "creating",
+          voice_id: "voice-phainon",
+        },
+      ],
+    });
   });
 });

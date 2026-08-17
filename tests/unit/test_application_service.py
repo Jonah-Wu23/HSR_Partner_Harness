@@ -12,6 +12,7 @@ from pair_harness.adapters.acp.engine import AcpCodingEngine
 from pair_harness.adapters.codex.engine import CodexAppServerEngine
 from pair_harness.adapters.demo import ScriptedCodingEngine
 from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDialogueModel
+from pair_harness.adapters.audio.qwen_voice_customization import CustomizationResult
 from pair_harness.core.contracts import (
     ApprovalMode,
     CharacterTurn,
@@ -363,25 +364,28 @@ async def test_first_complete_reply_generates_title_from_dialogue_only_and_manua
                 text="请陪我规划一下今天的工作。",
             )
         )
-        # 标题生成是后台异步任务（首条消息后异步完成，不打断对话）：
-        # 轮询等待，而不是单次让出事件循环猜时序。
+        # 标题生成是后台异步任务，在首轮完整回复落库后启动，不打断对话。
         title_requests = getattr(service.dialogue_model, "title_requests")
         await _wait_until(
             lambda: len(title_requests) == 1,
-            message="首条消息后应异步生成一次标题请求",
+            message="首轮完整回复后应异步生成一次标题请求",
         )
         _, context = title_requests[0]
-        # 标题必须由对话内容驱动：上下文包含用户消息原文，
-        # 且生成的标题来自该文本（去掉源过滤或喂空上下文都会使测试变红）。
+        # 命名上下文必须同时包含首条用户消息和首轮完整角色回复。
         assert context
         assert any(
             message.source == MessageSource.USER
             and "请陪我规划一下今天的工作" in message.text
             for message in context
         )
+        assert any(
+            message.source == MessageSource.CHARACTER and message.text.strip()
+            for message in context
+        )
         conversation = service.store.get_conversation(conversation_id)
         assert conversation.title != "新聊天"
         assert "请陪我规划" in conversation.title
+        assert conversation_id not in service._title_generation_started
 
         second = await service.handle_command(
             command("conversation-2", "conversation.create", project_id=service.current_project_id)
@@ -411,9 +415,10 @@ async def test_first_complete_reply_generates_title_from_dialogue_only_and_manua
 
 
 @pytest.mark.asyncio
-async def test_streaming_assistant_events_reconcile_to_one_persisted_message(
+async def test_streaming_assistant_events_reconcile_to_persisted_segments(
     tmp_path: Path,
 ) -> None:
+    """V0.3.2 M1：助手输出按工具边界拆段，delta 与持久化消息按 id 对账。"""
     events: list[dict] = []
     service = build_demo_service(
         database=tmp_path / "data" / "pair_harness.db",
@@ -465,16 +470,24 @@ async def test_streaming_assistant_events_reconcile_to_one_persisted_message(
             for event in events
             if event["event"] == "message.finalized"
         }
+        snapshot = service.bootstrap()
         assistant_messages = [
-            message
-            for message in service.bootstrap()["messages"]
-            if message["source"] == "assistant"
+            message for message in snapshot["messages"] if message["source"] == "assistant"
         ]
         assert delta_ids
-        assert len(delta_ids) == 1
+        # 演示脚本：工具前的说明段 + 工具后的最终正文段
+        assert len(assistant_messages) == 2
+        message_ids = [message["message_id"] for message in assistant_messages]
+        assert message_ids[0] in delta_ids
+        # 流式占位必须被 final 收尾；未流式的最终段由 message.created 落库
         assert delta_ids <= finalized_ids
-        assert len(assistant_messages) == 1
-        assert assistant_messages[0]["message_id"] in delta_ids
+        # 分段 id 带 segment index；消息与工具卡共享单调 timeline_order
+        for message in assistant_messages:
+            assert message["task_id"]
+            assert message["timeline_order"] is not None
+        tool_runs = list(snapshot["tool_runs"])
+        assert tool_runs
+        assert all(run["timeline_order"] is not None for run in tool_runs)
         assert service.store.get_conversation(conversation_id).last_mode == "collaboration"
     finally:
         await service.shutdown()
@@ -495,6 +508,16 @@ async def test_voice_commands_only_exchange_state_with_attached_runtime(tmp_path
             self.ptt = False
             self.stopped = False
             self.assistant_voice_enabled = False
+            self.contexts: list[tuple[str, str, str]] = []
+
+        async def set_context_async(self, conversation_id, pair_config) -> None:
+            self.contexts.append(
+                (
+                    conversation_id,
+                    pair_config.pair_id,
+                    pair_config.character.voice_id,
+                )
+            )
 
         def set_assistant_voice_enabled(self, enabled: bool) -> None:
             self.assistant_voice_enabled = enabled
@@ -562,6 +585,8 @@ async def test_voice_commands_only_exchange_state_with_attached_runtime(tmp_path
         assert runtime.listening is True
         assert runtime.ptt is False
         assert runtime.stopped is True
+        assert runtime.contexts[-1][0] == service.current_conversation_id
+        assert runtime.contexts[-1][1] == "phainon_ancient_machine"
         changed = [event for event in events if event["event"] == "voice.state_changed"]
         assert changed
         assert all(event["payload"]["voice"]["speech_queue_len"] == 0 for event in changed)
@@ -661,8 +686,19 @@ async def test_voice_tts_play_skip_and_preview_commands(tmp_path: Path) -> None:
             self.replayed: list[Any] = []
             self.skips = 0
             self.preview_texts: list[str] = []
+            self.preview_voice_ids: list[str | None] = []
+            self.contexts: list[tuple[str, str, str]] = []
             # V0.2 M4：待播队列长度（VoiceMiniPlayer 的 queuedCount）
             self.speech_queue_len = 0
+
+        async def set_context_async(self, conversation_id, pair_config) -> None:
+            self.contexts.append(
+                (
+                    conversation_id,
+                    pair_config.pair_id,
+                    pair_config.character.voice_id,
+                )
+            )
 
         def replay_message(self, message: Any) -> None:
             self.replayed.append(message)
@@ -674,8 +710,8 @@ async def test_voice_tts_play_skip_and_preview_commands(tmp_path: Path) -> None:
             self.skip_playing()
 
         def enqueue_text(self, text: str, *, voice_id: str | None = None) -> None:
-            del voice_id
             self.preview_texts.append(text)
+            self.preview_voice_ids.append(voice_id)
             self.speech_queue_len += 1
 
         async def shutdown(self) -> None:
@@ -688,6 +724,13 @@ async def test_voice_tts_play_skip_and_preview_commands(tmp_path: Path) -> None:
     )
     runtime = FakeVoiceRuntime()
     service.attach_voice_runtime(runtime)  # type: ignore[arg-type]
+    service.store.set_secret(service.current_account_id, "voice.api_key", "test-key")
+    service.store.set_config(
+        service.current_account_id,
+        "voice.profile.phainon.voice_id",
+        "voice-phainon",
+    )
+    service._account_config = None
     try:
         conversation_id = service.current_conversation_id
         result = await service.handle_command(
@@ -706,6 +749,11 @@ async def test_voice_tts_play_skip_and_preview_commands(tmp_path: Path) -> None:
             command("play-1", "voice.tts_play", message_id=message_id)
         )
         assert [m.message_id for m in runtime.replayed] == [message_id]
+        assert runtime.contexts[-1] == (
+            conversation_id,
+            "phainon_ancient_machine",
+            "voice-phainon",
+        )
 
         # tts_skip：调用 runtime.skip_playing
         await service.handle_command(command("skip-1", "voice.tts_skip"))
@@ -714,6 +762,7 @@ async def test_voice_tts_play_skip_and_preview_commands(tmp_path: Path) -> None:
         # preview：文本入队试听
         await service.handle_command(command("preview-1", "voice.preview", text="试听一下"))
         assert runtime.preview_texts == ["试听一下"]
+        assert runtime.preview_voice_ids == ["voice-phainon"]
 
         # V0.2 M4：voice 快照的 speech_queue_len 反映待播队列长度
         snapshot = await service.handle_command(command("b-1", "app.bootstrap"))
@@ -1184,7 +1233,7 @@ async def test_account_onboarding_complete_marks_flag_only_on_command(
 
 @pytest.mark.asyncio
 async def test_config_get_set_masks_secrets(tmp_path: Path) -> None:
-    """V0.2 M3：账号级配置读写；密钥只回显掩码。"""
+    """V0.3.2 M6：对话和语音 Key 都按账号保存且只回显掩码。"""
     service = build_demo_service(
         database=tmp_path / "data" / "pair_harness.db",
         project_root=tmp_path,
@@ -1199,6 +1248,8 @@ async def test_config_get_set_masks_secrets(tmp_path: Path) -> None:
                     "dialogue.base_url": "https://api.deepseek.com",
                     "dialogue.model": "deepseek-chat",
                     "dialogue.api_key": "sk-super-secret-123456",
+                    "voice.api_key": "voice-super-secret-abcdef",
+                    "voice.base_url": "https://dashscope.example/api/v1",
                     "voice.enabled": "false",
                     "assistant_voice_enabled": "true",
                     "vad_enabled": "true",
@@ -1212,15 +1263,176 @@ async def test_config_get_set_masks_secrets(tmp_path: Path) -> None:
         assert config["dialogue"]["model"] == "deepseek-chat"
         assert config["dialogue"]["api_key_masked"] == "sk-s…3456"
         assert "sk-super-secret" not in config["dialogue"]["api_key_masked"]
+        assert config["voice"]["api_key_masked"].endswith("cdef")
+        assert config["voice"]["credential_source"] == "account"
+        assert "voice-super-secret" not in config["voice"]["api_key_masked"]
+        assert config["voice"]["base_url"] == "https://dashscope.example/api/v1"
+        assert config["voice"]["asr_model"] == "qwen-audio-3.0-asr-flash-streaming"
+        assert config["voice"]["tts_model"] == "qwen-audio-3.0-tts-flash"
+        assert config["voice"]["voices_source"] == "account"
+        assert config["voice"]["character_voice"] == ""
+        assert config["voice"]["assistant_voice"] == ""
         # 明文只存 secret_refs，config.get 不回传
         assert "sk-super-secret" not in str(config)
-        # 语音开关类偏好可读写；凭据/模型/音色由应用内置，不回显账号配置
+        assert "voice-super-secret" not in str(config)
+        # 语音开关类偏好可读写；模型/音色由应用固定，不回显为可编辑配置
         assert config["voice"]["enabled"] == "false"
         assert config["voice"]["assistant_voice_enabled"] == "true"
         assert config["voice"]["vad_enabled"] == "true"
         assert config["voice"]["character_voice_name"] == "白厄"
         assert config["voice"]["assistant_voice_name"] == "神秘的古代机械"
-        assert config["voice"]["character_voice"].startswith("qwen-audio-3.0-tts-flash-phainon-")
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_config_get_distinguishes_development_env_voice_key_from_account_byok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "env-only-voice-key")
+    monkeypatch.setenv(
+        "PAIR_HARNESS_DASHSCOPE_HTTP_URL",
+        "https://dashscope.aliyuncs.com/api/v1",
+    )
+    service = build_demo_service(
+        database=tmp_path / "data" / "env-voice.db",
+        project_root=tmp_path,
+    )
+    try:
+        config = await service.handle_command(command("get-env-voice", "config.get"))
+        assert config["voice"]["credential_source"] == "development_env"
+        assert config["voice"]["api_key_masked"] == ""
+        assert config["voice"]["asr_available"] is True
+        assert "env-only-voice-key" not in str(config)
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_voice_provision_completed_event_carries_voice_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pair_harness.adapters.audio.qwen_voice_customization import (
+        QwenVoiceCustomizationClient,
+    )
+
+    events: list[dict] = []
+    service = build_demo_service(
+        database=tmp_path / "data" / "voice-provision.db",
+        project_root=tmp_path,
+        event_sink=events.append,
+    )
+    service.store.set_secret(service.current_account_id, "voice.api_key", "account-key")
+    service.store.set_config(
+        service.current_account_id,
+        "voice.base_url",
+        "https://dashscope.aliyuncs.com/api/v1",
+    )
+    service._account_config = None
+
+    def fake_clone(self, *, prefix: str, url: str) -> CustomizationResult:
+        del self, url
+        return CustomizationResult(
+            voice_id=f"voice-{prefix}", payload={"output": {"voice_id": f"voice-{prefix}"}}
+        )
+
+    def fake_design(
+        self, *, prefix: str, voice_prompt: str, preview_text: str
+    ) -> CustomizationResult:
+        del self, voice_prompt, preview_text
+        return CustomizationResult(
+            voice_id=f"voice-{prefix}", payload={"output": {"voice_id": f"voice-{prefix}"}}
+        )
+
+    monkeypatch.setattr(QwenVoiceCustomizationClient, "create_cloned_voice", fake_clone)
+    monkeypatch.setattr(QwenVoiceCustomizationClient, "create_designed_voice", fake_design)
+    try:
+        result = await service.handle_command(
+            command(
+                "provision-one",
+                "voice.provision",
+                speaker_ids=["phainon"],
+            )
+        )
+        assert result["results"][0]["voice_id"] == "voice-phainon"
+        completed = [
+            event
+            for event in events
+            if event["event"] == "voice.provision_changed"
+            and event["payload"]["state"] == "completed"
+        ]
+        assert completed[-1]["payload"]["voice_id"] == "voice-phainon"
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_voice_preview_accepts_all_account_manifest_voices_without_fallback(
+    tmp_path: Path,
+) -> None:
+    """V0.3.2 M6：设置页的六个专属音色都按各自 ID 试听。"""
+
+    class FakeVoiceRuntime:
+        on_message = lambda self, _message: None
+        speech_queue_len = 0
+
+        def __init__(self) -> None:
+            self.preview_voice_ids: list[str | None] = []
+
+        def enqueue_text(self, text: str, *, voice_id: str | None = None) -> None:
+            del text
+            self.preview_voice_ids.append(voice_id)
+
+        async def shutdown(self) -> None:
+            pass
+
+    service = build_demo_service(
+        database=tmp_path / "data" / "voice-preview.db",
+        project_root=tmp_path,
+    )
+    runtime = FakeVoiceRuntime()
+    service.attach_voice_runtime(runtime)  # type: ignore[arg-type]
+    expected_voice_ids = {
+        "phainon": "voice-phainon",
+        "firefly": "voice-firefly",
+        "sam": "voice-sam",
+        "march7": "voice-march7",
+        "fourth_mirror": "voice-fourth-mirror",
+        "ancient_machine": "voice-ancient-machine",
+    }
+    service.store.set_secret(service.current_account_id, "voice.api_key", "test-key")
+    for speaker_id, voice_id in expected_voice_ids.items():
+        service.store.set_config(
+            service.current_account_id,
+            f"voice.profile.{speaker_id}.voice_id",
+            voice_id,
+        )
+    service._account_config = None
+
+    try:
+        for speaker_id, voice_id in expected_voice_ids.items():
+            await service.handle_command(
+                command(
+                    f"preview-{speaker_id}",
+                    "voice.preview",
+                    text=f"试听{speaker_id}",
+                    voice_id=voice_id,
+                )
+            )
+
+        assert runtime.preview_voice_ids == list(expected_voice_ids.values())
+
+        with pytest.raises(ServiceError) as exc_info:
+            await service.handle_command(
+                command(
+                    "preview-unknown",
+                    "voice.preview",
+                    text="试听陌生音色",
+                    voice_id="voice-not-owned-by-current-account",
+                )
+            )
+        assert exc_info.value.code == "voice_preview_not_allowed"
+        assert runtime.preview_voice_ids == list(expected_voice_ids.values())
     finally:
         await service.shutdown()
 
@@ -1248,16 +1460,27 @@ async def test_config_get_returns_saved_dialogue_reasoning_effort(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_config_set_rejects_voice_credential_keys(tmp_path: Path) -> None:
-    """V0.2 M5：语音 API Key/模型/音色/服务地址由应用内置，客户端一律禁止写入。"""
+async def test_config_set_accepts_voice_credentials_but_locks_models(tmp_path: Path) -> None:
+    """V0.3.2 M6：允许保存用户语音凭据，但模型和音色仍由应用固定。"""
     service = build_demo_service(
         database=tmp_path / "data" / "pair_harness.db",
         project_root=tmp_path,
     )
     try:
+        accepted = await service.handle_command(
+            command(
+                "set-voice",
+                "config.set",
+                updates={
+                    "voice.api_key": "sk-user-voice",
+                    "voice.base_url": "dashscope.example/api/v1",
+                },
+            )
+        )
+        assert accepted["config"]["voice"]["base_url"] == "https://dashscope.example/api/v1"
+        assert accepted["config"]["voice"]["api_key_masked"].endswith("oice")
+
         for key in (
-            "voice.api_key",
-            "voice.base_url",
             "voice.asr_model",
             "voice.tts_model",
             "character_voice",
@@ -1268,22 +1491,49 @@ async def test_config_set_rejects_voice_credential_keys(tmp_path: Path) -> None:
                     command("set-locked", "config.set", updates={key: "user-value"})
                 )
             assert exc_info.value.code == "voice_config_locked"
-        # 混合批次也一样整体拒绝
-        with pytest.raises(ServiceError):
-            await service.handle_command(
-                command(
-                    "set-mixed",
-                    "config.set",
-                    updates={
-                        "engine": "deepseek",
-                        "voice.api_key": "sk-evil",
-                        "vad_enabled": "true",
-                    },
-                )
+        # 允许凭据和普通开关混合保存；锁定字段仍整体拒绝。
+        mixed = await service.handle_command(
+            command(
+                "set-mixed",
+                "config.set",
+                updates={
+                    "voice.api_key": "sk-new-voice",
+                    "vad_enabled": "true",
+                },
             )
-        # 拒绝后原有配置不受影响
+        )
+        assert mixed["config"]["voice"]["vad_enabled"] == "true"
         config = await service.handle_command(command("get-1", "config.get"))
-        assert config["voice"]["vad_enabled"] != "true"
+        assert config["voice"]["vad_enabled"] == "true"
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_voice_snapshot_keeps_old_id_visible_when_regeneration_fails(
+    tmp_path: Path,
+) -> None:
+    """M6：重新生成失败时保留旧音色 ID，但状态仍可显示失败并重试。"""
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        service.store.set_config(
+            service.current_account_id,
+            "voice.profile.phainon.voice_id",
+            "account-phainon-old",
+        )
+        service._voice_provision_states[service.current_account_id] = {
+            "phainon": {"state": "failed", "error": "HTTP 500"}
+        }
+        config = await service.handle_command(command("voice-config", "config.get"))
+        phainon = next(
+            item for item in config["voice"]["speakers"] if item["speaker_id"] == "phainon"
+        )
+        assert phainon["voice_id"] == "account-phainon-old"
+        assert phainon["state"] == "failed"
+        assert phainon["error"] == "HTTP 500"
     finally:
         await service.shutdown()
 

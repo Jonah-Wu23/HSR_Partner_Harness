@@ -49,57 +49,92 @@ class ActiveTurn:
 
 
 class GlobalEngineState:
+    """V0.3.2 M4：并发单位是 conversation。
+
+    - 不同聊天的任务同时 active，互不阻塞（同一账号内）；
+    - 同一聊天最多一个活动任务，第二个 start 被拒绝（BusyTurnError）；
+    - 取消、engine turn 绑定和 finish 全部按 task 精确归属。
+    """
+
     def __init__(self) -> None:
-        self.active: ActiveTurn | None = None
+        self.active_by_conversation: dict[str, ActiveTurn] = {}
+        self.active_by_task: dict[str, ActiveTurn] = {}
 
     def start(self, *, project_id: str, conversation_id: str, task_id: str) -> ActiveTurn:
-        if self.active is not None:
+        existing = self.active_by_conversation.get(conversation_id)
+        if existing is not None:
             raise BusyTurnError(
-                f"task {self.active.task_id} is already running in conversation "
-                f"{self.active.conversation_id}"
+                f"task {existing.task_id} is already running in conversation "
+                f"{existing.conversation_id}"
             )
-        self.active = ActiveTurn(
+        turn = ActiveTurn(
             project_id=project_id,
             conversation_id=conversation_id,
             task_id=task_id,
         )
-        return self.active
+        self.active_by_conversation[conversation_id] = turn
+        self.active_by_task[task_id] = turn
+        return turn
 
-    def bind_engine_turn(self, engine_turn_id: str) -> None:
-        if self.active is None:
-            raise RuntimeError("no active turn")
-        self.active = ActiveTurn(
-            project_id=self.active.project_id,
-            conversation_id=self.active.conversation_id,
-            task_id=self.active.task_id,
+    def get_for_conversation(self, conversation_id: str) -> ActiveTurn | None:
+        return self.active_by_conversation.get(conversation_id)
+
+    def get_for_task(self, task_id: str) -> ActiveTurn | None:
+        return self.active_by_task.get(task_id)
+
+    def active_tasks(self) -> list[ActiveTurn]:
+        """V0.3.2 M4：当前全部活动任务（快照/事件用）。"""
+        return list(self.active_by_task.values())
+
+    def bind_engine_turn(self, task_id: str, engine_turn_id: str) -> None:
+        turn = self.active_by_task.get(task_id)
+        if turn is None:
+            raise RuntimeError(f"no active turn for task {task_id}")
+        updated = ActiveTurn(
+            project_id=turn.project_id,
+            conversation_id=turn.conversation_id,
+            task_id=turn.task_id,
             engine_turn_id=engine_turn_id,
-            cancellation_requested=self.active.cancellation_requested,
+            cancellation_requested=turn.cancellation_requested,
+        )
+        self._store(updated)
+
+    def request_cancel(self, task_id: str) -> None:
+        turn = self.active_by_task.get(task_id)
+        if turn is None:
+            raise RuntimeError(f"no active turn for task {task_id}")
+        self._store(
+            ActiveTurn(
+                project_id=turn.project_id,
+                conversation_id=turn.conversation_id,
+                task_id=turn.task_id,
+                engine_turn_id=turn.engine_turn_id,
+                cancellation_requested=True,
+            )
         )
 
-    def request_cancel(self) -> None:
-        if self.active is None:
-            raise RuntimeError("no active turn")
-        self.active = ActiveTurn(
-            project_id=self.active.project_id,
-            conversation_id=self.active.conversation_id,
-            task_id=self.active.task_id,
-            engine_turn_id=self.active.engine_turn_id,
-            cancellation_requested=True,
-        )
-
-    def mark_cancel_sent(self) -> None:
-        if self.active is None:
+    def mark_cancel_sent(self, task_id: str) -> None:
+        turn = self.active_by_task.get(task_id)
+        if turn is None:
             return
-        self.active = ActiveTurn(
-            project_id=self.active.project_id,
-            conversation_id=self.active.conversation_id,
-            task_id=self.active.task_id,
-            engine_turn_id=self.active.engine_turn_id,
-            cancellation_requested=False,
+        self._store(
+            ActiveTurn(
+                project_id=turn.project_id,
+                conversation_id=turn.conversation_id,
+                task_id=turn.task_id,
+                engine_turn_id=turn.engine_turn_id,
+                cancellation_requested=False,
+            )
         )
+
+    def _store(self, turn: ActiveTurn) -> None:
+        self.active_by_conversation[turn.conversation_id] = turn
+        self.active_by_task[turn.task_id] = turn
 
     def finish(self, task_id: str) -> None:
-        if self.active is None or self.active.task_id != task_id:
+        turn = self.active_by_task.get(task_id)
+        if turn is None:
             raise RuntimeError("cannot finish a task that is not active")
-        self.active = None
-
+        self.active_by_task.pop(task_id, None)
+        if self.active_by_conversation.get(turn.conversation_id) is turn:
+            self.active_by_conversation.pop(turn.conversation_id, None)

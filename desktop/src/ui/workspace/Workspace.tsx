@@ -143,14 +143,13 @@ export function Workspace({
           </div>
           <div className="message-scroll">
             <div className="message-column">
-              {workspace.assistant.messages
-                .filter((message) => message.source !== "tool")
-                .map((message) => (
-                  <MessageBubble key={message.message_id} message={message} pair={pair} />
-                ))}
-              {workspace.assistant.toolRuns.map((run) => (
-                <ToolCard key={run.tool_call_id} run={run} />
-              ))}
+              {workspace.assistant.items.map((item) =>
+                item.kind === "message" ? (
+                  <MessageBubble key={item.message.message_id} message={item.message} pair={pair} />
+                ) : (
+                  <ToolCard key={item.run.tool_call_id} run={item.run} />
+                ),
+              )}
               {workbenchEmpty ? (
                 <div className="workbench-empty">
                   <p>把任务交给 {pair.assistant.name}，执行记录会出现在这里</p>

@@ -1,7 +1,9 @@
 import type {
   AppShellViewModel,
+  ChatTabsViewModel,
   ConversationViewModel,
   ProjectViewModel,
+  WorkbenchItem,
 } from "../contracts/view-models";
 import type { Message, ToolRun } from "../contracts/protocol";
 import type { DesktopRenderState } from "../stores/desktopStore";
@@ -9,7 +11,11 @@ import type { QueueItemView, ToastItem } from "../ui/status/types";
 import type { DelegationCardView } from "../ui/workspace/DelegationCard";
 import type { VoiceMiniPlayerView } from "../ui/composer/VoiceMiniPlayer";
 import type { AccountListItem } from "../ui/gate/types";
-import type { TestResult, VoicePageView } from "../ui/settings/types";
+import type {
+  TestResult,
+  VoicePageView,
+  VoiceSpeakerStatus,
+} from "../ui/settings/types";
 
 type CodingAssistantCodexStatus = "logged_out" | "waiting" | "logged_in" | "expired";
 
@@ -31,9 +37,9 @@ function truncateSingleLine(text: string, max = 24): string {
   return compact.length <= max ? compact : `${compact.slice(0, max)}…`;
 }
 
-/** V0.2 M4：排队条视图——当前会话未撤回的队列项按 position 升序。 */
-function presentQueueItems(state: DesktopRenderState): QueueItemView[] {
-  const items = state.queueItemsByConversation[state.currentConversationId] ?? [];
+/** V0.2 M4：排队条视图——指定会话未撤回的队列项按 position 升序。 */
+function presentQueueItems(state: DesktopRenderState, conversationId: string): QueueItemView[] {
+  const items = state.queueItemsByConversation[conversationId] ?? [];
   return items
     .filter((item) => item.status !== "withdrawn")
     .sort((a, b) => a.position - b.position)
@@ -47,11 +53,14 @@ function presentQueueItems(state: DesktopRenderState): QueueItemView[] {
     }));
 }
 
-/** V0.2 M4：委派卡——当前会话中角色发起的委派（origin=character_delegation
+/** V0.2 M4：委派卡——指定会话中角色发起的委派（origin=character_delegation
     且 delegation_id 非空），取最新一条 user 消息；状态来自真实消息状态。 */
-function presentDelegation(state: DesktopRenderState): DelegationCardView | null {
+function presentDelegation(
+  state: DesktopRenderState,
+  conversationId: string,
+): DelegationCardView | null {
   if (!state.pair) return null;
-  const ids = state.messageIdsByConversation[state.currentConversationId] ?? [];
+  const ids = state.messageIdsByConversation[conversationId] ?? [];
   let delegationMessage: Message | undefined;
   for (const id of ids) {
     const message = state.messagesById[id];
@@ -123,7 +132,7 @@ function presentAccountGate(state: DesktopRenderState): AppShellViewModel["accou
 interface ConfigShape {
   engine?: string;
   dialogue?: Record<string, string>;
-  voice?: Record<string, string | boolean>;
+  voice?: Record<string, unknown>;
   codex?: Record<string, string | null>;
 }
 
@@ -141,14 +150,48 @@ function presentSettings(state: DesktopRenderState): AppShellViewModel["settings
   const activePair =
     state.pairs.find((p) => p.pair_id === activePairId) ?? state.pair;
 
+  // config.get 是 V0.3.2 语音归属的权威来源。只有尚未拉取过配置时才
+  // 回退旧快照里的 pair voice_id，避免把作者音色重新显示为当前账号音色。
+  const hasVoiceConfig = config?.voice !== undefined;
+  const configuredCharacterVoiceId =
+    typeof voiceConfig.character_voice === "string" ? voiceConfig.character_voice : "";
+  const configuredAssistantVoiceId =
+    typeof voiceConfig.assistant_voice === "string" ? voiceConfig.assistant_voice : "";
   const characterVoiceId =
-    activePair?.character.voice_id || String(voiceConfig.character_voice ?? "");
+    configuredCharacterVoiceId || (!hasVoiceConfig ? activePair?.character.voice_id ?? "" : "");
   const characterVoiceName =
-    activePair?.character.name || String(voiceConfig.character_voice_name ?? "");
+    (typeof voiceConfig.character_voice_name === "string"
+      ? voiceConfig.character_voice_name
+      : "") || activePair?.character.name || "";
   const assistantVoiceId =
-    activePair?.assistant.voice_id || String(voiceConfig.assistant_voice ?? "");
+    configuredAssistantVoiceId || (!hasVoiceConfig ? activePair?.assistant.voice_id ?? "" : "");
   const assistantVoiceName =
-    activePair?.assistant.name || String(voiceConfig.assistant_voice_name ?? "");
+    (typeof voiceConfig.assistant_voice_name === "string"
+      ? voiceConfig.assistant_voice_name
+      : "") || activePair?.assistant.name || "";
+
+  const speakers: VoiceSpeakerStatus[] = Array.isArray(voiceConfig.speakers)
+    ? voiceConfig.speakers.flatMap((value): VoiceSpeakerStatus[] => {
+        if (!value || typeof value !== "object") return [];
+        const item = value as Record<string, unknown>;
+        const speakerId = String(item.speaker_id ?? "");
+        if (!speakerId) return [];
+        const state = String(item.state ?? "not_generated");
+        return [
+          {
+            speakerId,
+            name: String(item.name ?? speakerId),
+            method: item.method === "design" ? "design" : "clone",
+            state:
+              state === "creating" || state === "completed" || state === "failed"
+                ? state
+                : "not_generated",
+            voiceId: String(item.voice_id ?? "") || undefined,
+            error: item.error == null ? null : String(item.error),
+          },
+        ];
+      })
+    : [];
 
   const voice: VoicePageView = {
     enabled: Boolean(voiceConfig.enabled === true || voiceConfig.enabled === "true"),
@@ -161,6 +204,28 @@ function presentSettings(state: DesktopRenderState): AppShellViewModel["settings
     assistantVoiceName,
     vadEnabled: Boolean(voiceConfig.vad_enabled === "true"),
     vadStatus: "ready",
+    baseUrl: typeof voiceConfig.base_url === "string" ? voiceConfig.base_url : "",
+    apiKeyMasked:
+      typeof voiceConfig.api_key_masked === "string" ? voiceConfig.api_key_masked : "",
+    wsUrl: typeof voiceConfig.ws_url === "string" ? voiceConfig.ws_url : "",
+    customizationEndpoint:
+      typeof voiceConfig.customization_endpoint === "string"
+        ? voiceConfig.customization_endpoint
+        : "",
+    asrModel: typeof voiceConfig.asr_model === "string" ? voiceConfig.asr_model : undefined,
+    ttsModel: typeof voiceConfig.tts_model === "string" ? voiceConfig.tts_model : undefined,
+    asrAvailable: Boolean(voiceConfig.asr_available === true),
+    credentialSource:
+      voiceConfig.credential_source === "account" ||
+      voiceConfig.credential_source === "development_env"
+        ? voiceConfig.credential_source
+        : "not_configured",
+    voicesSource:
+      voiceConfig.voices_source === "account" ||
+      voiceConfig.voices_source === "env_author"
+        ? voiceConfig.voices_source
+        : "not_provisioned",
+    speakers,
   };
   const idle: TestResult = { state: "idle" };
   return {
@@ -191,44 +256,121 @@ function presentSettings(state: DesktopRenderState): AppShellViewModel["settings
   };
 }
 
+/** V0.3.2 M1：工作台统一时间线——助手 segment 与工具卡按 timeline_order
+    混排；没有序号的消息（用户任务卡、system 卡）保持在序号块之前，
+    legacy 记录（全部无序号）自然回退为“先消息后工具”的旧版分组。 */
+function presentWorkbenchItems(
+  messages: Message[],
+  tools: ToolRun[],
+): WorkbenchItem[] {
+  const messageItems: WorkbenchItem[] = messages
+    .filter((message) => message.source !== "tool")
+    .map((message) => ({
+      kind: "message" as const,
+      order:
+        message.timeline_order ??
+        (typeof message.payload?.timeline_order === "number"
+          ? (message.payload.timeline_order as number)
+          : null),
+      message,
+    }));
+  const toolItems: WorkbenchItem[] = tools.map((run) => ({
+    kind: "tool" as const,
+    order: run.timeline_order ?? null,
+    run,
+  }));
+  const unordered: WorkbenchItem[] = [];
+  const ordered: WorkbenchItem[] = [];
+  for (const item of [...messageItems, ...toolItems]) {
+    if (item.order === null || item.order === undefined) unordered.push(item);
+    else ordered.push(item);
+  }
+  ordered.sort((a, b) => (a.order as number) - (b.order as number));
+  return [...unordered, ...ordered];
+}
+
+/** V0.3.2 M5：聊天标签视图——标题取自会话记录（conversation.changed 实时更新），
+    状态点只反映该聊天自己的运行/排队/待审批状态。 */
+function presentChatTabs(state: DesktopRenderState): ChatTabsViewModel[] {
+  return state.openConversationIds.map((conversationId) => {
+    const conversation = state.conversationsById[conversationId];
+    return {
+      conversationId,
+      title: conversation?.title ?? "未知聊天",
+      isRunning: Boolean(state.activeTasksByConversation[conversationId]),
+      isQueued: (state.queueItemsByConversation[conversationId] ?? []).some(
+        (item) => item.status !== "withdrawn",
+      ),
+      isWaitingApproval: state.approvals.some(
+        (approval) => approval.conversation_id === conversationId,
+      ),
+      isActive: conversationId === state.activeConversationId,
+    };
+  });
+}
+
 export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
   const currentProject = state.projectsById[state.currentProjectId];
-  const currentConversation = state.conversationsById[state.currentConversationId];
-  const activeConversationId = state.activeTask?.conversation_id;
-  const projects: ProjectViewModel[] = Object.values(state.projectsById).map((project) => ({
-    ...project,
-    isCurrent: project.project_id === state.currentProjectId,
-    isBusy: project.project_id === state.activeTask?.project_id,
-    conversations: (project.conversations ?? []).map((conversation): ConversationViewModel => ({
-      ...conversation,
-      isCurrent: conversation.conversation_id === state.currentConversationId,
-      isTaskOrigin: conversation.conversation_id === activeConversationId,
-    })),
-  }));
+  // V0.3.2 M5：工作区渲染本窗口活动标签；没有打开的标签（全部关闭）时为空状态。
+  const workspaceConversationId = state.activeConversationId;
+  const workspaceConversation = workspaceConversationId
+    ? state.conversationsById[workspaceConversationId]
+    : undefined;
+  // V0.3.2 M5：项目级活动标记——该项目下任一聊天有活动任务即点亮。
+  const activeTaskCountByProject: Record<string, number> = {};
+  for (const task of Object.values(state.activeTasksByConversation)) {
+    activeTaskCountByProject[task.project_id] =
+      (activeTaskCountByProject[task.project_id] ?? 0) + 1;
+  }
+  const navigationConversationId = workspaceConversationId ?? state.currentConversationId;
+  const projects: ProjectViewModel[] = Object.values(state.projectsById).map((project) => {
+    const activeTaskCount = activeTaskCountByProject[project.project_id] ?? 0;
+    return {
+      ...project,
+      isCurrent: project.project_id === state.currentProjectId,
+      isBusy: activeTaskCount > 0,
+      activeTaskCount,
+      conversations: (project.conversations ?? []).map(
+        (conversation): ConversationViewModel => {
+          const isRunning = Boolean(
+            state.activeTasksByConversation[conversation.conversation_id],
+          );
+          return {
+            ...conversation,
+            isCurrent: conversation.conversation_id === navigationConversationId,
+            isRunning,
+            isTaskOrigin: isRunning,
+          };
+        },
+      ),
+    };
+  });
 
   // V0.2 消息空间归属（问题 7）：不再只按 source 切栏。
   // user+target=assistant 与 assistant/tool 归工作台；
   // user+target=character、character、system 归角色区。
-  const characterMessages = currentConversation
-    ? messagesFor(state, currentConversation.conversation_id).filter(
+  const characterMessages = workspaceConversation
+    ? messagesFor(state, workspaceConversation.conversation_id).filter(
         (message) =>
           (message.source === "user" && message.target !== "assistant") ||
           message.source === "character" ||
           message.source === "system",
       )
     : [];
-  const assistantMessages = currentConversation
-    ? messagesFor(state, currentConversation.conversation_id).filter(
+  const assistantMessages = workspaceConversation
+    ? messagesFor(state, workspaceConversation.conversation_id).filter(
         (message) =>
           (message.source === "user" && message.target === "assistant") ||
           message.source === "assistant" ||
           message.source === "tool",
       )
     : [];
-  const assistantTools = currentConversation ? toolsFor(state, currentConversation.conversation_id) : [];
+  const assistantTools = workspaceConversation
+    ? toolsFor(state, workspaceConversation.conversation_id)
+    : [];
   const approvalMode = currentProject?.approval_mode ?? "request_approval";
   const currentPairId =
-    currentConversation?.pair_id || state.pair?.pair_id || "phainon_ancient_machine";
+    workspaceConversation?.pair_id || state.pair?.pair_id || "phainon_ancient_machine";
 
   return {
     status: state.status,
@@ -238,34 +380,36 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
       ? {
           projects,
           currentProjectId: state.currentProjectId,
-          currentConversationId: state.currentConversationId,
+          currentConversationId: navigationConversationId,
           currentPair: state.pair,
           pairs: state.pairs?.length ? state.pairs : [state.pair],
         }
       : null,
-    workspace: currentConversation
+    chatTabs: presentChatTabs(state),
+    workspace: workspaceConversation
       ? {
           mode: state.mode,
           character: {
-            conversationId: currentConversation.conversation_id,
+            conversationId: workspaceConversation.conversation_id,
             messages: characterMessages,
             isStreaming: characterMessages.some((message) => message.streaming === true),
           },
           assistant: {
-            conversationId: currentConversation.conversation_id,
+            conversationId: workspaceConversation.conversation_id,
             messages: assistantMessages,
             toolRuns: assistantTools,
+            items: presentWorkbenchItems(assistantMessages, assistantTools),
             busy: state.busy,
             activeTask: state.activeTask,
           },
           // V0.2 M4：委派卡（角色区与工作台之间的视觉桥梁）
-          delegation: presentDelegation(state),
+          delegation: presentDelegation(state, workspaceConversation.conversation_id),
         }
       : null,
     composer: {
       target: state.composerTarget,
       draft: state.composerDraft,
-      enabled: state.status === "ready" && currentConversation !== undefined,
+      enabled: state.status === "ready" && workspaceConversation !== undefined,
       approvalMode,
       reasoningEffort: currentProject?.reasoning_effort ?? "low",
       asrPartial: state.voice.asr_partial,
@@ -285,7 +429,7 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
     },
     error: state.error,
     // V0.2 M4：视觉方案接口（队列 / Toast / 语音播放条 / 账号门 / 设置）
-    queueItems: presentQueueItems(state),
+    queueItems: presentQueueItems(state, workspaceConversationId ?? ""),
     toasts: state.toasts as ToastItem[],
     voiceMiniPlayer: presentVoiceMiniPlayer(state),
     accountGate: presentAccountGate(state),

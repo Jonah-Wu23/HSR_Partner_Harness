@@ -232,23 +232,50 @@ describe("SettingsCenter", () => {
     expect(props.onCodexOAuthStart).toHaveBeenCalled();
   });
 
-  it("语音页常驻赞助卡：微信收款码 + 收款人 + 跳过说明", () => {
+  it("语音页显示用户 BYOK 配置与固定模型，不显示赞助内容", () => {
     renderSettings({ page: "voice" });
     expect(screen.getByText("语音功能")).toBeInTheDocument();
-    expect(screen.getByText("喜欢这个语音功能的话，请给作者一点支持")).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: "微信收款二维码" })).toBeInTheDocument();
-    expect(screen.getByText("请认准收款人：天小可")).toBeInTheDocument();
-    expect(screen.getByText("无论是否打赏，都可以直接开启语音。打赏完全自愿，感谢每一份心意。")).toBeInTheDocument();
-    // 内置音色只读展示，不再有可编辑输入框
+    expect(screen.getByText("DashScope 账号配置")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("填写自己的 DashScope API Key")).toBeInTheDocument();
+    expect(screen.getByText("qwen-audio-3.0-asr-flash-streaming")).toBeInTheDocument();
+    expect(screen.getByText("qwen-audio-3.0-tts-flash")).toBeInTheDocument();
+    expect(screen.queryByText("喜欢这个语音功能的话，请给作者一点支持")).not.toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: "微信收款二维码" })).not.toBeInTheDocument();
+    // 六个音色只展示生成状态，不再提供模型或 voice_id 编辑输入框
     expect(screen.getByText("白厄")).toBeInTheDocument();
     expect(screen.getByText("神秘的古代机械")).toBeInTheDocument();
-    expect(screen.getByLabelText(/古代机械（助手）语音/)).not.toBeChecked();
-    expect(screen.queryByLabelText("API Key")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("ASR 模型")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("TTS 模型")).not.toBeInTheDocument();
   });
 
-  it("语音页关闭总开关后隐藏音色与 VAD 细项，赞助卡保留", () => {
+  it("语音页明确区分开发环境 .env 凭据与账号 BYOK", () => {
+    renderSettings({
+      page: "voice",
+      voice: {
+        enabled: true,
+        assistantVoiceEnabled: false,
+        characterVoiceId: "",
+        characterVoiceName: "白厄",
+        assistantVoiceId: "",
+        assistantVoiceName: "神秘的古代机械",
+        vadEnabled: false,
+        vadStatus: "ready",
+        baseUrl: "https://dashscope.aliyuncs.com/api/v1",
+        apiKeyMasked: "",
+        asrAvailable: true,
+        credentialSource: "development_env",
+      },
+    });
+    expect(
+      screen.getByText("开发环境 .env Key 可用，尚未保存到当前账号"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("开发环境 .env 凭据可用（未保存到账号）"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/当前账号已保存/)).not.toBeInTheDocument();
+  });
+
+  it("语音页关闭总开关后隐藏音色与 VAD 细项，不保留赞助卡", () => {
     renderSettings({
       page: "voice",
       voice: {
@@ -263,40 +290,104 @@ describe("SettingsCenter", () => {
       },
     });
     expect(screen.getByText("语音功能")).toBeInTheDocument();
-    expect(screen.getByText("喜欢这个语音功能的话，请给作者一点支持")).toBeInTheDocument();
+    expect(screen.queryByText("喜欢这个语音功能的话，请给作者一点支持")).not.toBeInTheDocument();
     expect(screen.queryByText("试听")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/语音自动聆听/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/语音自动聆听/)).toBeDisabled();
   });
 
-  it("语音页开关改动即保存；已开启时赞助按钮禁用", () => {
-    const props = renderSettings({ page: "voice" });
-    expect(screen.getByRole("button", { name: "我已打赏，开启语音" })).toBeDisabled();
+  it("语音页保存用户 Key、地址与开关偏好", async () => {
+    const onSaveVoice = vi.fn().mockResolvedValue(undefined);
+    const props = renderSettings({
+      page: "voice",
+      onSaveVoice,
+      voice: {
+        enabled: true,
+        assistantVoiceEnabled: false,
+        characterVoiceId: "",
+        characterVoiceName: "",
+        assistantVoiceId: "",
+        assistantVoiceName: "",
+        vadEnabled: false,
+        vadStatus: "ready",
+        baseUrl: "https://dashscope.aliyuncs.com/api/v1",
+        apiKeyMasked: "sk-····",
+      },
+    });
+
+    fireEvent.change(screen.getByPlaceholderText("留空保留当前 sk-····"), {
+      target: { value: "user-key" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存语音配置" }));
+    await waitFor(() =>
+      expect(onSaveVoice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          apiKey: "user-key",
+          baseUrl: "https://dashscope.aliyuncs.com/api/v1",
+        }),
+      ),
+    );
+
     fireEvent.click(screen.getByLabelText(/语音功能/));
-    expect(props.onSaveVoice).toHaveBeenCalledWith({
+    expect(props.onSaveVoice).toHaveBeenLastCalledWith(expect.objectContaining({
       enabled: false,
       assistantVoiceEnabled: false,
       vadEnabled: false,
+      baseUrl: "https://dashscope.aliyuncs.com/api/v1",
+    }));
+  });
+
+  it("语音页把六项生成委派给 voice.provision", async () => {
+    const onProvisionVoices = vi.fn().mockResolvedValue({
+      status: "completed",
+      completed: 6,
+      total: 6,
+      results: [],
     });
-    fireEvent.click(screen.getByLabelText(/古代机械（助手）语音/));
-    expect(props.onSaveVoice).toHaveBeenLastCalledWith({
-      enabled: true,
-      assistantVoiceEnabled: true,
-      vadEnabled: false,
-    });
-    fireEvent.click(screen.getByLabelText(/语音自动聆听（VAD）/));
-    expect(props.onSaveVoice).toHaveBeenLastCalledWith({
-      enabled: true,
-      assistantVoiceEnabled: false,
-      vadEnabled: true,
-    });
+    renderSettings({ page: "voice", onProvisionVoices });
+
+    fireEvent.click(screen.getByRole("button", { name: "生成 6 个专属音色" }));
+    await waitFor(() =>
+      expect(onProvisionVoices).toHaveBeenCalledWith(
+        ["phainon", "firefly", "sam", "march7", "fourth_mirror", "ancient_machine"],
+        false,
+      ),
+    );
   });
 
   it("语音页试听按钮按音色回传 voice_id 与名称", () => {
-    const props = renderSettings({ page: "voice" });
+    const props = renderSettings({
+      page: "voice",
+      voice: {
+        enabled: true,
+        assistantVoiceEnabled: false,
+        characterVoiceId: "",
+        characterVoiceName: "",
+        assistantVoiceId: "",
+        assistantVoiceName: "",
+        vadEnabled: false,
+        vadStatus: "ready",
+        speakers: [
+          {
+            speakerId: "phainon",
+            name: "白厄",
+            method: "clone",
+            state: "completed",
+            voiceId: "account-phainon-voice",
+          },
+          {
+            speakerId: "ancient_machine",
+            name: "神秘的古代机械",
+            method: "design",
+            state: "completed",
+            voiceId: "account-ancient-machine-voice",
+          },
+        ],
+      },
+    });
     const previewButtons = screen.getAllByRole("button", { name: "试听" });
     fireEvent.click(previewButtons[1]);
     expect(props.onPreviewVoice).toHaveBeenCalledWith(
-      "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19",
+      "account-ancient-machine-voice",
       "神秘的古代机械",
     );
   });

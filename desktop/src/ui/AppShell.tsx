@@ -5,6 +5,7 @@ import type { AppShellViewModel } from "../contracts/view-models";
 import { TopBar } from "./TopBar";
 import { Navigation } from "./navigation/Navigation";
 import { Workspace } from "./workspace/Workspace";
+import { ChatTabs } from "./ChatTabs";
 import { ApprovalBar } from "./approval/ApprovalBar";
 import { Composer } from "./composer/Composer";
 import { QueueStrip } from "./status/QueueStrip";
@@ -183,6 +184,14 @@ export function AppShell({ vm, actions }: AppShellProps) {
         <div className="app-body">
           <Navigation navigation={vm.navigation} theme={vm.theme} actions={actions} />
           <main className="workspace">
+            {/* V0.3.2 M5：本窗口聊天标签栏（无标签时不渲染）；
+                切换标签聚焦本窗口视图，关闭标签只移除视图。 */}
+            <ChatTabs
+              tabs={vm.chatTabs}
+              onSelect={(conversationId) => void actions.openConversationTab(conversationId)}
+              onClose={(conversationId) => actions.closeConversationTab(conversationId)}
+              onOpenWindow={(conversationId) => void actions.openConversationWindow(conversationId)}
+            />
             {vm.status === "disconnected" || vm.status === "error" ? (
               <div className="connection-banner" role="alert">
                 与本地服务失去连接，正在重试。已加载的对话不受影响，发送的消息会在恢复后处理。
@@ -296,15 +305,23 @@ export function AppShell({ vm, actions }: AppShellProps) {
           })
         }
         onSaveVoice={(config) => {
-          // 语音页只有开关类偏好可存；API Key/模型/音色由应用内置
-          void actions.setConfig({
+          // M6：Key 与服务地址属于当前本地账号配置；Key 只由后端写入
+          // secret_refs，前端不保存明文。模型与音色没有可编辑入口。
+          const updates: Record<string, string> = {
             "voice.enabled": String(config.enabled),
             "assistant_voice_enabled": String(config.assistantVoiceEnabled),
             "vad_enabled": String(config.vadEnabled),
-          });
-          // VAD 开关立即作用于运行时；语音关闭时停止聆听
-          void actions.setVadEnabled(config.enabled ? config.vadEnabled : false);
+          };
+          if (config.baseUrl !== undefined) updates["voice.base_url"] = config.baseUrl;
+          if (config.apiKey) updates["voice.api_key"] = config.apiKey;
+          return actions.setConfig(updates).then(() =>
+            // VAD 开关立即作用于运行时；语音关闭时停止聆听。
+            actions.setVadEnabled(config.enabled ? config.vadEnabled : false),
+          );
         }}
+        onProvisionVoices={(speakerIds, replaceExisting) =>
+          actions.provisionVoices(speakerIds, replaceExisting)
+        }
         onPreviewVoice={(voiceId, voiceName) =>
           // V0.2 M4：试听入队即返回成功（合成结果由 voice 状态机接管）
           runTest(

@@ -186,6 +186,59 @@ class SubprocessJsonLineConnection:
 ConnectionFactory = Callable[[], Awaitable[JsonLineConnection]]
 
 
+def _session_route_key(message: dict[str, Any]) -> str | None:
+    """V0.3.2 M3：返回按 session 路由的键。
+
+    只对携带 ``params.sessionId`` 的 ACP 会话事件生效（``session/update``、
+    ``session/request_permission`` 等）；其他通知（Codex item/* 与无
+    session 标识的旧形状）继续走通用队列，保持 Codex 适配器行为不变。
+    """
+    method = message.get("method")
+    if not isinstance(method, str) or not method.startswith("session/"):
+        return None
+    params = message.get("params")
+    if not isinstance(params, dict):
+        return None
+    session_id = params.get("sessionId") or params.get("session_id")
+    if session_id is None:
+        return None
+    return str(session_id)
+
+
+class SessionSubscription:
+    """单个 ACP session 的通知订阅器（V0.3.2 M3）。
+
+    ``next()`` 只返回路由到该 session 的事件；transport 断开时收到同一个
+    真实异常。订阅器由 :meth:`JsonlProcessTransport.subscribe_session`
+    创建，``close()`` 归还路由槽位。
+    """
+
+    def __init__(self, transport: "JsonlProcessTransport", session_id: str) -> None:
+        self._transport = transport
+        self.session_id = session_id
+        self._queue: asyncio.Queue[dict[str, Any] | BaseException] = asyncio.Queue()
+        self._closed = False
+
+    async def next(self) -> dict[str, Any]:
+        if self._closed and self._queue.empty():
+            raise TransportClosed(
+                f"session subscription for {self.session_id} is closed"
+            )
+        item = await self._queue.get()
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._transport._release_subscription(self)
+
+    def _deliver(self, item: dict[str, Any] | BaseException) -> None:
+        self._queue.put_nowait(item)
+
+
 class JsonlProcessTransport:
     """One-reader JSONL RPC transport with request correlation."""
 
@@ -206,6 +259,12 @@ class JsonlProcessTransport:
         self._notifications: asyncio.Queue[dict[str, Any] | BaseException] = asyncio.Queue()
         self._generation = 0
         self._next_id = 1
+        # V0.3.2 M3：按 session 路由的 ACP 会话事件订阅器。一个 session
+        # 同时只允许一个活动订阅器（与 Reasonix 同 session 单 prompt 一致）。
+        self._session_subscriptions: dict[str, SessionSubscription] = {}
+        # 未路由/未知 session 的事件保留在诊断缓冲中，绝不投给任意任务。
+        self._session_diagnostics: deque[str] = deque(maxlen=50)
+        self._failure_broadcast = False
         # 坏行容错计数（O1.3）：读循环跳过无法解析的行，不中断
         self.bad_line_count = 0
 
@@ -227,6 +286,7 @@ class JsonlProcessTransport:
         self._generation += 1
         # M1.3：每次重连使用新的通知队列；旧 reader 的异常只进旧队列。
         self._notifications = asyncio.Queue()
+        self._failure_broadcast = False
         if self.connection_factory is not None:
             self._connection = await self.connection_factory()
         else:
@@ -277,6 +337,56 @@ class JsonlProcessTransport:
             raise item
         return item
 
+    def subscribe_session(self, session_id: str) -> SessionSubscription:
+        """V0.3.2 M3：订阅指定 ACP session 的通知。
+
+        一个 session 同时只允许一个活动订阅器——与 Reasonix 的
+        ``session already has an active prompt`` 限制一致；重复订阅是路由
+        缺陷，直接抛错暴露。
+        """
+        if session_id in self._session_subscriptions:
+            raise RuntimeError(
+                f"session {session_id} already has an active notification subscriber"
+            )
+        subscription = SessionSubscription(self, session_id)
+        self._session_subscriptions[session_id] = subscription
+        return subscription
+
+    def _release_subscription(self, subscription: SessionSubscription) -> None:
+        current = self._session_subscriptions.get(subscription.session_id)
+        if current is subscription:
+            self._session_subscriptions.pop(subscription.session_id, None)
+
+    def _route_session_message(self, message: dict[str, Any]) -> bool:
+        """按 sessionId 投递会话事件；返回是否已被 session 路由消费。"""
+        session_id = _session_route_key(message)
+        if session_id is None:
+            return False
+        subscription = self._session_subscriptions.get(session_id)
+        if subscription is not None:
+            subscription._deliver(message)
+            return True
+        # 未知 session：保留可观测诊断，绝不悄悄塞给任意任务/通用队列。
+        method = message.get("method")
+        self._session_diagnostics.append(
+            f"unrouted session event: method={method} sessionId={session_id}"
+        )
+        logger.warning(
+            "session notification without active subscriber dropped to diagnostics: "
+            "method=%s sessionId=%s",
+            method,
+            session_id,
+        )
+        return True
+
+    def _broadcast_failure_to_subscriptions(self, exc: BaseException) -> None:
+        """transport 断开：向所有活动订阅器广播同一个真实异常。"""
+        if self._failure_broadcast:
+            return
+        self._failure_broadcast = True
+        for subscription in tuple(self._session_subscriptions.values()):
+            subscription._deliver(exc)
+
     async def _write_message(self, message: dict[str, Any]) -> None:
         if self._connection is None:
             raise TransportClosed("transport is not started")
@@ -326,10 +436,13 @@ class JsonlProcessTransport:
                     logger.warning("忽略无法解析的 JSONL 行: %r", line[:200])
                     continue
                 if "id" in message and "method" in message:
-                    # O3.1：服务端发起的请求（如 item/commandExecution/requestApproval）
-                    # 带 JSON-RPC id 与方法名，与通知同队列消费，由调用方
-                    # （run_turn 循环）经 respond() 回复；不能当作客户端请求的响应。
-                    await notifications.put(message)
+                    # O3.1：服务端发起的请求（如 item/commandExecution/requestApproval
+                    # 或 session/request_permission）带 JSON-RPC id 与方法名，
+                    # 与通知同队列消费，由调用方（run_turn 循环）经 respond()
+                    # 回复；不能当作客户端请求的响应。V0.3.2 M3：携带
+                    # sessionId 的会话请求先走 session 路由。
+                    if not self._route_session_message(message):
+                        await notifications.put(message)
                 elif "id" in message:
                     request_id = int(message["id"])
                     if self._pending_generation.get(request_id) != generation:
@@ -343,7 +456,8 @@ class JsonlProcessTransport:
                     else:
                         future.set_result(message.get("result", {}))
                 elif "method" in message:
-                    await notifications.put(message)
+                    if not self._route_session_message(message):
+                        await notifications.put(message)
         except asyncio.CancelledError:
             return
         except BaseException as exc:
@@ -355,10 +469,15 @@ class JsonlProcessTransport:
                 self._pending.pop(request_id, None)
                 if not future.done():
                     future.set_exception(exc)
+            # V0.3.2 M3：断开对全部 session 订阅器广播同一真实异常。
+            self._broadcast_failure_to_subscriptions(exc)
             # 旧 reader 的异常只放进自己代次的通知队列，不影响新队列。
             await notifications.put(exc)
 
     async def _close_connection(self) -> None:
+        # V0.3.2 M3：主动关闭也要让所有 session 订阅器收到真实异常，
+        # 不能让 next() 永久悬挂。
+        self._broadcast_failure_to_subscriptions(TransportClosed("transport closed"))
         reader_task = self._reader_task
         self._reader_task = None
         if reader_task is not None and reader_task is not asyncio.current_task():

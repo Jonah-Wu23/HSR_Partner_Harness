@@ -17,8 +17,25 @@ use tauri::{Emitter, Manager, State};
 
 type PendingMap = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<Value>>>>;
 
+/// V0.3.2 M5：独立聊天窗口的元数据（label → 归属会话），用于改名同步标题。
+#[derive(Debug, Clone)]
+struct ChatWindowMeta {
+    conversation_id: String,
+    #[allow(dead_code)]
+    project_id: String,
+}
+
 /// 桌面请求等待 Sidecar 响应的默认上限。
 const REQUEST_TIMEOUT_SECS: u64 = 30;
+
+/// 音色生成会串行调用多个真实远程接口，不适用普通请求的
+/// 30 秒上限。Sidecar 断开时 `fail_pending` 仍会立即释放等待方。
+fn request_timeout_secs(request: &Value) -> Option<u64> {
+    match request.get("method").and_then(Value::as_str) {
+        Some("voice.provision") => None,
+        _ => Some(REQUEST_TIMEOUT_SECS),
+    }
+}
 
 /// 自动重连退避起点（秒）：首次立即重试，失败后按 1s → 2s → 4s → 8s → 15s 递增。
 const BACKOFF_START_SECS: u64 = 1;
@@ -82,6 +99,8 @@ struct BackendState {
     /// 本进程侧的单调事件序号：跟踪 Sidecar 事件的最大序号，合成事件取其后续，
     /// 保证前端序列号校验在断线-重连之间不断层。
     last_sequence: AtomicU64,
+    /// V0.3.2 M5：独立聊天窗口登记表（窗口 label → 会话元数据）。
+    chat_windows: Mutex<HashMap<String, ChatWindowMeta>>,
 }
 
 fn repository_root() -> PathBuf {
@@ -97,6 +116,56 @@ fn repository_root() -> PathBuf {
 fn next_stream_id() -> u64 {
     static NEXT_STREAM_ID: AtomicU64 = AtomicU64::new(0);
     NEXT_STREAM_ID.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+/// V0.3.2 M5：进程内唯一的 v4 形态 UUID（窗口 label / view_id 用）。
+/// 窗口 label 只需在本进程生命周期内唯一；为避免引入新依赖，用时间戳 + 计数器
+/// 经 xorshift 混合生成，并按 RFC 4122 置版本与变体位。
+fn random_uuid_v4() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0);
+    let count = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let mut state = nanos ^ count.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let mut next_u64 = move || {
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    };
+    let a = next_u64();
+    let b = next_u64();
+    let c = next_u64();
+    let d = next_u64();
+    format!(
+        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
+        a as u32,
+        (b >> 48) as u16,
+        (b >> 32) & 0x0FFF,
+        (((c >> 48) as u16) & 0x3FFF) | 0x8000,
+        ((c & 0x0000_FFFF) << 32) | (d & 0xFFFF_FFFF),
+    )
+}
+
+/// V0.3.2 M5：URL query 组件百分号编码（保留非保留字符 A-Za-z0-9-_.~）。
+fn encode_query_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+/// V0.3.2 M5：聊天窗口标题（会话名 + 应用名）。
+fn chat_window_title(title: &str) -> String {
+    format!("{title} · HSR Partner Harness")
 }
 
 fn python_command(root: &PathBuf) -> PathBuf {
@@ -216,6 +285,9 @@ fn configured_env_file(app: &tauri::AppHandle, root: &Path) -> Option<PathBuf> {
         candidates.push(PathBuf::from(value));
     }
     candidates.push(root.join(".env"));
+    // 开发机直接运行 target/release EXE 时，Sidecar 的 runtime_root 位于
+    // resources 目录，不能再靠 current_dir 反推出仓库根目录。
+    candidates.push(repository_root().join(".env"));
     if let Ok(current_dir) = std::env::current_dir() {
         candidates.push(current_dir.join(".env"));
     }
@@ -240,6 +312,66 @@ fn configured_env_file(app: &tauri::AppHandle, root: &Path) -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.is_file())
 }
 
+fn env_file_has_real_config(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .map(|contents| env_content_has_real_config(&contents))
+        .unwrap_or(false)
+}
+
+fn env_content_has_real_config(contents: &str) -> bool {
+    let mut dialogue_base = false;
+    let mut dialogue_key = false;
+    let mut dialogue_model = false;
+    for raw_line in contents.lines() {
+        let line = raw_line.trim();
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((raw_key, raw_value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = raw_key.trim();
+        let value = raw_value.trim().trim_matches(|ch| ch == '\'' || ch == '"');
+        if value.is_empty() || value.starts_with("replace-with-") {
+            continue;
+        }
+        match key {
+            "PAIR_HARNESS_DIALOGUE_BASE_URL" => dialogue_base = true,
+            "PAIR_HARNESS_DIALOGUE_API_KEY" => dialogue_key = true,
+            "PAIR_HARNESS_DIALOGUE_MODEL" => dialogue_model = true,
+            _ => {}
+        }
+    }
+    if let Some(value) = env_content_flag(contents, "PAIR_HARNESS_REAL") {
+        return value;
+    }
+    if env_content_flag(contents, "PAIR_HARNESS_DEMO") == Some(true) {
+        return false;
+    }
+    dialogue_base && dialogue_key && dialogue_model
+}
+
+fn env_content_flag(contents: &str, wanted_key: &str) -> Option<bool> {
+    for raw_line in contents.lines() {
+        let line = raw_line.trim();
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((raw_key, raw_value)) = line.split_once('=') else {
+            continue;
+        };
+        if raw_key.trim() != wanted_key {
+            continue;
+        }
+        let value = raw_value
+            .trim()
+            .trim_matches(|ch| ch == '\'' || ch == '"')
+            .to_ascii_lowercase();
+        return match value.as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        };
+    }
+    None
+}
+
 fn use_real_backend(env_file: Option<&Path>) -> bool {
     if let Some(value) = env_flag("PAIR_HARNESS_REAL") {
         return value;
@@ -247,7 +379,11 @@ fn use_real_backend(env_file: Option<&Path>) -> bool {
     if env_flag("PAIR_HARNESS_DEMO") == Some(true) {
         return false;
     }
-    env_file.is_some()
+    env_file.is_some_and(env_file_has_real_config)
+}
+
+fn stream_id_value(stream_id: u64) -> String {
+    stream_id.to_string()
 }
 
 /// 拉起一个 Sidecar 进程并取回它的 stdin/stdout 句柄（不启动读取线程）。
@@ -350,8 +486,8 @@ impl BackendState {
                 "kind": "event",
                 "event": "connection.status",
                 "sequence": self.next_event_sequence(),
-                "stream_id": stream_id,
-                "payload": {"status": "disconnected", "stream_id": stream_id}
+                "stream_id": stream_id_value(stream_id),
+                "payload": {"status": "disconnected", "stream_id": stream_id_value(stream_id)}
             }),
         );
         let _ = self.app.emit(
@@ -360,7 +496,7 @@ impl BackendState {
                 "kind": "event",
                 "event": "error.reported",
                 "sequence": self.next_event_sequence(),
-                "stream_id": stream_id,
+                "stream_id": stream_id_value(stream_id),
                 "payload": {
                     "code": "backend_disconnected",
                     "message": message,
@@ -381,8 +517,8 @@ impl BackendState {
                 "kind": "event",
                 "event": "connection.status",
                 "sequence": self.next_event_sequence(),
-                "stream_id": stream_id,
-                "payload": {"status": "connected", "stream_id": stream_id}
+                "stream_id": stream_id_value(stream_id),
+                "payload": {"status": "connected", "stream_id": stream_id_value(stream_id)}
             }),
         );
     }
@@ -460,6 +596,7 @@ fn spawn_backend(app: &tauri::AppHandle, debug_console: bool) -> Result<Arc<Back
         last_error: Mutex::new(None),
         crash_streak: Mutex::new(0),
         last_sequence: AtomicU64::new(0),
+        chat_windows: Mutex::new(HashMap::new()),
     });
     start_reader(&state, stdout, stream_id);
     Ok(state)
@@ -490,7 +627,7 @@ fn start_reader(state: &Arc<BackendState>, stdout: ChildStdout, stream_id: u64) 
                         "kind": "event",
                         "event": "error.reported",
                         "sequence": state.next_event_sequence(),
-                        "stream_id": stream_id,
+                        "stream_id": stream_id_value(stream_id),
                         "payload": {"code": "invalid_sidecar_json", "message": "Sidecar 输出不是合法 JSON"}
                     }),
                 );
@@ -525,6 +662,8 @@ fn start_reader(state: &Arc<BackendState>, stdout: ChildStdout, stream_id: u64) 
                     }
                 }
             } else {
+                // V0.3.2 M5：会话改名时同步所有打开该会话的聊天窗口标题。
+                sync_chat_window_titles(&state, &value);
                 let _ = state.app.emit("sidecar://event", value);
             }
         }
@@ -575,6 +714,43 @@ fn fail_pending(pending: &PendingMap, message: &str) {
     }
 }
 
+/// V0.3.2 M5：conversation.changed 事件到达时，更新所有打开该会话的
+/// 独立聊天窗口标题（标签栏标题由前端各自消费事件更新）。
+fn sync_chat_window_titles(state: &Arc<BackendState>, value: &Value) {
+    if value.get("event").and_then(Value::as_str) != Some("conversation.changed") {
+        return;
+    }
+    let Some(conversation) = value.get("payload").and_then(|payload| payload.get("conversation"))
+    else {
+        return;
+    };
+    let Some(conversation_id) = conversation
+        .get("conversation_id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let title = conversation
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let window_title = chat_window_title(title);
+    let labels: Vec<String> = state
+        .chat_windows
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, meta)| meta.conversation_id == conversation_id)
+        .map(|(label, _)| label.clone())
+        .collect();
+    for label in labels {
+        if let Some(window) = state.app.get_webview_window(&label) {
+            let _ = window.set_title(&window_title);
+        }
+    }
+}
+
 fn encode_request_line(request: &Value) -> Result<Vec<u8>, String> {
     let mut line = serde_json::to_vec(request).map_err(|error| error.to_string())?;
     line.push(b'\n');
@@ -592,6 +768,7 @@ async fn desktop_request(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "桌面请求缺少 id".to_string())?
         .to_string();
+    let timeout_secs = request_timeout_secs(&request);
     let line = encode_request_line(&request)?;
     let (sender, receiver) = tokio::sync::oneshot::channel();
     state.pending.lock().unwrap().insert(id.clone(), sender);
@@ -624,17 +801,27 @@ async fn desktop_request(
         return Err(error);
     }
 
-    match tokio::time::timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), receiver).await {
-        Ok(Ok(value)) => Ok(value),
-        Ok(Err(_)) => {
-            state.pending.lock().unwrap().remove(&id);
-            Err("等待 Sidecar 响应失败：响应通道已关闭".to_string())
+    if let Some(seconds) = timeout_secs {
+        match tokio::time::timeout(Duration::from_secs(seconds), receiver).await {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(_)) => {
+                state.pending.lock().unwrap().remove(&id);
+                Err("等待 Sidecar 响应失败：响应通道已关闭".to_string())
+            }
+            Err(_) => {
+                state.pending.lock().unwrap().remove(&id);
+                Err(format!(
+                    "backend_timeout: 等待 Sidecar 响应超过 {seconds} 秒（id={id}）"
+                ))
+            }
         }
-        Err(_) => {
-            state.pending.lock().unwrap().remove(&id);
-            Err(format!(
-                "backend_timeout: 等待 Sidecar 响应超过 {REQUEST_TIMEOUT_SECS} 秒（id={id}）"
-            ))
+    } else {
+        match receiver.await {
+            Ok(value) => Ok(value),
+            Err(_) => {
+                state.pending.lock().unwrap().remove(&id);
+                Err("等待 Sidecar 响应失败：响应通道已关闭".to_string())
+            }
         }
     }
 }
@@ -682,6 +869,50 @@ async fn sidecar_reconnect(state: State<'_, Arc<BackendState>>) -> Result<Value,
     Ok(json!({ "reconnected": true }))
 }
 
+/// V0.3.2 M5：打开独立聊天窗口。
+///
+/// - 每次调用创建独立 WebviewWindow；label 用 `chat-{uuid}`（同一聊天允许
+///   开多个窗口，不能用 conversation_id 做 label）。
+/// - 窗口 URL 携带编码后的 conversation_id 与新 view_id，React 启动后调用
+///   conversation.open 装载该聊天。
+/// - 新窗口与主窗口共享同一个 Rust BackendState、Python Sidecar 与事件广播。
+#[tauri::command]
+async fn open_chat_window(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<BackendState>>,
+    conversation_id: String,
+    project_id: String,
+    title: String,
+) -> Result<String, String> {
+    let window_id = random_uuid_v4();
+    let view_id = random_uuid_v4();
+    let label = format!("chat-{window_id}");
+    let url_path = format!(
+        "index.html?conversation_id={}&view_id={}",
+        encode_query_component(&conversation_id),
+        encode_query_component(&view_id),
+    );
+    let window = tauri::WebviewWindowBuilder::new(
+        &app,
+        &label,
+        tauri::WebviewUrl::App(std::path::PathBuf::from(url_path)),
+    )
+    .title(chat_window_title(&title))
+    .inner_size(980.0, 700.0)
+    .min_inner_size(720.0, 520.0)
+    .build()
+    .map_err(|error| format!("创建聊天窗口失败：{error}"))?;
+    let _ = window.show();
+    state.chat_windows.lock().unwrap().insert(
+        label.clone(),
+        ChatWindowMeta {
+            conversation_id,
+            project_id,
+        },
+    );
+    Ok(label)
+}
+
 fn stop_backend(state: &BackendState) {
     state.shutdown.store(true, Ordering::SeqCst); // 主动关闭：禁止自动重连
     if let Some(mut stdin) = state.stdin.lock().unwrap().take() {
@@ -723,10 +954,31 @@ pub fn run() {
             app.manage(state);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![desktop_request, sidecar_reconnect])
+        .on_window_event(|window, event| {
+            // V0.3.2 M5：聊天窗口销毁时从登记表移除（不影响其他窗口与 Sidecar）。
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                if let Some(state) = window.app_handle().try_state::<Arc<BackendState>>() {
+                    state.chat_windows.lock().unwrap().remove(window.label());
+                }
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            desktop_request,
+            sidecar_reconnect,
+            open_chat_window
+        ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
+            // V0.3.2 M5：关闭任意聊天窗口只是销毁该窗口，不触发退出流程；
+            // 只有最后一个应用窗口退出（ExitRequested 且已无窗口）才进入退出，
+            // 在 Exit 时停止 Sidecar。仍存在窗口时拒绝退出请求（防御）。
+            if let tauri::RunEvent::ExitRequested { code: None, ref api, .. } = event {
+                if !app_handle.webview_windows().is_empty() {
+                    api.prevent_exit();
+                    return;
+                }
+            }
             if let tauri::RunEvent::Exit = event {
                 if let Some(state) = app_handle.try_state::<Arc<BackendState>>() {
                     stop_backend(&state);
@@ -742,7 +994,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        backoff_delay, classify_exit, debug_console_requested, encode_request_line, fail_pending,
+        backoff_delay, classify_exit, debug_console_requested, encode_request_line,
+        env_content_has_real_config, fail_pending, request_timeout_secs, stream_id_value,
         ExitClass, PendingMap,
     };
     use serde_json::json;
@@ -776,6 +1029,18 @@ mod tests {
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&line[..line.len() - 1]).unwrap()["id"],
             "r1"
+        );
+    }
+
+    #[test]
+    fn voice_provision_is_not_limited_by_the_default_request_timeout() {
+        assert_eq!(
+            request_timeout_secs(&json!({"method": "voice.provision"})),
+            None
+        );
+        assert_eq!(
+            request_timeout_secs(&json!({"method": "config.get"})),
+            Some(30)
         );
     }
 
@@ -867,5 +1132,56 @@ mod tests {
         // 第 5 次起 16s 被截断为上限 15s，此后维持上限
         assert_eq!(backoff_delay(5), Duration::from_secs(15));
         assert_eq!(backoff_delay(100), Duration::from_secs(15));
+    }
+
+    #[test]
+    fn stream_id_is_serialized_as_a_string() {
+        assert_eq!(stream_id_value(42), "42");
+    }
+
+    // ------------------------------------------------- V0.3.2 M5 聊天窗口辅助
+
+    #[test]
+    fn query_component_encodes_reserved_characters() {
+        use super::{chat_window_title, encode_query_component};
+        assert_eq!(encode_query_component("conv-1"), "conv-1");
+        assert_eq!(encode_query_component("a b&c=d"), "a%20b%26c%3Dd");
+        assert_eq!(encode_query_component("中文"), "%E4%B8%AD%E6%96%87");
+        assert_eq!(chat_window_title("奥赫玛"), "奥赫玛 · HSR Partner Harness");
+    }
+
+    #[test]
+    fn window_uuid_is_unique_and_v4_shaped() {
+        use super::random_uuid_v4;
+        let first = random_uuid_v4();
+        let second = random_uuid_v4();
+        assert_ne!(first, second);
+        // 8-4-4-4-12 十六进制段，版本 4、变体 8/9/a/b
+        let segments: Vec<&str> = first.split('-').collect();
+        assert_eq!(
+            segments.iter().map(|segment| segment.len()).collect::<Vec<_>>(),
+            vec![8, 4, 4, 4, 12]
+        );
+        assert!(segments[2].starts_with('4'));
+        assert!(matches!(
+            segments[3].chars().next(),
+            Some('8') | Some('9') | Some('a') | Some('b')
+        ));
+        assert!(first.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-'));
+    }
+
+    #[test]
+    fn env_file_requires_real_dialogue_configuration() {
+        assert!(env_content_has_real_config(
+            "PAIR_HARNESS_DIALOGUE_BASE_URL=https://example.test\nPAIR_HARNESS_DIALOGUE_API_KEY=secret\nPAIR_HARNESS_DIALOGUE_MODEL=model\n"
+        ));
+        assert!(env_content_has_real_config("PAIR_HARNESS_REAL=1\n"));
+        assert!(!env_content_has_real_config(
+            "PAIR_HARNESS_REAL=0\nPAIR_HARNESS_DIALOGUE_BASE_URL=https://example.test\nPAIR_HARNESS_DIALOGUE_API_KEY=secret\nPAIR_HARNESS_DIALOGUE_MODEL=model\n"
+        ));
+        assert!(!env_content_has_real_config("PAIR_HARNESS_DEMO=1\n"));
+        assert!(!env_content_has_real_config(
+            "PAIR_HARNESS_DIALOGUE_BASE_URL=https://example.test\nPAIR_HARNESS_DIALOGUE_API_KEY=replace-with-your-api-key\nPAIR_HARNESS_DIALOGUE_MODEL=model\n"
+        ));
     }
 }

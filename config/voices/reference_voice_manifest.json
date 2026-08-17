@@ -1,0 +1,59 @@
+{
+  "_comment": "V0.3.2 M6 参考音色 manifest。5 个复刻项默认读取安装包内 local_path 并转为 data URI 提交，已由真实 DashScope 请求验证，无需公网托管。public_url 只保留为发布素材记录和人工排查备用。",
+  "speakers": [
+    {
+      "speaker_id": "phainon",
+      "display_name": "白厄",
+      "method": "clone",
+      "local_path": "assets/reference_voices/白厄/phainon_concat.wav",
+      "public_url": "https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases/download/voice-assets-v1/phainon_concat.wav",
+      "prefix": "phainon",
+      "target_model": "qwen-audio-3.0-tts-flash"
+    },
+    {
+      "speaker_id": "firefly",
+      "display_name": "流萤",
+      "method": "clone",
+      "local_path": "assets/reference_voices/流萤/流萤.wav",
+      "public_url": "https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases/download/voice-assets-v1/firefly.wav",
+      "prefix": "firefly",
+      "target_model": "qwen-audio-3.0-tts-flash"
+    },
+    {
+      "speaker_id": "sam",
+      "display_name": "萨姆",
+      "method": "clone",
+      "local_path": "assets/reference_voices/萨姆/萨姆.wav",
+      "public_url": "https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases/download/voice-assets-v1/sam.wav",
+      "prefix": "sam",
+      "target_model": "qwen-audio-3.0-tts-flash"
+    },
+    {
+      "speaker_id": "march7",
+      "display_name": "三月七",
+      "method": "clone",
+      "local_path": "assets/reference_voices/三月七/三月七.wav",
+      "public_url": "https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases/download/voice-assets-v1/march7.wav",
+      "prefix": "march7",
+      "target_model": "qwen-audio-3.0-tts-flash"
+    },
+    {
+      "speaker_id": "fourth_mirror",
+      "display_name": "第四面镜",
+      "method": "clone",
+      "local_path": "assets/reference_voices/第四面镜/第四面镜.wav",
+      "public_url": "https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases/download/voice-assets-v1/fourth_mirror.wav",
+      "prefix": "fourthmirr",
+      "target_model": "qwen-audio-3.0-tts-flash"
+    },
+    {
+      "speaker_id": "ancient_machine",
+      "display_name": "神秘的古代机械",
+      "method": "design",
+      "local_path": "config/voices/ancient_machine_prompt.txt",
+      "public_url": "",
+      "prefix": "ancientmac",
+      "target_model": "qwen-audio-3.0-tts-flash"
+    }
+  ]
+}

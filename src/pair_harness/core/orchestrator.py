@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time as time_module
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePath
 from typing import Literal, cast
 
 from .approval import ApprovalManager, ApprovalRequired, GateOutcome
-from .context import recent_roleplay_context
+from .context import ExecutionContext, recent_roleplay_context
 from .contracts import (
     ApprovalDecision,
     ApprovalMode,
@@ -38,16 +39,18 @@ from .contracts import (
     TaskStatus,
     ToolRun,
 )
-from .engine_state import BusyTurnError, GlobalEngineState, TaskLifecycle
+from .engine_state import ActiveTurn, BusyTurnError, GlobalEngineState, TaskLifecycle
 from .ports import CodingEngine, DialogueModel, Reviewer, StateStore
 from .risk_rules import RiskRules, default_risk_rules
 from .sandbox import ProjectSandbox, SandboxViolation
 from .voice_policy import is_tts_eligible
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class ConversationOutcome:
-    messages: tuple[Message, ...]
+    messages: tuple[Message, ...] = ()
     engine_events: tuple[EngineEvent, ...] = ()
     tool_runs: tuple[ToolRun, ...] = ()
     task: TaskRequest | None = None
@@ -71,13 +74,40 @@ class _TaskProgress:
     total_steps: int | None = None
 
 
+@dataclass
+class _SegmentState:
+    """V0.3.2 M1：单次任务内的助手分段累加器。
+
+    思考与正文 delta 持续进入当前段；第一个工具事件到达时定稿当前段，
+    工具后再次出现的 delta 开新段。消息 id 为
+    ``assistant:{conversation_id}:{task_id}:{segment_index}``。
+    """
+
+    index: int = -1
+    order: int | None = None
+    text_parts: list[str] = field(default_factory=list)
+    reasoning_content: list[str] = field(default_factory=list)
+    reasoning_summary: list[str] = field(default_factory=list)
+    # ASSISTANT_FINAL 的完整正文覆盖当前段的流式累积
+    final_override: str | None = None
+    finalized_count: int = 0
+
+    def is_open(self) -> bool:
+        return self.index >= 0
+
+    def has_any_content(self) -> bool:
+        return bool("".join(self.text_parts).strip()) or self.final_override is not None
+
+
 ApprovalCallback = Callable[
-    [PendingOperation, str, str], Awaitable[ApprovalDecision]
+    [PendingOperation, str, str, str, str], Awaitable[ApprovalDecision]
 ]
-"""审批回调签名：操作、approval_id、真实理由（风险标签或“需要用户审批”）。
+"""审批回调签名：操作、approval_id、真实理由（风险标签或“需要用户审批”）、
+conversation_id、task_id。
 
 O1.7：approval_id 由编排器生成并贯通到 UI 队列，裁决按 id 对应，
-不再依赖 FIFO 顺序巧合。
+不再依赖 FIFO 顺序巧合。V0.3.2 M4：显式携带聊天与任务 id，删除通过
+全局当前任务反查归属的方式。
 """
 
 # O4.3：状态字面量类型别名——ToolRun.status 与 ExecutionReceipt.status
@@ -118,7 +148,12 @@ class ConversationOrchestrator:
         self._approval_managers: dict[str, ApprovalManager] = {}
         # O3.3：活动任务的执行进度（_execute 期间填充，结束时清理）
         self._progress: dict[str, _TaskProgress] = {}
-        self._active_lifecycle: TaskLifecycle | None = None
+        # V0.3.2 M4：活动任务生命周期按 task_id 索引；不同聊天并发时
+        # 各自独立推进，一个任务结束只清理自己的生命周期。
+        self._active_lifecycles: dict[str, TaskLifecycle] = {}
+        # V0.3.2：每个聊天单调递增的工作台序号；助手 segment 与工具卡
+        # 共用同一时间线。restore_conversation 从历史最大值恢复。
+        self._timeline_counters: dict[str, int] = {}
         # V0.2：按会话持久化的对话模式（chat/collaboration）。模式由
         # 后端权威保存；设置类命令不得回推覆盖（与推理档位/审批方式/
         # 发送对象互不覆盖的独立字段）。聊天模式是角色能力边界：不能委派。
@@ -128,9 +163,11 @@ class ConversationOrchestrator:
         # 刻意不在锁内，执行期间到达的聊天轮与执行产生的系统/助手消息按
         # 落库先后交错，运行中直接输入/修改仍可并发 steer 活动 turn。
         self._conversation_locks: dict[str, asyncio.Lock] = {}
-        # 执行生命周期回调（O1.4）：busy 状态由任务开始/结束驱动，UI 不做文本猜测
-        self.on_execution_started: Callable[[], None] | None = None
-        self.on_execution_finished: Callable[[], None] | None = None
+        # 执行生命周期回调（O1.4）：busy 状态由任务开始/结束驱动，UI 不做
+        # 文本猜测。V0.3.2 M4：回调携带完整 ActiveTurn，不能再从可变全局
+        # 状态反查。
+        self.on_execution_started: Callable[[ActiveTurn], None] | None = None
+        self.on_execution_finished: Callable[[ActiveTurn], None] | None = None
         # O2.1：流式事件通道——消息与引擎事件产生时即推送，UI 增量渲染；
         # ConversationOutcome 保留为最终汇总（事后回放）。
         # 推送顺序约定（设计 §3.2）：角色接受委派的台词先于执行事件到达界面。
@@ -195,21 +232,51 @@ class ConversationOrchestrator:
         """
         return self._conversation_modes.get(conversation_id, "collaboration")
 
-    def _build_runtime_context(self, conversation_id: str) -> ProjectRuntimeContext:
+    def _build_runtime_context(
+        self,
+        conversation_id: str,
+        context: ExecutionContext | None = None,
+    ) -> ProjectRuntimeContext:
         """V0.2：构造项目运行上下文（名称/目录/时间/时区/模式）。
 
-        项目创建、选择、路径修复与账号切换时重建；注入角色与助手系统
-        上下文，不显示成普通聊天消息。
+        V0.3.2 M4：Turn 显式携带 ExecutionContext 时从上下文读取项目与
+        模式，不再依赖可变全局 ``self.project``；省略上下文的独立使用
+        （CLI/单测）沿用当前全局状态。
         """
-        mode = self.conversation_mode(conversation_id)
+        project = context.project if context is not None else self.project
+        mode = (
+            context.conversation_mode
+            if context is not None
+            else self.conversation_mode(conversation_id)
+        )
         now = datetime.now().astimezone()
         tz_abbr = time_module.tzname[0] if time_module.tzname else now.tzname() or ""
         return ProjectRuntimeContext(
-            project_name=self.project.name,
-            project_abs_dir=self.project.root_path,
+            project_name=project.name,
+            project_abs_dir=project.root_path,
             local_time=now.strftime("%Y-%m-%d %H:%M:%S"),
             timezone=tz_abbr or str(now.utcoffset() or ""),
             conversation_mode=mode,
+        )
+
+    def _context_or_current(
+        self, conversation_id: str, context: ExecutionContext | None
+    ) -> ExecutionContext:
+        """V0.3.2 M4：执行路径的上下文来源统一出口。
+
+        显式上下文优先；未提供时（CLI/单测的直连用法）按当前全局选择
+        状态合成，保持旧行为。
+        """
+        if context is not None:
+            return context
+        return ExecutionContext(
+            account_id="",
+            project=self.project,
+            conversation_id=conversation_id,
+            pair_id=self.pair_id,
+            conversation_mode=self.conversation_mode(conversation_id),
+            approval_mode=self.approval_mode,
+            assistant_instructions=self.assistant_instructions,
         )
 
     def mark_message_failed(
@@ -312,6 +379,11 @@ class ConversationOrchestrator:
         if callback not in self._message_listeners:
             self._message_listeners.append(callback)
 
+    def remove_message_listener(self, callback: Callable[[Message], None]) -> None:
+        """移除消息监听器（V0.3.2 M6：替换 VoiceRuntime 时清理旧回调）。"""
+        while callback in self._message_listeners:
+            self._message_listeners.remove(callback)
+
     def _engine_policy(
         self, approval_mode: ApprovalMode | None = None
     ) -> dict[str, str | None]:
@@ -362,6 +434,18 @@ class ConversationOrchestrator:
             self._sessions[conversation_id] = session_ref
         else:
             self._sessions.pop(conversation_id, None)
+        # V0.3.2：恢复工作台序号——历史消息与工具记录的最大值。旧记录
+        # 缺少 timeline_order 时不推进计数器（legacy 数据按旧版展示）。
+        restored_orders = [
+            value
+            for value in (
+                *(m.timeline_order for m in snapshot.get("messages", ())),
+                *(r.timeline_order for r in snapshot.get("tool_runs", ())),
+            )
+            if value is not None
+        ]
+        if restored_orders:
+            self._timeline_counters[conversation_id] = max(restored_orders)
 
     def close_conversation(self, conversation_id: str) -> None:
         """O4.2：聊天结束/切换钩子——清理该会话的审批缓存。
@@ -388,6 +472,67 @@ class ConversationOrchestrator:
             self._conversation_locks[conversation_id] = lock
         return lock
 
+    def _next_timeline_order(self, conversation_id: str) -> int:
+        """V0.3.2 M1：分配该聊天单调递增的工作台序号。"""
+        value = self._timeline_counters.get(conversation_id, 0) + 1
+        self._timeline_counters[conversation_id] = value
+        return value
+
+    def _finalize_segment(
+        self,
+        state: _SegmentState,
+        *,
+        conversation_id: str,
+        task_id: str,
+        engine_turn_id: str | None,
+        pair_id: str,
+        delegation_id: str | None,
+        origin: MessageOrigin | None,
+    ) -> str | None:
+        """V0.3.2 M1：定稿当前助手 segment 并持久化为独立消息。
+
+        消息 id 为 ``assistant:{conversation_id}:{task_id}:{segment_index}``。
+        没有打开的段、或段内既无正文也无思考时不产生消息（计划 5.5：
+        不创建空段；只有思考的段保留为可折叠气泡）。
+        返回刚定稿 segment 的正文，供回执摘要回退使用。
+        """
+        if not state.is_open():
+            return None
+        text = (
+            state.final_override
+            if state.final_override is not None
+            else "".join(state.text_parts)
+        )
+        reasoning = "".join(state.reasoning_content).strip() or "".join(
+            state.reasoning_summary
+        ).strip()
+        index = state.index
+        order = state.order
+        state.index = -1
+        state.order = None
+        state.text_parts = []
+        state.reasoning_content = []
+        state.reasoning_summary = []
+        state.final_override = None
+        state.finalized_count = index + 1
+        if not text.strip() and not reasoning:
+            return None
+        self._message(
+            conversation_id=conversation_id,
+            source=MessageSource.ASSISTANT,
+            kind=MessageKind.ASSISTANT_NATURAL_LANGUAGE,
+            text=text,
+            engine_turn_id=engine_turn_id,
+            message_id=f"assistant:{conversation_id}:{task_id}:{index}",
+            pair_id=pair_id,
+            delegation_id=delegation_id,
+            origin=origin or MessageOrigin.USER,
+            payload=({"reasoning": reasoning} if reasoning else None),
+            task_id=task_id,
+            timeline_order=order,
+        )
+        return text
+
     def _message(
         self,
         *,
@@ -403,6 +548,8 @@ class ConversationOrchestrator:
         origin: MessageOrigin | None = None,
         delegation_id: str | None = None,
         status: MessageStatus = MessageStatus.DONE,
+        task_id: str | None = None,
+        timeline_order: int | None = None,
     ) -> Message:
         message_values = {
             "conversation_id": conversation_id,
@@ -417,6 +564,8 @@ class ConversationOrchestrator:
             "origin": origin or self._default_origin(source),
             "delegation_id": delegation_id,
             "status": status,
+            "task_id": task_id,
+            "timeline_order": timeline_order,
         }
         if message_id is not None:
             message_values["message_id"] = message_id
@@ -501,18 +650,30 @@ class ConversationOrchestrator:
             self.on_review_event(event, forwarded)
 
     async def handle_character_input(
-        self, *, conversation_id: str, text: str
+        self,
+        *,
+        conversation_id: str,
+        text: str,
+        context: ExecutionContext | None = None,
     ) -> ConversationOutcome:
         """完整角色回合入口（CLI/语音/测试使用）：快速接受 + 后台处理。"""
         user = await self.submit_user_message(
-            conversation_id=conversation_id, text=text, target="character"
+            conversation_id=conversation_id,
+            text=text,
+            target="character",
+            pair_id=context.pair_id if context is not None else None,
         )
         return await self.process_character_turn(
-            conversation_id=conversation_id, user_message=user
+            conversation_id=conversation_id, user_message=user, context=context
         )
 
     async def submit_user_message(
-        self, *, conversation_id: str, text: str, target: str
+        self,
+        *,
+        conversation_id: str,
+        text: str,
+        target: str,
+        pair_id: str | None = None,
     ) -> Message:
         """V0.2 快速接受（问题 1）：同步落库用户消息并立即返回真实 id。
 
@@ -527,19 +688,26 @@ class ConversationOrchestrator:
                 source=MessageSource.USER,
                 kind=MessageKind.USER_TEXT,
                 text=text,
+                pair_id=pair_id,
                 target=target_value,
                 origin=MessageOrigin.USER,
             )
 
     async def process_character_turn(
-        self, *, conversation_id: str, user_message: Message
+        self,
+        *,
+        conversation_id: str,
+        user_message: Message,
+        context: ExecutionContext | None = None,
     ) -> ConversationOutcome:
         """V0.2：在后台运行角色回合（用户消息已落库）。
 
         角色台词在会话锁内串行产生；委派处理（_execute/修改路由）在锁外
         进行。聊天模式下角色输出的 delegation 一律不执行（问题 4），
-        后端做最终裁决并注入能力边界。
+        后端做最终裁决并注入能力边界。V0.3.2 M4：``context`` 是提交时
+        解析的不可变执行上下文；省略时按当前全局状态合成（CLI/单测）。
         """
+        exec_context = self._context_or_current(conversation_id, context)
         async with self._conversation_lock(conversation_id):
             # O3.3：执行期间（_execute 未结束）注入压缩进度摘要；
             # 任务结束后 _progress 已清理，聊天轮回到纯角色对话
@@ -552,12 +720,14 @@ class ConversationOrchestrator:
                     total_steps=progress.total_steps,
                 )
             request = DialogueRequest(
-                pair_id=self.pair_id,
+                pair_id=exec_context.pair_id,
                 conversation_id=conversation_id,
                 user_message=user_message,
                 recent_messages=recent_roleplay_context(self._history[conversation_id][:-1]),
                 progress_summary=progress_summary,
-                runtime_context=self._build_runtime_context(conversation_id),
+                runtime_context=self._build_runtime_context(
+                    conversation_id, exec_context
+                ),
             )
             character_turn = None
             async for event in self.dialogue_model.stream_reply(request):
@@ -572,6 +742,7 @@ class ConversationOrchestrator:
                 source=MessageSource.CHARACTER,
                 kind=MessageKind.CHARACTER_SPEECH,
                 text=character_turn.speech,
+                pair_id=exec_context.pair_id,
                 # 桌面端的思考流和正文流共用这个 id；最终消息会覆盖临时流，
                 # 时间线里只保留一个角色气泡。
                 message_id=f"speech:{conversation_id}:{user_message.message_id}",
@@ -604,6 +775,7 @@ class ConversationOrchestrator:
             retry_turn = await self._retry_character_delegation(
                 conversation_id=conversation_id,
                 user_message=user_message,
+                context=exec_context,
             )
             if retry_turn is not None and isinstance(
                 retry_turn.delegation, TaskRequestDraft
@@ -614,6 +786,7 @@ class ConversationOrchestrator:
                     source=MessageSource.CHARACTER,
                     kind=MessageKind.CHARACTER_SPEECH,
                     text=retry_turn.speech,
+                    pair_id=exec_context.pair_id,
                     # 与主轮共用同一个气泡 id：最终消息覆盖临时流，
                     # 时间线里只保留重试后的角色回复。
                     message_id=f"speech:{conversation_id}:{user_message.message_id}",
@@ -645,6 +818,7 @@ class ConversationOrchestrator:
                     task,
                     delegation_id=task.task_id,
                     origin=MessageOrigin.CHARACTER_DELEGATION,
+                    context=exec_context,
                 )
             except BusyTurnError as exc:
                 # O2.4：任务运行中角色再委派新任务——冲突转为用户可见的
@@ -667,7 +841,11 @@ class ConversationOrchestrator:
 
         if isinstance(character_turn.delegation, TaskAmendmentDraft):
             try:
-                await self._apply_amendment(user_message.message_id, character_turn.delegation)
+                await self._apply_amendment(
+                    user_message.message_id,
+                    character_turn.delegation,
+                    conversation_id=conversation_id,
+                )
             except (RuntimeError, ValueError) as exc:
                 # O2.4：角色建议的修改无法路由（无活动任务、生命周期已终态等）
                 # 时同样转为可见系统提示，不静默
@@ -681,7 +859,11 @@ class ConversationOrchestrator:
         return ConversationOutcome(messages=tuple(messages))
 
     async def _retry_character_delegation(
-        self, *, conversation_id: str, user_message: Message
+        self,
+        *,
+        conversation_id: str,
+        user_message: Message,
+        context: ExecutionContext,
     ) -> CharacterTurn | None:
         """委派未形成后的自动补一轮：失败信息回传角色，让它重新按协议委派。
 
@@ -689,7 +871,7 @@ class ConversationOrchestrator:
         """
         synthetic = Message(
             conversation_id=conversation_id,
-            pair_id=self.pair_id,
+            pair_id=context.pair_id,
             source=MessageSource.SYSTEM,
             kind=MessageKind.SYSTEM_STATUS,
             text=(
@@ -700,13 +882,13 @@ class ConversationOrchestrator:
             ),
         )
         request = DialogueRequest(
-            pair_id=self.pair_id,
+            pair_id=context.pair_id,
             conversation_id=conversation_id,
             user_message=synthetic,
             recent_messages=recent_roleplay_context(
                 self._history.get(conversation_id, [])
             ),
-            runtime_context=self._build_runtime_context(conversation_id),
+            runtime_context=self._build_runtime_context(conversation_id, context),
         )
         turn: CharacterTurn | None = None
         async for event in self.dialogue_model.stream_reply(request):
@@ -716,14 +898,25 @@ class ConversationOrchestrator:
         return turn
 
     async def handle_direct_input(
-        self, *, conversation_id: str, text: str, constraints: tuple[str, ...] = ()
+        self,
+        *,
+        conversation_id: str,
+        text: str,
+        constraints: tuple[str, ...] = (),
+        context: ExecutionContext | None = None,
     ) -> ConversationOutcome:
         """完整直发助手回合入口（CLI/语音/测试使用）：快速接受 + 后台处理。"""
         user = await self.submit_user_message(
-            conversation_id=conversation_id, text=text, target="assistant"
+            conversation_id=conversation_id,
+            text=text,
+            target="assistant",
+            pair_id=context.pair_id if context is not None else None,
         )
         return await self.process_direct_input(
-            conversation_id=conversation_id, user_message=user, constraints=constraints
+            conversation_id=conversation_id,
+            user_message=user,
+            constraints=constraints,
+            context=context,
         )
 
     async def process_direct_input(
@@ -732,27 +925,23 @@ class ConversationOrchestrator:
         conversation_id: str,
         user_message: Message,
         constraints: tuple[str, ...] = (),
+        context: ExecutionContext | None = None,
     ) -> ConversationOutcome:
         """V0.2：后台处理直发助手的用户消息。
 
-        用户消息已由快速接受落库；这里按当前状态路由：无活动任务时新建
-        任务执行；活动任务在其他聊天时给出可见提示；活动任务在本聊天时
-        归一为 TaskAmendment（M2 起默认排队，只有明确「立即插入」才 steer）。
+        用户消息已由快速接受落库；这里按当前状态路由：本聊天无活动任务时
+        新建任务执行；本聊天有活动任务时归一为 TaskAmendment（M2 起默认
+        排队，只有明确「立即插入」才 steer）。V0.3.2 M4：并发单位是
+        conversation——其他聊天是否忙碌不再影响当前聊天的提交判断。
         """
-        if self.state.active is not None:
-            if conversation_id != self.state.active.conversation_id:
-                notice = self._message(
-                    conversation_id=conversation_id,
-                    source=MessageSource.SYSTEM,
-                    kind=MessageKind.SYSTEM_STATUS,
-                    text="另一聊天的助手任务仍在运行，当前指令没有转交。",
-                )
-                return ConversationOutcome(messages=(user_message, notice))
+        exec_context = self._context_or_current(conversation_id, context)
+        active = self.state.get_for_conversation(conversation_id)
+        if active is not None:
             # O2.4：设计 §3.2——运行中用户直接发给助手的新指令拥有最高优先级，
             # 归一为 TaskAmendment 走 amend_turn，来源标记 user 与角色建议区分
             try:
                 amendment = TaskAmendment(
-                    target_task_id=self.state.active.task_id,
+                    target_task_id=active.task_id,
                     origin_message_id=user_message.message_id,
                     revision=1,
                     instructions=user_message.text,
@@ -777,7 +966,7 @@ class ConversationOrchestrator:
             instructions=user_message.text,
             constraints=constraints,
         )
-        execution = await self._execute(task)
+        execution = await self._execute(task, context=exec_context)
         return ConversationOutcome(
             messages=(user_message, *execution.messages),
             engine_events=execution.engine_events,
@@ -787,14 +976,18 @@ class ConversationOrchestrator:
         )
 
     async def _apply_amendment(
-        self, origin_message_id: str, draft: TaskAmendmentDraft
+        self,
+        origin_message_id: str,
+        draft: TaskAmendmentDraft,
+        *,
+        conversation_id: str,
     ) -> None:
-        active = self.state.active
+        active = self.state.get_for_conversation(conversation_id)
         if active is None or active.engine_turn_id is None:
             raise RuntimeError("no running task can accept an amendment")
         if draft.target_task_id is not None and draft.target_task_id != active.task_id:
             raise ValueError("amendment target does not match active task")
-        if self._active_lifecycle is None:
+        if active.task_id not in self._active_lifecycles:
             raise RuntimeError("active task lifecycle is missing")
         amendment = TaskAmendment(
             target_task_id=active.task_id,
@@ -813,28 +1006,45 @@ class ConversationOrchestrator:
         AMENDMENT_PENDING 再回拨 RUNNING——期间若已被取消请求落到
         CANCELLED（终态）则不再回拨，避免 InvalidTaskTransition。
         """
-        active = self.state.active
-        if active is None or active.engine_turn_id is None or self._active_lifecycle is None:
+        active = self.state.get_for_task(amendment.target_task_id)
+        lifecycle = self._active_lifecycles.get(amendment.target_task_id)
+        if active is None or active.engine_turn_id is None or lifecycle is None:
             raise RuntimeError("no running task can accept an amendment")
-        self._active_lifecycle.transition(TaskStatus.AMENDMENT_PENDING)
+        lifecycle.transition(TaskStatus.AMENDMENT_PENDING)
         session = self._sessions[active.conversation_id]
         await self.coding_engine.amend_turn(session, active.engine_turn_id, amendment)
-        if self._active_lifecycle.status == TaskStatus.AMENDMENT_PENDING:
-            self._active_lifecycle.transition(TaskStatus.RUNNING)
+        if lifecycle.status == TaskStatus.AMENDMENT_PENDING:
+            lifecycle.transition(TaskStatus.RUNNING)
 
-    async def cancel_active_task(self) -> bool:
-        """O2.3/M1.2：请求取消当前活动任务（取消按钮入口）。
+    async def cancel_active_task(
+        self, conversation_id: str | None = None, task_id: str | None = None
+    ) -> bool:
+        """O2.3/M1.2 + V0.3.2 M4：定向取消活动任务。
 
-        先把本地任务生命周期句柄落到 CANCELLED（终态）。引擎 turn 尚未
-        绑定（还没收到任何事件）时记录取消意图，绑定后由事件循环立即发送
-        interrupt；已绑定则直接发送。无活动任务或生命周期已终态时返回
-        False（按钮保持禁用兜底）。
+        显式传入 ``conversation_id``/``task_id`` 时按聊天与任务双重校验
+        （用户切换聊天后旧按钮不得取消新任务）；省略参数时保持旧行为
+        （取消首个活动任务，CLI 兼容）。引擎 turn 尚未绑定时记录取消
+        意图，绑定后由事件循环立即发送 interrupt；已绑定则直接发送。
+        无活动任务或生命周期已终态时返回 False。
         """
-        active = self.state.active
-        lifecycle = self._active_lifecycle
+        if conversation_id is not None:
+            active = self.state.get_for_conversation(conversation_id)
+            if active is None:
+                return False
+            if task_id is not None and active.task_id != task_id:
+                return False
+        elif task_id is not None:
+            active = self.state.get_for_task(task_id)
+            if active is None:
+                return False
+        else:
+            tasks = self.state.active_tasks()
+            if not tasks:
+                return False
+            active = tasks[0]
+        lifecycle = self._active_lifecycles.get(active.task_id)
         if (
-            active is None
-            or lifecycle is None
+            lifecycle is None
             or lifecycle.status not in (TaskStatus.RUNNING, TaskStatus.AMENDMENT_PENDING)
         ):
             return False
@@ -843,7 +1053,7 @@ class ConversationOrchestrator:
             return False
         lifecycle.transition(TaskStatus.CANCELLED)
         if active.engine_turn_id is None:
-            self.state.request_cancel()
+            self.state.request_cancel(active.task_id)
             return True
         await self.coding_engine.cancel_turn(session, active.engine_turn_id)
         return True
@@ -855,6 +1065,7 @@ class ConversationOrchestrator:
         delegation_id: str | None = None,
         origin: MessageOrigin | None = None,
         delegation_retry_depth: int = 0,
+        context: ExecutionContext | None = None,
     ) -> ConversationOutcome:
         """执行一次助手任务；失败且角色立即重新委派时自动重试一次。
 
@@ -867,7 +1078,7 @@ class ConversationOrchestrator:
         递归重试时显式 +1，不使用可跨会话泄漏的实例字段。
         """
         execution = await self._execute_once(
-            task, delegation_id=delegation_id, origin=origin
+            task, delegation_id=delegation_id, origin=origin, context=context
         )
         retry_draft = execution.retry_delegation
         if retry_draft is None or (
@@ -899,6 +1110,7 @@ class ConversationOrchestrator:
             delegation_id=retry_task.task_id,
             origin=origin,
             delegation_retry_depth=delegation_retry_depth + 1,
+            context=context,
         )
         return ConversationOutcome(
             messages=(*execution.messages, *retry_execution.messages),
@@ -914,6 +1126,7 @@ class ConversationOrchestrator:
         *,
         delegation_id: str | None = None,
         origin: MessageOrigin | None = None,
+        context: ExecutionContext | None = None,
     ) -> ConversationOutcome:
         """单次任务执行（不含失败重试路由）。
 
@@ -922,28 +1135,29 @@ class ConversationOrchestrator:
         助手的执行记录保持 user 来源。Presenter 按此把两类记录都归入工作台，
         委派卡通过 delegation_id 连接角色区与工作台。
         """
-        task_project = self.project
-        task_pair_id = self.pair_id
-        task_approval_mode = self.approval_mode
-        task_assistant_instructions = self.assistant_instructions
+        # V0.3.2 M4：项目、pair、审批模式与助手提示词都来自提交时解析的
+        # 不可变上下文；省略时回退当前全局选择（CLI/单测）。
+        exec_context = self._context_or_current(task.conversation_id, context)
+        task_project = exec_context.project
+        task_pair_id = exec_context.pair_id
+        task_approval_mode = exec_context.approval_mode
+        task_assistant_instructions = exec_context.assistant_instructions
         task_delegation_id = delegation_id or task.task_id
         state_started = False
         try:
-            self.state.start(
+            active_turn = self.state.start(
                 project_id=task_project.project_id,
                 conversation_id=task.conversation_id,
                 task_id=task.task_id,
             )
             state_started = True
             if self.on_execution_started is not None:
-                self.on_execution_started()
+                self.on_execution_started(active_turn)
             lifecycle = TaskLifecycle(task_id=task.task_id)
             lifecycle.transition(TaskStatus.RUNNING)
-            self._active_lifecycle = lifecycle
+            self._active_lifecycles[task.task_id] = lifecycle
             events: list[EngineEvent] = []
             assistant_text = ""
-            assistant_reasoning_summary = ""
-            assistant_reasoning_content = ""
             tool_runs: dict[str, ToolRun] = {}
             failed = False
             cancelled = False
@@ -953,6 +1167,9 @@ class ConversationOrchestrator:
             checks: list[str] = []
             engine_turn_id = "unavailable"
             sequence = 0
+            # V0.3.2 M1：per-task segment 累加器与工具时间线序号
+            segment_state = _SegmentState()
+            tool_orders: dict[str, int] = {}
             # O3.1：已被原生审批请求（requestApproval）裁决过的工具操作集合。
             # 引擎侧挂起时已裁决并回复，后续到达的 tool.started 不再重复门控。
             adjudicated_tool_ids: set[str] = set()
@@ -1000,9 +1217,9 @@ class ConversationOrchestrator:
             if state_started:
                 self._progress.pop(task.conversation_id, None)
                 self.state.finish(task.task_id)
-                self._active_lifecycle = None
+                self._active_lifecycles.pop(task.task_id, None)
                 if self.on_execution_finished is not None:
-                    self.on_execution_finished()
+                    self.on_execution_finished(active_turn)
             raise
         try:
             session = self._sessions.get(task.conversation_id)
@@ -1034,9 +1251,11 @@ class ConversationOrchestrator:
                 )
                 sequence += 1
                 engine_turn_id = event.engine_turn_id
-                if self.state.active is None:
+                active_turn = self.state.get_for_task(task.task_id)
+                if active_turn is None:
                     # M1.2：本地任务已经结束，迟到的引擎 turn id 不得复活
                     # ActiveTurn；记录为迟到协议事件并请求引擎取消该 turn。
+                    # V0.3.2 M4：判定只看本任务，其他聊天的并发任务不受影响。
                     errors.append(
                         f"late engine event after local finish: {engine_turn_id} {event.type}"
                     )
@@ -1046,13 +1265,51 @@ class ConversationOrchestrator:
                         except Exception as exc:  # noqa: BLE001 - 保留真实错误
                             errors.append(f"cancel late engine turn failed: {exc}")
                     continue
-                if self.state.active.engine_turn_id is None:
-                    self.state.bind_engine_turn(engine_turn_id)
-                if self.state.active.cancellation_requested:
+                if active_turn.engine_turn_id is None:
+                    self.state.bind_engine_turn(task.task_id, engine_turn_id)
+                if self.state.get_for_task(task.task_id).cancellation_requested:
                     # 取消意图在引擎 turn id 绑定后立即发送 interrupt
                     if session is not None:
                         await self.coding_engine.cancel_turn(session, engine_turn_id)
-                    self.state.mark_cancel_sent()
+                    self.state.mark_cancel_sent(task.task_id)
+
+                # V0.3.2 M1：推送前完成分段/时间线enrichment。delta 打开
+                # 当前 segment；TOOL_STARTED 定稿当前段并给首个观察到的
+                # 工具分配一次工作台序号（后续更新沿用原序号）。
+                if event.type in (
+                    EngineEventType.ASSISTANT_DELTA,
+                    EngineEventType.ASSISTANT_REASONING_DELTA,
+                ):
+                    if not segment_state.is_open():
+                        segment_state.index = segment_state.finalized_count
+                        segment_state.order = self._next_timeline_order(
+                            task.conversation_id
+                        )
+                    payload = dict(event.payload)
+                    payload["segment_index"] = segment_state.index
+                    payload["timeline_order"] = segment_state.order
+                    payload["message_id"] = (
+                        f"assistant:{task.conversation_id}:{task.task_id}:"
+                        f"{segment_state.index}"
+                    )
+                    event = event.model_copy(update={"payload": payload})
+                elif event.type == EngineEventType.TOOL_STARTED:
+                    self._finalize_segment(
+                        segment_state,
+                        conversation_id=task.conversation_id,
+                        task_id=task.task_id,
+                        engine_turn_id=engine_turn_id,
+                        pair_id=task_pair_id,
+                        delegation_id=task_delegation_id,
+                        origin=origin,
+                    )
+                    if event.tool_call_id and event.tool_call_id not in tool_orders:
+                        tool_orders[event.tool_call_id] = self._next_timeline_order(
+                            task.conversation_id
+                        )
+                    payload = dict(event.payload)
+                    payload["timeline_order"] = tool_orders.get(event.tool_call_id)
+                    event = event.model_copy(update={"payload": payload})
 
                 # O2.1：原始事件到达即推送（tool.started 先于审批/沙箱结果到达 UI，
                 # 保证“运行中的工具卡片”立即出现）
@@ -1111,7 +1368,13 @@ class ConversationOrchestrator:
                         engine_turn_id=engine_turn_id,
                         tool_call_id=event.tool_call_id,
                         context=self._recent_user_messages(task.conversation_id),
-                        request_decision=self._request_approval,
+                        request_decision=(
+                            lambda op, approval_id, reason, _cid=task.conversation_id, _tid=task.task_id: (
+                                self._request_approval(
+                                    op, approval_id, reason, _cid, _tid
+                                )
+                            )
+                        ),
                     )
                     sequence = self._emit_gate_outcome(
                         outcome,
@@ -1247,7 +1510,11 @@ class ConversationOrchestrator:
                             )
                             try:
                                 decision = await self._request_approval(
-                                    req.op, req.approval_id, reason
+                                    req.op,
+                                    req.approval_id,
+                                    reason,
+                                    task.conversation_id,
+                                    task.task_id,
                                 )
                             except BaseException:
                                 # M1.5：回调异常/取消也要清理 _pending，
@@ -1299,14 +1566,25 @@ class ConversationOrchestrator:
                     events.append(event)
                 if event.type == EngineEventType.ASSISTANT_FINAL:
                     assistant_text = str(event.payload.get("text", ""))
+                    if assistant_text.strip() and not segment_state.is_open():
+                        # 只发 final、没有流式 delta 的引擎（如 Codex）：
+                        # final 自身构成 segment 0
+                        segment_state.index = segment_state.finalized_count
+                        segment_state.order = self._next_timeline_order(
+                            task.conversation_id
+                        )
+                    # V0.3.2 M1：final 完整正文覆盖当前段的流式累积
+                    segment_state.final_override = assistant_text
                     # O3.3：助手进入收尾阶段
                     progress.current_step = "助手整理结果"
                 elif event.type == EngineEventType.ASSISTANT_REASONING_DELTA:
                     text = str(event.payload.get("text", ""))
                     if event.payload.get("channel") == "content":
-                        assistant_reasoning_content += text
+                        segment_state.reasoning_content.append(text)
                     else:
-                        assistant_reasoning_summary += text
+                        segment_state.reasoning_summary.append(text)
+                elif event.type == EngineEventType.ASSISTANT_DELTA:
+                    segment_state.text_parts.append(str(event.payload.get("text", "")))
                 elif event.type == EngineEventType.FILE_PATCH:
                     path = event.payload.get("path")
                     if path:
@@ -1339,6 +1617,7 @@ class ConversationOrchestrator:
                             title=str(event.payload.get("title", "工具")),
                             summary=str(event.payload.get("summary", "")),
                             details=str(event.payload.get("details", "")),
+                            timeline_order=tool_orders.get(event.tool_call_id),
                         )
                 elif event.type == EngineEventType.TURN_FAILED:
                     terminal_status = "failed"
@@ -1351,8 +1630,23 @@ class ConversationOrchestrator:
                     # 先报告一次失败，随后用 completed 收尾。
                     terminal_status = "cancelled" if cancelled else "completed"
 
+            # V0.3.2 M1：任务结束定稿最后一个尚未定稿的 segment（正常、
+            # 失败、取消路径都只收尾本任务自己的段落）。final 未到达时，
+            # 段内已累积的 delta 文本就是该段最终正文。
+            final_segment_text = self._finalize_segment(
+                segment_state,
+                conversation_id=task.conversation_id,
+                task_id=task.task_id,
+                engine_turn_id=engine_turn_id,
+                pair_id=task_pair_id,
+                delegation_id=task_delegation_id,
+                origin=origin,
+            )
+            if not assistant_text.strip() and final_segment_text:
+                assistant_text = final_segment_text
             if (
                 not assistant_text.strip()
+                and not segment_state.has_any_content()
                 and terminal_status not in ("failed", "cancelled")
                 and not failed
             ):
@@ -1393,27 +1687,6 @@ class ConversationOrchestrator:
             for tool_run in tool_runs.values():
                 if self.store is not None:
                     self.store.save_tool_run(tool_run)
-            if assistant_text.strip():
-                assistant_reasoning = (
-                    assistant_reasoning_content.strip()
-                    or assistant_reasoning_summary.strip()
-                )
-                self._message(
-                    conversation_id=task.conversation_id,
-                    source=MessageSource.ASSISTANT,
-                    kind=MessageKind.ASSISTANT_NATURAL_LANGUAGE,
-                    text=assistant_text,
-                    engine_turn_id=engine_turn_id,
-                    message_id=f"assistant:{task.conversation_id}:{task.task_id}",
-                    pair_id=task_pair_id,
-                    delegation_id=task_delegation_id,
-                    origin=origin or MessageOrigin.USER,
-                    payload=(
-                        {"reasoning": assistant_reasoning}
-                        if assistant_reasoning
-                        else None
-                    ),
-                )
 
             result_summary = CharacterResultSummary(
                 task_id=task.task_id,
@@ -1499,14 +1772,32 @@ class ConversationOrchestrator:
                 retry_delegation=retry_delegation,
             )
         finally:
+            # V0.3.2 M1：异常中断也要保留已到达的部分 segment（计划 5.5.7）。
+            # 主异常继续传播；定稿自身的失败单独记录，不吞不掩。
+            if segment_state.is_open():
+                try:
+                    self._finalize_segment(
+                        segment_state,
+                        conversation_id=task.conversation_id,
+                        task_id=task.task_id,
+                        engine_turn_id=engine_turn_id,
+                        pair_id=task_pair_id,
+                        delegation_id=task_delegation_id,
+                        origin=origin,
+                    )
+                except Exception:  # noqa: BLE001 - 只记录定稿失败，原异常照常传播
+                    logger.exception(
+                        "任务异常收尾时定稿助手 segment 失败（task=%s）",
+                        task.task_id,
+                    )
             # M1.5：任务结束清理未决本地审批，避免悬挂 pending
             approval.clear_pending()
             # O3.3：任务结束清理进度，后续聊天轮不再注入摘要
             self._progress.pop(task.conversation_id, None)
             self.state.finish(task.task_id)
-            self._active_lifecycle = None
+            self._active_lifecycles.pop(task.task_id, None)
             if self.on_execution_finished is not None:
-                self.on_execution_finished()
+                self.on_execution_finished(active_turn)
 
     def _emit_event(self, event: EngineEvent) -> None:
         """O2.1：把引擎事件立即推送给 UI（流式通道）。"""
@@ -1567,11 +1858,18 @@ class ConversationOrchestrator:
             sandbox.enforce_cwd(None)
 
     async def _request_approval(
-        self, op: PendingOperation, approval_id: str, reason: str
+        self,
+        op: PendingOperation,
+        approval_id: str,
+        reason: str,
+        conversation_id: str,
+        task_id: str,
     ) -> ApprovalDecision:
         if self.approval_callback is None:
             return ApprovalDecision.DENY
-        return await self.approval_callback(op, approval_id, reason)
+        return await self.approval_callback(
+            op, approval_id, reason, conversation_id, task_id
+        )
 
     @staticmethod
     def _deny_tool_event(

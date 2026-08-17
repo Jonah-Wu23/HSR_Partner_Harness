@@ -20,6 +20,7 @@ from pair_harness.adapters.audio.qwen_asr import QwenAsrError, QwenStreamingReco
 from pair_harness.adapters.audio import qwen_tts
 from pair_harness.adapters.audio.qwen_tts import QwenSpeechSynthesizer, QwenTtsError
 from pair_harness.core.contracts import SpeechRequest
+from pair_harness.voice_models import VOICE_ASR_MODEL, VOICE_TTS_MODEL
 
 
 class FakeResult:
@@ -191,7 +192,7 @@ async def test_configured_model_and_sample_rate(fake_sdk) -> None:
     recognizer = QwenStreamingRecognizer(model="qwen-test-model", sample_rate=8000)
     await _events(recognizer, [b"\x00" * 256])
     fake = FakeRecognition.instances[0]
-    assert fake.model == "qwen-test-model"
+    assert fake.model == VOICE_ASR_MODEL
     assert fake.sample_rate == 8000
     assert fake.format == "pcm"
 
@@ -304,7 +305,7 @@ async def test_tts_voice_model_format_passed(fake_tts_sdk) -> None:
     assert chunks  # 正常合成完成
     fake = FakeTtsSynthesizer.instances[0]
     assert fake.voice == "demo-voice"
-    assert fake.model == "qwen-tts-test"
+    assert fake.model == VOICE_TTS_MODEL
     assert fake.format == "pcm_24000"
     assert fake.texts == ["你好"]
     assert fake.completed is True
