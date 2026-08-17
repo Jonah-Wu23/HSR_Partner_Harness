@@ -385,7 +385,13 @@ async def test_push_to_talk_stops_playback_then_commits() -> None:
         assert ctx.recognizer.received_audio == [[BLOCK, BLOCK]]  # 无 pre-roll
     finally:
         hold.set()
-        await wait_until(lambda: ctx.states[-1] == "listening")
+        # 播放循环恢复后重开 VAD 会话（_start_vad_loop 新建 detect 会话）。
+        # 慢 CI 上恢复链整体可能延迟：以确定性信号 sessions==2 为等待目标，
+        # 超时放宽到 15s，不再依赖 states[-1] 的状态序列。
+        await wait_until(
+            lambda: ctx.vad.sessions == 2 and ctx.states[-1] == "listening",
+            timeout=15,
+        )
         playback.cancel()
         try:
             await playback
