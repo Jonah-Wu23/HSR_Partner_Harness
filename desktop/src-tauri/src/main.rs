@@ -720,7 +720,9 @@ fn sync_chat_window_titles(state: &Arc<BackendState>, value: &Value) {
     if value.get("event").and_then(Value::as_str) != Some("conversation.changed") {
         return;
     }
-    let Some(conversation) = value.get("payload").and_then(|payload| payload.get("conversation"))
+    let Some(conversation) = value
+        .get("payload")
+        .and_then(|payload| payload.get("conversation"))
     else {
         return;
     };
@@ -973,7 +975,12 @@ pub fn run() {
             // V0.3.2 M5：关闭任意聊天窗口只是销毁该窗口，不触发退出流程；
             // 只有最后一个应用窗口退出（ExitRequested 且已无窗口）才进入退出，
             // 在 Exit 时停止 Sidecar。仍存在窗口时拒绝退出请求（防御）。
-            if let tauri::RunEvent::ExitRequested { code: None, ref api, .. } = event {
+            if let tauri::RunEvent::ExitRequested {
+                code: None,
+                ref api,
+                ..
+            } = event
+            {
                 if !app_handle.webview_windows().is_empty() {
                     api.prevent_exit();
                     return;
@@ -1159,7 +1166,10 @@ mod tests {
         // 8-4-4-4-12 十六进制段，版本 4、变体 8/9/a/b
         let segments: Vec<&str> = first.split('-').collect();
         assert_eq!(
-            segments.iter().map(|segment| segment.len()).collect::<Vec<_>>(),
+            segments
+                .iter()
+                .map(|segment| segment.len())
+                .collect::<Vec<_>>(),
             vec![8, 4, 4, 4, 12]
         );
         assert!(segments[2].starts_with('4'));

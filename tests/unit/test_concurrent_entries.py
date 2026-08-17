@@ -33,6 +33,17 @@ class PausingEngine(ScriptedCodingEngine):
         super().__init__()
         self._started = started
         self._release = release
+        self._started_per_conversation: dict[str, asyncio.Event] = {}
+
+    def started_for(self, conversation_id: str) -> asyncio.Event:
+        """指定会话的 tool.started 事件（与会话绑定，可独立等待）。
+
+        ``_started`` 是全局布尔事件，置位后 ``wait()`` 立即返回，无法
+        区分"哪个会话推了 tool.started"；多会话测试按会话等待。
+        """
+        return self._started_per_conversation.setdefault(
+            conversation_id, asyncio.Event()
+        )
 
     async def run_turn(
         self, session_ref: EngineSessionRef, request: TaskRequest
@@ -41,6 +52,7 @@ class PausingEngine(ScriptedCodingEngine):
             yield event
             if event.type == EngineEventType.TOOL_STARTED:
                 self._started.set()
+                self.started_for(request.conversation_id).set()
                 await self._release.wait()
 
 
@@ -237,8 +249,9 @@ async def test_direct_input_from_other_conversation_runs_concurrently() -> None:
                 conversation_id="chat-b", text="改成只跑单测"
             )
         )
-        # B 的回合推进到自己的工具事件（同一 started 事件第二次置位）
-        await asyncio.wait_for(engine._started.wait(), timeout=5)
+        # B 的回合推进到自己的工具事件：按会话等待（共享 started 事件已被
+        # A 置位，wait() 会立即返回，不能作为 B 的同步点）
+        await asyncio.wait_for(engine.started_for("chat-b").wait(), timeout=5)
         assert orchestrator.state.get_for_conversation("chat-a") is not None
         assert orchestrator.state.get_for_conversation("chat-b") is not None
         engine._release.set()
