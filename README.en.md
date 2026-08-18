@@ -211,6 +211,8 @@ The finished installer is written to `desktop/src-tauri/target/release/bundle/ns
 
 ## Third-party code
 
+This project is inspired by [Herta](https://github.com/PersonaCLI/Herta).
+
 The provider detection and reasoning-effort semantics in `src/pair_harness/config/providers.py` are rewritten from [DeepSeek-Reasonix](https://github.com/esengine/deepseek-reasonix), which uses the MIT License. The full notice is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 The coding assistant connects to [OpenAI Codex](https://github.com/openai/codex) through the
@@ -220,4 +222,4 @@ local Codex app-server, which handles files and commands.
 
 The code is under the [Apache License 2.0](LICENSE). Copyright © 2026 Zonghe Wu.
 
-This project is a fan project. Character names and related fictional settings belong to their rights holders.
+Phainon, Firefly, and March 7th are characters from *Honkai: Star Rail*, © HoYoverse. This work is an unofficial fan project, not affiliated with or endorsed by HoYoverse in any way. Game-derived material (character art, voice lines, original text) is fan-made content subject to HoYoverse's Fan Content Policy, and is not covered by the Apache License 2.0.

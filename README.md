@@ -21,9 +21,18 @@
   <a href="docs/architecture_V0.2.0.md">架构说明</a>
 </p>
 
-HSR Partner Harness 将角色扮演对话与本地 AI 编程整合至同一个 Windows 工作台。在会话中与角色讨论需求后，任务可直接委派给助手，在绑定的本地项目目录中执行。对话上下文全程保持连贯，执行状态与产出结果在同一条时间线呈现。
+## 30 秒了解
 
-角色空间保障交流连续，助手空间负责文件读写与命令执行。任务委派具备清晰来源标记，执行结果同步回传至对话上下文。
+**和角色讨论需求，把任务委派给真正的编程 Agent，角色再结合结果继续对话——可以用她自己的声音读给你听。**
+
+HSR Partner Harness 把角色扮演对话与本地 AI 编程整合进同一个 Windows 工作台。它不是纯聊天应用，也不是纯编程工具，而是同一条会话里的两条工作轨：
+
+- **角色负责对话**：白厄、流萤、三月七等搭档各有界面主题与专属复刻音色；自然语言回复可自动朗读，工具记录保持静音。
+- **助手负责执行**：勾选“交给助手”，或让角色直接发起委派；Codex / DeepSeek-Reasonix 在绑定的本地项目目录中真实读写文件、执行命令，过程与结果以结构化卡片回传到同一条时间线。
+- **本地优先，自带 Key**：模型与语音（DashScope）均使用你自己的账号配置；本项目不代存密钥，不提供付费中转。
+- **零门槛试用**：安装后无需任何 Key，预览模式即可体验完整界面交互。
+
+Windows x64 · 开源 Apache-2.0 · 非官方同人创作，角色名称与世界观相关内容归原权利人所有。
 
 ## 一条会话，两条工作轨
 
@@ -215,10 +224,12 @@ Python Sidecar 管理业务状态，桌面端通过 JSONL 协议与其通信。�
 
 ## 外部代码与许可
 
+本项目受 [Herta](https://github.com/PersonaCLI/Herta) 启发。
+
 `src/pair_harness/config/providers.py` 的供应商识别方式与推理档位语义参考 [DeepSeek-Reasonix](https://github.com/esengine/deepseek-reasonix)。原项目采用 MIT License，完整声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 编程助手通过本机 [OpenAI Codex](https://github.com/openai/codex) app-server 执行文件操作与命令。
 
 代码采用 [Apache License 2.0](LICENSE)，版权所有 © 2026 Zonghe Wu。
 
-本项目为同人创作，角色名称与世界观相关内容归原权利人所有。
+白厄、流萤和三月七是《崩坏：星穹铁道》中的角色，© HoYoverse。本作品为非官方粉丝项目，与 HoYoverse 无任何关联，亦未获得其认可。游戏衍生素材（角色立绘、语音、原作文本）均属于粉丝创作内容，受 HoYoverse 粉丝创作条款约束，不受 Apache License 2.0 许可协议保护。
