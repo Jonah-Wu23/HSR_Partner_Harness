@@ -60,6 +60,7 @@ DESKTOP_COMMANDS = frozenset(
         "card.archive",
         "card.delete",
         "card.select_active",
+        "remote.issue_code",
         "remote.pair",
         "remote.list_devices",
         "remote.revoke",

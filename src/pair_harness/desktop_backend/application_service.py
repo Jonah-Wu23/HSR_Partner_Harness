@@ -927,6 +927,7 @@ class DesktopApplicationService:
             "card.archive": self._card_archive,
             "card.delete": self._card_delete,
             "card.select_active": self._card_select_active,
+            "remote.issue_code": self._remote_issue_code,
             "remote.pair": self._remote_pair,
             "remote.list_devices": self._remote_list_devices,
             "remote.revoke": self._remote_revoke,
@@ -2044,6 +2045,16 @@ class DesktopApplicationService:
             "remote.pairing_state",
             json.dumps(self.pairing_service.export_state(), ensure_ascii=False),
         )
+
+    async def _remote_issue_code(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """桌面端生成短期配对码（5 分钟有效、一次性）。
+
+        仅桌面 stdin 路径与已鉴权远程连接可调用；未鉴权连接无权生成。
+        """
+        del params
+        code = self.pairing_service.issue_code()
+        self._persist_pairing_state()
+        return {"code": code, "ttl_seconds": 300}
 
     async def _remote_pair(self, params: Mapping[str, Any]) -> dict[str, Any]:
         code = str(params.get("code") or "")

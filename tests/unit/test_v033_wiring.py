@@ -158,7 +158,10 @@ async def test_card_delete_requires_confirm(service) -> None:
 
 
 async def test_remote_pair_full_flow(service) -> None:
-    code = service.pairing_service.issue_code()
+    issued = await service.handle_command(command("0", "remote.issue_code"))
+    code = issued["code"]
+    assert issued["ttl_seconds"] == 300
+    assert len(code) == 6 and code.isdigit()
     paired = await service.handle_command(
         command("1", "remote.pair", code=code, device_name="我的手机")
     )
