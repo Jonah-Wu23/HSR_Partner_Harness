@@ -1,6 +1,6 @@
 import type { HarnessActions } from "../../contracts/actions";
 import type { NavigationViewModel } from "../../contracts/view-models";
-import { PlusIcon, RecordVoiceIcon, WarningIcon } from "../../assets/icons/icons";
+import { HeartIcon, PlusIcon, RecordVoiceIcon, WarningIcon } from "../../assets/icons/icons";
 
 interface ProjectRailProps {
   navigation: NavigationViewModel;
@@ -26,6 +26,18 @@ export function ProjectRail({ navigation, actions }: ProjectRailProps) {
       >
         <span className="project-badge">
           <RecordVoiceIcon />
+        </span>
+      </button>
+
+      <button
+        type="button"
+        className="rail-item"
+        title="角色库"
+        aria-label="角色库"
+        onClick={() => void actions.openCharacterLibrary()}
+      >
+        <span className="project-badge">
+          <HeartIcon />
         </span>
       </button>
 

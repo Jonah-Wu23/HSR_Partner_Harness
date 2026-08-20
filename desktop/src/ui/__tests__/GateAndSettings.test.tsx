@@ -164,6 +164,17 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsCenter>[0]>
     onTestModel: vi.fn(),
     onSaveVoice: vi.fn(),
     onPreviewVoice: vi.fn(),
+    remote: {
+      code: null,
+      ttlSeconds: 300,
+      issuedAtEpochMs: null,
+      devices: [],
+      loading: false,
+      error: null,
+    },
+    onIssuePairingCode: vi.fn(),
+    onListRemoteDevices: vi.fn(),
+    onRevokeRemoteDevice: vi.fn(),
     ...overrides,
   };
   render(<SettingsCenter {...props} />);

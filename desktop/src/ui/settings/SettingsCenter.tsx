@@ -9,8 +9,10 @@ import type {
   VoicePageView,
   VoiceSpeakerStatus,
 } from "./types";
+import type { RemotePairingViewModel } from "../../contracts/view-models";
+import { RemotePairingPanel } from "./remote/RemotePairingPanel";
 
-export type SettingsPage = "account" | "coding" | "model" | "voice";
+export type SettingsPage = "account" | "coding" | "model" | "voice" | "remote";
 
 interface SettingsCenterProps {
   open: boolean;
@@ -21,6 +23,11 @@ interface SettingsCenterProps {
   coding: CodingAssistantPageView;
   model: CharacterModelPageView;
   voice: VoicePageView;
+  /** V0.3.3：远程设备页数据源与回调（remote.* 命令）。 */
+  remote: RemotePairingViewModel;
+  onIssuePairingCode: () => void;
+  onListRemoteDevices: () => void;
+  onRevokeRemoteDevice: (deviceName: string) => void;
   modelTest: TestResult;
   voicePreview: TestResult;
   onSaveProfile: (displayName: string) => void;
@@ -53,6 +60,7 @@ const NAV: Array<{ id: SettingsPage; label: string }> = [
   { id: "coding", label: "编程助手" },
   { id: "model", label: "角色对话模型" },
   { id: "voice", label: "语音" },
+  { id: "remote", label: "远程设备" },
 ];
 
 interface TestResultNoteProps {
@@ -76,6 +84,8 @@ function TestResultNote({ result, okClass, testingLabel }: TestResultNoteProps) 
 const FIXED_ASR_MODEL = "qwen-audio-3.0-asr-flash-streaming";
 const FIXED_TTS_MODEL = "qwen-audio-3.0-tts-flash";
 
+// TODO(W3)：sam（萨姆）与 ancient_machine（神秘的古代机械）是助手侧说话方，
+// 随角色卡语音方案移除，仅保留角色说话方。
 const VOICE_SPEAKER_DEFINITIONS: Array<
   Pick<VoiceSpeakerStatus, "speakerId" | "name" | "method">
 > = [
@@ -761,6 +771,7 @@ function VoicePage(props: SettingsCenterProps) {
         </span>
       </label>
 
+      {/* TODO(W3)：助手语音入口随助手侧说话方一并移除；VAD 用户语音输入保留。 */}
       <label className="settings-switch">
         <input
           type="checkbox"
@@ -800,9 +811,21 @@ function VoicePage(props: SettingsCenterProps) {
   );
 }
 
+function RemotePage(props: SettingsCenterProps) {
+  return (
+    <RemotePairingPanel
+      vm={props.remote}
+      onIssuePairingCode={props.onIssuePairingCode}
+      onListRemoteDevices={props.onListRemoteDevices}
+      onRevokeRemoteDevice={props.onRevokeRemoteDevice}
+    />
+  );
+}
+
 const PAGES = {
   account: AccountPage,
   coding: CodingAssistantPage,
   model: CharacterModelPage,
   voice: VoicePage,
+  remote: RemotePage,
 };

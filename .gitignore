@@ -8,6 +8,7 @@ __pycache__/
 build/
 dist/
 desktop/node_modules/
+desktop/mobile/node_modules/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
 desktop/src-tauri/resources/

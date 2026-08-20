@@ -1,0 +1,30 @@
+/* V0.3.3 角色库 / 角色创作页样式基座。
+   只使用 tokens.css 的语义变量；禁止引入 #5e6ad2 蓝紫色与 emoji 图标。
+   W1/W2 扩展样式时追加到本文件各自段落，保持同样约束。 */
+
+.characters-page {
+  height: 100%;
+  overflow-y: auto;
+  padding: var(--space-6);
+  color: var(--text-primary);
+}
+
+.characters-page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.characters-page-head h1 {
+  font-size: var(--text-t2-size);
+  line-height: var(--text-t2-line);
+  margin: 0;
+}
+
+.characters-hint {
+  color: var(--text-muted);
+  font-size: var(--text-b2-size);
+  line-height: var(--text-b2-line);
+}

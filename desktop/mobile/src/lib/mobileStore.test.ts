@@ -1,0 +1,274 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ConversationRecord, DesktopSnapshot } from "@shared/contracts/protocol";
+import { mobileWsClient, useMobileStore } from "./mobileStore";
+import { getStoredToken } from "./wsClient";
+
+class FakeWebSocket {
+  static instances: FakeWebSocket[] = [];
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+
+  readyState = FakeWebSocket.CONNECTING;
+  readonly url: string;
+  readonly sent: string[] = [];
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onclose: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+
+  constructor(url: string) {
+    this.url = url;
+    FakeWebSocket.instances.push(this);
+  }
+
+  open(): void {
+    this.readyState = FakeWebSocket.OPEN;
+    this.onopen?.();
+  }
+
+  close(): void {
+    this.readyState = 3;
+    this.onclose?.();
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+  }
+
+  emit(frame: unknown): void {
+    this.onmessage?.({ data: JSON.stringify(frame) });
+  }
+}
+
+const CONVERSATION: ConversationRecord = {
+  conversation_id: "c1",
+  project_id: "p1",
+  pair_id: "pair-default",
+  title: "测试聊天",
+  last_mode: "collaboration",
+  archived: false,
+  created_at: "2026-08-20T00:00:00Z",
+  updated_at: "2026-08-20T00:00:00Z",
+};
+
+function snapshotResult(sequence: number): DesktopSnapshot {
+  return {
+    projects: [
+      {
+        project_id: "p1",
+        name: "演示项目",
+        conversations: [CONVERSATION],
+      },
+    ],
+    messages: [],
+    tool_runs: [],
+    approvals: [],
+    sequence,
+  } as unknown as DesktopSnapshot;
+}
+
+function lastInstance(): FakeWebSocket {
+  const instance = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+  if (!instance) throw new Error("没有 FakeWebSocket 实例");
+  return instance;
+}
+
+function lastSentFrame(): Record<string, unknown> {
+  const ws = lastInstance();
+  const raw = ws.sent[ws.sent.length - 1];
+  if (!raw) throw new Error("客户端尚未发出任何帧");
+  return JSON.parse(raw) as Record<string, unknown>;
+}
+
+/** 走通 pair 流程并留下已水合状态（lastSequence=10）。 */
+async function pairAndBootstrap(): Promise<void> {
+  const pairPromise = useMobileStore.getState().pair("654321", "我的小米");
+  // pair() 内部先 await 连接就绪，remote.pair 帧在 microtask 后才发出。
+  await vi.waitFor(() => {
+    expect(lastSentFrame().method).toBe("remote.pair");
+  });
+  const pairFrame = lastSentFrame();
+  lastInstance().emit({ kind: "response", id: pairFrame.id, ok: true, result: { token: "tok-9" } });
+  await vi.waitFor(() => {
+    expect(lastSentFrame().method).toBe("app.bootstrap");
+  });
+  const bootstrapFrame = lastSentFrame();
+  lastInstance().emit({
+    kind: "response",
+    id: bootstrapFrame.id,
+    ok: true,
+    result: snapshotResult(10),
+  });
+  await pairPromise;
+}
+
+beforeEach(() => {
+  vi.stubGlobal("WebSocket", FakeWebSocket);
+  mobileWsClient.disconnect();
+  FakeWebSocket.instances = [];
+  window.localStorage.clear();
+  useMobileStore.setState({
+    connection: "disconnected",
+    deviceName: null,
+    projects: [],
+    conversationsById: {},
+    activeConversationId: null,
+    messages: [],
+    toolRuns: [],
+    approvals: [],
+    lastSequence: 0,
+    bootstrapped: false,
+  });
+  useMobileStore.getState().start();
+  mobileWsClient.connect();
+  lastInstance().open();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  window.localStorage.clear();
+});
+
+describe("mobileStore 配对与水合", () => {
+  it("pair 成功后保存凭证并 bootstrap 水合索引", async () => {
+    await pairAndBootstrap();
+    expect(getStoredToken()).toBe("tok-9");
+    const state = useMobileStore.getState();
+    expect(state.deviceName).toBe("我的小米");
+    expect(state.bootstrapped).toBe(true);
+    expect(state.projects).toHaveLength(1);
+    expect(state.conversationsById.c1?.title).toBe("测试聊天");
+    expect(state.lastSequence).toBe(10);
+  });
+
+  it("bootstrap 请求携带配对 token", async () => {
+    await pairAndBootstrap();
+    // pairAndBootstrap 内部已断言 remote.pair 无 auth；这里补查 bootstrap 帧。
+    // 帧序列：remote.pair → app.bootstrap
+    const bootstrapRaw = lastInstance().sent[1];
+    expect(JSON.parse(bootstrapRaw)).toMatchObject({
+      method: "app.bootstrap",
+      auth: { token: "tok-9" },
+    });
+  });
+});
+
+describe("mobileStore 事件一致性", () => {
+  it("旧序号事件被去重，会话变更按序合并", async () => {
+    await pairAndBootstrap();
+    const renamed = { ...CONVERSATION, title: "改名后" };
+    lastInstance().emit({
+      kind: "event",
+      event: "conversation.changed",
+      sequence: 11,
+      payload: { conversation: renamed },
+    });
+    expect(useMobileStore.getState().conversationsById.c1?.title).toBe("改名后");
+
+    // 重复投递同一序号：payload 换成别的标题，不应再合并。
+    const stale = { ...CONVERSATION, title: "过期标题" };
+    lastInstance().emit({
+      kind: "event",
+      event: "conversation.changed",
+      sequence: 11,
+      payload: { conversation: stale },
+    });
+    expect(useMobileStore.getState().conversationsById.c1?.title).toBe("改名后");
+  });
+
+  it("事件序号缺口触发重新 bootstrap，不猜中间态", async () => {
+    await pairAndBootstrap();
+    const sentBefore = lastInstance().sent.length;
+    lastInstance().emit({
+      kind: "event",
+      event: "conversation.changed",
+      sequence: 15,
+      payload: { conversation: { ...CONVERSATION, title: "缺口后标题" } },
+    });
+    await vi.waitFor(() => {
+      expect(lastSentFrame().method).toBe("app.bootstrap");
+    });
+    expect(lastInstance().sent.length).toBe(sentBefore + 1);
+    // 缺口事件本身未被合并。
+    expect(useMobileStore.getState().conversationsById.c1?.title).toBe("测试聊天");
+    const reBootstrap = lastSentFrame();
+    lastInstance().emit({
+      kind: "response",
+      id: reBootstrap.id,
+      ok: true,
+      result: snapshotResult(15),
+    });
+    await vi.waitFor(() => {
+      expect(useMobileStore.getState().lastSequence).toBe(15);
+    });
+  });
+
+  it("approval.requested 与 approval.resolved 维护审批列表", async () => {
+    await pairAndBootstrap();
+    lastInstance().emit({
+      kind: "event",
+      event: "approval.requested",
+      sequence: 11,
+      payload: {
+        approval: {
+          approval_id: "a1",
+          conversation_id: "c1",
+          operation: { tool_kind: "shell", command: "npm test", paths: [], patch_file_count: null, summary: "跑测试" },
+        },
+      },
+    });
+    expect(useMobileStore.getState().approvals).toHaveLength(1);
+    lastInstance().emit({
+      kind: "event",
+      event: "approval.resolved",
+      sequence: 12,
+      payload: { approval_id: "a1" },
+    });
+    expect(useMobileStore.getState().approvals).toHaveLength(0);
+  });
+});
+
+describe("mobileStore 会话操作", () => {
+  it("openConversation 装载消息，submitDelegation 用会话 last_mode", async () => {
+    await pairAndBootstrap();
+    const openPromise = useMobileStore.getState().openConversation("c1");
+    const openFrame = lastSentFrame();
+    expect(openFrame).toMatchObject({
+      method: "conversation.open",
+      params: { conversation_id: "c1" },
+    });
+    expect((openFrame.params as { view_id?: string }).view_id).toMatch(/^mobile-/);
+    lastInstance().emit({
+      kind: "response",
+      id: openFrame.id,
+      ok: true,
+      result: {
+        conversation: CONVERSATION,
+        project: null,
+        pair: null,
+        messages: [{ message_id: "m1", conversation_id: "c1" }],
+        tool_runs: [],
+        turns: [],
+        queue_items: [],
+        active_task: null,
+      },
+    });
+    await openPromise;
+    expect(useMobileStore.getState().messages).toHaveLength(1);
+    expect(useMobileStore.getState().activeConversationId).toBe("c1");
+
+    const submitPromise = useMobileStore.getState().submitDelegation("去把 README 翻成英文");
+    const submitFrame = lastSentFrame();
+    expect(submitFrame).toMatchObject({
+      method: "chat.submit",
+      params: {
+        conversation_id: "c1",
+        target: "assistant",
+        mode: "collaboration",
+        text: "去把 README 翻成英文",
+      },
+    });
+    lastInstance().emit({ kind: "response", id: submitFrame.id, ok: true, result: {} });
+    await submitPromise;
+  });
+});

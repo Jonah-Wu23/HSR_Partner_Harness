@@ -438,5 +438,10 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
       state.currentAccount.username !== "default" &&
       state.currentAccount.onboarding_complete === false,
     settings: presentSettings(state),
+    // V0.3.3：角色卡与远程配对 slice 在 store 层按视图模型形状维护，直接透传。
+    mainView: state.mainView,
+    characterLibrary: state.characterLibrary,
+    characterCreate: state.characterCreate,
+    remotePairing: state.remotePairing,
   };
 }
