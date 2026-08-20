@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time as time_module
 from collections.abc import Awaitable, Callable
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePath
@@ -1238,397 +1239,398 @@ class ConversationOrchestrator:
             if self.store is not None:
                 self.store.save_engine_session(task.conversation_id, session)
 
-            async for raw_event in self.coding_engine.run_turn(session, task):
-                # O4.1：事件序号单一源头——到达事件在循环入口统一分配；
-                # 合成事件（审批 gate/否决/resolved）经同一计数器分配，
-                # 出口事件流序号连续无碰撞，不再信任适配器自带序号。
-                event = raw_event.model_copy(
-                    update={
-                        "conversation_id": task.conversation_id,
-                        "task_id": task.task_id,
-                        "sequence": sequence,
-                    }
-                )
-                sequence += 1
-                engine_turn_id = event.engine_turn_id
-                active_turn = self.state.get_for_task(task.task_id)
-                if active_turn is None:
-                    # M1.2：本地任务已经结束，迟到的引擎 turn id 不得复活
-                    # ActiveTurn；记录为迟到协议事件并请求引擎取消该 turn。
-                    # V0.3.2 M4：判定只看本任务，其他聊天的并发任务不受影响。
-                    errors.append(
-                        f"late engine event after local finish: {engine_turn_id} {event.type}"
+            async with aclosing(self.coding_engine.run_turn(session, task)) as turn_stream:
+                async for raw_event in turn_stream:
+                    # O4.1：事件序号单一源头——到达事件在循环入口统一分配；
+                    # 合成事件（审批 gate/否决/resolved）经同一计数器分配，
+                    # 出口事件流序号连续无碰撞，不再信任适配器自带序号。
+                    event = raw_event.model_copy(
+                        update={
+                            "conversation_id": task.conversation_id,
+                            "task_id": task.task_id,
+                            "sequence": sequence,
+                        }
                     )
-                    if session is not None:
-                        try:
+                    sequence += 1
+                    engine_turn_id = event.engine_turn_id
+                    active_turn = self.state.get_for_task(task.task_id)
+                    if active_turn is None:
+                        # M1.2：本地任务已经结束，迟到的引擎 turn id 不得复活
+                        # ActiveTurn；记录为迟到协议事件并请求引擎取消该 turn。
+                        # V0.3.2 M4：判定只看本任务，其他聊天的并发任务不受影响。
+                        errors.append(
+                            f"late engine event after local finish: {engine_turn_id} {event.type}"
+                        )
+                        if session is not None:
+                            try:
+                                await self.coding_engine.cancel_turn(session, engine_turn_id)
+                            except Exception as exc:  # noqa: BLE001 - 保留真实错误
+                                errors.append(f"cancel late engine turn failed: {exc}")
+                        continue
+                    if active_turn.engine_turn_id is None:
+                        self.state.bind_engine_turn(task.task_id, engine_turn_id)
+                    if self.state.get_for_task(task.task_id).cancellation_requested:
+                        # 取消意图在引擎 turn id 绑定后立即发送 interrupt
+                        if session is not None:
                             await self.coding_engine.cancel_turn(session, engine_turn_id)
-                        except Exception as exc:  # noqa: BLE001 - 保留真实错误
-                            errors.append(f"cancel late engine turn failed: {exc}")
-                    continue
-                if active_turn.engine_turn_id is None:
-                    self.state.bind_engine_turn(task.task_id, engine_turn_id)
-                if self.state.get_for_task(task.task_id).cancellation_requested:
-                    # 取消意图在引擎 turn id 绑定后立即发送 interrupt
-                    if session is not None:
-                        await self.coding_engine.cancel_turn(session, engine_turn_id)
-                    self.state.mark_cancel_sent(task.task_id)
-
-                # V0.3.2 M1：推送前完成分段/时间线enrichment。delta 打开
-                # 当前 segment；TOOL_STARTED 定稿当前段并给首个观察到的
-                # 工具分配一次工作台序号（后续更新沿用原序号）。
-                if event.type in (
-                    EngineEventType.ASSISTANT_DELTA,
-                    EngineEventType.ASSISTANT_REASONING_DELTA,
-                ):
-                    if not segment_state.is_open():
-                        segment_state.index = segment_state.finalized_count
-                        segment_state.order = self._next_timeline_order(
-                            task.conversation_id
-                        )
-                    payload = dict(event.payload)
-                    payload["segment_index"] = segment_state.index
-                    payload["timeline_order"] = segment_state.order
-                    payload["message_id"] = (
-                        f"assistant:{task.conversation_id}:{task.task_id}:"
-                        f"{segment_state.index}"
-                    )
-                    event = event.model_copy(update={"payload": payload})
-                elif event.type == EngineEventType.TOOL_STARTED:
-                    self._finalize_segment(
-                        segment_state,
-                        conversation_id=task.conversation_id,
-                        task_id=task.task_id,
-                        engine_turn_id=engine_turn_id,
-                        pair_id=task_pair_id,
-                        delegation_id=task_delegation_id,
-                        origin=origin,
-                    )
-                    if event.tool_call_id and event.tool_call_id not in tool_orders:
-                        tool_orders[event.tool_call_id] = self._next_timeline_order(
-                            task.conversation_id
-                        )
-                    payload = dict(event.payload)
-                    payload["timeline_order"] = tool_orders.get(event.tool_call_id)
-                    event = event.model_copy(update={"payload": payload})
-
-                # O2.1：原始事件到达即推送（tool.started 先于审批/沙箱结果到达 UI，
-                # 保证“运行中的工具卡片”立即出现）
-                self._emit_event(event)
-
-                if event.type == EngineEventType.APPROVAL_REQUESTED:
-                    # O3.1：引擎侧挂起通知（app-server requestApproval）——
-                    # 操作尚未执行，这里做真正的裁决：沙箱兜底（越界直接
-                    # 否决）+ ApprovalManager 裁决，结果经 resolve_approval
-                    # 回复引擎。原生审批不再作为独立交互卡片直透 UI。
-                    op = self._operation_from_approval_event(event)
-                    if event.tool_call_id:
-                        adjudicated_tool_ids.add(event.tool_call_id)
-                    # 设计 §6.3：请求 payload 记录决策方（user 或 reviewer）
-                    payload = dict(event.payload)
-                    payload.setdefault(
-                        "actor",
-                        "reviewer"
-                        if approval.mode == ApprovalMode.REVIEW
-                        else "user",
-                    )
-                    event = event.model_copy(update={"payload": payload})
-                    # O4.1：请求事件在分支入口先入列——出口列表与推送顺序
-                    # 一致（请求→裁决→工具），沙箱否决路径（continue）也不会丢事件
-                    events.append(event)
-                    approval_id = str(event.payload.get("approval_id") or "")
-                    try:
-                        self._check_sandbox(sandbox, op)
-                    except SandboxViolation as exc:
-                        # 挂起中的越界操作直接否决，引擎不会执行
-                        await self.coding_engine.resolve_approval(
-                            session, approval_id, ApprovalDecision.DENY
-                        )
-                        denied_run = self._deny_tool_and_notify(
-                            events,
-                            event,
-                            deny_reason=f"沙箱拦截：{exc}",
-                            message_text=f"沙箱拦截：{exc}",
-                            sequence=sequence,
-                            conversation_id=task.conversation_id,
-                            task_id=task.task_id,
-                            engine_turn_id=engine_turn_id,
-                            pair_id=task_pair_id,
-                        )
-                        if denied_run.tool_call_id:
-                            tool_runs[denied_run.tool_call_id] = denied_run
-                        sequence += 1
-                        failed = True
-                        errors.append(str(exc))
-                        continue
-                    outcome = await approval.adjudicate(
-                        op,
-                        requested_event=event,
-                        conversation_id=task.conversation_id,
-                        task_id=task.task_id,
-                        engine_turn_id=engine_turn_id,
-                        tool_call_id=event.tool_call_id,
-                        context=self._recent_user_messages(task.conversation_id),
-                        request_decision=(
-                            lambda op, approval_id, reason, _cid=task.conversation_id, _tid=task.task_id: (
-                                self._request_approval(
-                                    op, approval_id, reason, _cid, _tid
-                                )
-                            )
-                        ),
-                    )
-                    sequence = self._emit_gate_outcome(
-                        outcome,
-                        events,
-                        sequence,
-                        conversation_id=task.conversation_id,
-                        engine_turn_id=engine_turn_id,
-                        pair_id=task_pair_id,
-                    )
-                    if outcome.decision == ApprovalDecision.DENY:
-                        # M4.1：原生审批请求被用户/审查否决时同样落 denied
-                        # 工具记录，保留裁决理由。
-                        resolved_reason = next(
-                            (
-                                str(e.payload.get("reason") or "")
-                                for e in reversed(outcome.events)
-                                if e.type == EngineEventType.APPROVAL_RESOLVED
-                            ),
-                            "",
-                        ) or "审批否决"
-                        denied_run = self._deny_tool_and_notify(
-                            events,
-                            event,
-                            deny_reason=resolved_reason,
-                            message_text=resolved_reason,
-                            sequence=sequence,
-                            conversation_id=task.conversation_id,
-                            task_id=task.task_id,
-                            engine_turn_id=engine_turn_id,
-                            pair_id=task_pair_id,
-                        )
-                        if denied_run.tool_call_id:
-                            tool_runs[denied_run.tool_call_id] = denied_run
-                        sequence += 1
-                    # O3.1：统一经 resolve_approval 转发裁决；被否决时
-                    # 不中断执行循环——引擎把拒绝反馈给模型后继续 turn，
-                    # 任务成败由 turn 终态决定。
-                    await self.coding_engine.resolve_approval(
-                        session, approval_id, outcome.decision
-                    )
-
-                elif event.type == EngineEventType.TOOL_STARTED:
-                    op = self._operation_from_event(event)
-                    # O4.1：工具事件在门控处理前先入列，出口列表与推送顺序
-                    # 一致（工具开始→审批裁决/否决），序号连续
-                    events.append(event)
-                    # O3.3：当前步骤用中性标签（不泄露命令/路径原文）
-                    progress.current_step = self._step_label(event)
-                    try:
-                        self._check_sandbox(sandbox, op)
-                    except SandboxViolation as exc:
-                        denied_run = self._deny_tool_and_notify(
-                            events,
-                            event,
-                            deny_reason=str(exc),
-                            message_text=f"沙箱拦截：{exc}",
-                            sequence=sequence,
-                            conversation_id=task.conversation_id,
-                            task_id=task.task_id,
-                            engine_turn_id=engine_turn_id,
-                            pair_id=task_pair_id,
-                        )
-                        if denied_run.tool_call_id:
-                            tool_runs[denied_run.tool_call_id] = denied_run
-                        sequence += 1
-                        failed = True
-                        errors.append(str(exc))
-                        break
-
-                    # Codex 的 item/started 已表示操作开始。真实适配器只接受
-                    # app-server 在执行前发出的 requestApproval，避免在这里
-                    # 展示已经无法阻止执行的审批卡片。演示适配器继续走本地
-                    # 门控，用于离线验证三种审批模式。
-                    if self.coding_engine.native_preexecution_approval:
-                        continue
-
-                    # O3.1：该工具操作已由原生审批请求裁决并回复
-                    # （adjudicated），兜底 gate 不再重复执行；
-                    # 演示引擎等不产生原生请求的路径仍走完整门控。
-                    if not (
-                        event.tool_call_id
-                        and event.tool_call_id in adjudicated_tool_ids
+                        self.state.mark_cancel_sent(task.task_id)
+    
+                    # V0.3.2 M1：推送前完成分段/时间线enrichment。delta 打开
+                    # 当前 segment；TOOL_STARTED 定稿当前段并给首个观察到的
+                    # 工具分配一次工作台序号（后续更新沿用原序号）。
+                    if event.type in (
+                        EngineEventType.ASSISTANT_DELTA,
+                        EngineEventType.ASSISTANT_REASONING_DELTA,
                     ):
+                        if not segment_state.is_open():
+                            segment_state.index = segment_state.finalized_count
+                            segment_state.order = self._next_timeline_order(
+                                task.conversation_id
+                            )
+                        payload = dict(event.payload)
+                        payload["segment_index"] = segment_state.index
+                        payload["timeline_order"] = segment_state.order
+                        payload["message_id"] = (
+                            f"assistant:{task.conversation_id}:{task.task_id}:"
+                            f"{segment_state.index}"
+                        )
+                        event = event.model_copy(update={"payload": payload})
+                    elif event.type == EngineEventType.TOOL_STARTED:
+                        self._finalize_segment(
+                            segment_state,
+                            conversation_id=task.conversation_id,
+                            task_id=task.task_id,
+                            engine_turn_id=engine_turn_id,
+                            pair_id=task_pair_id,
+                            delegation_id=task_delegation_id,
+                            origin=origin,
+                        )
+                        if event.tool_call_id and event.tool_call_id not in tool_orders:
+                            tool_orders[event.tool_call_id] = self._next_timeline_order(
+                                task.conversation_id
+                            )
+                        payload = dict(event.payload)
+                        payload["timeline_order"] = tool_orders.get(event.tool_call_id)
+                        event = event.model_copy(update={"payload": payload})
+    
+                    # O2.1：原始事件到达即推送（tool.started 先于审批/沙箱结果到达 UI，
+                    # 保证“运行中的工具卡片”立即出现）
+                    self._emit_event(event)
+    
+                    if event.type == EngineEventType.APPROVAL_REQUESTED:
+                        # O3.1：引擎侧挂起通知（app-server requestApproval）——
+                        # 操作尚未执行，这里做真正的裁决：沙箱兜底（越界直接
+                        # 否决）+ ApprovalManager 裁决，结果经 resolve_approval
+                        # 回复引擎。原生审批不再作为独立交互卡片直透 UI。
+                        op = self._operation_from_approval_event(event)
+                        if event.tool_call_id:
+                            adjudicated_tool_ids.add(event.tool_call_id)
+                        # 设计 §6.3：请求 payload 记录决策方（user 或 reviewer）
+                        payload = dict(event.payload)
+                        payload.setdefault(
+                            "actor",
+                            "reviewer"
+                            if approval.mode == ApprovalMode.REVIEW
+                            else "user",
+                        )
+                        event = event.model_copy(update={"payload": payload})
+                        # O4.1：请求事件在分支入口先入列——出口列表与推送顺序
+                        # 一致（请求→裁决→工具），沙箱否决路径（continue）也不会丢事件
+                        events.append(event)
+                        approval_id = str(event.payload.get("approval_id") or "")
                         try:
-                            outcome = await approval.gate(
-                                op,
+                            self._check_sandbox(sandbox, op)
+                        except SandboxViolation as exc:
+                            # 挂起中的越界操作直接否决，引擎不会执行
+                            await self.coding_engine.resolve_approval(
+                                session, approval_id, ApprovalDecision.DENY
+                            )
+                            denied_run = self._deny_tool_and_notify(
+                                events,
+                                event,
+                                deny_reason=f"沙箱拦截：{exc}",
+                                message_text=self._sandbox_denial_text(exc),
+                                sequence=sequence,
                                 conversation_id=task.conversation_id,
                                 task_id=task.task_id,
                                 engine_turn_id=engine_turn_id,
-                                sequence=sequence,
-                                tool_call_id=event.tool_call_id,
-                                context=self._recent_user_messages(
-                                    task.conversation_id
-                                ),
-                            )
-                            sequence = self._emit_gate_outcome(
-                                outcome,
-                                events,
-                                sequence,
-                                conversation_id=task.conversation_id,
-                                engine_turn_id=engine_turn_id,
                                 pair_id=task_pair_id,
                             )
-                            if outcome.decision == ApprovalDecision.DENY:
-                                denied_run = self._deny_tool_and_notify(
-                                    events,
-                                    event,
-                                    deny_reason="审批否决",
-                                    message_text="审批否决",
-                                    sequence=sequence,
-                                    conversation_id=task.conversation_id,
-                                    task_id=task.task_id,
-                                    engine_turn_id=engine_turn_id,
-                                    pair_id=task_pair_id,
-                                )
-                                if denied_run.tool_call_id:
-                                    tool_runs[denied_run.tool_call_id] = denied_run
-                                sequence += 1
-                                failed = True
-                                errors.append("审批否决")
-                                break
-                        except ApprovalRequired as req:
-                            # O4.1：req.event 也走统一计数器（gate 内相对编号
-                            # 不参与出口序号，避免与后续合成事件碰撞）
-                            req.event = req.event.model_copy(update={"sequence": sequence})
+                            if denied_run.tool_call_id:
+                                tool_runs[denied_run.tool_call_id] = denied_run
                             sequence += 1
-                            events.append(req.event)
-                            self._emit_event(req.event)
-                            # O1.7：把真实理由与 approval_id 传给回调，UI 不再用
-                            # 命令文本冒充理由，也不再用 FIFO 顺序猜测对应关系
-                            reason = str(
-                                req.event.payload.get("reason", "") or "需要用户审批"
-                            )
-                            try:
-                                decision = await self._request_approval(
-                                    req.op,
-                                    req.approval_id,
-                                    reason,
-                                    task.conversation_id,
-                                    task.task_id,
-                                )
-                            except BaseException:
-                                # M1.5：回调异常/取消也要清理 _pending，
-                                # 不能把审批项留在管理器里悬挂。
-                                approval.resolve(
-                                    req.approval_id, ApprovalDecision.DENY
-                                )
-                                raise
-                            op = approval.resolve(req.approval_id, decision)
-                            resolved_event = self._approval_resolved_event(
-                                req.event, decision, "user", op, sequence
-                            )
-                            sequence += 1
-                            events.append(resolved_event)
-                            self._emit_event(resolved_event)
-                            # 设计 §4.3：用户裁决以 system 卡片留在消息时间线
-                            self._message(
-                                conversation_id=task.conversation_id,
-                                source=MessageSource.SYSTEM,
-                                kind=MessageKind.APPROVAL,
-                                text=self._decision_text(decision),
-                                engine_turn_id=engine_turn_id,
-                                pair_id=task_pair_id,
-                            )
-                            if decision == ApprovalDecision.DENY:
-                                denied_run = self._deny_tool_and_notify(
-                                    events,
-                                    event,
-                                    deny_reason="用户否决",
-                                    message_text="用户否决",
-                                    sequence=sequence,
-                                    conversation_id=task.conversation_id,
-                                    task_id=task.task_id,
-                                    engine_turn_id=engine_turn_id,
-                                    pair_id=task_pair_id,
-                                )
-                                if denied_run.tool_call_id:
-                                    tool_runs[denied_run.tool_call_id] = denied_run
-                                sequence += 1
-                                failed = True
-                                errors.append("用户否决")
-                                break
-
-                if event.type not in (
-                    EngineEventType.APPROVAL_REQUESTED,
-                    EngineEventType.TOOL_STARTED,
-                ):
-                    # O4.1：这两类事件已在各自分支入口入列，避免重复
-                    events.append(event)
-                if event.type == EngineEventType.ASSISTANT_FINAL:
-                    assistant_text = str(event.payload.get("text", ""))
-                    if assistant_text.strip() and not segment_state.is_open():
-                        # 只发 final、没有流式 delta 的引擎（如 Codex）：
-                        # final 自身构成 segment 0
-                        segment_state.index = segment_state.finalized_count
-                        segment_state.order = self._next_timeline_order(
-                            task.conversation_id
-                        )
-                    # V0.3.2 M1：final 完整正文覆盖当前段的流式累积
-                    segment_state.final_override = assistant_text
-                    # O3.3：助手进入收尾阶段
-                    progress.current_step = "助手整理结果"
-                elif event.type == EngineEventType.ASSISTANT_REASONING_DELTA:
-                    text = str(event.payload.get("text", ""))
-                    if event.payload.get("channel") == "content":
-                        segment_state.reasoning_content.append(text)
-                    else:
-                        segment_state.reasoning_summary.append(text)
-                elif event.type == EngineEventType.ASSISTANT_DELTA:
-                    segment_state.text_parts.append(str(event.payload.get("text", "")))
-                elif event.type == EngineEventType.FILE_PATCH:
-                    path = event.payload.get("path")
-                    if path:
-                        # O4.3：同一文件多次 patch 只记一次（保持首次出现顺序）
-                        text = str(path)
-                        if text not in changed_files:
-                            changed_files.append(text)
-                elif event.type == EngineEventType.TOOL_FINISHED:
-                    status = cast(ToolRunStatus, str(event.payload.get("status", "succeeded")))
-                    if status == "failed":
-                        # 单个工具步骤失败不等于整个 turn 失败：引擎可能会
-                        # 重试、改用其他路径，最后正常完成。保留错误明细，
-                        # 但让真实的 turn.failed / turn.completed 终态决定
-                        # 任务回执状态。
-                        if event.payload.get("error"):
-                            errors.append(str(event.payload["error"]))
-                    if event.payload.get("check"):
-                        checks.append(str(event.payload["check"]))
-                    # O3.3：工具步骤收尾后计数
-                    progress.completed_steps += 1
-                    progress.current_step = "任务收尾中"
-                    if event.tool_call_id:
-                        tool_runs[event.tool_call_id] = ToolRun(
-                            tool_call_id=event.tool_call_id,
+                            failed = True
+                            errors.append(str(exc))
+                            continue
+                        outcome = await approval.adjudicate(
+                            op,
+                            requested_event=event,
                             conversation_id=task.conversation_id,
                             task_id=task.task_id,
                             engine_turn_id=engine_turn_id,
-                            sequence=event.sequence,
-                            status=status,
-                            title=str(event.payload.get("title", "工具")),
-                            summary=str(event.payload.get("summary", "")),
-                            details=str(event.payload.get("details", "")),
-                            timeline_order=tool_orders.get(event.tool_call_id),
+                            tool_call_id=event.tool_call_id,
+                            context=self._recent_user_messages(task.conversation_id),
+                            request_decision=(
+                                lambda op, approval_id, reason, _cid=task.conversation_id, _tid=task.task_id: (
+                                    self._request_approval(
+                                        op, approval_id, reason, _cid, _tid
+                                    )
+                                )
+                            ),
                         )
-                elif event.type == EngineEventType.TURN_FAILED:
-                    terminal_status = "failed"
-                    error = event.payload.get("error")
-                    if error:
-                        errors.append(str(error))
-                elif event.type == EngineEventType.TURN_COMPLETED:
-                    cancelled = event.payload.get("status") == "cancelled"
-                    # 最后一个终态事件决定回执；引擎可能在重试过程中
-                    # 先报告一次失败，随后用 completed 收尾。
-                    terminal_status = "cancelled" if cancelled else "completed"
+                        sequence = self._emit_gate_outcome(
+                            outcome,
+                            events,
+                            sequence,
+                            conversation_id=task.conversation_id,
+                            engine_turn_id=engine_turn_id,
+                            pair_id=task_pair_id,
+                        )
+                        if outcome.decision == ApprovalDecision.DENY:
+                            # M4.1：原生审批请求被用户/审查否决时同样落 denied
+                            # 工具记录，保留裁决理由。
+                            resolved_reason = next(
+                                (
+                                    str(e.payload.get("reason") or "")
+                                    for e in reversed(outcome.events)
+                                    if e.type == EngineEventType.APPROVAL_RESOLVED
+                                ),
+                                "",
+                            ) or "审批否决"
+                            denied_run = self._deny_tool_and_notify(
+                                events,
+                                event,
+                                deny_reason=resolved_reason,
+                                message_text=resolved_reason,
+                                sequence=sequence,
+                                conversation_id=task.conversation_id,
+                                task_id=task.task_id,
+                                engine_turn_id=engine_turn_id,
+                                pair_id=task_pair_id,
+                            )
+                            if denied_run.tool_call_id:
+                                tool_runs[denied_run.tool_call_id] = denied_run
+                            sequence += 1
+                        # O3.1：统一经 resolve_approval 转发裁决；被否决时
+                        # 不中断执行循环——引擎把拒绝反馈给模型后继续 turn，
+                        # 任务成败由 turn 终态决定。
+                        await self.coding_engine.resolve_approval(
+                            session, approval_id, outcome.decision
+                        )
+    
+                    elif event.type == EngineEventType.TOOL_STARTED:
+                        op = self._operation_from_event(event)
+                        # O4.1：工具事件在门控处理前先入列，出口列表与推送顺序
+                        # 一致（工具开始→审批裁决/否决），序号连续
+                        events.append(event)
+                        # O3.3：当前步骤用中性标签（不泄露命令/路径原文）
+                        progress.current_step = self._step_label(event)
+                        try:
+                            self._check_sandbox(sandbox, op)
+                        except SandboxViolation as exc:
+                            denied_run = self._deny_tool_and_notify(
+                                events,
+                                event,
+                                deny_reason=str(exc),
+                                message_text=self._sandbox_denial_text(exc),
+                                sequence=sequence,
+                                conversation_id=task.conversation_id,
+                                task_id=task.task_id,
+                                engine_turn_id=engine_turn_id,
+                                pair_id=task_pair_id,
+                            )
+                            if denied_run.tool_call_id:
+                                tool_runs[denied_run.tool_call_id] = denied_run
+                            sequence += 1
+                            failed = True
+                            errors.append(str(exc))
+                            break
+    
+                        # Codex 的 item/started 已表示操作开始。真实适配器只接受
+                        # app-server 在执行前发出的 requestApproval，避免在这里
+                        # 展示已经无法阻止执行的审批卡片。演示适配器继续走本地
+                        # 门控，用于离线验证三种审批模式。
+                        if self.coding_engine.native_preexecution_approval:
+                            continue
+    
+                        # O3.1：该工具操作已由原生审批请求裁决并回复
+                        # （adjudicated），兜底 gate 不再重复执行；
+                        # 演示引擎等不产生原生请求的路径仍走完整门控。
+                        if not (
+                            event.tool_call_id
+                            and event.tool_call_id in adjudicated_tool_ids
+                        ):
+                            try:
+                                outcome = await approval.gate(
+                                    op,
+                                    conversation_id=task.conversation_id,
+                                    task_id=task.task_id,
+                                    engine_turn_id=engine_turn_id,
+                                    sequence=sequence,
+                                    tool_call_id=event.tool_call_id,
+                                    context=self._recent_user_messages(
+                                        task.conversation_id
+                                    ),
+                                )
+                                sequence = self._emit_gate_outcome(
+                                    outcome,
+                                    events,
+                                    sequence,
+                                    conversation_id=task.conversation_id,
+                                    engine_turn_id=engine_turn_id,
+                                    pair_id=task_pair_id,
+                                )
+                                if outcome.decision == ApprovalDecision.DENY:
+                                    denied_run = self._deny_tool_and_notify(
+                                        events,
+                                        event,
+                                        deny_reason="审批否决",
+                                        message_text="审批否决",
+                                        sequence=sequence,
+                                        conversation_id=task.conversation_id,
+                                        task_id=task.task_id,
+                                        engine_turn_id=engine_turn_id,
+                                        pair_id=task_pair_id,
+                                    )
+                                    if denied_run.tool_call_id:
+                                        tool_runs[denied_run.tool_call_id] = denied_run
+                                    sequence += 1
+                                    failed = True
+                                    errors.append("审批否决")
+                                    break
+                            except ApprovalRequired as req:
+                                # O4.1：req.event 也走统一计数器（gate 内相对编号
+                                # 不参与出口序号，避免与后续合成事件碰撞）
+                                req.event = req.event.model_copy(update={"sequence": sequence})
+                                sequence += 1
+                                events.append(req.event)
+                                self._emit_event(req.event)
+                                # O1.7：把真实理由与 approval_id 传给回调，UI 不再用
+                                # 命令文本冒充理由，也不再用 FIFO 顺序猜测对应关系
+                                reason = str(
+                                    req.event.payload.get("reason", "") or "需要用户审批"
+                                )
+                                try:
+                                    decision = await self._request_approval(
+                                        req.op,
+                                        req.approval_id,
+                                        reason,
+                                        task.conversation_id,
+                                        task.task_id,
+                                    )
+                                except BaseException:
+                                    # M1.5：回调异常/取消也要清理 _pending，
+                                    # 不能把审批项留在管理器里悬挂。
+                                    approval.resolve(
+                                        req.approval_id, ApprovalDecision.DENY
+                                    )
+                                    raise
+                                op = approval.resolve(req.approval_id, decision)
+                                resolved_event = self._approval_resolved_event(
+                                    req.event, decision, "user", op, sequence
+                                )
+                                sequence += 1
+                                events.append(resolved_event)
+                                self._emit_event(resolved_event)
+                                # 设计 §4.3：用户裁决以 system 卡片留在消息时间线
+                                self._message(
+                                    conversation_id=task.conversation_id,
+                                    source=MessageSource.SYSTEM,
+                                    kind=MessageKind.APPROVAL,
+                                    text=self._decision_text(decision),
+                                    engine_turn_id=engine_turn_id,
+                                    pair_id=task_pair_id,
+                                )
+                                if decision == ApprovalDecision.DENY:
+                                    denied_run = self._deny_tool_and_notify(
+                                        events,
+                                        event,
+                                        deny_reason="用户否决",
+                                        message_text="用户否决",
+                                        sequence=sequence,
+                                        conversation_id=task.conversation_id,
+                                        task_id=task.task_id,
+                                        engine_turn_id=engine_turn_id,
+                                        pair_id=task_pair_id,
+                                    )
+                                    if denied_run.tool_call_id:
+                                        tool_runs[denied_run.tool_call_id] = denied_run
+                                    sequence += 1
+                                    failed = True
+                                    errors.append("用户否决")
+                                    break
+    
+                    if event.type not in (
+                        EngineEventType.APPROVAL_REQUESTED,
+                        EngineEventType.TOOL_STARTED,
+                    ):
+                        # O4.1：这两类事件已在各自分支入口入列，避免重复
+                        events.append(event)
+                    if event.type == EngineEventType.ASSISTANT_FINAL:
+                        assistant_text = str(event.payload.get("text", ""))
+                        if assistant_text.strip() and not segment_state.is_open():
+                            # 只发 final、没有流式 delta 的引擎（如 Codex）：
+                            # final 自身构成 segment 0
+                            segment_state.index = segment_state.finalized_count
+                            segment_state.order = self._next_timeline_order(
+                                task.conversation_id
+                            )
+                        # V0.3.2 M1：final 完整正文覆盖当前段的流式累积
+                        segment_state.final_override = assistant_text
+                        # O3.3：助手进入收尾阶段
+                        progress.current_step = "助手整理结果"
+                    elif event.type == EngineEventType.ASSISTANT_REASONING_DELTA:
+                        text = str(event.payload.get("text", ""))
+                        if event.payload.get("channel") == "content":
+                            segment_state.reasoning_content.append(text)
+                        else:
+                            segment_state.reasoning_summary.append(text)
+                    elif event.type == EngineEventType.ASSISTANT_DELTA:
+                        segment_state.text_parts.append(str(event.payload.get("text", "")))
+                    elif event.type == EngineEventType.FILE_PATCH:
+                        path = event.payload.get("path")
+                        if path:
+                            # O4.3：同一文件多次 patch 只记一次（保持首次出现顺序）
+                            text = str(path)
+                            if text not in changed_files:
+                                changed_files.append(text)
+                    elif event.type == EngineEventType.TOOL_FINISHED:
+                        status = cast(ToolRunStatus, str(event.payload.get("status", "succeeded")))
+                        if status == "failed":
+                            # 单个工具步骤失败不等于整个 turn 失败：引擎可能会
+                            # 重试、改用其他路径，最后正常完成。保留错误明细，
+                            # 但让真实的 turn.failed / turn.completed 终态决定
+                            # 任务回执状态。
+                            if event.payload.get("error"):
+                                errors.append(str(event.payload["error"]))
+                        if event.payload.get("check"):
+                            checks.append(str(event.payload["check"]))
+                        # O3.3：工具步骤收尾后计数
+                        progress.completed_steps += 1
+                        progress.current_step = "任务收尾中"
+                        if event.tool_call_id:
+                            tool_runs[event.tool_call_id] = ToolRun(
+                                tool_call_id=event.tool_call_id,
+                                conversation_id=task.conversation_id,
+                                task_id=task.task_id,
+                                engine_turn_id=engine_turn_id,
+                                sequence=event.sequence,
+                                status=status,
+                                title=str(event.payload.get("title", "工具")),
+                                summary=str(event.payload.get("summary", "")),
+                                details=str(event.payload.get("details", "")),
+                                timeline_order=tool_orders.get(event.tool_call_id),
+                            )
+                    elif event.type == EngineEventType.TURN_FAILED:
+                        terminal_status = "failed"
+                        error = event.payload.get("error")
+                        if error:
+                            errors.append(str(error))
+                    elif event.type == EngineEventType.TURN_COMPLETED:
+                        cancelled = event.payload.get("status") == "cancelled"
+                        # 最后一个终态事件决定回执；引擎可能在重试过程中
+                        # 先报告一次失败，随后用 completed 收尾。
+                        terminal_status = "cancelled" if cancelled else "completed"
 
             # V0.3.2 M1：任务结束定稿最后一个尚未定稿的 segment（正常、
             # 失败、取消路径都只收尾本任务自己的段落）。final 未到达时，
@@ -1848,6 +1850,19 @@ class ConversationOrchestrator:
             summary=str(
                 payload.get("summary") or payload.get("reason") or "工具操作"
             ),
+        )
+
+    @staticmethod
+    def _sandbox_denial_text(exc: SandboxViolation) -> str:
+        """沙箱拒绝卡片的文案：保留真实拦截原因，并附可操作的落地建议。
+
+        只改善被拦截后的引导，不放宽沙箱本身；路径仍必须以绑定项目目录
+        （或重新选择项目路径）为准。
+        """
+        return (
+            f"沙箱拦截：{exc}。"
+            "路径在绑定项目之外；把文件移入项目目录后再试，"
+            "或重新选择项目路径。"
         )
 
     @staticmethod

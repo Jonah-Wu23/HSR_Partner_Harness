@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from collections.abc import AsyncIterator
@@ -33,8 +34,24 @@ from pair_harness.core.contracts import (
 )
 from pair_harness.core.ports import DialogueModel
 
+logger = logging.getLogger(__name__)
+
 # 当前协议要求单一 JSON 对象；解析器仍兼容早期“台词 + JSON”输出。
 # 解析失败必须暴露；不能把空输出改写成可显示的省略号。
+
+
+class UnusableSpeechError(ValueError):
+    """角色输出不可用（空输出/JSON 截断/占位标点）。
+
+    ``category`` 区分失败形态，供流式适配器决定是否对真实模型做有界重试：
+    - ``empty``：没有可用的台词（原始输出为空，或剥离 JSON 残块后只剩
+      空白/占位标点；含合法 JSON 内 speech 为占位标点）；
+    - ``truncated``：模型在输出 JSON 但被截断（以 ``{`` 开头却无法解析）。
+    """
+
+    def __init__(self, message: str, *, category: str) -> None:
+        super().__init__(message)
+        self.category = category
 
 
 class OpenAICompatibleDialogueModel(DialogueModel):
@@ -208,10 +225,21 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         """公开共享解析入口：解析并应用委派纠偏标记。
 
         供 OpenAI 兼容流与 Codex 对话适配器共用，覆盖空正文/截断 JSON
-        （解析失败继续抛出原始错误）以及委派自报不一致时的
-        ``delegation_missed`` 真实标记。
+        （解析失败时不吞异常，把原始输出片段记入本地日志后继续抛出）
+        以及委派自报不一致时的 ``delegation_missed`` 真实标记。
         """
-        turn = self._parse_output(raw_text)
+        try:
+            turn = self._parse_output(raw_text)
+        except ValueError as exc:
+            # V0.3.3：解析失败把原始输出片段写入本地日志（不进聊天）——
+            # 保留真实失败以便定位是截断还是真空，而不是让 UI 只能看到
+            # 一句无法诊断的“回复失败”。
+            logger.warning(
+                "角色对话模型输出不可用（%s），原始片段: %r",
+                getattr(exc, "category", "parse"),
+                raw_text[-500:],
+            )
+            raise
         if (
             request is not None
             and request.result_summary is None
@@ -236,7 +264,9 @@ class OpenAICompatibleDialogueModel(DialogueModel):
                 raise ValueError("角色模型输出缺少 speech 字段")
             speech = str(obj.get("speech") or "").strip()
             if _is_placeholder_speech(speech):
-                raise ValueError("角色模型输出的 speech 为空或仅包含占位标点")
+                raise UnusableSpeechError(
+                    "角色模型输出的 speech 为空或仅包含占位标点", category="empty"
+                )
             delegation = OpenAICompatibleDialogueModel._parse_delegation(
                 obj.get("delegation")
             )
@@ -250,7 +280,15 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             )
         cleaned = OpenAICompatibleDialogueModel._strip_json_attempt(text)
         if _is_placeholder_speech(cleaned):
-            raise ValueError("角色模型未返回可用 speech")
+            # 剥离 JSON 残块后只剩空白/标点：按失败形态区分文案——
+            # 以 { 开头是模型在输出 JSON 时被截断；否则就是纯空/占位输出。
+            if text.startswith("{"):
+                raise UnusableSpeechError(
+                    "角色模型 JSON 截断，未返回可用 speech", category="truncated"
+                )
+            raise UnusableSpeechError(
+                "角色模型输出为空或仅含占位标点，未返回可用 speech", category="empty"
+            )
         return CharacterTurn(speech=cleaned)
 
     @staticmethod
@@ -489,11 +527,18 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         raw_text = "".join(text_chunks)
         try:
             turn = self.parse_output(raw_text, request=request)
-        except ValueError:
-            # DeepSeek 结构化 JSON 偶发返回空 content。没有产生任何 speech
-            # 增量时可以安全重试两次；不会用占位台词掩盖失败，也不会重放
-            # 已经展示过的半截正文。
-            if deepseek_structured and _attempt < 2 and not speech_started:
+        except UnusableSpeechError as exc:
+            # 空输出/截断 JSON：尚未产生任何 speech 增量时，对 DeepSeek
+            # 结构化端点做一次有界重试（重新请求真实模型，与委派纠偏重试
+            # 同机制，不合成结果）；不会用占位台词掩盖失败，也不会重放已经
+            # 展示过的半截正文。重试后再失败才报错，报错文案区分「输出为空」
+            # 与「JSON 截断」。
+            if (
+                deepseek_structured
+                and _attempt < 2
+                and not speech_started
+                and exc.category in ("empty", "truncated")
+            ):
                 async for retry_event in self.stream_reply(
                     request,
                     _attempt=_attempt + 1,

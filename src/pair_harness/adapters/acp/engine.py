@@ -262,6 +262,12 @@ class AcpCodingEngine(CodingEngine):
                             notification_task.cancel()
                         await asyncio.gather(notification_task, return_exceptions=True)
                         notification_task = None
+        except GeneratorExit:
+            # V0.3.3：消费方 break（如编排器的 aclosing 关闭）抛出的
+            # GeneratorExit 必须直通——`except BaseException` 分支会把回合
+            # 改写成对外 yield 的 TURN_FAILED，导致 aclose() 抛
+            # RuntimeError 且订阅器无法归还；直通后由 finally 释放。
+            raise
         except asyncio.CancelledError:
             if not prompt_task.done():
                 prompt_task.cancel()
@@ -300,20 +306,25 @@ class AcpCodingEngine(CodingEngine):
         )
         # Reasonix 的真实 session/prompt 成功响应可能只包含 sessionId，
         # 不带 stopReason。v1.24.2 还会在助手最终回复与工具均成功后返回
-        # stopReason=error；此时保留 warning，但不能把已完成的任务改写成失败。
+        # stopReason=error 或 cancelled；此时保留 warning，但不能把已完成
+        # 的任务改写成失败——状态保持 completed，stop_reason 原样进入回执
+        # 卡片供界面如实展示（V0.3.3）。
         failure_text = f"{stop_reason} {stop_error or ''}".lower()
         terminal_error = bool(
             stop_error or "error" in failure_text or "fail" in failure_text
         )
-        recoverable_terminal_error = terminal_error and bool(
-            assistant_chunks and tool_succeeded and not tool_failed
-        )
+        # 工具与正文均已成功的回合即便带上 error/cancelled 终态标记，也按
+        # recoverable 处理；cancelled 不在 error/fail 关键词里，单独纳入。
+        recoverable_terminal_error = (
+            terminal_error or "cancel" in failure_text
+        ) and bool(assistant_chunks and tool_succeeded and not tool_failed)
         status = "completed" if not terminal_error or recoverable_terminal_error else "failed"
         warning = None
         if recoverable_terminal_error:
             warning = stop_error or stop_reason
             logger.warning(
-                "Reasonix returned terminal error after successful tool execution: %s",
+                "Reasonix returned terminal %s after successful tool execution: %s",
+                "error" if terminal_error else "cancelled",
                 warning,
             )
         if assistant_chunks:
@@ -405,6 +416,10 @@ class AcpCodec:
 
     def __init__(self) -> None:
         self._sequence = 0
+        # V0.3.3：tool_call → tool_call_update 之间记下该工具的命令摘要，
+        # 失败回执把命令拼进 details/error——真实 Reasonix 失败常常只给
+        # "command exited: exit status 1"，没有命令就无法定位是哪个工具。
+        self._tool_commands: dict[str, str] = {}
 
     def _next(self) -> int:
         self._sequence += 1
@@ -419,9 +434,14 @@ class AcpCodec:
 
     @staticmethod
     def _tool_text(content: Any) -> str:
-        """tool_call_update 的 content 数组（结果文本）提取。"""
+        """tool_call_update 的 content（结果文本）提取。
+
+        兼容 dict / 文本数组两种形状；失败型工具可能携带 stderr/error/
+        traceback 字段，一并并入结果文本供错误卡片定位失败原因。
+        """
+        result_keys = ("text", "output", "result", "stderr", "error", "traceback")
         if isinstance(content, dict):
-            return str(content.get("text") or content.get("output") or content.get("result") or "")
+            return str(next((content[k] for k in result_keys if content.get(k)), ""))
         if isinstance(content, str):
             return content
         if not isinstance(content, list):
@@ -431,10 +451,12 @@ class AcpCodec:
             if not isinstance(item, dict):
                 continue
             nested = item.get("content")
-            if isinstance(nested, dict) and nested.get("text"):
-                parts.append(str(nested["text"]))
-            elif item.get("text"):
-                parts.append(str(item["text"]))
+            if isinstance(nested, dict):
+                value = next((nested[k] for k in result_keys if nested.get(k)), "")
+            else:
+                value = next((item[k] for k in result_keys if item.get(k)), "")
+            if value:
+                parts.append(str(value))
         return "\n".join(parts)
 
     @staticmethod
@@ -544,6 +566,10 @@ class AcpCodec:
                     or ""
                 )
                 op = self._op_fields(update)
+                if tool_call_id:
+                    self._tool_commands[tool_call_id] = op["command"] or str(
+                        update.get("title") or "工具调用"
+                    )
                 return EngineEvent(
                     sequence=self._next(), type=EngineEventType.TOOL_STARTED,
                     tool_call_id=tool_call_id or None,
@@ -568,6 +594,15 @@ class AcpCodec:
                     or update.get("result")
                     or update.get("output")
                 )
+                # 失败工具附上命令摘要（来自对应的 tool_call），诊断不再只有
+                # 退出码；工具结果里的 stderr/error 文本已被 _tool_text 并入。
+                if succeeded:
+                    details = text
+                else:
+                    command = self._tool_commands.get(tool_call_id, "")
+                    details = text or status
+                    if command:
+                        details = f"命令：{command}" + (f"\n{details}" if details else "")
                 return EngineEvent(
                     sequence=self._next(), type=EngineEventType.TOOL_FINISHED,
                     tool_call_id=tool_call_id or None,
@@ -575,8 +610,8 @@ class AcpCodec:
                         "status": "succeeded" if succeeded else "failed",
                         "title": str(update.get("title") or "工具调用"),
                         "summary": text,
-                        "details": text,
-                        "error": None if succeeded else text or status,
+                        "details": details,
+                        "error": None if succeeded else details,
                     },
                     **common,
                 )

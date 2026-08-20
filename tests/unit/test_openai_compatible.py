@@ -4,7 +4,10 @@ import pytest
 from httpx import AsyncClient, Request, Response
 from httpx._transports.mock import MockTransport
 
-from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDialogueModel
+from pair_harness.adapters.dialogue.openai_compatible import (
+    OpenAICompatibleDialogueModel,
+    UnusableSpeechError,
+)
 from pair_harness.core.contracts import DialogueRequest, Message, MessageKind, MessageSource
 
 
@@ -22,6 +25,26 @@ def _mock_stream_transport(content_chunks: list[str]) -> MockTransport:
         return Response(200, content=b"".join(lines))
 
     return MockTransport(handler)
+
+
+def _deepseek_model(handler) -> OpenAICompatibleDialogueModel:
+    client = AsyncClient(base_url="https://api.deepseek.com", transport=MockTransport(handler))
+    return OpenAICompatibleDialogueModel(
+        base_url="https://api.deepseek.com",
+        api_key="test-key",
+        model="deepseek-v4-flash",
+        client=client,
+    )
+
+
+def _user_message(text: str = "你好") -> Message:
+    return Message(
+        conversation_id="c",
+        pair_id="phainon_ancient_machine",
+        source=MessageSource.USER,
+        kind=MessageKind.USER_TEXT,
+        text=text,
+    )
 
 
 @pytest.mark.asyncio
@@ -256,3 +279,96 @@ def test_parse_delegation_accepts_flat_and_nested_data(
     assert turn.speech == "这事我插不上手。" or turn.speech == "等等，先停一下。"
     assert turn.delegation is not None
     assert turn.delegation.instructions == expected_instructions
+
+
+# ---------------------------------------------------------------------------
+# V0.3.3：不可用输出按「输出为空 / JSON 截断」分类，原始片段入本地日志，
+# 空输出/截断 JSON 对 DeepSeek 结构化端点做有界重试（不合成结果）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw, expected_category",
+    [
+        # 原始输出为空
+        ("   ", "empty"),
+        # 合法 JSON 内 speech 是占位标点
+        ('{"speech":"……"}', "empty"),
+        # 模型以 { 开头输出 JSON 但被截断（值尚未开始 / 值未闭合）
+        ('{"speech":', "truncated"),
+        ('{"speech": "你好', "truncated"),
+    ],
+)
+def test_parse_output_classifies_unusable_output(
+    raw: str, expected_category: str
+) -> None:
+    model = OpenAICompatibleDialogueModel(
+        base_url="http://test", api_key="test-key", model="test-model"
+    )
+    with pytest.raises(UnusableSpeechError) as exc_info:
+        model.parse_output(raw)
+    assert exc_info.value.category == expected_category
+    if expected_category == "truncated":
+        assert "JSON 截断" in str(exc_info.value)
+    else:
+        # 「输出为空」与「JSON 内占位标点」的文案落在可用 speech 说明上
+        assert "speech" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_stream_reply_retries_empty_output_then_raises_bounded() -> None:
+    """DeepSeek 结构化端点持续空输出：有界重试后仍失败才报「输出为空」。
+
+    不合成结果：三次真实请求后直接抛错（初始 + 2 次有界重试）。
+    """
+    requests: list[dict] = []
+
+    def handler(request: Request) -> Response:
+        requests.append(json.loads(request.content))
+        data = '{"choices":[{"delta":{"content":" "}}]}'
+        return Response(
+            200,
+            content=f"data: {data}\ndata: [DONE]\n".encode("utf-8"),
+        )
+
+    model = _deepseek_model(handler)
+    request = DialogueRequest(
+        pair_id="phainon_ancient_machine",
+        conversation_id="c",
+        user_message=_user_message(),
+    )
+    with pytest.raises(UnusableSpeechError, match="输出为空"):
+        [event async for event in model.stream_reply(request)]
+    assert len(requests) == 3
+    # 重试时放宽供应商格式约束，仍请求真实模型
+    assert all("response_format" not in r2 for r2 in requests[1:])
+
+
+@pytest.mark.asyncio
+async def test_stream_reply_recovers_after_truncated_json_retry() -> None:
+    """首次输出 JSON 截断、尚无 speech 增量时，对有界重试后的正常结果放行。"""
+    requests: list[dict] = []
+    scripts = ['{"speech":', "好呀"]
+
+    def handler(request: Request) -> Response:
+        requests.append(json.loads(request.content))
+        chunk = scripts.pop(0)
+        data = json.dumps(
+            {"choices": [{"delta": {"content": chunk}}]}, ensure_ascii=False
+        )
+        return Response(
+            200,
+            content=f"data: {data}\ndata: [DONE]\n".encode("utf-8"),
+        )
+
+    model = _deepseek_model(handler)
+    request = DialogueRequest(
+        pair_id="phainon_ancient_machine",
+        conversation_id="c",
+        user_message=_user_message(),
+    )
+    events = [event async for event in model.stream_reply(request)]
+    finals = [event for event in events if event.type == "character.final"]
+    assert len(finals) == 1
+    assert finals[0].turn.speech == "好呀"
+    assert len(requests) == 2

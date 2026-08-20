@@ -7,18 +7,24 @@
 import asyncio
 import json
 from collections import deque
+from contextlib import aclosing
 
 import pytest
 
-from pair_harness.adapters.acp.engine import AcpCodingEngine
+from pair_harness.adapters.acp.engine import AcpCodingEngine, AcpCodec
 from pair_harness.adapters.codex.transport import JsonlProcessTransport
 from pair_harness.core.contracts import (
     ApprovalDecision,
+    ApprovalMode,
+    CharacterTurn,
     EngineEventType,
     EngineSessionRef,
+    MessageSource,
     ProjectRef,
     TaskRequest,
 )
+from pair_harness.core.orchestrator import ConversationOrchestrator
+from tests.fakes import FixedDialogueModel
 
 
 class FakeAcpConnection:
@@ -364,6 +370,42 @@ async def test_run_turn_accepts_snake_case_fields_and_rejected_status(
     assert events[-1].type == EngineEventType.TURN_COMPLETED
 
 
+class CancelledStopReasonAfterSuccessServer(FakeAcpServer):
+    """Reasonix 在成功工具与助手正文后返回 stopReason=cancelled。"""
+
+    async def handle_request(self, method: str, params: dict) -> dict:
+        result = await super().handle_request(method, params)
+        if method == "session/prompt":
+            result["stopReason"] = "cancelled"
+        return result
+
+
+@pytest.mark.asyncio
+async def test_run_turn_keeps_completed_status_for_cancelled_after_success(
+    engine_and_server,
+) -> None:
+    """工具与正文均成功后 stopReason=cancelled：状态保持完成，附真实 stop_reason 警告。
+
+    已有 recoverable 逻辑只覆盖 error/fail；V0.3.3 把「工具与正文均已成功」
+    的 cancelled 也纳入，避免角色把已完成的任务转述成「取消」。
+    """
+    engine, transport, _server = engine_and_server
+    transport.server = CancelledStopReasonAfterSuccessServer(transport)
+    ref = await engine.open_session(
+        ProjectRef(project_id="p1", name="项目", root_path="C:/project")
+    )
+    events = [
+        event
+        async for event in engine.run_turn(
+            ref,
+            TaskRequest(conversation_id="c1", origin_message_id="m1", instructions="检查项目文件"),
+        )
+    ]
+    assert events[-1].type == EngineEventType.TURN_COMPLETED
+    assert events[-1].payload["stop_reason"] == "cancelled"
+    assert events[-1].payload["warning"] == "cancelled"
+
+
 @pytest.mark.asyncio
 async def test_run_turn_recovers_error_stop_reason_after_successful_tools(
     engine_and_server,
@@ -508,3 +550,192 @@ async def test_amend_turn_uses_steer_extension(engine_and_server) -> None:
     steer_calls = [params for m, params in server.requests if m == "_reasonix.io/session/steer"]
     assert len(steer_calls) == 1
     assert steer_calls[0]["prompt"][0]["text"] == "改用表格"
+
+
+def test_codec_failed_tool_carries_command_and_stderr() -> None:
+    """V0.3.3：失败工具回执附带命令摘要与 stderr/error 文本，诊断不再
+    只有退出码（真实 Reasonix 失败只给 "command exited: exit status 1"）。"""
+    codec = AcpCodec()
+    binding = {
+        "conversation_id": "c1",
+        "task_id": "t1",
+        "engine_turn_id": "e1",
+        "acp_session_id": "s1",
+    }
+    started = codec.map_notification(
+        {
+            "method": "session/update",
+            "params": {
+                "sessionId": "s1",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "tool-x",
+                    "title": "bash",
+                    "kind": "execute",
+                    "rawInput": {"command": "python fix_script.py"},
+                },
+            },
+        },
+        binding,
+    )
+    assert started is not None and started.type == EngineEventType.TOOL_STARTED
+
+    finished = codec.map_notification(
+        {
+            "method": "session/update",
+            "params": {
+                "sessionId": "s1",
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "tool-x",
+                    "status": "failed",
+                    "content": [
+                        {
+                            "type": "content",
+                            "content": {"type": "text", "text": "Traceback (most recent call last)"},
+                        },
+                        {"type": "stderr", "text": "ModuleNotFoundError: No module named 'x'"},
+                    ],
+                },
+            },
+        },
+        binding,
+    )
+    assert finished is not None and finished.type == EngineEventType.TOOL_FINISHED
+    assert finished.payload["status"] == "failed"
+    # summary 保留工具结果原文；details/error 附上命令摘要与 stderr 尾部
+    assert finished.payload["summary"] == (
+        "Traceback (most recent call last)\nModuleNotFoundError: No module named 'x'"
+    )
+    assert "命令：python fix_script.py" in finished.payload["details"]
+    assert "ModuleNotFoundError" in finished.payload["details"]
+    assert "命令：python fix_script.py" in finished.payload["error"]
+
+
+class OutOfSandboxServer(FakeAcpServer):
+    """工具目标路径在项目目录之外——触发编排器 TOOL_STARTED 分支的沙箱 break。"""
+
+    async def handle_request(self, method: str, params: dict) -> dict:
+        if method == "session/prompt":
+            session_id = str(params.get("sessionId") or "")
+            self.current_session = session_id
+            await self.transport._emit_notification(
+                {
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": session_id,
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": "我看一下那份 3D 计划。"},
+                        }
+                    },
+                }
+            )
+            await self.transport._emit_notification(
+                {
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": session_id,
+                        "update": {
+                            "sessionUpdate": "tool_call",
+                            "toolCallId": "tool-outside",
+                            "title": "read",
+                            "kind": "read",
+                            "rawInput": {"path": "C:/outside/3d_plan.txt"},
+                        }
+                    },
+                }
+            )
+            return {"stopReason": "end_turn", "sessionId": session_id}
+        return await super().handle_request(method, params)
+
+
+@pytest.mark.asyncio
+async def test_aclose_releases_session_subscription_after_mid_turn_break(
+    engine_and_server,
+) -> None:
+    """V0.3.3：消费方在 TOOL_STARTED 后 aclose() 回合，订阅槽位必须归还。
+
+    编排器用 contextlib.aclosing 包裹 run_turn 的 async for；break/异常/
+    取消都会触发 aclose()。若 engine 的 ``except BaseException`` 分支吞掉
+    GeneratorExit，aclose() 会抛 RuntimeError，订阅器滞留，同一 session
+    的再次 run_turn 立即撞 "already has an active notification subscriber"。
+    """
+    engine, _transport, _server = engine_and_server
+    ref = await engine.open_session(
+        ProjectRef(project_id="p1", name="项目", root_path="C:/project")
+    )
+
+    async def break_after_tool_started() -> None:
+        async with aclosing(
+            engine.run_turn(
+                ref,
+                TaskRequest(
+                    conversation_id="c1", origin_message_id="m1", instructions="检查项目文件"
+                ),
+            )
+        ) as stream:
+            async for event in stream:
+                if event.type == EngineEventType.TOOL_STARTED:
+                    break
+
+    await break_after_tool_started()
+    # 订阅槽位已随 aclose 释放：同一 session 能再次进入 run_turn 并完整收尾
+    events = [
+        event
+        async for event in engine.run_turn(
+            ref,
+            TaskRequest(
+                conversation_id="c1", origin_message_id="m2", instructions="继续检查"
+            ),
+        )
+    ]
+    assert events[-1].type == EngineEventType.TURN_COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_sandbox_denial_break_does_not_leak_session_subscription() -> None:
+    """V0.3.3 回归：沙箱拒绝 break 不再泄漏 ACP 会话订阅器。
+
+    复现路径：TOOL_STARTED 目标路径越界 → orchestrator 在 TOOL_STARTED
+    分支 break 跳出事件循环。修复前 break 不关闭异步生成器，run_turn 的
+    finally 不执行，订阅槽位滞留；同一聊天第二次委派复用同一 ACP session，
+    open_session(resume) 立即撞 "already has an active notification
+    subscriber"，每次重试都死在同一步。
+    """
+    transport = FakeTransport()
+    server = OutOfSandboxServer(transport)
+    transport.server = server
+    engine = AcpCodingEngine(transport)
+    orchestrator = ConversationOrchestrator(
+        pair_id="march7_fourth_mirror",
+        project=ProjectRef(project_id="p", name="p", root_path="C:\\project"),
+        dialogue_model=FixedDialogueModel(
+            CharacterTurn(speech="被拦住了。", delegation=None),
+            CharacterTurn(speech="再试一次。", delegation=None),
+        ),
+        coding_engine=engine,
+        store=None,
+        approval_mode=ApprovalMode.REQUEST_APPROVAL,
+    )
+
+    first = await orchestrator.handle_direct_input(
+        conversation_id="c", text="查一下 C 盘那份 3D 计划"
+    )
+    assert first.receipt is not None
+    assert first.receipt.status == "failed"
+    assert any("路径越界" in err for err in first.receipt.errors)
+    # 沙箱拒绝卡片附可操作提示（不改动沙箱边界）
+    card_texts = [m.text for m in first.messages if m.source == MessageSource.SYSTEM]
+    assert any(
+        "路径在绑定项目之外" in text and "移入项目目录" in text for text in card_texts
+    )
+
+    # 同聊天第二次委派复用同一 ACP session；订阅器若泄漏，此处直接抛
+    # RuntimeError("session ... already has an active notification subscriber")
+    second = await orchestrator.handle_direct_input(
+        conversation_id="c", text="再查一次那份 3D 计划"
+    )
+    assert second.receipt is not None
+    assert second.receipt.status == "failed"
+    assert any("路径越界" in err for err in second.receipt.errors)
