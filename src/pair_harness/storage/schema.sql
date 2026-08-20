@@ -129,6 +129,33 @@ CREATE TABLE IF NOT EXISTS conversation_inbox (
 
 CREATE INDEX IF NOT EXISTS idx_conversation_inbox_dispatch
 ON conversation_inbox(conversation_id, status, position);
+
+-- V0.3.3：角色卡持久化。card_json 存 codec.dump_card_v3 完整文本（酒馆
+-- 标准字段 + extensions.hsr，权威位置见 docs/character-card/角色卡数据契约.md）。
+-- state/source 存 CharacterCardState 枚举值与来源值；归档集合走 app_state。
+CREATE TABLE IF NOT EXISTS character_cards (
+    card_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    name TEXT NOT NULL,
+    source TEXT NOT NULL,
+    card_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS character_assets (
+    asset_id TEXT PRIMARY KEY,
+    card_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    source_ref TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_character_assets_card
+ON character_assets(card_id);
+
 -- O4.3：新库的完整表结构由本文件保证（IF NOT EXISTS 只影响新库）。
 -- 旧库（user_version=0）的补列/删列迁移在 sqlite_store.SCHEMA_VERSION
 -- 中逐级执行；新库创建后由 sqlite_store 直接标记当前版本。

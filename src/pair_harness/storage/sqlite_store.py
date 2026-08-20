@@ -28,7 +28,7 @@ def _dt(value: str) -> datetime:
 # O4.3：数据库结构版本。新库由 schema.sql 一次建全，直接标记为该版本；
 # 旧库（user_version=0）按 MIGRATIONS 逐级升级。每次结构变更 +1，
 # 并在 MIGRATIONS 里补对应迁移步骤。
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # 索引 i 对应“从版本 i 升到 i+1”的迁移步骤（每级一条或多条 SQL）。
 MIGRATIONS: tuple[tuple[str, ...], ...] = (
@@ -130,6 +130,28 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         "AND COALESCE(json_extract(message_json, '$.pair_id'), '') <> "
         "(SELECT pair_id FROM conversations "
         "WHERE conversations.conversation_id = messages.conversation_id)",
+    ),
+    # 版本 9：V0.3.3 角色卡持久化（character_cards / character_assets）。
+    # 旧库升级只建新表，不触碰已有表数据；新库由 schema.sql 直建同构表。
+    (
+        "CREATE TABLE IF NOT EXISTS character_cards ("
+        "card_id TEXT PRIMARY KEY,"
+        "state TEXT NOT NULL,"
+        "name TEXT NOT NULL,"
+        "source TEXT NOT NULL,"
+        "card_json TEXT NOT NULL,"
+        "created_at TEXT NOT NULL,"
+        "updated_at TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS character_assets ("
+        "asset_id TEXT PRIMARY KEY,"
+        "card_id TEXT NOT NULL,"
+        "kind TEXT NOT NULL,"
+        "mime_type TEXT NOT NULL,"
+        "file_path TEXT NOT NULL,"
+        "source_ref TEXT NOT NULL DEFAULT '',"
+        "created_at TEXT NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS idx_character_assets_card "
+        "ON character_assets(card_id)",
     ),
 )
 
