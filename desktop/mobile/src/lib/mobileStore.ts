@@ -143,8 +143,11 @@ export const useMobileStore = create<MobileState>((set, get) => {
         break;
       }
       case "approval.requested": {
-        const approval = (event.payload as { approval?: PendingApproval }).approval;
-        if (approval) {
+        // 真实协议：payload 平铺即为 PendingApproval
+        // （application_service 直接 emit approval_id/conversation_id/task_id/operation/reason），
+        // 不是 {"approval": {...}} 嵌套。
+        const approval = event.payload as unknown as PendingApproval;
+        if (approval && approval.approval_id) {
           const rest = get().approvals.filter((item) => item.approval_id !== approval.approval_id);
           set({ approvals: [...rest, approval] });
         }

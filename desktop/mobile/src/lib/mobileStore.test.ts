@@ -209,12 +209,13 @@ describe("mobileStore 事件一致性", () => {
       kind: "event",
       event: "approval.requested",
       sequence: 11,
+      // 真实协议：payload 平铺即为 PendingApproval（非 {"approval": {...}} 嵌套）。
       payload: {
-        approval: {
-          approval_id: "a1",
-          conversation_id: "c1",
-          operation: { tool_kind: "shell", command: "npm test", paths: [], patch_file_count: null, summary: "跑测试" },
-        },
+        approval_id: "a1",
+        conversation_id: "c1",
+        task_id: "t1",
+        operation: { tool_kind: "shell", command: "npm test", paths: [], patch_file_count: null, summary: "跑测试" },
+        reason: "风险规则",
       },
     });
     expect(useMobileStore.getState().approvals).toHaveLength(1);
