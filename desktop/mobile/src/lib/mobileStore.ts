@@ -213,6 +213,10 @@ export const useMobileStore = create<MobileState>((set, get) => {
     },
 
     async openConversation(conversationId) {
+      // 页面刷新直接落在聊天页时，装载可能先于 WS 握手完成；
+      // 与 pair() 同模式等待连接就绪，避免 mount 竞态报「WebSocket 未连接」。
+      client.connect();
+      await waitForConnected();
       const result = await client.request<ConversationOpenResult>("conversation.open", {
         conversation_id: conversationId,
         view_id: mobileViewId,

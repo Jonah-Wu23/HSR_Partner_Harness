@@ -233,6 +233,10 @@ describe("mobileStore 会话操作", () => {
   it("openConversation 装载消息，submitDelegation 用会话 last_mode", async () => {
     await pairAndBootstrap();
     const openPromise = useMobileStore.getState().openConversation("c1");
+    // openConversation 先 await 连接就绪，帧在 microtask 后才发出。
+    await vi.waitFor(() => {
+      expect(lastSentFrame().method).toBe("conversation.open");
+    });
     const openFrame = lastSentFrame();
     expect(openFrame).toMatchObject({
       method: "conversation.open",
@@ -271,5 +275,40 @@ describe("mobileStore 会话操作", () => {
     });
     lastInstance().emit({ kind: "response", id: submitFrame.id, ok: true, result: {} });
     await submitPromise;
+  });
+
+  it("openConversation 在 WS 握手未完成时等待连接就绪再发请求", async () => {
+    // 模拟刷新后直接落在聊天页：连接尚未建立，装载不许报「WebSocket 未连接」。
+    mobileWsClient.disconnect();
+    FakeWebSocket.instances = [];
+
+    const openPromise = useMobileStore.getState().openConversation("c1");
+    // connect() 已触发但握手未完成，此时不应发出任何帧。
+    expect(lastInstance().readyState).toBe(FakeWebSocket.CONNECTING);
+    expect(lastInstance().sent).toEqual([]);
+
+    lastInstance().open();
+    await vi.waitFor(() => {
+      expect(lastSentFrame().method).toBe("conversation.open");
+    });
+    const openFrame = lastSentFrame();
+    expect(openFrame.params).toMatchObject({ conversation_id: "c1" });
+    lastInstance().emit({
+      kind: "response",
+      id: openFrame.id,
+      ok: true,
+      result: {
+        conversation: CONVERSATION,
+        project: null,
+        pair: null,
+        messages: [],
+        tool_runs: [],
+        turns: [],
+        queue_items: [],
+        active_task: null,
+      },
+    });
+    await openPromise;
+    expect(useMobileStore.getState().activeConversationId).toBe("c1");
   });
 });
