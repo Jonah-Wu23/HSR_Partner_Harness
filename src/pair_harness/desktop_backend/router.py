@@ -74,12 +74,16 @@ class SidecarRouter:
         self._stop_event = asyncio.Event()
         self._tasks: set[asyncio.Task[None]] = set()
 
-    def dispatch(self, line: str) -> None:
-        """提交一条请求，不等待它完成，以便后续请求可以继续进入。"""
-        task = asyncio.create_task(self.handle_line(line))
+    def dispatch(self, line: str, reply_sink: Callable[[dict[str, Any]], None] | None = None) -> None:
+        """提交一条请求，不等待它完成，以便后续请求可以继续进入。
+
+        ``reply_sink``（V0.3.3 WS 服务器模式）把 response 额外写回发起
+        该请求的远程连接；stdout 仍始终收到同一份 response（唯一权威）。
+        stdin 路径不传 reply_sink，行为与之前完全一致。
+        """
+        task = asyncio.create_task(self.handle_line(line, reply_sink))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
-
     async def wait_stopped(self) -> None:
         await self._stop_event.wait()
 
@@ -92,7 +96,15 @@ class SidecarRouter:
         while self._tasks:
             await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
 
-    async def handle_line(self, line: str) -> None:
+    async def handle_line(
+        self, line: str, reply_sink: Callable[[dict[str, Any]], None] | None = None
+    ) -> None:
+        def respond(message: dict[str, Any]) -> None:
+            """response 写 stdout（权威）；远程发起方同时收到同一份。"""
+            self.writer.write(message)
+            if reply_sink is not None:
+                reply_sink(message)
+
         try:
             command = parse_request(line)
         except Exception as exc:  # 协议错误必须留在 stdout 的结构化消息中
@@ -105,37 +117,45 @@ class SidecarRouter:
                     request_id = candidate
             except (TypeError, ValueError):
                 pass
-            self.writer.write(protocol_error(code, str(exc), request_id=request_id))
+            respond(protocol_error(code, str(exc), request_id=request_id))
             return
 
         try:
             result = await self.service.handle_command(command)
         except ServiceError as exc:
-            self.writer.write(response_error(command.request_id, exc.code, str(exc)))
+            respond(response_error(command.request_id, exc.code, str(exc)))
             return
         except Exception as exc:  # noqa: BLE001 - Sidecar 不能因单个请求崩溃
             logger.exception("desktop command failed: %s", command.method)
-            self.writer.write(
+            respond(
                 response_error(command.request_id, "internal_error", str(exc))
             )
             return
 
-        self.writer.write(response_ok(command.request_id, result))
+        respond(response_ok(command.request_id, result))
         if command.method == "app.shutdown":
             self.stop_requested = True
             self._stop_event.set()
 
 
 async def run_stdin(
-    service: DesktopApplicationService, *, writer: JsonlWriter, stdin: TextIO
+    service: DesktopApplicationService,
+    *,
+    writer: JsonlWriter,
+    stdin: TextIO,
+    router: SidecarRouter | None = None,
 ) -> None:
     """运行 Sidecar 主循环。
 
     Windows 控制台 stdin 不是 asyncio 原生异步流，使用线程读取单行，
     不阻塞事件循环中的模型、审批和语音任务。stdout 写入器由 __main__
     创建并传入，避免出现第二把写入锁。
+
+    V0.3.3：``--serve`` 模式传入已创建的 ``router``（WS 服务器共享同一
+    Router 与 service）；stdin 路径不传则在此创建，行为与之前一致。
     """
-    router = SidecarRouter(service, writer)
+    if router is None:
+        router = SidecarRouter(service, writer)
     writer.on_broken_pipe = router.request_stop
     lines: asyncio.Queue[str] = asyncio.Queue()
     loop = asyncio.get_running_loop()

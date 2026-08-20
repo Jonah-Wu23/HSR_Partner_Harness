@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
-from .router import JsonlWriter
-
+if TYPE_CHECKING:
+    # 仅类型标注需要；运行时鸭子类型（同一 write(message) 接口），
+    # 避免与 router/application_service 形成循环导入。
+    from .router import JsonlWriter
 logger = logging.getLogger(__name__)
 
 RemoteEventWriter = Callable[[dict], None]

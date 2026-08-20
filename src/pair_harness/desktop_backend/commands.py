@@ -48,6 +48,21 @@ DESKTOP_COMMANDS = frozenset(
         "codex.oauth_status",
         "codex.logout",
         "codex.api_login",
+        "codex.oauth_start",
+        "codex.oauth_status",
+        "codex.logout",
+        "codex.api_login",
+        "card.list",
+        "card.get",
+        "card.create_draft",
+        "card.update",
+        "card.duplicate",
+        "card.archive",
+        "card.delete",
+        "card.select_active",
+        "remote.pair",
+        "remote.list_devices",
+        "remote.revoke",
     }
 )
 

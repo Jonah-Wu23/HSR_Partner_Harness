@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from pathlib import Path
@@ -29,7 +30,10 @@ from pair_harness.config.voices import (
     assistant_speaker_ids,
     load_reference_voice_manifest,
 )
-from pair_harness.core.context import ExecutionContext
+from pair_harness.character_cards.codec import dump_card_v3, load_card_payload
+from pair_harness.character_cards.models import CharacterCard
+from pair_harness.character_cards.repository import CharacterCardRepository
+from pair_harness.core.context import ExecutionContext, assert_single_assistant_markdown
 from pair_harness.core.contracts import (
     ApprovalDecision,
     ApprovalMode,
@@ -49,6 +53,7 @@ from pair_harness.core.voice_policy import is_readable_text
 from pair_harness.core.voice_runtime import VoiceRuntime
 from pair_harness.settings import Settings
 from pair_harness.storage.sqlite_store import SQLiteStore
+from .pairing import PairingError, PairingService
 from pair_harness.voice_models import VOICE_ASR_MODEL, VOICE_TTS_MODEL
 
 from .commands import DesktopCommand
@@ -217,6 +222,10 @@ class DesktopApplicationService:
         voice_runtime: VoiceRuntime | None = None,
     ) -> None:
         self.store = store
+        # V0.3.3：角色卡仓库（迁移 9 已建表）与远程配对服务（状态存 app_state）。
+        self.card_repository = CharacterCardRepository(store)
+        self.pairing_service = PairingService()
+        self._restore_pairing_state()
         self.orchestrator = orchestrator
         self.pair_config = pair_config
         self.pair_catalog = tuple(pair_catalog)
@@ -329,6 +338,8 @@ class DesktopApplicationService:
         close_transport = getattr(transport, "close", None)
         if close_transport is not None:
             await close_transport()
+        # V0.3.3：退出前持久化远程配对状态（token/撤销集合/审计）。
+        self._persist_pairing_state()
         self.store.close()
 
     # ------------------------------------------------------------------ V0.2 M3 账号
@@ -653,7 +664,13 @@ class DesktopApplicationService:
                 )
                 raw_speaker_ids = params.get("speaker_ids")
                 if raw_speaker_ids is None:
-                    requested_ids = {entry.speaker_id for entry in manifest}
+                    # V0.3.3：一键生成默认只含角色侧说话方（助手侧已永久禁用，
+                    # 不再随默认请求被整批拒绝）；显式指定助手侧仍会被拒绝。
+                    requested_ids = {
+                        entry.speaker_id
+                        for entry in manifest
+                        if entry.speaker_id not in assistant_speaker_ids()
+                    }
                 elif isinstance(raw_speaker_ids, (list, tuple)) and all(
                     isinstance(value, str) for value in raw_speaker_ids
                 ):
@@ -902,6 +919,17 @@ class DesktopApplicationService:
             "codex.logout": self._codex_logout,
             "codex.api_login": self._codex_api_login,
             "app.reconnect": self._app_reconnect,
+            "card.list": self._card_list,
+            "card.get": self._card_get,
+            "card.create_draft": self._card_create_draft,
+            "card.update": self._card_update,
+            "card.duplicate": self._card_duplicate,
+            "card.archive": self._card_archive,
+            "card.delete": self._card_delete,
+            "card.select_active": self._card_select_active,
+            "remote.pair": self._remote_pair,
+            "remote.list_devices": self._remote_list_devices,
+            "remote.revoke": self._remote_revoke,
         }
         handler = handlers[command.method]
         return await handler(command.params)
@@ -1828,6 +1856,232 @@ class DesktopApplicationService:
             )
         self.voice_runtime.enqueue_text(text, voice_id=voice_id)
         return {"voice": self._voice_snapshot()}
+
+    # ------------------------------------------------------------------ V0.3.3 角色卡
+
+    _BUILTIN_PREFIX = "builtin:"
+
+    def _builtin_card_summaries(self) -> list[dict[str, Any]]:
+        """内置角色只读摘要：来自 pair 目录，不入库、不可编辑。"""
+        config = self._load_account_config()
+        active_id = self.card_repository.get_active_card_id()
+        summaries: list[dict[str, Any]] = []
+        for pair in self.pair_catalog:
+            speaker = pair.character.id
+            voice_state = (
+                "voice_ready"
+                if (config.get(f"voice.profile.{speaker}.voice_id") or "").strip()
+                else "voice_unconfigured"
+            )
+            summaries.append(
+                {
+                    "card_id": f"{self._BUILTIN_PREFIX}{speaker}",
+                    "name": pair.character.name,
+                    "state": "saved",
+                    "source": "builtin",
+                    "updated_at": "",
+                    "has_avatar": False,
+                    "voice_state": voice_state,
+                    "active": active_id == f"{self._BUILTIN_PREFIX}{speaker}",
+                    "read_only": True,
+                }
+            )
+        return summaries
+
+    def _require_writable_card(self, card_id: str) -> None:
+        if card_id.startswith(self._BUILTIN_PREFIX):
+            raise ServiceError(
+                "内置角色为只读，不能修改、归档或删除", code="card_read_only"
+            )
+
+    async def _card_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        include_archived = bool(params.get("include_archived", False))
+        cards = [
+            {
+                "card_id": s.card_id,
+                "name": s.name,
+                "state": s.state,
+                "source": s.source,
+                "updated_at": s.updated_at,
+                "has_avatar": s.has_avatar,
+                "voice_state": s.voice_state,
+                "active": s.active,
+                "read_only": False,
+            }
+            for s in self.card_repository.list_cards(
+                include_archived=include_archived
+            )
+        ]
+        return {"cards": cards + self._builtin_card_summaries()}
+
+    async def _card_get(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        card_id = str(params.get("card_id") or "")
+        if not card_id:
+            raise ServiceError("card.get 需要 card_id", code="invalid_params")
+        if card_id.startswith(self._BUILTIN_PREFIX):
+            speaker = card_id[len(self._BUILTIN_PREFIX):]
+            pair = next(
+                (p for p in self.pair_catalog if p.character.id == speaker), None
+            )
+            if pair is None:
+                raise ServiceError("内置角色不存在", code="card_not_found")
+            card = CharacterCard(
+                name=pair.character.name,
+                creator="HSR Partner Harness",
+                tags=["builtin"],
+                creator_notes=f"内置角色，提示词来源：{pair.character.prompt}",
+            )
+            return {
+                "card_id": card_id,
+                "state": "saved",
+                "source": "builtin",
+                "created_at": "",
+                "updated_at": "",
+                "card": json.loads(dump_card_v3(card)),
+                "read_only": True,
+            }
+        try:
+            record = self.card_repository.get_card(card_id)
+        except KeyError as exc:
+            raise ServiceError("角色卡不存在", code="card_not_found") from exc
+        return {
+            "card_id": record.card_id,
+            "state": record.state,
+            "source": record.source,
+            "created_at": record.created_at,
+            "updated_at": record.updated_at,
+            "card": json.loads(dump_card_v3(record.card)),
+            "read_only": False,
+        }
+
+    async def _card_create_draft(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        name = str(params.get("name") or "").strip()
+        if not name:
+            raise ServiceError("card.create_draft 需要 name", code="invalid_params")
+        record = self.card_repository.create_draft(name)
+        return {"card_id": record.card_id, "state": record.state}
+
+    async def _card_update(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        card_id = str(params.get("card_id") or "")
+        self._require_writable_card(card_id)
+        raw_card = params.get("card")
+        if not isinstance(raw_card, Mapping):
+            raise ServiceError(
+                "card.update 需要 card（角色卡 JSON 对象）", code="invalid_params"
+            )
+        try:
+            parsed = load_card_payload(dict(raw_card))
+        except Exception as exc:  # 解析失败如实上抛，不做兜底
+            raise ServiceError(
+                f"角色卡数据非法：{exc}", code="card_invalid_payload"
+            ) from exc
+        try:
+            record = self.card_repository.update_card(card_id, parsed.card)
+        except KeyError as exc:
+            raise ServiceError("角色卡不存在", code="card_not_found") from exc
+        return {"card_id": record.card_id, "updated_at": record.updated_at}
+
+    async def _card_duplicate(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        card_id = str(params.get("card_id") or "")
+        if card_id.startswith(self._BUILTIN_PREFIX):
+            raise ServiceError(
+                "内置角色为只读，暂不支持复制为副本", code="card_read_only"
+            )
+        try:
+            record = self.card_repository.duplicate_card(card_id)
+        except KeyError as exc:
+            raise ServiceError("角色卡不存在", code="card_not_found") from exc
+        return {"card_id": record.card_id, "name": record.card.name}
+
+    async def _card_archive(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        card_id = str(params.get("card_id") or "")
+        self._require_writable_card(card_id)
+        try:
+            self.card_repository.archive_card(card_id)
+        except KeyError as exc:
+            raise ServiceError("角色卡不存在", code="card_not_found") from exc
+        except ValueError as exc:
+            raise ServiceError(str(exc), code="card_invalid_state") from exc
+        return {"card_id": card_id, "archived": True}
+
+    async def _card_delete(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        card_id = str(params.get("card_id") or "")
+        self._require_writable_card(card_id)
+        confirm = params.get("confirm") is True
+        try:
+            self.card_repository.delete_card(card_id, confirm=confirm)
+        except ValueError as exc:
+            raise ServiceError(str(exc), code="card_confirm_required") from exc
+        return {"card_id": card_id, "deleted": True}
+
+    async def _card_select_active(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        card_id = str(params.get("card_id") or "")
+        self._require_writable_card(card_id)
+        try:
+            self.card_repository.select_active(card_id)
+        except ValueError as exc:
+            raise ServiceError(str(exc), code="card_invalid_state") from exc
+        return {"card_id": card_id}
+
+    # ------------------------------------------------------------------ V0.3.3 手机远程配对
+
+    def _restore_pairing_state(self) -> None:
+
+        raw = self.store.get_app_state("remote.pairing_state")
+        if not raw:
+            return
+        try:
+            state = json.loads(raw)
+        except (TypeError, ValueError):
+            # 状态损坏按空状态启动；真实错误留在日志，不阻断 Sidecar。
+            logger.warning("远程配对状态损坏，按空状态启动", exc_info=True)
+            return
+        if isinstance(state, dict):
+            self.pairing_service.load_state(state)
+
+    def _persist_pairing_state(self) -> None:
+        self.store.set_app_state(
+            "remote.pairing_state",
+            json.dumps(self.pairing_service.export_state(), ensure_ascii=False),
+        )
+
+    async def _remote_pair(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        code = str(params.get("code") or "")
+        device_name = str(params.get("device_name") or "").strip()
+        if not code or not device_name:
+            raise ServiceError(
+                "remote.pair 需要 code 与 device_name", code="invalid_params"
+            )
+        try:
+            token = self.pairing_service.claim(code, device_name=device_name)
+        except PairingError as exc:
+            raise ServiceError(str(exc), code=f"pairing_{exc.code}") from exc
+        self._persist_pairing_state()
+        return {"token": token}
+
+    async def _remote_list_devices(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        del params
+        return {"devices": self.pairing_service.list_devices()}
+
+    async def _remote_revoke(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        device_name = str(params.get("device_name") or "").strip()
+        if not device_name:
+            raise ServiceError(
+                "remote.revoke 需要 device_name", code="invalid_params"
+            )
+        # 桌面端按设备名撤销：撤销该设备名下全部 token。
+        state = self.pairing_service.export_state()
+        revoked = 0
+        for entry in state.get("tokens", []):
+            if entry.get("device_name") == device_name and not entry.get("revoked"):
+                if self.pairing_service.revoke(entry["token"]):
+                    revoked += 1
+        if revoked == 0:
+            raise ServiceError(
+                f"没有可撤销的设备：{device_name}", code="device_not_found"
+            )
+        self._persist_pairing_state()
+        return {"device_name": device_name, "revoked_tokens": revoked}
 
     async def _account_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
@@ -3188,7 +3442,9 @@ class DesktopApplicationService:
             conversation.project_id, conversation_mismatch=True
         )
         selected_pair = load_pair_config(conversation.pair_id)
-        return ExecutionContext(
+        # V0.3.3 装配断言：助手上下文恰好注入一个助手 Markdown（单一来源）。
+        assistant_md = load_prompt(selected_pair.assistant.prompt)
+        context = ExecutionContext(
             account_id=self.current_account_id,
             project=ProjectRef(
                 project_id=project.project_id,
@@ -3200,8 +3456,10 @@ class DesktopApplicationService:
             conversation_mode=conversation.last_mode,  # type: ignore[arg-type]
             approval_mode=ApprovalMode(project.approval_mode),
             reasoning_effort=project.reasoning_effort,
-            assistant_instructions=load_prompt(selected_pair.assistant.prompt),
+            assistant_instructions=assistant_md,
         )
+        assert_single_assistant_markdown(context.assistant_instructions, assistant_md)
+        return context
 
     def _effective_voice_pair(self, pair_id: str) -> PairConfig:
         """按当前账号解析某个搭档的真实有效音色。"""
@@ -3237,6 +3495,9 @@ class DesktopApplicationService:
         )
         project = self.store.mark_project_opened(project.project_id)
         selected_pair = load_pair_config(conversation.pair_id)
+        # V0.3.3 装配断言：切换上下文同样只注入一个助手 Markdown。
+        assistant_md = load_prompt(selected_pair.assistant.prompt)
+        assert_single_assistant_markdown(assistant_md, assistant_md)
         if conversation_id != self.current_conversation_id:
             self.orchestrator.close_conversation(self.current_conversation_id)
         self.current_project_id = project.project_id
@@ -3251,7 +3512,7 @@ class DesktopApplicationService:
             pair_id=conversation.pair_id,
             conversation_id=conversation_id,
             approval_mode=ApprovalMode(project.approval_mode),
-            assistant_instructions=load_prompt(selected_pair.assistant.prompt),
+            assistant_instructions=assistant_md,
             conversation_mode=conversation.last_mode,
         )
         if isinstance(self.dialogue_model, OpenAICompatibleDialogueModel):
@@ -3565,6 +3826,7 @@ def _build_service(
         ),
         approval_callback=broker.request,
         reviewer=DialogueModelReviewer(dialogue_model) if not demo else None,
+        # V0.3.3 装配断言：服务构建（含重启恢复路径）同样单一注入。
         assistant_instructions=load_prompt(pair_config.assistant.prompt),
     )
     service = DesktopApplicationService(

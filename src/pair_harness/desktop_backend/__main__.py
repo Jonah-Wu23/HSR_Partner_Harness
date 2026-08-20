@@ -10,7 +10,9 @@ from pathlib import Path
 
 if __package__:
     from .application_service import ServiceError, build_configured_service
-    from .router import JsonlWriter, run_stdin
+    from .event_fanout import EventFanout
+    from .router import JsonlWriter, SidecarRouter, run_stdin
+    from .ws_server import WSServerMode
 else:
     # PyInstaller 以脚本入口运行时没有 package 上下文，改用绝对导入。
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -18,8 +20,13 @@ else:
         ServiceError,
         build_configured_service,
     )
-    from pair_harness.desktop_backend.router import JsonlWriter, run_stdin
-
+    from pair_harness.desktop_backend.event_fanout import EventFanout
+    from pair_harness.desktop_backend.router import (
+        JsonlWriter,
+        SidecarRouter,
+        run_stdin,
+    )
+    from pair_harness.desktop_backend.ws_server import WSServerMode
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Pair Harness Python desktop sidecar")
@@ -28,6 +35,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pair", default="phainon_ancient_machine")
     parser.add_argument("--project", type=Path, default=Path.cwd())
     parser.add_argument("--data-dir", type=Path)
+    parser.add_argument(
+        "--serve",
+        type=int,
+        metavar="PORT",
+        help="同端口开启 WS 服务器模式（手机远程 P0），与 stdin 循环并行",
+    )
     return parser
 
 
@@ -40,8 +53,14 @@ async def _run(args: argparse.Namespace) -> int:
     writer = JsonlWriter(sys.stdout)
     service = None
 
+    # V0.3.3 --serve：事件先写 stdout（唯一权威），再扇出到已鉴权远程连接。
+    fanout = EventFanout(writer) if args.serve else None
+
     def sink(message: dict) -> None:
-        writer.write(message)
+        if fanout is not None:
+            fanout.publish(message)
+        else:
+            writer.write(message)
 
     def report_startup_error(code: str, message: str) -> None:
         writer.write(
@@ -82,9 +101,37 @@ async def _run(args: argparse.Namespace) -> int:
         {"pid": os.getpid(), "demo": not args.real},
     )
     await service.start_voice()
+    ws_server: WSServerMode | None = None
+    router: SidecarRouter | None = None
     try:
-        await run_stdin(service, writer=writer, stdin=sys.stdin)
+        if args.serve and fanout is not None:
+            # WS 服务器模式与 stdin 循环共享同一 service 与 Router；
+            # 鉴权由 service.pairing_service 承担（配对码/token/撤销）。
+            router = SidecarRouter(service, writer)
+            pwa_env = os.getenv("PAIR_HARNESS_PWA_DIR", "").strip()
+            static_root = Path(pwa_env) if pwa_env else None
+            if static_root is not None and not static_root.is_dir():
+                # 静态目录配置错误按无静态资源处理（/ 返回 404），如实暴露。
+                logging.getLogger(__name__).warning(
+                    "PAIR_HARNESS_PWA_DIR 指向的目录不存在，PWA 静态伺服禁用: %s",
+                    static_root,
+                )
+                static_root = None
+            ws_server = WSServerMode(
+                dispatch=router.dispatch,
+                authenticator=service.pairing_service,
+                fanout=fanout,
+                static_root=static_root,
+                port=args.serve,
+            )
+            await ws_server.start()
+            logging.getLogger(__name__).info(
+                "WS 服务器模式已启动 port=%s", args.serve
+            )
+        await run_stdin(service, writer=writer, stdin=sys.stdin, router=router)
     finally:
+        if ws_server is not None:
+            await ws_server.stop()
         if service is not None and not service._shutdown:
             await service.shutdown()
     return 0
