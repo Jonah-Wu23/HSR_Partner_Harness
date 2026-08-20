@@ -36,6 +36,16 @@ describe("RemotePairingPanel (V0.3.3 远程设备配对面板)", () => {
     expect(props.onListRemoteDevices).toHaveBeenCalledTimes(1);
   });
 
+  it("回调引用变化不触发重复拉取（防 AppShell 内联回调渲染循环）", () => {
+    const props = createMockPanelProps();
+    const { rerender } = render(<RemotePairingPanel {...props} />);
+    expect(props.onListRemoteDevices).toHaveBeenCalledTimes(1);
+
+    // AppShell 传入的是内联箭头，父级每次渲染都是新引用；面板不得因此重拉。
+    rerender(<RemotePairingPanel {...props} onListRemoteDevices={vi.fn()} />);
+    expect(props.onListRemoteDevices).toHaveBeenCalledTimes(1);
+  });
+
   it("未生成配对码时显示「生成配对码」按钮并可触发生成", () => {
     const props = createMockPanelProps();
     render(<RemotePairingPanel {...props} />);

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { RemotePairingViewModel } from "../../../contracts/view-models";
 import { QrCode } from "../../primitives/QrCode";
 
@@ -28,10 +28,13 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
   const [now, setNow] = useState(() => Date.now());
   const [revokingDeviceName, setRevokingDeviceName] = useState<string | null>(null);
 
-  // 挂载时拉取设备列表
+  // 挂载时拉取设备列表。回调在 AppShell 是内联箭头，引用随每次渲染变化；
+  // 用 ref 持有，避免 effect 依赖不稳定引用造成「拉取 → setState → 重渲染 → 重拉」死循环。
+  const listDevicesRef = useRef(onListRemoteDevices);
+  listDevicesRef.current = onListRemoteDevices;
   useEffect(() => {
-    onListRemoteDevices();
-  }, [onListRemoteDevices]);
+    listDevicesRef.current();
+  }, []);
 
   // 驱动配对码倒计时
   useEffect(() => {
