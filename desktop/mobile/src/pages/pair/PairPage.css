@@ -1,0 +1,129 @@
+.pair-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 440px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.pair-header {
+  margin-bottom: 4px;
+}
+
+.pair-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.form-input {
+  min-height: 44px;
+  padding: 10px 14px;
+  font-size: 15px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--fg);
+  box-sizing: border-box;
+}
+
+.code-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 20px;
+  letter-spacing: 3px;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.pair-submit-btn {
+  min-height: 48px;
+  font-size: 16px;
+  font-weight: 600;
+  border-radius: 10px;
+  width: 100%;
+}
+
+.scan-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+.scan-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.scan-btn {
+  min-height: 44px;
+  font-size: 14px;
+  width: 100%;
+}
+
+.scanner-viewfinder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.scanner-video {
+  width: 100%;
+  max-height: 240px;
+  background: #000;
+  border-radius: 8px;
+  object-fit: cover;
+}
+
+.scanner-cancel-btn {
+  min-height: 44px;
+  width: 100%;
+}
+
+.field-error-card {
+  border-color: var(--danger);
+  background: oklch(0.2 0.05 25);
+  color: var(--fg);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+}
+
+.error-title {
+  font-weight: 600;
+  color: var(--danger);
+  font-size: 14px;
+}
+
+.error-message {
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.error-hint {
+  font-size: 12px;
+  color: var(--muted);
+}

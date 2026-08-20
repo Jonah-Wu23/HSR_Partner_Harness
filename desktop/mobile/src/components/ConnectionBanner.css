@@ -1,0 +1,41 @@
+.conn-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 12px;
+  padding: 8px 16px;
+  font-size: 13px;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+.conn-banner-message {
+  flex: 1 1 auto;
+  min-width: 180px;
+}
+
+.conn-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.conn-banner-btn {
+  background: var(--surface);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 13px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.conn-banner-btn:active {
+  opacity: 0.8;
+}
