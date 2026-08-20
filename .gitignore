@@ -25,3 +25,7 @@ DeepSeek-Reasonix/
 .worktrees/
 debug.log
 .archive/
+.opencode/
+
+docs/promo/
+.dsh_better_edit/
