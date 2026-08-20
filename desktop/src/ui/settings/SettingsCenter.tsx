@@ -84,17 +84,13 @@ function TestResultNote({ result, okClass, testingLabel }: TestResultNoteProps) 
 const FIXED_ASR_MODEL = "qwen-audio-3.0-asr-flash-streaming";
 const FIXED_TTS_MODEL = "qwen-audio-3.0-tts-flash";
 
-// TODO(W3)：sam（萨姆）与 ancient_machine（神秘的古代机械）是助手侧说话方，
-// 随角色卡语音方案移除，仅保留角色说话方。
 const VOICE_SPEAKER_DEFINITIONS: Array<
   Pick<VoiceSpeakerStatus, "speakerId" | "name" | "method">
 > = [
   { speakerId: "phainon", name: "白厄", method: "clone" },
   { speakerId: "firefly", name: "流萤", method: "clone" },
-  { speakerId: "sam", name: "萨姆", method: "clone" },
   { speakerId: "march7", name: "三月七", method: "clone" },
   { speakerId: "fourth_mirror", name: "第四面镜", method: "clone" },
-  { speakerId: "ancient_machine", name: "神秘的古代机械", method: "design" },
 ];
 
 function normalizeSpeakerState(
@@ -105,10 +101,10 @@ function normalizeSpeakerState(
 }
 
 function speakerStateLabel(state: VoiceSpeakerStatus["state"]): string {
-  if (state === "creating") return "生成中";
-  if (state === "completed") return "已生成";
+  if (state === "creating") return "创建中";
+  if (state === "completed") return "已绑定";
   if (state === "failed") return "失败";
-  return "未生成";
+  return "未配置";
 }
 
 function speakerMethodLabel(method: VoiceSpeakerStatus["method"]): string {
@@ -667,17 +663,25 @@ function VoicePage(props: SettingsCenterProps) {
 
       <h3 className="settings-subhead">专属音色</h3>
       <p className="settings-hint">
-        当前账号将依次提交 5 次声音复刻和 1 次声音设计。生成请求使用当前百炼账号的额度；是否计费以该账号页面和真实响应为准。
+        当前账号将依次提交 4 次声音复刻。生成请求使用当前百炼账号的额度；是否计费以该账号页面和真实响应为准。
       </p>
+      {!hasConfig ? (
+        <div className="settings-status-card" role="alert">
+          <p className="field-error">
+            语音服务账号未配置：尚未填写有效 DashScope API Key 与服务地址，无法生成音色。
+          </p>
+          <p className="settings-hint">请先在上方填写并保存 DashScope 账号配置。</p>
+        </div>
+      ) : null}
       <div className="settings-voice-progress" role="status" aria-live="polite">
-        <span>进度：{completedCount}/6 项已生成</span>
+        <span>进度：{completedCount}/{VOICE_SPEAKER_DEFINITIONS.length} 项已绑定</span>
         <span>{voice.voicesSource === "env_author" ? "开发机兼容音色" : "当前账号音色"}</span>
       </div>
       <div className="settings-row">
         <button
           type="button"
           className="btn btn-primary"
-          disabled={provisioning || provisionTargetIds.length === 0}
+          disabled={provisioning || provisionTargetIds.length === 0 || !hasConfig}
           onClick={() => void provisionVoices(provisionTargetIds)}
         >
           {provisioning
@@ -686,7 +690,7 @@ function VoicePage(props: SettingsCenterProps) {
               ? "重试失败项"
               : completedCount > 0
                 ? "继续生成剩余音色"
-                : "生成 6 个专属音色"}
+                : "生成 4 个专属音色"}
         </button>
       </div>
       {provisionError ? <p className="field-error" role="alert">{provisionError}</p> : null}
@@ -752,6 +756,8 @@ function VoicePage(props: SettingsCenterProps) {
         })}
       </div>
 
+      <p className="settings-hint">为自定义角色上传参考音频并生成音色将于 V0.3.5 开放。</p>
+
       <label className="settings-switch">
         <input
           type="checkbox"
@@ -768,24 +774,6 @@ function VoicePage(props: SettingsCenterProps) {
               : asrAvailable
                 ? "ASR 已具备配置条件"
                 : "保存 Key 和服务地址后可开启"}
-        </span>
-      </label>
-
-      {/* TODO(W3)：助手语音入口随助手侧说话方一并移除；VAD 用户语音输入保留。 */}
-      <label className="settings-switch">
-        <input
-          type="checkbox"
-          checked={voice.assistantVoiceEnabled}
-          disabled={!voice.enabled || !voice.assistantVoiceId}
-          onChange={(event) =>
-            void savePreferences({ assistantVoiceEnabled: event.target.checked })
-          }
-        />
-        {voice.assistantVoiceName ? `${voice.assistantVoiceName}（助手）语音` : "助手语音"}
-        <span className="field-note">
-          {voice.assistantVoiceId
-            ? "开启后自动朗读助手的自然语言回复"
-            : "当前搭档音色未生成，试听和自动朗读不可用"}
         </span>
       </label>
 
