@@ -11,7 +11,10 @@ export function App() {
   const route = useRoute();
   const connection = useMobileStore((state) => state.connection);
   const start = useMobileStore((state) => state.start);
-  const hasToken = getStoredToken() !== null;
+  // deviceName 与 localStorage token 同写同清（pair/disconnect），用它驱动
+  // 守卫重渲染；直接 render 期读 localStorage 不会在配对成功后刷新。
+  const deviceName = useMobileStore((state) => state.deviceName);
+  const hasToken = deviceName !== null && getStoredToken() !== null;
 
   useEffect(() => {
     start();
