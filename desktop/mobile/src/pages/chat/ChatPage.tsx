@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ConnectionBanner } from "../../components/ConnectionBanner";
 import { ApprovalCard } from "../../components/cards/ApprovalCard";
 import { ArrowDownIcon, BackIcon } from "../../components/cards/icons";
 import { ToolCard } from "../../components/cards/ToolCard";
@@ -33,7 +32,6 @@ export function ChatPage({ conversationId }: ChatPageProps) {
   const approvals = (allApprovals ?? []).filter(
     (a) => a.conversation_id === conversationId,
   );
-  const connection = useMobileStore((state) => state.connection);
 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [pinned, setPinned] = useState(true);
@@ -119,9 +117,6 @@ export function ChatPage({ conversationId }: ChatPageProps) {
           <span className="mobile-chat-subtitle">{modeText}</span>
         </div>
       </header>
-
-      {/* 连接状态条（W4 提供的全局连接提示） */}
-      <ConnectionBanner connection={connection} />
 
       {/* 装载失败提示 */}
       {loadError ? (
