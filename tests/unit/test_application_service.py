@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import traceback
 from pathlib import Path
@@ -23,6 +24,7 @@ from pair_harness.core.contracts import (
     MessageSource,
     MessageStatus,
     MessageTarget,
+    PendingOperation,
 )
 from pair_harness.desktop_backend.application_service import (
     ServiceError,
@@ -79,6 +81,47 @@ async def test_bootstrap_contains_projects_conversation_and_voice_shape(tmp_path
         service.emitter.emit("test.event", {})
         next_snapshot = service.bootstrap()
         assert next_snapshot["sequence"] == events[-1]["sequence"]
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_approvals_json_serializable_with_pending(tmp_path: Path) -> None:
+    """V0.3.3 走查发现：broker.snapshot() 曾直接返回 PendingOperation 对象，
+    有挂起审批时 app.bootstrap 响应编码失败，请求方永远等不到响应。"""
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        op = PendingOperation(
+            tool_kind="shell", command="npm test", paths=(), summary="跑测试"
+        )
+        request_task = asyncio.create_task(
+            service.approval_broker.request(op, "a1", "风险规则", "conv-1", "task-1")
+        )
+        await asyncio.sleep(0)  # 让 request 注册进 _pending
+
+        snapshot = await service.handle_command(command("1", "app.bootstrap"))
+        json.dumps(snapshot)  # 响应必须可编码，不抛即通过
+        assert snapshot["approvals"] == [
+            {
+                "approval_id": "a1",
+                "conversation_id": "conv-1",
+                "task_id": "task-1",
+                "operation": {
+                    "tool_kind": "shell",
+                    "command": "npm test",
+                    "paths": [],
+                    "patch_file_count": None,
+                    "summary": "跑测试",
+                },
+                "reason": "风险规则",
+            }
+        ]
+
+        service.approval_broker.resolve("a1", "deny")
+        await request_task
     finally:
         await service.shutdown()
 

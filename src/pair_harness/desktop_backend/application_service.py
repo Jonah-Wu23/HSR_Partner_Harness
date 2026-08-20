@@ -187,12 +187,14 @@ class ApprovalBroker:
         )
 
     def snapshot(self) -> list[dict[str, Any]]:
+        # operation 是 PendingOperation 模型，必须过 to_jsonable；
+        # 否则 bootstrap 响应在有挂起审批时编码失败，请求方永远等不到响应。
         return [
             {
                 "approval_id": approval_id,
                 "conversation_id": item["conversation_id"],
                 "task_id": item.get("task_id"),
-                "operation": item["operation"],
+                "operation": to_jsonable(item["operation"]),
                 "reason": item["reason"],
             }
             for approval_id, item in self._pending.items()
