@@ -1,0 +1,349 @@
+/* V0.3.3 手机端聊天页与消息流视觉样式（OKLch 暖色暗色体系，触控目标 ≥44px，零 emoji，无 #5e6ad2） */
+@import "../../components/cards/cards.css";
+
+.mobile-chat-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: 100vh;
+  background: var(--bg);
+  color: var(--fg);
+  overflow: hidden;
+  position: relative;
+}
+
+/* ========== 顶栏 ========== */
+
+.mobile-chat-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 52px;
+  min-height: 44px;
+  padding: 0 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex: none;
+  z-index: 10;
+}
+
+.mobile-chat-back-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 8px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  flex: none;
+}
+
+.mobile-chat-back-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.mobile-chat-title-group {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  flex: 1;
+  min-width: 0;
+}
+
+.mobile-chat-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-chat-subtitle {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ========== 审批卡展示区 ========== */
+
+.mobile-chat-approvals {
+  padding: 8px 12px 0;
+  flex: none;
+}
+
+/* ========== 消息滚动区与虚拟化 ========== */
+
+.mobile-chat-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 12px;
+  min-height: 0;
+  position: relative;
+}
+
+.mobile-chat-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.mobile-virtual-container {
+  position: relative;
+  width: 100%;
+}
+
+.mobile-virtual-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  padding-bottom: 10px;
+}
+
+/* ========== 消息气泡行 ========== */
+
+.mobile-msg-row {
+  display: flex;
+  width: 100%;
+  margin: 2px 0;
+}
+
+.mobile-msg-row-user {
+  justify-content: flex-end;
+}
+
+.mobile-msg-row-character,
+.mobile-msg-row-assistant {
+  justify-content: flex-start;
+}
+
+.mobile-msg-row-system {
+  justify-content: center;
+}
+
+.mobile-msg-row-tool {
+  width: 100%;
+}
+
+.mobile-msg-tool-wrap {
+  width: 100%;
+}
+
+.mobile-msg-bubble {
+  max-width: min(86%, 520px);
+  padding: 10px 14px;
+  border-radius: 14px;
+  border: 1px solid transparent;
+  font-size: 15px;
+  line-height: 1.5;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.mobile-msg-bubble-user {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--fg);
+  border-bottom-right-radius: 4px;
+}
+
+.mobile-msg-bubble-character {
+  background: oklch(0.2 0.02 60);
+  border-color: oklch(0.32 0.04 60);
+  color: var(--fg);
+  border-bottom-left-radius: 4px;
+}
+
+.mobile-msg-bubble-assistant {
+  background: oklch(0.18 0.02 75);
+  border-color: oklch(0.3 0.04 75);
+  color: var(--fg);
+  border-bottom-left-radius: 4px;
+}
+
+.mobile-msg-bubble-system {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 4px 12px;
+}
+
+.mobile-msg-badge {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: var(--muted);
+  opacity: 0.85;
+}
+
+.mobile-msg-bubble-character .mobile-msg-badge {
+  color: var(--accent);
+}
+
+.mobile-msg-bubble-assistant .mobile-msg-badge {
+  color: var(--warn);
+}
+
+.mobile-msg-text {
+  position: relative;
+}
+
+/* ========== 回到最新悬浮按钮 ========== */
+
+.mobile-jump-latest {
+  position: absolute;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  z-index: 20;
+}
+
+.mobile-jump-latest:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+/* ========== 委派输入区 ========== */
+
+.mobile-composer {
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding: 10px 12px max(10px, var(--safe-bottom));
+  flex: none;
+  z-index: 10;
+}
+
+.mobile-composer-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  background: oklch(0.2 0.05 25);
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  color: var(--fg);
+  font-size: 13px;
+}
+
+.mobile-composer-error-text {
+  flex: 1;
+  word-break: break-word;
+}
+
+.mobile-composer-error-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  flex: none;
+}
+
+.mobile-composer-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.mobile-composer-input-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.mobile-composer-textarea {
+  width: 100%;
+  min-height: 44px;
+  max-height: 120px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1.4;
+  resize: none;
+}
+
+.mobile-composer-textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  border-color: var(--accent);
+}
+
+.mobile-composer-submit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 12px;
+  flex: none;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.mobile-composer-submit-label {
+  display: inline;
+}
+
+/* 窄屏 (≤ 360px) 优化 */
+@media (max-width: 360px) {
+  .mobile-chat-header {
+    padding: 0 8px;
+  }
+  .mobile-chat-scroll {
+    padding: 8px;
+  }
+  .mobile-msg-bubble {
+    max-width: 90%;
+  }
+  .mobile-composer {
+    padding: 8px 8px max(8px, var(--safe-bottom));
+  }
+}
