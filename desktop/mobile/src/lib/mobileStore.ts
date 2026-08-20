@@ -39,6 +39,8 @@ export interface MobileState {
   bootstrapped: boolean;
 
   start: () => void;
+  /** 手动重连入口（unreachable/auth_failed 后由 UI 重试按钮调用）。 */
+  reconnect: () => void;
   pair: (code: string, deviceName: string) => Promise<void>;
   openConversation: (conversationId: string) => Promise<void>;
   submitDelegation: (text: string) => Promise<void>;
@@ -185,6 +187,12 @@ export const useMobileStore = create<MobileState>((set, get) => {
         }
       });
       client.onEvent(handleEvent);
+      client.connect();
+    },
+
+    reconnect() {
+      // reconnect 前复位退避计数：unreachable 是终态，需显式重开。
+      client.disconnect();
       client.connect();
     },
 
