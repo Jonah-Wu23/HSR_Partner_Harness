@@ -26,6 +26,7 @@ from pair_harness.config.providers import detect_provider, load_reasoning_preset
 from pair_harness.config.voices import (
     ANCIENT_MACHINE_PREVIEW_TEXT,
     VoiceManifestError,
+    assistant_speaker_ids,
     load_reference_voice_manifest,
 )
 from pair_harness.core.context import ExecutionContext
@@ -669,6 +670,15 @@ class DesktopApplicationService:
                         "speaker_ids 包含未知说话方: "
                         + ", ".join(sorted(unknown_ids)),
                         code="voice_invalid_request",
+                    )
+                # V0.3.3：助手永不使用 TTS——助手侧说话方一律拒绝生成专属音色。
+                assistant_ids = assistant_speaker_ids()
+                assistant_requested = requested_ids & assistant_ids
+                if assistant_requested:
+                    raise ServiceError(
+                        "助手侧说话方已禁用语音，不可生成专属音色: "
+                        + ", ".join(sorted(assistant_requested)),
+                        code="assistant_voice_disabled",
                     )
                 replace_existing = bool(params.get("replace_existing", False))
                 failed = 0
@@ -1727,6 +1737,12 @@ class DesktopApplicationService:
         )
         if message is None:
             raise ServiceError("消息不存在", code="message_not_found")
+        if message.source == MessageSource.ASSISTANT:
+            # V0.3.3：助手永不使用 TTS——手动重播助手消息在语音入口被拒。
+            raise ServiceError(
+                "助手语音已禁用，不可朗读助手消息",
+                code="assistant_tts_disabled",
+            )
         self.voice_runtime.replay_message(message)
         return {"voice": self._voice_snapshot()}
 
@@ -1793,6 +1809,22 @@ class DesktopApplicationService:
             raise ServiceError(
                 "当前搭档的角色音色尚未生成，请先在语音页生成专属音色",
                 code="voice_not_provisioned",
+            )
+        assistant_ids = assistant_speaker_ids()
+        if voices.state == "account":
+            assistant_preview_ids = {
+                config[entry.profile_key]
+                for entry in manifest
+                if entry.speaker_id in assistant_ids and config.get(entry.profile_key)
+            }
+        else:
+            assistant_preview_ids = (
+                {voices.assistant_voice_id} if voices.assistant_voice_id else set()
+            )
+        if voice_id in assistant_preview_ids:
+            raise ServiceError(
+                "助手语音已禁用，不可作为试听音色",
+                code="assistant_tts_disabled",
             )
         self.voice_runtime.enqueue_text(text, voice_id=voice_id)
         return {"voice": self._voice_snapshot()}

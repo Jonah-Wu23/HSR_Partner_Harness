@@ -6,7 +6,7 @@
 - TTS 播放中暂停 VAD 喂帧，播放结束重开 VAD 会话后恢复；
 - PTT 按下先停 TTS，松开后非空提交（target 可切 assistant）；
 - 空 final / false_trigger 不提交，回显清空；
-- on_message 按来源选 voice_id（character/assistant），user/tool/system 不入队；
+- on_message 只朗读角色发言；助手消息（含任意 kind）一律不入队；
 - VAD 不可用时提示并退回 PTT 通路。
 """
 
@@ -528,7 +528,7 @@ async def test_false_trigger_not_committed() -> None:
         await runtime.stop_listening()
 
 
-def test_on_message_selects_voice_id_by_source_and_filters() -> None:
+def test_on_message_plays_character_only_and_filters_assistant_and_others() -> None:
     runtime, ctx = make_runtime(vad=None)
 
     def msg(source: MessageSource, kind: MessageKind, text: str) -> Message:
@@ -543,8 +543,7 @@ def test_on_message_selects_voice_id_by_source_and_filters() -> None:
     runtime.on_message(
         msg(MessageSource.CHARACTER, MessageKind.CHARACTER_SPEECH, "你好，白厄。")
     )
-    runtime.set_assistant_voice_enabled(True)
-    # 助手消息含围栏代码块：只朗读自然语言段落
+    # V0.3.3：助手消息（含围栏代码块）一律不朗读，不分段。
     runtime.on_message(
         msg(
             MessageSource.ASSISTANT,
@@ -561,16 +560,15 @@ def test_on_message_selects_voice_id_by_source_and_filters() -> None:
         msg(MessageSource.SYSTEM, MessageKind.SYSTEM_STATUS, "任务完成")
     )
 
-    requests = [ctx.queue.pop_next(), ctx.queue.pop_next()]
-    assert ctx.queue.pop_next() is None
+    request = ctx.queue.pop_next()
+    assert request is not None
     pair = load_pair_config(PAIR_ID)
-    assert [(r.voice_id, r.text) for r in requests] == [
-        (pair.character.voice_id, "你好，白厄。"),
-        (pair.assistant.voice_id, "好的。"),
-    ]
+    assert (request.voice_id, request.text) == (pair.character.voice_id, "你好，白厄。")
+    assert ctx.queue.pop_next() is None
 
 
-def test_assistant_voice_is_disabled_by_default_until_enabled() -> None:
+def test_assistant_messages_never_enqueue_tts() -> None:
+    """V0.3.3：助手永不使用 TTS——即使显式开启助手语音开关也不产生请求。"""
     runtime, ctx = make_runtime(vad=None)
     assistant = Message(
         conversation_id="conv-1",
@@ -585,10 +583,7 @@ def test_assistant_voice_is_disabled_by_default_until_enabled() -> None:
 
     runtime.set_assistant_voice_enabled(True)
     runtime.on_message(assistant)
-    request = ctx.queue.pop_next()
-    assert request is not None
-    assert request.voice_id == load_pair_config(PAIR_ID).assistant.voice_id
-    assert request.text == assistant.text
+    assert ctx.queue.pop_next() is None
 
 
 def test_on_message_filters_ellipsis_and_punctuation_only_text() -> None:
@@ -859,16 +854,23 @@ def test_replay_message_ignores_tts_eligibility() -> None:
     # 同一聊天 ID 下也不能拿其他搭档的音色朗读错配消息。
     runtime.replay_message(user.model_copy(update={"pair_id": "firefly_sam"}))
     assert ctx.queue.pop_next() is None
+    # V0.3.3：手动重播助手消息同样被冻结——不入队不朗读。
+    runtime.replay_message(
+        Message(
+            conversation_id="conv-1",
+            pair_id=PAIR_ID,
+            source=MessageSource.ASSISTANT,
+            kind=MessageKind.ASSISTANT_NATURAL_LANGUAGE,
+            text="好的，我马上处理。",
+        )
+    )
+    assert ctx.queue.pop_next() is None
 
 
-def test_assistant_progress_is_spoken_once_when_final_message_arrives() -> None:
-    """工具前的助手阶段性说明先播报，最终消息落库时不重复入队。"""
+def test_assistant_messages_never_speak_through_auto_or_play() -> None:
+    """V0.3.3：助手阶段性说明与最终回复都不再进入 TTS（进度朗读已删除）。"""
     runtime, ctx = make_runtime(vad=None)
     runtime.set_assistant_voice_enabled(True)
-    runtime.enqueue_assistant_progress("我来读取项目目录。")
-    progress = ctx.queue.pop_next()
-    assert progress is not None
-    assert progress.voice_id == load_pair_config(PAIR_ID).assistant.voice_id
 
     runtime.on_message(
         Message(
@@ -881,15 +883,10 @@ def test_assistant_progress_is_spoken_once_when_final_message_arrives() -> None:
         )
     )
     assert ctx.queue.pop_next() is None
+    # 阶段性进度朗读已作为死代码删除，运行时不暴露该方法。
+    assert not hasattr(runtime, "enqueue_assistant_progress")
 
 
-def test_assistant_progress_from_background_conversation_stays_silent() -> None:
-    runtime, ctx = make_runtime(vad=None)
-    runtime.set_assistant_voice_enabled(True)
-    runtime.enqueue_assistant_progress(
-        "另一个聊天的进度。", conversation_id="conv-other"
-    )
-    assert ctx.queue.pop_next() is None
 
 
 def test_replay_message_filters_unreadable_text() -> None:
