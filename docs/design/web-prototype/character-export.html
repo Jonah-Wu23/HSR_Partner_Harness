@@ -1,0 +1,632 @@
+<!doctype html>
+<!--
+  HSR Partner Harness V0.4.0 角色卡 · 导出
+  共享设计基底（本文件为范式页，其余页面复制 <style> 与外壳脚本）：
+  - 双主题：暗色默认，data-theme="light" 切换浅色，localStorage 记忆
+  - 琥珀橙唯一 accent（oklch），严禁蓝紫；图标一律线性 SVG，严禁 emoji
+  - 8px 基线 / 8px 圆角 / 1px 边框
+-->
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>导出角色 · HSR Partner Harness 原型</title>
+<style>
+  /* ─── tokens ────────────────────────────────────────────────────── */
+  :root {
+    --bg:      oklch(0.14 0.008 60);
+    --surface: oklch(0.18 0.008 60);
+    --fg:      oklch(0.95 0.005 70);
+    --muted:   oklch(0.62 0.012 60);
+    --border:  oklch(0.25 0.008 60);
+    --accent:  oklch(0.72 0.15 65);
+
+    --ok:      oklch(0.7 0.15 150);
+    --warn:    oklch(0.78 0.14 85);
+    --danger:  oklch(0.6 0.2 25);
+
+    --accent-soft: color-mix(in oklch, var(--accent) 14%, transparent);
+    --fg-soft:     color-mix(in oklch, var(--fg) 6%, transparent);
+    --surface-2:   color-mix(in oklch, var(--surface) 60%, var(--bg));
+
+    --font-display: 'Noto Serif SC', 'Source Han Serif SC', Georgia, serif;
+    --font-body:    'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    --font-mono:    'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+    --fs-h1: 28px; --fs-h2: 22px; --fs-h3: 16px; --fs-body: 14px; --fs-meta: 12px;
+
+    --gap-xs: 8px; --gap-sm: 12px; --gap-md: 16px; --gap-lg: 24px; --gap-xl: 32px;
+    --radius: 8px; --radius-lg: 12px;
+  }
+  [data-theme="light"] {
+    --bg:      oklch(0.97 0.005 75);
+    --surface: oklch(0.99 0.004 75);
+    --fg:      oklch(0.22 0.01 60);
+    --muted:   oklch(0.5 0.012 60);
+    --border:  oklch(0.88 0.006 70);
+    --accent:  oklch(0.62 0.16 60);
+    --ok:      oklch(0.55 0.14 150);
+    --warn:    oklch(0.6 0.14 80);
+    --danger:  oklch(0.5 0.18 25);
+    --surface-2: color-mix(in oklch, var(--surface) 55%, var(--bg));
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: var(--font-body); font-size: var(--fs-body); line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  img, svg { display: block; }
+  a { color: inherit; text-decoration: none; }
+  button { font: inherit; cursor: pointer; color: inherit; }
+  h1, h2, h3, h4 { margin: 0; text-wrap: balance; }
+  p { margin: 0; text-wrap: pretty; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+  /* ─── app shell ─────────────────────────────────────────────────── */
+  .shell { display: grid; grid-template-columns: 224px 1fr; min-height: 100vh; }
+  .rail {
+    border-right: 1px solid var(--border);
+    padding: var(--gap-md) var(--gap-sm);
+    display: flex; flex-direction: column; gap: var(--gap-lg);
+    position: sticky; top: 0; height: 100vh;
+  }
+  .rail .brand {
+    font-family: var(--font-display); font-size: 17px; font-weight: 600;
+    padding: var(--gap-xs) var(--gap-sm); letter-spacing: 0.01em;
+  }
+  .rail .brand .meta { display: block; margin-top: 2px; }
+  .rail-group { display: flex; flex-direction: column; gap: 2px; }
+  .rail-label {
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted); padding: 0 var(--gap-sm) 6px;
+  }
+  .rail a.nav {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px var(--gap-sm); border-radius: var(--radius);
+    color: var(--muted); font-size: 13.5px; min-height: 40px;
+  }
+  .rail a.nav svg { width: 16px; height: 16px; flex: none; }
+  .rail a.nav:hover { background: var(--fg-soft); color: var(--fg); }
+  .rail a.nav.active { background: var(--accent-soft); color: var(--fg); }
+  .rail a.nav.active svg { color: var(--accent); }
+  .rail-foot { margin-top: auto; display: flex; flex-direction: column; gap: var(--gap-sm); }
+
+  .main { min-width: 0; display: flex; flex-direction: column; }
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md);
+    padding: 14px var(--gap-xl); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10;
+    background: color-mix(in oklch, var(--bg) 88%, transparent);
+    backdrop-filter: blur(10px);
+  }
+  .topbar .crumbs { font-size: 13px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  .topbar .crumbs b { color: var(--fg); font-weight: 600; }
+  .content { padding: var(--gap-xl); max-width: 1280px; width: 100%; margin-inline: auto; }
+
+  /* ─── type & primitives ─────────────────────────────────────────── */
+  .h1 { font-family: var(--font-display); font-size: var(--fs-h1); font-weight: 600; letter-spacing: 0.01em; }
+  .h2 { font-family: var(--font-display); font-size: var(--fs-h2); font-weight: 600; }
+  .h3 { font-size: var(--fs-h3); font-weight: 600; }
+  .meta { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--muted); }
+  .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); }
+  .row { display: flex; align-items: center; gap: var(--gap-sm); }
+  .row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md); }
+  .stack { display: flex; flex-direction: column; gap: var(--gap-md); }
+
+  /* ─── buttons ───────────────────────────────────────────────────── */
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    min-height: 40px; padding: 8px 16px;
+    border-radius: var(--radius); border: 1px solid transparent;
+    font-size: 13.5px; font-weight: 500; white-space: nowrap;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  .btn svg { width: 16px; height: 16px; }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--accent); color: oklch(0.14 0.008 60); border-color: var(--accent); font-weight: 600; }
+  [data-theme="light"] .btn-primary { color: oklch(0.99 0.004 75); }
+  .btn-primary:hover { background: color-mix(in oklch, var(--accent) 88%, black); color: oklch(0.98 0.005 70); }
+  .btn-secondary { background: transparent; color: var(--fg); border-color: var(--border); }
+  .btn-secondary:hover { border-color: var(--muted); background: var(--fg-soft); }
+  .btn-ghost { background: transparent; color: var(--muted); padding-inline: 8px; }
+  .btn-ghost:hover { color: var(--fg); background: var(--fg-soft); }
+  .btn-danger { background: transparent; color: var(--danger); border-color: transparent; padding-inline: 8px; }
+  .btn-danger:hover { background: color-mix(in oklch, var(--danger) 12%, transparent); }
+  .btn-primary-danger { background: var(--danger); color: oklch(0.98 0.005 70); border-color: var(--danger); font-weight: 600; }
+  .btn-primary-danger:hover { background: color-mix(in oklch, var(--danger) 85%, black); }
+  .icon-btn {
+    width: 36px; height: 36px; display: grid; place-items: center;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: transparent; color: var(--muted);
+  }
+  .icon-btn:hover { color: var(--fg); background: var(--fg-soft); }
+  .icon-btn svg { width: 16px; height: 16px; }
+
+  /* ─── badges / pills ────────────────────────────────────────────── */
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 9px; border-radius: 999px;
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+    background: var(--fg-soft); color: var(--muted); border: 1px solid transparent;
+  }
+  .pill svg { width: 12px; height: 12px; }
+  .pill-accent { background: var(--accent-soft); color: var(--accent); }
+  .pill-ok { background: color-mix(in oklch, var(--ok) 14%, transparent); color: var(--ok); }
+  .pill-warn { background: color-mix(in oklch, var(--warn) 14%, transparent); color: var(--warn); }
+  .pill-danger { background: color-mix(in oklch, var(--danger) 14%, transparent); color: var(--danger); }
+  .dot { width: 7px; height: 7px; border-radius: 999px; flex: none; }
+  .dot-ok { background: var(--ok); }
+  .dot-warn { background: var(--warn); }
+  .dot-danger { background: var(--danger); }
+  .dot-muted { background: var(--muted); }
+  .dot-progress { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+
+  .mock-tag {
+    display: inline-flex; align-items: center;
+    padding: 2px 8px; border: 1px dashed var(--muted); border-radius: 4px;
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em;
+    color: var(--muted); text-transform: uppercase;
+  }
+
+  /* ─── cards ─────────────────────────────────────────────────────── */
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); padding: var(--gap-lg);
+  }
+  .grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--gap-md); }
+
+  /* ─── form ──────────────────────────────────────────────────────── */
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-size: 12.5px; color: var(--muted); }
+  .input, .textarea, .select {
+    width: 100%; padding: 9px 12px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); color: var(--fg); font: inherit; font-size: 13.5px;
+  }
+  .input:focus, .textarea:focus, .select:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .textarea { min-height: 96px; resize: vertical; }
+  .search {
+    display: flex; align-items: center; gap: 8px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); padding: 0 12px; min-height: 40px; width: 280px;
+  }
+  .search svg { width: 15px; height: 15px; color: var(--muted); flex: none; }
+  .search input { border: 0; background: none; color: var(--fg); font: inherit; font-size: 13.5px; width: 100%; }
+  .search input:focus { outline: none; }
+  .search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+  /* ─── table ─────────────────────────────────────────────────────── */
+  .ds-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .ds-table th, .ds-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+  .ds-table th { color: var(--muted); font-weight: 500; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; }
+  .ds-table tbody tr:hover { background: var(--fg-soft); }
+
+  /* ─── avatar placeholder ────────────────────────────────────────── */
+  .avatar {
+    width: 44px; height: 44px; border-radius: var(--radius); flex: none;
+    display: grid; place-items: center;
+    background: var(--surface-2); border: 1px solid var(--border);
+    font-family: var(--font-display); font-size: 18px; color: var(--muted);
+  }
+  .avatar-lg { width: 64px; height: 64px; font-size: 26px; }
+  .avatar-geo {
+    background:
+      linear-gradient(135deg, var(--accent-soft), transparent 60%),
+      var(--surface-2);
+  }
+
+  /* ─── modal ─────────────────────────────────────────────────────── */
+  .modal-mask {
+    position: fixed; inset: 0; z-index: 50; display: none;
+    background: color-mix(in oklch, var(--bg) 70%, transparent);
+    backdrop-filter: blur(4px);
+    align-items: center; justify-content: center;
+  }
+  .modal-mask.open { display: flex; }
+  .modal { width: 420px; max-width: calc(100vw - 48px); }
+
+  /* ─── theme toggle ──────────────────────────────────────────────── */
+  .theme-toggle {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px var(--gap-sm); border-radius: var(--radius);
+    border: 1px solid var(--border); background: transparent;
+    color: var(--muted); font-size: 12.5px; min-height: 40px; width: 100%;
+  }
+  .theme-toggle:hover { color: var(--fg); background: var(--fg-soft); }
+  .theme-toggle svg { width: 15px; height: 15px; }
+
+  @media (max-width: 920px) {
+    .shell { grid-template-columns: 1fr; }
+    .rail { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; border-right: 0; border-bottom: 1px solid var(--border); }
+    .rail-foot { margin-top: 0; }
+    .content { padding: var(--gap-md); }
+    .search { width: 100%; }
+  }
+
+  /* ─── page: export ─────────────────────────────────────────────── */
+  .export-flow { max-width: 720px; }
+  .steps { display: flex; align-items: center; gap: var(--gap-sm); flex-wrap: wrap; }
+  .step { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+  .step .step-no {
+    width: 24px; height: 24px; border-radius: 999px; flex: none;
+    display: grid; place-items: center;
+    border: 1px solid var(--border); background: var(--surface);
+    font-family: var(--font-mono); font-size: 12px;
+  }
+  .step.current { color: var(--fg); }
+  .step.current .step-no { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+  .step-sep { width: 32px; height: 1px; background: var(--border); flex: none; }
+
+  .fmt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap-md); }
+  .fmt-card { display: block; cursor: pointer; }
+  .fmt-card input { position: absolute; opacity: 0; pointer-events: none; }
+  .fmt-card .fmt-body {
+    display: flex; gap: var(--gap-md); align-items: flex-start;
+    height: 100%; padding: var(--gap-lg);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .fmt-card:hover .fmt-body { border-color: var(--muted); }
+  .fmt-card:focus-within .fmt-body { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .fmt-card.selected .fmt-body { border-color: var(--accent); background: var(--accent-soft); }
+  .fmt-icon {
+    width: 40px; height: 40px; flex: none; display: grid; place-items: center;
+    border-radius: var(--radius); background: var(--surface-2);
+    border: 1px solid var(--border); color: var(--muted);
+  }
+  .fmt-icon svg { width: 20px; height: 20px; }
+  .fmt-card.selected .fmt-icon { color: var(--accent); border-color: var(--accent); }
+  .fmt-body h3 { display: flex; align-items: center; gap: 8px; }
+  .fmt-body p { margin-top: 6px; font-size: 13px; color: var(--muted); }
+
+  .status-row {
+    display: flex; align-items: center; gap: var(--gap-sm);
+    padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13.5px;
+  }
+  .status-row:last-child { border-bottom: 0; }
+  .status-row svg { width: 16px; height: 16px; flex: none; }
+  .status-row .st-ok { color: var(--ok); }
+  .status-row .st-warn { color: var(--warn); }
+  .status-row .st-name { min-width: 108px; flex: none; }
+  .status-row .st-text { color: var(--muted); }
+
+  .save-path {
+    display: flex; align-items: center; gap: var(--gap-sm);
+    padding: 10px 12px; border: 1px dashed var(--border); border-radius: var(--radius);
+    background: var(--surface-2);
+  }
+  .save-path svg { width: 16px; height: 16px; color: var(--muted); flex: none; }
+
+  .result-card { text-align: center; padding: 48px 24px; display: flex; flex-direction: column; align-items: center; gap: var(--gap-md); }
+  .result-mark {
+    width: 72px; height: 72px; border-radius: 999px;
+    display: grid; place-items: center;
+  }
+  .result-mark svg { width: 34px; height: 34px; }
+  .result-mark.ok { background: color-mix(in oklch, var(--ok) 14%, transparent); color: var(--ok); }
+  .result-mark.danger { background: color-mix(in oklch, var(--danger) 14%, transparent); color: var(--danger); }
+
+  [hidden] { display: none !important; }
+
+  @media (max-width: 920px) {
+    .fmt-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <!-- ─── left rail ─── -->
+  <aside class="rail" data-od-id="rail">
+    <div class="brand">
+      Partner Harness
+      <span class="meta">v0.4.0 · 角色卡原型</span>
+    </div>
+    <nav class="rail-group" data-od-id="rail-nav-main">
+      <span class="rail-label">角色</span>
+      <a class="nav" href="character-library.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="3" y="15" width="7" height="7" rx="1.5"/><rect x="14" y="15" width="7" height="7" rx="1.5"/></svg>
+        角色库
+      </a>
+      <a class="nav" href="character-create.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 5v14M5 12h14"/></svg>
+        创建角色
+      </a>
+      <a class="nav" href="character-import.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        导入
+      </a>
+      <a class="nav active" href="character-export.html" aria-current="page">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 15V3m0 12 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        导出
+      </a>
+    </nav>
+    <nav class="rail-group" data-od-id="rail-nav-tools">
+      <span class="rail-label">扩展</span>
+      <a class="nav" href="worldbook-editor.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>
+        世界书
+      </a>
+      <a class="nav" href="voice-create.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+        角色语音
+      </a>
+      <a class="nav" href="onboarding.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.7.35-1.1.8-1.1 1.8"/><path d="M12 17h.01"/></svg>
+        新用户引导
+      </a>
+    </nav>
+    <div class="rail-foot">
+      <button class="theme-toggle" data-theme-toggle data-od-id="theme-toggle">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <span data-theme-label>切换浅色主题</span>
+      </button>
+      <a class="meta" href="index.html" style="padding: 0 var(--gap-sm);">← 原型总览</a>
+    </div>
+  </aside>
+
+  <!-- ─── main ─── -->
+  <div class="main">
+    <header class="topbar" data-od-id="topbar">
+      <div class="crumbs"><a href="character-library.html">角色库</a><span>/</span><b>导出</b><span class="mock-tag">样例数据</span></div>
+      <div class="row">
+        <span class="meta">角色：卡芙卡 · <span class="num">v3</span></span>
+      </div>
+    </header>
+
+    <main class="content stack" id="content" style="gap: var(--gap-lg);">
+      <div class="row-between" data-od-id="export-header">
+        <h1 class="h1">导出角色</h1>
+      </div>
+
+      <!-- step indicator -->
+      <div class="steps" data-od-id="export-steps" aria-label="导出步骤">
+        <span class="step current" id="step-ind-1"><span class="step-no">1</span>选择格式</span>
+        <span class="step-sep" aria-hidden="true"></span>
+        <span class="step" id="step-ind-2"><span class="step-no">2</span>预览导出</span>
+      </div>
+
+      <!-- step 1: choose format -->
+      <section class="export-flow stack" id="export-step-1" data-od-id="export-step-1" aria-label="选择格式">
+        <p class="muted" style="font-size: 13.5px;">选择导出格式。两种格式都包含完整 v3 字段与 mufy 扩展字段，区别在头像的承载方式。</p>
+        <div class="fmt-grid" role="radiogroup" aria-label="导出格式">
+          <label class="fmt-card selected" data-od-id="fmt-json">
+            <input type="radio" name="export-format" value="json" checked />
+            <span class="fmt-body">
+              <span class="fmt-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3H6a2 2 0 0 0-2 2v4a2 2 0 0 1-2 2 2 2 0 0 1 2 2v4a2 2 0 0 0 2 2h2M16 3h2a2 2 0 0 1 2 2v4a2 2 0 0 0 2 2 2 2 0 0 0-2 2v4a2 2 0 0 1-2 2h-2"/></svg>
+              </span>
+              <span>
+                <h3 class="h3">v3 JSON <span class="pill pill-accent">推荐</span></h3>
+                <p>纯文本角色卡，体积最小，便于版本管理与跨工具迁移。头像不内嵌，以引用方式保留。</p>
+              </span>
+            </span>
+          </label>
+          <label class="fmt-card" data-od-id="fmt-png">
+            <input type="radio" name="export-format" value="png" />
+            <span class="fmt-body">
+              <span class="fmt-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-4.5-4.5L6 21"/></svg>
+              </span>
+              <span>
+                <h3 class="h3">v3 PNG</h3>
+                <p>角色数据嵌入 PNG 图片（tEXt chunk），头像随图片一体携带，适合直接分享到社区平台。</p>
+              </span>
+            </span>
+          </label>
+        </div>
+        <div class="row" style="justify-content: flex-end;">
+          <button class="btn btn-primary" id="btn-next" data-od-id="btn-next">下一步</button>
+        </div>
+      </section>
+
+      <!-- step 2: preview & export -->
+      <section class="export-flow stack" id="export-step-2" data-od-id="export-step-2" aria-label="预览导出" hidden>
+        <div class="card stack">
+          <div class="field" data-od-id="export-filename">
+            <label for="filename">文件名</label>
+            <input class="input" id="filename" type="text" value="kafka_v3.json" style="font-family: var(--font-mono);" />
+          </div>
+
+          <div data-od-id="export-checklist">
+            <div class="status-row">
+              <svg class="st-ok" id="avatar-ok-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" hidden><path d="M20 6 9 17l-5-5"/></svg>
+              <svg class="st-warn" id="avatar-warn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3 2.5 20h19L12 3z"/><path d="M12 10v4m0 3h.01"/></svg>
+              <span class="st-name">头像</span>
+              <span class="st-text" id="avatar-status-text">JSON 不含头像</span>
+            </div>
+            <div class="status-row">
+              <svg class="st-ok" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 6 9 17l-5-5"/></svg>
+              <span class="st-name">世界书</span>
+              <span class="st-text"><span class="num">12</span> 条已包含</span>
+            </div>
+            <div class="status-row">
+              <svg class="st-ok" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 6 9 17l-5-5"/></svg>
+              <span class="st-name">扩展字段</span>
+              <span class="st-text"><span class="meta">mufy</span> 字段已序列化</span>
+            </div>
+            <div class="status-row">
+              <svg class="st-warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3 2.5 20h19L12 3z"/><path d="M12 10v4m0 3h.01"/></svg>
+              <span class="st-name">声明式面板</span>
+              <span class="st-text">暂未运行，按原始数据保留</span>
+            </div>
+          </div>
+
+          <div class="save-path" data-od-id="export-save-path">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            <span class="muted" style="font-size: 12.5px;">保存位置</span>
+            <span class="meta">~/PartnerHarness/exports/</span>
+          </div>
+        </div>
+
+        <div class="row" style="justify-content: space-between;">
+          <button class="btn btn-ghost" id="btn-back">← 返回上一步</button>
+          <button class="btn btn-primary" id="btn-export" data-od-id="btn-export">导出</button>
+        </div>
+      </section>
+
+      <!-- progress: writing -->
+      <section class="export-flow" id="export-writing" data-od-id="export-writing" hidden>
+        <div class="card result-card">
+          <span class="row" style="gap: 10px;" aria-hidden="true">
+            <span class="dot dot-progress"></span>
+            <span class="dot dot-progress" style="animation-delay: 0.2s;"></span>
+            <span class="dot dot-progress" style="animation-delay: 0.4s;"></span>
+          </span>
+          <div>
+            <div class="h2">正在写入文件…</div>
+            <p class="meta" style="margin-top: 8px;" id="writing-path">~/PartnerHarness/exports/kafka_v3.json</p>
+            <p class="muted" style="margin-top: 6px; font-size: 13px;">写入期间请勿关闭窗口。<span class="mock-tag" style="margin-left: 6px;">样例数据</span></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- result: success -->
+      <section class="export-flow" id="export-success" data-od-id="export-success" hidden>
+        <div class="card result-card">
+          <span class="result-mark ok">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 6 9 17l-5-5"/></svg>
+          </span>
+          <div>
+            <div class="h2">导出完成</div>
+            <p class="meta" style="margin-top: 8px;" id="success-path">~/PartnerHarness/exports/kafka_v3.json</p>
+          </div>
+          <div class="row" style="flex-wrap: wrap; justify-content: center;">
+            <a class="btn btn-secondary" href="character-library.html" data-od-id="btn-back-library">返回角色库</a>
+            <button class="btn btn-ghost" id="btn-demo-fail" data-od-id="btn-demo-fail">演示失败态</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- result: failure -->
+      <section class="export-flow" id="export-failure" data-od-id="export-failure" hidden>
+        <div class="card result-card">
+          <span class="result-mark danger">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M12 8v5m0 3h.01"/></svg>
+          </span>
+          <div>
+            <div class="h2">导出失败</div>
+            <p class="meta" style="margin-top: 8px; color: var(--danger);">EACCES: 无法写入 ~/PartnerHarness/exports/</p>
+            <p class="muted" style="margin-top: 6px; font-size: 13px;">目标目录不可写。请检查目录权限，或更换保存位置后重试。</p>
+          </div>
+          <div class="row" style="flex-wrap: wrap; justify-content: center;">
+            <button class="btn btn-secondary" id="btn-retry" data-od-id="btn-retry">重试</button>
+            <button class="btn btn-ghost" id="btn-demo-ok">演示成功态</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<script>
+  // theme: dark default, persisted
+  (function () {
+    var saved = localStorage.getItem('hp-theme');
+    if (saved) document.documentElement.setAttribute('data-theme', saved);
+    function sync() {
+      var light = document.documentElement.getAttribute('data-theme') === 'light';
+      document.querySelectorAll('[data-theme-label]').forEach(function (el) {
+        el.textContent = light ? '切换暗色主题' : '切换浅色主题';
+      });
+    }
+    document.querySelectorAll('[data-theme-toggle]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('hp-theme', next);
+        sync();
+      });
+    });
+    sync();
+  })();
+
+  // export flow demo: two steps + result states
+  (function () {
+    var step1 = document.getElementById('export-step-1');
+    var step2 = document.getElementById('export-step-2');
+    var writingView = document.getElementById('export-writing');
+    var okView = document.getElementById('export-success');
+    var failView = document.getElementById('export-failure');
+    var ind1 = document.getElementById('step-ind-1');
+    var ind2 = document.getElementById('step-ind-2');
+    var filenameInput = document.getElementById('filename');
+    var avatarOk = document.getElementById('avatar-ok-icon');
+    var avatarWarn = document.getElementById('avatar-warn-icon');
+    var avatarText = document.getElementById('avatar-status-text');
+
+    function getFormat() {
+      return document.querySelector('input[name="export-format"]:checked').value;
+    }
+
+    // format card selected state + filename extension + avatar status
+    document.querySelectorAll('.fmt-card input').forEach(function (radio) {
+      radio.addEventListener('change', function () {
+        document.querySelectorAll('.fmt-card').forEach(function (card) {
+          card.classList.toggle('selected', card.querySelector('input').checked);
+        });
+        var png = getFormat() === 'png';
+        avatarOk.hidden = !png;
+        avatarWarn.hidden = png;
+        avatarText.textContent = png ? '已嵌入' : 'JSON 不含头像';
+        filenameInput.value = png ? 'kafka_v3.png' : 'kafka_v3.json';
+      });
+    });
+
+    function showStep(n) {
+      step1.hidden = n !== 1;
+      step2.hidden = n !== 2;
+      writingView.hidden = true;
+      okView.hidden = true;
+      failView.hidden = true;
+      ind1.classList.toggle('current', n === 1);
+      ind2.classList.toggle('current', n === 2);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    // demo sequence: 确认 → 写入中（约 1s）→ 成功 / 失败
+    function showWriting(ok) {
+      step1.hidden = true;
+      step2.hidden = true;
+      okView.hidden = true;
+      failView.hidden = true;
+      writingView.hidden = false;
+      ind1.classList.remove('current');
+      ind2.classList.add('current');
+      document.getElementById('writing-path').textContent =
+        '~/PartnerHarness/exports/' + (filenameInput.value.trim() || 'kafka_v3.json');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      setTimeout(function () { showResult(ok); }, 1000);
+    }
+
+    function showResult(ok) {
+      step1.hidden = true;
+      step2.hidden = true;
+      writingView.hidden = true;
+      okView.hidden = !ok;
+      failView.hidden = ok;
+      ind1.classList.remove('current');
+      ind2.classList.add('current');
+      if (ok) {
+        document.getElementById('success-path').textContent =
+          '~/PartnerHarness/exports/' + (filenameInput.value.trim() || 'kafka_v3.json');
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    document.getElementById('btn-next').addEventListener('click', function () { showStep(2); });
+    document.getElementById('btn-back').addEventListener('click', function () { showStep(1); });
+    document.getElementById('btn-export').addEventListener('click', function () { showWriting(true); });
+    document.getElementById('btn-demo-fail').addEventListener('click', function () { showWriting(false); });
+    document.getElementById('btn-demo-ok').addEventListener('click', function () { showWriting(true); });
+    document.getElementById('btn-retry').addEventListener('click', function () { showWriting(true); });
+  })();
+</script>
+</body>
+</html>

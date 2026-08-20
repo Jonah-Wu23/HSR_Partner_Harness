@@ -1,0 +1,824 @@
+<!doctype html>
+<!--
+  HSR Partner Harness V0.4.0 角色卡 · 角色语音（创建音色）
+  共享设计基底复制自范式页 character-library.html，勿改共享 token/类；
+  本页专属样式见 <style> 末尾 /* ─── page: voice ─── */ 块。
+-->
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>角色语音 · HSR Partner Harness 原型</title>
+<style>
+  /* ─── tokens ────────────────────────────────────────────────────── */
+  :root {
+    --bg:      oklch(0.14 0.008 60);
+    --surface: oklch(0.18 0.008 60);
+    --fg:      oklch(0.95 0.005 70);
+    --muted:   oklch(0.62 0.012 60);
+    --border:  oklch(0.25 0.008 60);
+    --accent:  oklch(0.72 0.15 65);
+
+    --ok:      oklch(0.7 0.15 150);
+    --warn:    oklch(0.78 0.14 85);
+    --danger:  oklch(0.6 0.2 25);
+
+    --accent-soft: color-mix(in oklch, var(--accent) 14%, transparent);
+    --fg-soft:     color-mix(in oklch, var(--fg) 6%, transparent);
+    --surface-2:   color-mix(in oklch, var(--surface) 60%, var(--bg));
+
+    --font-display: 'Noto Serif SC', 'Source Han Serif SC', Georgia, serif;
+    --font-body:    'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    --font-mono:    'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+    --fs-h1: 28px; --fs-h2: 22px; --fs-h3: 16px; --fs-body: 14px; --fs-meta: 12px;
+
+    --gap-xs: 8px; --gap-sm: 12px; --gap-md: 16px; --gap-lg: 24px; --gap-xl: 32px;
+    --radius: 8px; --radius-lg: 12px;
+  }
+  [data-theme="light"] {
+    --bg:      oklch(0.97 0.005 75);
+    --surface: oklch(0.99 0.004 75);
+    --fg:      oklch(0.22 0.01 60);
+    --muted:   oklch(0.5 0.012 60);
+    --border:  oklch(0.88 0.006 70);
+    --accent:  oklch(0.62 0.16 60);
+    --ok:      oklch(0.55 0.14 150);
+    --warn:    oklch(0.6 0.14 80);
+    --danger:  oklch(0.5 0.18 25);
+    --surface-2: color-mix(in oklch, var(--surface) 55%, var(--bg));
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: var(--font-body); font-size: var(--fs-body); line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  img, svg { display: block; }
+  a { color: inherit; text-decoration: none; }
+  button { font: inherit; cursor: pointer; color: inherit; }
+  h1, h2, h3, h4 { margin: 0; text-wrap: balance; }
+  p { margin: 0; text-wrap: pretty; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+  /* ─── app shell ─────────────────────────────────────────────────── */
+  .shell { display: grid; grid-template-columns: 224px 1fr; min-height: 100vh; }
+  .rail {
+    border-right: 1px solid var(--border);
+    padding: var(--gap-md) var(--gap-sm);
+    display: flex; flex-direction: column; gap: var(--gap-lg);
+    position: sticky; top: 0; height: 100vh;
+  }
+  .rail .brand {
+    font-family: var(--font-display); font-size: 17px; font-weight: 600;
+    padding: var(--gap-xs) var(--gap-sm); letter-spacing: 0.01em;
+  }
+  .rail .brand .meta { display: block; margin-top: 2px; }
+  .rail-group { display: flex; flex-direction: column; gap: 2px; }
+  .rail-label {
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted); padding: 0 var(--gap-sm) 6px;
+  }
+  .rail a.nav {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px var(--gap-sm); border-radius: var(--radius);
+    color: var(--muted); font-size: 13.5px; min-height: 40px;
+  }
+  .rail a.nav svg { width: 16px; height: 16px; flex: none; }
+  .rail a.nav:hover { background: var(--fg-soft); color: var(--fg); }
+  .rail a.nav.active { background: var(--accent-soft); color: var(--fg); }
+  .rail a.nav.active svg { color: var(--accent); }
+  .rail-foot { margin-top: auto; display: flex; flex-direction: column; gap: var(--gap-sm); }
+
+  .main { min-width: 0; display: flex; flex-direction: column; }
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md);
+    padding: 14px var(--gap-xl); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10;
+    background: color-mix(in oklch, var(--bg) 88%, transparent);
+    backdrop-filter: blur(10px);
+  }
+  .topbar .crumbs { font-size: 13px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  .topbar .crumbs b { color: var(--fg); font-weight: 600; }
+  .content { padding: var(--gap-xl); max-width: 1280px; width: 100%; margin-inline: auto; }
+
+  /* ─── type & primitives ─────────────────────────────────────────── */
+  .h1 { font-family: var(--font-display); font-size: var(--fs-h1); font-weight: 600; letter-spacing: 0.01em; }
+  .h2 { font-family: var(--font-display); font-size: var(--fs-h2); font-weight: 600; }
+  .h3 { font-size: var(--fs-h3); font-weight: 600; }
+  .meta { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--muted); }
+  .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); }
+  .row { display: flex; align-items: center; gap: var(--gap-sm); }
+  .row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md); }
+  .stack { display: flex; flex-direction: column; gap: var(--gap-md); }
+
+  /* ─── buttons ───────────────────────────────────────────────────── */
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    min-height: 40px; padding: 8px 16px;
+    border-radius: var(--radius); border: 1px solid transparent;
+    font-size: 13.5px; font-weight: 500; white-space: nowrap;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  .btn svg { width: 16px; height: 16px; }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--accent); color: oklch(0.14 0.008 60); border-color: var(--accent); font-weight: 600; }
+  [data-theme="light"] .btn-primary { color: oklch(0.99 0.004 75); }
+  .btn-primary:hover { background: color-mix(in oklch, var(--accent) 88%, black); color: oklch(0.98 0.005 70); }
+  .btn-secondary { background: transparent; color: var(--fg); border-color: var(--border); }
+  .btn-secondary:hover { border-color: var(--muted); background: var(--fg-soft); }
+  .btn-ghost { background: transparent; color: var(--muted); padding-inline: 8px; }
+  .btn-ghost:hover { color: var(--fg); background: var(--fg-soft); }
+  .btn-danger { background: transparent; color: var(--danger); border-color: transparent; padding-inline: 8px; }
+  .btn-danger:hover { background: color-mix(in oklch, var(--danger) 12%, transparent); }
+  .btn-primary-danger { background: var(--danger); color: oklch(0.98 0.005 70); border-color: var(--danger); font-weight: 600; }
+  .btn-primary-danger:hover { background: color-mix(in oklch, var(--danger) 85%, black); }
+  .icon-btn {
+    width: 36px; height: 36px; display: grid; place-items: center;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: transparent; color: var(--muted);
+  }
+  .icon-btn:hover { color: var(--fg); background: var(--fg-soft); }
+  .icon-btn svg { width: 16px; height: 16px; }
+
+  /* ─── badges / pills ────────────────────────────────────────────── */
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 9px; border-radius: 999px;
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+    background: var(--fg-soft); color: var(--muted); border: 1px solid transparent;
+  }
+  .pill svg { width: 12px; height: 12px; }
+  .pill-accent { background: var(--accent-soft); color: var(--accent); }
+  .pill-ok { background: color-mix(in oklch, var(--ok) 14%, transparent); color: var(--ok); }
+  .pill-warn { background: color-mix(in oklch, var(--warn) 14%, transparent); color: var(--warn); }
+  .pill-danger { background: color-mix(in oklch, var(--danger) 14%, transparent); color: var(--danger); }
+  .dot { width: 7px; height: 7px; border-radius: 999px; flex: none; }
+  .dot-ok { background: var(--ok); }
+  .dot-warn { background: var(--warn); }
+  .dot-danger { background: var(--danger); }
+  .dot-muted { background: var(--muted); }
+  .dot-progress { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+
+  .mock-tag {
+    display: inline-flex; align-items: center;
+    padding: 2px 8px; border: 1px dashed var(--muted); border-radius: 4px;
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em;
+    color: var(--muted); text-transform: uppercase;
+  }
+
+  /* ─── cards ─────────────────────────────────────────────────────── */
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); padding: var(--gap-lg);
+  }
+  .grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--gap-md); }
+
+  /* ─── form ──────────────────────────────────────────────────────── */
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-size: 12.5px; color: var(--muted); }
+  .input, .textarea, .select {
+    width: 100%; padding: 9px 12px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); color: var(--fg); font: inherit; font-size: 13.5px;
+  }
+  .input:focus, .textarea:focus, .select:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .textarea { min-height: 96px; resize: vertical; }
+  .search {
+    display: flex; align-items: center; gap: 8px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); padding: 0 12px; min-height: 40px; width: 280px;
+  }
+  .search svg { width: 15px; height: 15px; color: var(--muted); flex: none; }
+  .search input { border: 0; background: none; color: var(--fg); font: inherit; font-size: 13.5px; width: 100%; }
+  .search input:focus { outline: none; }
+  .search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+  /* ─── table ─────────────────────────────────────────────────────── */
+  .ds-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .ds-table th, .ds-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+  .ds-table th { color: var(--muted); font-weight: 500; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; }
+  .ds-table tbody tr:hover { background: var(--fg-soft); }
+
+  /* ─── avatar placeholder ────────────────────────────────────────── */
+  .avatar {
+    width: 44px; height: 44px; border-radius: var(--radius); flex: none;
+    display: grid; place-items: center;
+    background: var(--surface-2); border: 1px solid var(--border);
+    font-family: var(--font-display); font-size: 18px; color: var(--muted);
+  }
+  .avatar-lg { width: 64px; height: 64px; font-size: 26px; }
+  .avatar-geo {
+    background:
+      linear-gradient(135deg, var(--accent-soft), transparent 60%),
+      var(--surface-2);
+  }
+
+  /* ─── modal ─────────────────────────────────────────────────────── */
+  .modal-mask {
+    position: fixed; inset: 0; z-index: 50; display: none;
+    background: color-mix(in oklch, var(--bg) 70%, transparent);
+    backdrop-filter: blur(4px);
+    align-items: center; justify-content: center;
+  }
+  .modal-mask.open { display: flex; }
+  .modal { width: 420px; max-width: calc(100vw - 48px); }
+
+  /* ─── theme toggle ──────────────────────────────────────────────── */
+  .theme-toggle {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px var(--gap-sm); border-radius: var(--radius);
+    border: 1px solid var(--border); background: transparent;
+    color: var(--muted); font-size: 12.5px; min-height: 40px; width: 100%;
+  }
+  .theme-toggle:hover { color: var(--fg); background: var(--fg-soft); }
+  .theme-toggle svg { width: 15px; height: 15px; }
+
+  @media (max-width: 920px) {
+    .shell { grid-template-columns: 1fr; }
+    .rail { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; border-right: 0; border-bottom: 1px solid var(--border); }
+    .rail-foot { margin-top: 0; }
+    .content { padding: var(--gap-md); }
+    .search { width: 100%; }
+  }
+
+  /* ─── page: voice ───────────────────────────────────────────────── */
+  .voice-wrap { max-width: 860px; }
+  .char-strip { display: flex; align-items: center; gap: var(--gap-md); padding: var(--gap-md) var(--gap-lg); }
+  .char-strip .info { flex: 1; min-width: 0; }
+  .char-strip .info b { font-size: 15px; }
+
+  .dropzone {
+    border: 1.5px dashed var(--border); border-radius: var(--radius-lg);
+    padding: var(--gap-xl) var(--gap-lg);
+    display: flex; flex-direction: column; align-items: center; gap: var(--gap-sm);
+    text-align: center; color: var(--muted);
+    background: var(--surface-2);
+    transition: border-color 0.15s ease, background 0.15s ease;
+    cursor: pointer;
+  }
+  .dropzone:hover, .dropzone.dragover, .dropzone:focus-visible { border-color: var(--accent); background: var(--accent-soft); color: var(--fg); }
+  .dropzone svg { width: 28px; height: 28px; }
+
+  .player {
+    display: flex; align-items: center; gap: var(--gap-sm);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 8px 12px; background: var(--surface-2);
+  }
+  .player .play-btn {
+    width: 40px; height: 40px; flex: none;
+    display: grid; place-items: center;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: transparent; color: var(--fg);
+  }
+  .player .play-btn:hover { background: var(--fg-soft); border-color: var(--muted); }
+  .player .play-btn svg { width: 16px; height: 16px; }
+  .player .track {
+    flex: 1; height: 6px; border-radius: 999px;
+    background: var(--fg-soft); overflow: hidden;
+  }
+  .player .track .fill { height: 100%; width: 0%; background: var(--accent); border-radius: 999px; transition: width 0.25s linear; }
+
+  .req-list { margin: 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+  .req-list li { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; color: var(--muted); }
+  .req-list li svg { width: 16px; height: 16px; flex: none; color: var(--accent); margin-top: 2px; }
+
+  .url-note {
+    display: flex; align-items: flex-start; gap: 10px;
+    border: 1px solid var(--warn); border-radius: var(--radius);
+    background: color-mix(in oklch, var(--warn) 10%, transparent);
+    padding: 12px 14px; font-size: 13px;
+  }
+  .url-note svg { width: 16px; height: 16px; flex: none; color: var(--warn); margin-top: 2px; }
+
+  .model-row {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 10px 14px; background: var(--surface-2);
+  }
+  .model-row svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
+
+  .segmented { display: flex; flex-wrap: wrap; gap: 4px; border: 1px solid var(--border); border-radius: var(--radius); padding: 4px; width: fit-content; }
+  .segmented button {
+    min-height: 32px; padding: 4px 12px; border-radius: 6px; border: 0;
+    background: transparent; color: var(--muted); font-size: 12.5px;
+  }
+  .segmented button:hover { background: var(--fg-soft); color: var(--fg); }
+  .segmented button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+
+  .state-card { display: none; }
+  .state-card.show { display: block; }
+  .state-hero {
+    width: 56px; height: 56px; border-radius: var(--radius-lg);
+    display: grid; place-items: center;
+    border: 1px dashed var(--border); color: var(--muted);
+  }
+  .state-hero svg { width: 24px; height: 24px; }
+  .state-hero.warn { color: var(--warn); border-color: var(--warn); }
+  .state-hero.ok { color: var(--ok); border-color: var(--ok); border-style: solid; }
+  .state-hero.danger { color: var(--danger); border-color: var(--danger); border-style: solid; }
+  .create-track { height: 6px; border-radius: 999px; background: var(--fg-soft); overflow: hidden; }
+  .create-track .fill { height: 100%; width: 0%; background: var(--accent); border-radius: 999px; transition: width 0.3s ease; }
+  .error-text { color: var(--danger); }
+  @media (max-width: 920px) {
+    .segmented { width: 100%; }
+    .segmented button { flex: 1; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <!-- ─── left rail ─── -->
+  <aside class="rail" data-od-id="rail">
+    <div class="brand">
+      Partner Harness
+      <span class="meta">v0.4.0 · 角色卡原型</span>
+    </div>
+    <nav class="rail-group" data-od-id="rail-nav-main">
+      <span class="rail-label">角色</span>
+      <a class="nav" href="character-library.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="3" y="15" width="7" height="7" rx="1.5"/><rect x="14" y="15" width="7" height="7" rx="1.5"/></svg>
+        角色库
+      </a>
+      <a class="nav" href="character-create.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 5v14M5 12h14"/></svg>
+        创建角色
+      </a>
+      <a class="nav" href="character-import.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        导入
+      </a>
+      <a class="nav" href="character-export.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 15V3m0 12 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        导出
+      </a>
+    </nav>
+    <nav class="rail-group" data-od-id="rail-nav-tools">
+      <span class="rail-label">扩展</span>
+      <a class="nav" href="worldbook-editor.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>
+        世界书
+      </a>
+      <a class="nav active" href="voice-create.html" aria-current="page">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+        角色语音
+      </a>
+      <a class="nav" href="onboarding.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.7.35-1.1.8-1.1 1.8"/><path d="M12 17h.01"/></svg>
+        新用户引导
+      </a>
+    </nav>
+    <div class="rail-foot">
+      <button class="theme-toggle" data-theme-toggle data-od-id="theme-toggle">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <span data-theme-label>切换浅色主题</span>
+      </button>
+      <a class="meta" href="index.html" style="padding: 0 var(--gap-sm);">← 原型总览</a>
+    </div>
+  </aside>
+
+  <!-- ─── main ─── -->
+  <div class="main">
+    <header class="topbar" data-od-id="topbar">
+      <div class="crumbs"><span>角色</span><span>/</span><b>角色语音</b><span class="mock-tag">样例数据</span></div>
+      <span class="meta">音色创建与绑定 · 固定模型只读</span>
+    </header>
+
+    <main class="content stack" id="content" style="gap: var(--gap-lg);">
+      <div class="voice-wrap stack" style="gap: var(--gap-lg); width: 100%;">
+        <h1 class="h1" data-od-id="page-title">角色语音</h1>
+
+        <!-- 顶部角色卡条 -->
+        <section class="card char-strip" data-od-id="char-strip">
+          <div class="avatar avatar-geo" id="strip-avatar">卡</div>
+          <div class="info">
+            <div class="row"><b id="strip-name">卡芙卡</b><span class="mock-tag">样例数据</span></div>
+            <p class="muted" style="font-size: 13px; margin-top: 2px;" id="strip-meta">v3 · 星核猎手 · 当前音色状态如下</p>
+          </div>
+          <div class="row" data-od-id="char-select-wrap" style="flex-wrap: wrap; justify-content: flex-end;">
+            <label class="meta" for="char-select" style="white-space: nowrap;">选择角色</label>
+            <select class="select" id="char-select" data-od-id="char-select" style="width: auto; min-width: 140px;" aria-label="选择角色">
+              <option value="kafka" selected>卡芙卡</option>
+              <option value="fuxuan">符玄</option>
+              <option value="jingliu">镜流</option>
+              <option value="acheron">黄泉</option>
+            </select>
+            <span class="pill" id="strip-status"><span class="dot dot-muted"></span>未配置</span>
+          </div>
+        </section>
+
+        <!-- 主流程卡 -->
+        <section class="card stack" data-od-id="voice-flow" style="gap: var(--gap-lg);">
+          <div class="row-between">
+            <h2 class="h2">创建音色</h2>
+            <span class="meta">参考音频 → 试听 → 创建</span>
+          </div>
+
+          <!-- ① 选择本地参考音频 -->
+          <div class="field" data-od-id="ref-dropzone">
+            <label>① 选择本地参考音频</label>
+            <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="点击或拖放选择参考音频">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18V6l10-2v11"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="15" r="2.5"/></svg>
+              <div>
+                <div style="color: var(--fg); font-weight: 500;">点击选择，或将音频文件拖放到此处</div>
+                <p class="meta" style="margin-top: 4px;">支持 WAV / MP3 · 时长 10–60 秒 · 人声清晰</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- ② 音频信息卡（演示已选状态） -->
+          <div class="field" data-od-id="ref-info">
+            <label>② 已选音频 <span class="mock-tag" style="margin-left: 6px;">样例数据</span></label>
+            <div class="card stack" style="padding: var(--gap-md); background: var(--surface-2);">
+              <div class="row-between" style="flex-wrap: wrap;">
+                <div class="row">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:16px;height:16px;color:var(--accent);"><path d="M9 18V6l10-2v11"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="15" r="2.5"/></svg>
+                  <span class="meta" style="color: var(--fg);">kafka_ref_01.wav</span>
+                </div>
+                <table class="ds-table" style="width: auto;">
+                  <tbody>
+                    <tr><th style="padding:4px 16px 4px 0;">时长</th><td class="num" style="padding:4px 0;">00:23</td></tr>
+                    <tr><th style="padding:4px 16px 4px 0;">格式</th><td class="meta" style="padding:4px 0; color: var(--fg);">WAV</td></tr>
+                    <tr><th style="padding:4px 16px 4px 0;">大小</th><td class="num" style="padding:4px 0;">1.8 MB</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <!-- 试听播放器（JS 模拟进度，无真实音频） -->
+              <div class="player" data-od-id="ref-player">
+                <button class="play-btn" id="ref-play" aria-label="播放参考音频试听">
+                  <svg id="ref-play-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M7 4.5v15l12-7.5z"/></svg>
+                </button>
+                <div class="track"><div class="fill" id="ref-fill"></div></div>
+                <span class="num meta" id="ref-time">00:00 / 00:23</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- ③ 参考音频要求 -->
+          <div class="field" data-od-id="ref-requirements">
+            <label>③ 参考音频要求</label>
+            <ul class="req-list">
+              <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m4 12 5 5L20 7"/></svg>单一人声：仅目标角色的声音，避免多人对话片段</li>
+              <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m4 12 5 5L20 7"/></svg>无背景音乐与明显环境噪声，响度适中不破音</li>
+              <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m4 12 5 5L20 7"/></svg>采样率 <span class="num" style="margin: 0 2px;">≥ 16000 Hz</span>，单声道或立体声均可</li>
+              <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m4 12 5 5L20 7"/></svg>语流自然，包含完整句子，避免纯语气词或喊叫</li>
+            </ul>
+          </div>
+
+          <!-- 公网 URL 提示条 -->
+          <div class="url-note" data-od-id="url-note" role="note">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3 2.5 20h19L12 3z"/><path d="M12 10v4m0 3h.01"/></svg>
+            <div>
+              <b>公网 URL 要求</b>
+              <p class="muted" style="margin-top: 2px;">参考音频需可通过公网 URL 访问，将在创建时自动上传生成临时链接。临时链接有效期有限，请在上传完成后及时创建音色。</p>
+            </div>
+          </div>
+
+          <!-- 固定模型只读信息行 -->
+          <div class="model-row" data-od-id="model-row">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+            <span class="meta">固定模型（只读）</span>
+            <span class="meta" style="color: var(--fg);">ASR: qwen-audio-3.0-asr-flash-streaming · TTS: qwen-audio-3.0-tts-flash</span>
+          </div>
+
+          <!-- ④ 创建音色（本页唯一实心主按钮） -->
+          <div class="row" style="justify-content: flex-end;">
+            <button class="btn btn-primary" id="btn-create" data-od-id="cta-create-voice">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 5v14M5 12h14"/></svg>
+              创建音色
+            </button>
+          </div>
+        </section>
+
+        <!-- 状态机演示区 -->
+        <section class="card stack" data-od-id="state-demo" style="gap: var(--gap-md);">
+          <div class="row-between" style="flex-wrap: wrap;">
+            <h2 class="h2">音色状态机演示</h2>
+            <div class="segmented" role="group" aria-label="切换状态">
+              <button type="button" data-state="unconfigured" aria-pressed="true">未配置</button>
+              <button type="button" data-state="no-account" aria-pressed="false">账号未配置</button>
+              <button type="button" data-state="creating" aria-pressed="false">创建中</button>
+              <button type="button" data-state="success" aria-pressed="false">成功</button>
+              <button type="button" data-state="failed" aria-pressed="false">失败</button>
+            </div>
+          </div>
+
+          <!-- 未配置 -->
+          <div class="state-card show" id="state-unconfigured">
+            <div class="stack" style="align-items: flex-start; gap: var(--gap-md);">
+              <div class="state-hero">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+              </div>
+              <div>
+                <div class="h3">尚未配置音色</div>
+                <p class="muted" style="margin-top: 4px; font-size: 13.5px;">该角色还没有绑定任何音色。选择一段参考音频并点击「创建音色」，系统会自动上传并生成音色 ID。</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- 账号未配置 -->
+          <div class="state-card" id="state-no-account">
+            <div class="stack" style="align-items: flex-start; gap: var(--gap-md);">
+              <div class="state-hero warn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3 2.5 20h19L12 3z"/><path d="M12 10v4m0 3h.01"/></svg>
+              </div>
+              <div>
+                <div class="h3" style="color: var(--warn);">语音服务账号未配置</div>
+                <p class="muted" style="margin-top: 4px; font-size: 13.5px;">尚未填写语音服务的 API Key，无法创建音色。请先前往设置页完成账号配置，再返回此处重试。</p>
+              </div>
+              <a class="btn btn-secondary" href="onboarding.html">前往设置</a>
+            </div>
+          </div>
+
+          <!-- 创建中 -->
+          <div class="state-card" id="state-creating">
+            <div class="stack" style="gap: var(--gap-md);">
+              <div class="row-between">
+                <div class="row"><span class="dot dot-progress"></span><b>正在创建音色…</b></div>
+                <span class="num" id="create-pct">0%</span>
+              </div>
+              <div class="create-track"><div class="fill" id="create-fill"></div></div>
+              <div class="row-between">
+                <p class="muted" style="font-size: 13px;">已上传参考音频，正在提交 TTS 服务生成音色。通常需要 20–40 秒，请勿关闭页面。</p>
+                <button class="btn btn-secondary" id="btn-cancel">取消</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 成功 -->
+          <div class="state-card" id="state-success">
+            <div class="stack" style="align-items: flex-start; gap: var(--gap-md);">
+              <div class="state-hero ok">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m4 12 5 5L20 7"/></svg>
+              </div>
+              <div>
+                <div class="h3" style="color: var(--ok);">音色创建成功</div>
+                <p style="margin-top: 4px; font-size: 13.5px;">
+                  <span class="meta" style="color: var(--fg);">voice_kfk_8f3a21</span>
+                  <span class="pill pill-ok" style="margin-left: 8px;"><span class="dot dot-ok"></span>已绑定</span>
+                  <span class="mock-tag" style="margin-left: 8px;">样例数据</span>
+                </p>
+                <p class="muted" style="margin-top: 4px; font-size: 13px;">音色已绑定到角色「<span id="ok-char-name">卡芙卡</span>」，试听下方合成效果。</p>
+              </div>
+              <div class="player" style="width: 100%;">
+                <button class="play-btn" id="ok-play" aria-label="播放音色试听">
+                  <svg id="ok-play-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M7 4.5v15l12-7.5z"/></svg>
+                </button>
+                <div class="track"><div class="fill" id="ok-fill"></div></div>
+                <span class="num meta" id="ok-time">00:00 / 00:06</span>
+              </div>
+              <div class="row" style="flex-wrap: wrap;">
+                <button class="btn btn-secondary" id="btn-recreate" data-od-id="cta-recreate-voice">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/></svg>
+                  重新创建
+                </button>
+                <button class="btn btn-danger" id="btn-unbind" data-od-id="cta-unbind-voice">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3 2.5 20h19L12 3z"/><path d="M12 10v4m0 3h.01"/></svg>
+                  解除绑定
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 失败 -->
+          <div class="state-card" id="state-failed">
+            <div class="stack" style="align-items: flex-start; gap: var(--gap-md);">
+              <div class="state-hero danger">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg>
+              </div>
+              <div>
+                <div class="h3" style="color: var(--danger);">音色创建失败</div>
+                <p class="error-text meta" style="margin-top: 4px; font-size: 13px;">TTS 服务返回 402：音色创建额度已用尽</p>
+                <p class="muted" style="margin-top: 4px; font-size: 13px;">参考音频未被保存，重试前请先确认账号额度或更换服务账号。</p>
+              </div>
+              <button class="btn btn-secondary" id="btn-retry">重试</button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- 二次确认弹层（重新创建 / 解除绑定共用） -->
+<div class="modal-mask" id="confirm-mask" data-od-id="confirm-modal">
+  <div class="modal card stack" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" style="gap: var(--gap-md);">
+    <div class="row">
+      <span class="state-hero" id="confirm-hero" style="width: 40px; height: 40px; border-radius: var(--radius);">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width: 18px; height: 18px;"><path d="M12 3 2.5 20h19L12 3z"/><path d="M12 10v4m0 3h.01"/></svg>
+      </span>
+      <h3 class="h3" id="confirm-title">确认操作</h3>
+    </div>
+    <p class="muted" style="font-size: 13.5px;" id="confirm-desc"></p>
+    <div class="row" style="justify-content: flex-end;">
+      <button class="btn btn-ghost" id="confirm-cancel">取消</button>
+      <button class="btn" id="confirm-ok">确认</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // theme: dark default, persisted
+  (function () {
+    var saved = localStorage.getItem('hp-theme');
+    if (saved) document.documentElement.setAttribute('data-theme', saved);
+    function sync() {
+      var light = document.documentElement.getAttribute('data-theme') === 'light';
+      document.querySelectorAll('[data-theme-label]').forEach(function (el) {
+        el.textContent = light ? '切换暗色主题' : '切换浅色主题';
+      });
+    }
+    document.querySelectorAll('[data-theme-toggle]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('hp-theme', next);
+        sync();
+      });
+    });
+    sync();
+  })();
+
+  // page: voice —— dropzone 拖放高亮（仅演示）
+  (function () {
+    var dz = document.getElementById('dropzone');
+    ['dragenter', 'dragover'].forEach(function (ev) {
+      dz.addEventListener(ev, function (e) { e.preventDefault(); dz.classList.add('dragover'); });
+    });
+    ['dragleave', 'drop'].forEach(function (ev) {
+      dz.addEventListener(ev, function (e) { e.preventDefault(); dz.classList.remove('dragover'); });
+    });
+    dz.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); dz.click(); }
+    });
+  })();
+
+  // page: voice —— 模拟播放进度（无真实音频）
+  (function () {
+    function fmt(s) {
+      var m = Math.floor(s / 60), sec = Math.floor(s % 60);
+      return (m < 10 ? '0' : '') + m + ':' + (sec < 10 ? '0' : '') + sec;
+    }
+    var ICON_PLAY = '<path d="M7 4.5v15l12-7.5z"/>';
+    var ICON_PAUSE = '<path d="M7 4.5h3.5v15H7zM13.5 4.5H17v15h-3.5z"/>';
+    function mockPlayer(btnId, iconId, fillId, timeId, total) {
+      var btn = document.getElementById(btnId);
+      var icon = document.getElementById(iconId);
+      var fill = document.getElementById(fillId);
+      var time = document.getElementById(timeId);
+      var cur = 0, timer = null;
+      function render() {
+        fill.style.width = (cur / total * 100) + '%';
+        time.textContent = fmt(cur) + ' / ' + fmt(total);
+      }
+      function stop() {
+        clearInterval(timer); timer = null;
+        icon.innerHTML = ICON_PLAY;
+        btn.setAttribute('aria-label', '播放');
+      }
+      btn.addEventListener('click', function () {
+        if (timer) { stop(); return; }
+        if (cur >= total) cur = 0;
+        icon.innerHTML = ICON_PAUSE;
+        btn.setAttribute('aria-label', '暂停');
+        timer = setInterval(function () {
+          cur += 0.25;
+          if (cur >= total) { cur = total; render(); stop(); return; }
+          render();
+        }, 250);
+      });
+      render();
+    }
+    mockPlayer('ref-play', 'ref-play-icon', 'ref-fill', 'ref-time', 23);
+    mockPlayer('ok-play', 'ok-play-icon', 'ok-fill', 'ok-time', 6);
+  })();
+
+  // page: voice —— 状态机切换 + 创建进度演示
+  (function () {
+    var pills = {
+      unconfigured: '<span class="dot dot-muted"></span>未配置',
+      'no-account': '<span class="dot dot-warn"></span>账号未配置',
+      creating: '<span class="dot dot-progress"></span>创建中',
+      success: '<span class="dot dot-ok"></span>已绑定',
+      failed: '<span class="dot dot-danger"></span>失败'
+    };
+    var strip = document.getElementById('strip-status');
+    var buttons = document.querySelectorAll('[data-state]');
+    var createTimer = null;
+    var fill = document.getElementById('create-fill');
+    var pct = document.getElementById('create-pct');
+
+    function stopCreating() {
+      clearInterval(createTimer); createTimer = null;
+      fill.style.width = '0%'; pct.textContent = '0%';
+    }
+    function startCreating() {
+      stopCreating();
+      var p = 0;
+      createTimer = setInterval(function () {
+        p = Math.min(97, p + Math.random() * 6);
+        fill.style.width = p + '%';
+        pct.textContent = Math.round(p) + '%';
+      }, 300);
+    }
+    function show(state) {
+      buttons.forEach(function (b) { b.setAttribute('aria-pressed', b.getAttribute('data-state') === state ? 'true' : 'false'); });
+      document.querySelectorAll('.state-card').forEach(function (c) { c.classList.remove('show'); });
+      document.getElementById('state-' + state).classList.add('show');
+      strip.className = 'pill' + (state === 'success' ? ' pill-ok' : state === 'no-account' ? ' pill-warn' : state === 'failed' ? ' pill-danger' : state === 'creating' ? ' pill-accent' : '');
+      strip.innerHTML = pills[state];
+      if (state === 'creating') startCreating(); else stopCreating();
+    }
+    buttons.forEach(function (b) {
+      b.addEventListener('click', function () { show(b.getAttribute('data-state')); });
+    });
+    document.getElementById('btn-cancel').addEventListener('click', function () { show('unconfigured'); });
+    document.getElementById('btn-retry').addEventListener('click', function () { show('creating'); });
+    document.getElementById('btn-create').addEventListener('click', function () {
+      show('creating');
+      var demo = document.querySelector('[data-od-id="state-demo"]');
+      demo.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+
+    // 角色选择：预置数据切换（样例数据，无真实请求）
+    var CHARACTERS = {
+      kafka:   { name: '卡芙卡', initial: '卡', meta: 'v3 · 星核猎手 · 当前音色状态如下',   state: 'unconfigured' },
+      fuxuan:  { name: '符玄',   initial: '符', meta: 'v2 · 太卜司 · 已绑定预置音色',         state: 'success' },
+      jingliu: { name: '镜流',   initial: '镜', meta: 'v1 · 罗浮剑首 · 音色创建中',           state: 'creating' },
+      acheron: { name: '黄泉',   initial: '黄', meta: 'v4 · 巡海游侠 · 语音服务账号未配置',   state: 'no-account' }
+    };
+    var currentChar = 'kafka';
+    var stripAvatar = document.getElementById('strip-avatar');
+    var stripName = document.getElementById('strip-name');
+    var stripMeta = document.getElementById('strip-meta');
+    var okCharName = document.getElementById('ok-char-name');
+    function applyCharacter(key) {
+      var c = CHARACTERS[key];
+      if (!c) return;
+      currentChar = key;
+      stripAvatar.textContent = c.initial;
+      stripName.textContent = c.name;
+      stripMeta.textContent = c.meta;
+      okCharName.textContent = c.name;
+      show(c.state);
+    }
+    document.getElementById('char-select').addEventListener('change', function (e) {
+      applyCharacter(e.target.value);
+    });
+
+    // 二次确认弹层：重新创建 / 解除绑定
+    var mask = document.getElementById('confirm-mask');
+    var hero = document.getElementById('confirm-hero');
+    var title = document.getElementById('confirm-title');
+    var desc = document.getElementById('confirm-desc');
+    var okBtn = document.getElementById('confirm-ok');
+    var pending = null;
+    function openConfirm(opts) {
+      title.textContent = opts.title;
+      desc.textContent = opts.desc;
+      okBtn.textContent = opts.okText;
+      okBtn.className = 'btn ' + (opts.danger ? 'btn-primary-danger' : 'btn-primary');
+      hero.className = 'state-hero' + (opts.danger ? ' danger' : ' warn');
+      pending = opts.onOk;
+      mask.classList.add('open');
+      document.getElementById('confirm-cancel').focus();
+    }
+    function closeConfirm() { mask.classList.remove('open'); pending = null; }
+    document.getElementById('confirm-cancel').addEventListener('click', closeConfirm);
+    mask.addEventListener('click', function (e) { if (e.target === mask) closeConfirm(); });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeConfirm(); });
+    okBtn.addEventListener('click', function () {
+      var fn = pending; closeConfirm();
+      if (fn) fn();
+    });
+    document.getElementById('btn-recreate').addEventListener('click', function () {
+      openConfirm({
+        title: '重新创建音色？',
+        desc: '将丢弃当前已绑定的音色并回到创建流程，重新选择参考音频后可再次创建。',
+        okText: '重新创建',
+        danger: false,
+        onOk: function () {
+          show('unconfigured');
+          document.getElementById('dropzone').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      });
+    });
+    document.getElementById('btn-unbind').addEventListener('click', function () {
+      openConfirm({
+        title: '解除音色绑定？',
+        desc: '解除后角色「' + CHARACTERS[currentChar].name + '」将回到未配置状态，音色 ID 会被移除且不可恢复。',
+        okText: '解除绑定',
+        danger: true,
+        onOk: function () { show('unconfigured'); }
+      });
+    });
+  })();
+</script>
+</body>
+</html>

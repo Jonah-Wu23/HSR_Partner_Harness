@@ -1,0 +1,99 @@
+{
+  "schema": "hsr.character_library_sample/1.0",
+  "description": "强视觉 AI 专用稳定样例数据。数据为手工构造的界面开发样例，用于覆盖全部状态；不是真实用户数据，也不作为任何功能验收证据。状态枚举与 docs/character-card/强视觉AI-角色卡样例数据与状态枚举.md 一致。",
+  "fixed_models": {
+    "asr": "qwen-audio-3.0-asr-flash-streaming",
+    "tts_clone_and_design": "qwen-audio-3.0-tts-flash",
+    "user_modifiable": false
+  },
+  "cards": [
+    {
+      "id": "card-01",
+      "name": "白厄（3.4前）",
+      "state": "imported",
+      "voice_state": "voice_ready",
+      "source": "tavern_json_import",
+      "import_summary": {
+        "format": "chara_card_v3",
+        "avatar_found": true,
+        "world_book_name": "翁法罗斯",
+        "world_book_entry_count": 20,
+        "greeting_count": 6,
+        "recognized_extensions": ["talkativeness", "fav", "world", "depth_prompt"],
+        "compat_report": {
+          "applied": ["name", "description", "personality", "scenario", "first_mes", "mes_example", "system_prompt", "post_history_instructions", "creator_notes", "character_book", "data.extensions.depth_prompt"],
+          "preserved": ["data.extensions.talkativeness", "data.extensions.fav", "data.extensions.world", "creatorcomment", "avatar", "create_date"],
+          "not_executed": [],
+          "normalized_from_root": [],
+          "warnings": [],
+          "errors": []
+        }
+      },
+      "voice": {
+        "voice_id": "qwen-audio-3.0-tts-flash-phainon-00000000000000000000000000000000",
+        "creation_mode": "clone",
+        "target_model": "qwen-audio-3.0-tts-flash",
+        "prefix": "phainon",
+        "reference_audio_asset": "audio-asset-01",
+        "last_error": "",
+        "updated_at": "2026-08-16T12:00:00+08:00"
+      },
+      "updated_at": "2026-08-16T12:00:00+08:00"
+    },
+    {
+      "id": "card-02",
+      "name": "新聊天搭档（未命名草稿）",
+      "state": "draft",
+      "voice_state": "voice_unconfigured",
+      "source": "created_in_app",
+      "draft_progress": {"filled_fields": ["name"], "optional_suggestions": ["description", "first_mes", "avatar"]},
+      "voice": null,
+      "updated_at": "2026-08-16T12:05:00+08:00"
+    },
+    {
+      "id": "card-03",
+      "name": "流萤",
+      "state": "saved",
+      "voice_state": "voice_creating",
+      "source": "created_in_app",
+      "voice": {
+        "voice_id": "",
+        "creation_mode": "clone",
+        "target_model": "qwen-audio-3.0-tts-flash",
+        "prefix": "firefly",
+        "reference_audio_asset": "audio-asset-02",
+        "last_error": "",
+        "updated_at": "2026-08-16T12:08:30+08:00"
+      },
+      "updated_at": "2026-08-16T12:08:30+08:00"
+    },
+    {
+      "id": "card-04",
+      "name": "损坏的卡片.json",
+      "state": "invalid",
+      "voice_state": "voice_unconfigured",
+      "source": "tavern_json_import",
+      "invalid_reason": "CardImportError: JSON 解析失败: Expecting ',' delimiter: line 42 column 3 (char 1187)",
+      "import_summary": null,
+      "voice": null,
+      "updated_at": "2026-08-16T12:10:00+08:00"
+    },
+    {
+      "id": "card-05",
+      "name": "第四面镜",
+      "state": "saved",
+      "voice_state": "voice_failed",
+      "source": "created_in_app",
+      "voice": {
+        "voice_id": "",
+        "creation_mode": "clone",
+        "target_model": "qwen-audio-3.0-tts-flash",
+        "prefix": "mirror4th",
+        "reference_audio_asset": "audio-asset-03",
+        "last_error": "HTTP 400 {\"code\":\"BadRequest.InputDownloadFailed\",\"message\":\"download audio failed\",\"request_id\":\"sample-recorded-error\"}",
+        "updated_at": "2026-08-16T12:12:00+08:00"
+      },
+      "updated_at": "2026-08-16T12:12:00+08:00"
+    }
+  ]
+}

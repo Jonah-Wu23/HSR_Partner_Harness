@@ -1,0 +1,740 @@
+<!doctype html>
+<!--
+  HSR Partner Harness V0.4.0 角色卡 · 头像设置弹层演示（计划 3.3）
+  共享设计基底复制自 character-library.html（范式页）：
+  - 双主题：暗色默认，data-theme="light" 切换浅色，localStorage 记忆
+  - 琥珀橙唯一 accent（oklch），严禁蓝紫；图标一律线性 SVG，严禁 emoji
+  - 8px 基线 / 8px 圆角 / 1px 边框
+-->
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>头像设置 · HSR Partner Harness 原型</title>
+<style>
+  /* ─── tokens ────────────────────────────────────────────────────── */
+  :root {
+    --bg:      oklch(0.14 0.008 60);
+    --surface: oklch(0.18 0.008 60);
+    --fg:      oklch(0.95 0.005 70);
+    --muted:   oklch(0.62 0.012 60);
+    --border:  oklch(0.25 0.008 60);
+    --accent:  oklch(0.72 0.15 65);
+
+    --ok:      oklch(0.7 0.15 150);
+    --warn:    oklch(0.78 0.14 85);
+    --danger:  oklch(0.6 0.2 25);
+
+    --accent-soft: color-mix(in oklch, var(--accent) 14%, transparent);
+    --fg-soft:     color-mix(in oklch, var(--fg) 6%, transparent);
+    --surface-2:   color-mix(in oklch, var(--surface) 60%, var(--bg));
+
+    --font-display: 'Noto Serif SC', 'Source Han Serif SC', Georgia, serif;
+    --font-body:    'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    --font-mono:    'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+    --fs-h1: 28px; --fs-h2: 22px; --fs-h3: 16px; --fs-body: 14px; --fs-meta: 12px;
+
+    --gap-xs: 8px; --gap-sm: 12px; --gap-md: 16px; --gap-lg: 24px; --gap-xl: 32px;
+    --radius: 8px; --radius-lg: 12px;
+  }
+  [data-theme="light"] {
+    --bg:      oklch(0.97 0.005 75);
+    --surface: oklch(0.99 0.004 75);
+    --fg:      oklch(0.22 0.01 60);
+    --muted:   oklch(0.5 0.012 60);
+    --border:  oklch(0.88 0.006 70);
+    --accent:  oklch(0.62 0.16 60);
+    --ok:      oklch(0.55 0.14 150);
+    --warn:    oklch(0.6 0.14 80);
+    --danger:  oklch(0.5 0.18 25);
+    --surface-2: color-mix(in oklch, var(--surface) 55%, var(--bg));
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: var(--font-body); font-size: var(--fs-body); line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  img, svg { display: block; }
+  a { color: inherit; text-decoration: none; }
+  button { font: inherit; cursor: pointer; color: inherit; }
+  h1, h2, h3, h4 { margin: 0; text-wrap: balance; }
+  p { margin: 0; text-wrap: pretty; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+  /* ─── app shell ─────────────────────────────────────────────────── */
+  .shell { display: grid; grid-template-columns: 224px 1fr; min-height: 100vh; }
+  .rail {
+    border-right: 1px solid var(--border);
+    padding: var(--gap-md) var(--gap-sm);
+    display: flex; flex-direction: column; gap: var(--gap-lg);
+    position: sticky; top: 0; height: 100vh;
+  }
+  .rail .brand {
+    font-family: var(--font-display); font-size: 17px; font-weight: 600;
+    padding: var(--gap-xs) var(--gap-sm); letter-spacing: 0.01em;
+  }
+  .rail .brand .meta { display: block; margin-top: 2px; }
+  .rail-group { display: flex; flex-direction: column; gap: 2px; }
+  .rail-label {
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted); padding: 0 var(--gap-sm) 6px;
+  }
+  .rail a.nav {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px var(--gap-sm); border-radius: var(--radius);
+    color: var(--muted); font-size: 13.5px; min-height: 40px;
+  }
+  .rail a.nav svg { width: 16px; height: 16px; flex: none; }
+  .rail a.nav:hover { background: var(--fg-soft); color: var(--fg); }
+  .rail a.nav.active { background: var(--accent-soft); color: var(--fg); }
+  .rail a.nav.active svg { color: var(--accent); }
+  .rail-foot { margin-top: auto; display: flex; flex-direction: column; gap: var(--gap-sm); }
+
+  .main { min-width: 0; display: flex; flex-direction: column; }
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md);
+    padding: 14px var(--gap-xl); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10;
+    background: color-mix(in oklch, var(--bg) 88%, transparent);
+    backdrop-filter: blur(10px);
+  }
+  .topbar .crumbs { font-size: 13px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  .topbar .crumbs b { color: var(--fg); font-weight: 600; }
+  .content { padding: var(--gap-xl); max-width: 1280px; width: 100%; margin-inline: auto; }
+
+  /* ─── type & primitives ─────────────────────────────────────────── */
+  .h1 { font-family: var(--font-display); font-size: var(--fs-h1); font-weight: 600; letter-spacing: 0.01em; }
+  .h2 { font-family: var(--font-display); font-size: var(--fs-h2); font-weight: 600; }
+  .h3 { font-size: var(--fs-h3); font-weight: 600; }
+  .meta { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--muted); }
+  .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); }
+  .row { display: flex; align-items: center; gap: var(--gap-sm); }
+  .row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md); }
+  .stack { display: flex; flex-direction: column; gap: var(--gap-md); }
+
+  /* ─── buttons ───────────────────────────────────────────────────── */
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    min-height: 40px; padding: 8px 16px;
+    border-radius: var(--radius); border: 1px solid transparent;
+    font-size: 13.5px; font-weight: 500; white-space: nowrap;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  .btn svg { width: 16px; height: 16px; }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--accent); color: oklch(0.14 0.008 60); border-color: var(--accent); font-weight: 600; }
+  [data-theme="light"] .btn-primary { color: oklch(0.99 0.004 75); }
+  .btn-primary:hover { background: color-mix(in oklch, var(--accent) 88%, black); color: oklch(0.98 0.005 70); }
+  .btn-secondary { background: transparent; color: var(--fg); border-color: var(--border); }
+  .btn-secondary:hover { border-color: var(--muted); background: var(--fg-soft); }
+  .btn-ghost { background: transparent; color: var(--muted); padding-inline: 8px; }
+  .btn-ghost:hover { color: var(--fg); background: var(--fg-soft); }
+  .btn-danger { background: transparent; color: var(--danger); border-color: transparent; padding-inline: 8px; }
+  .btn-danger:hover { background: color-mix(in oklch, var(--danger) 12%, transparent); }
+  .btn-primary-danger { background: var(--danger); color: oklch(0.98 0.005 70); border-color: var(--danger); font-weight: 600; }
+  .btn-primary-danger:hover { background: color-mix(in oklch, var(--danger) 85%, black); }
+  .icon-btn {
+    width: 36px; height: 36px; display: grid; place-items: center;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: transparent; color: var(--muted);
+  }
+  .icon-btn:hover { color: var(--fg); background: var(--fg-soft); }
+  .icon-btn svg { width: 16px; height: 16px; }
+
+  /* ─── badges / pills ────────────────────────────────────────────── */
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 9px; border-radius: 999px;
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+    background: var(--fg-soft); color: var(--muted); border: 1px solid transparent;
+  }
+  .pill svg { width: 12px; height: 12px; }
+  .pill-accent { background: var(--accent-soft); color: var(--accent); }
+  .pill-ok { background: color-mix(in oklch, var(--ok) 14%, transparent); color: var(--ok); }
+  .pill-warn { background: color-mix(in oklch, var(--warn) 14%, transparent); color: var(--warn); }
+  .pill-danger { background: color-mix(in oklch, var(--danger) 14%, transparent); color: var(--danger); }
+  .dot { width: 7px; height: 7px; border-radius: 999px; flex: none; }
+  .dot-ok { background: var(--ok); }
+  .dot-warn { background: var(--warn); }
+  .dot-danger { background: var(--danger); }
+  .dot-muted { background: var(--muted); }
+  .dot-progress { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+
+  .mock-tag {
+    display: inline-flex; align-items: center;
+    padding: 2px 8px; border: 1px dashed var(--muted); border-radius: 4px;
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em;
+    color: var(--muted); text-transform: uppercase;
+  }
+
+  /* ─── cards ─────────────────────────────────────────────────────── */
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); padding: var(--gap-lg);
+  }
+  .grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--gap-md); }
+
+  /* ─── form ──────────────────────────────────────────────────────── */
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-size: 12.5px; color: var(--muted); }
+  .input, .textarea, .select {
+    width: 100%; padding: 9px 12px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); color: var(--fg); font: inherit; font-size: 13.5px;
+  }
+  .input:focus, .textarea:focus, .select:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .textarea { min-height: 96px; resize: vertical; }
+  .search {
+    display: flex; align-items: center; gap: 8px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); padding: 0 12px; min-height: 40px; width: 280px;
+  }
+  .search svg { width: 15px; height: 15px; color: var(--muted); flex: none; }
+  .search input { border: 0; background: none; color: var(--fg); font: inherit; font-size: 13.5px; width: 100%; }
+  .search input:focus { outline: none; }
+  .search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+  /* ─── table ─────────────────────────────────────────────────────── */
+  .ds-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .ds-table th, .ds-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+  .ds-table th { color: var(--muted); font-weight: 500; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; }
+  .ds-table tbody tr:hover { background: var(--fg-soft); }
+
+  /* ─── avatar placeholder ────────────────────────────────────────── */
+  .avatar {
+    width: 44px; height: 44px; border-radius: var(--radius); flex: none;
+    display: grid; place-items: center;
+    background: var(--surface-2); border: 1px solid var(--border);
+    font-family: var(--font-display); font-size: 18px; color: var(--muted);
+  }
+  .avatar-lg { width: 64px; height: 64px; font-size: 26px; }
+  .avatar-geo {
+    background:
+      linear-gradient(135deg, var(--accent-soft), transparent 60%),
+      var(--surface-2);
+  }
+
+  /* ─── modal ─────────────────────────────────────────────────────── */
+  .modal-mask {
+    position: fixed; inset: 0; z-index: 50; display: none;
+    background: color-mix(in oklch, var(--bg) 70%, transparent);
+    backdrop-filter: blur(4px);
+    align-items: center; justify-content: center;
+  }
+  .modal-mask.open { display: flex; }
+  .modal { width: 420px; max-width: calc(100vw - 48px); }
+
+  /* ─── theme toggle ──────────────────────────────────────────────── */
+  .theme-toggle {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px var(--gap-sm); border-radius: var(--radius);
+    border: 1px solid var(--border); background: transparent;
+    color: var(--muted); font-size: 12.5px; min-height: 40px; width: 100%;
+  }
+  .theme-toggle:hover { color: var(--fg); background: var(--fg-soft); }
+  .theme-toggle svg { width: 15px; height: 15px; }
+
+  @media (max-width: 920px) {
+    .shell { grid-template-columns: 1fr; }
+    .rail { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; border-right: 0; border-bottom: 1px solid var(--border); }
+    .rail-foot { margin-top: 0; }
+    .content { padding: var(--gap-md); }
+    .search { width: 100%; }
+  }
+
+  /* ─── page: avatar-flow ─────────────────────────────────────────── */
+  .flow-modal { width: 560px; max-width: calc(100vw - 48px); }
+  .step-dots { display: flex; align-items: center; gap: var(--gap-xs); }
+  .step-dots .step {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.05em;
+    color: var(--muted);
+  }
+  .step-dots .step .n {
+    width: 22px; height: 22px; border-radius: 999px; flex: none;
+    display: grid; place-items: center;
+    border: 1px solid var(--border); background: var(--surface-2);
+    font-family: var(--font-mono); font-size: 11px;
+  }
+  .step-dots .step.on { color: var(--fg); }
+  .step-dots .step.on .n { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+  .step-dots .step.done .n { border-color: var(--ok); color: var(--ok); }
+  .step-dots .sep { width: 18px; height: 1px; background: var(--border); }
+
+  .drop-zone {
+    border: 1px dashed var(--border); border-radius: var(--radius-lg);
+    padding: var(--gap-xl) var(--gap-lg); text-align: center;
+    display: flex; flex-direction: column; align-items: center; gap: var(--gap-sm);
+    color: var(--muted); transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .drop-zone:hover, .drop-zone.dragover { border-color: var(--accent); background: var(--accent-soft); color: var(--fg); }
+  .drop-zone.invalid { border-color: var(--danger); background: color-mix(in oklch, var(--danger) 8%, transparent); }
+  .drop-zone svg { width: 28px; height: 28px; }
+
+  .format-error {
+    display: flex; align-items: flex-start; gap: var(--gap-sm);
+    padding: var(--gap-sm) var(--gap-md);
+    border: 1px solid color-mix(in oklch, var(--danger) 40%, transparent);
+    border-radius: var(--radius);
+    background: color-mix(in oklch, var(--danger) 10%, transparent);
+    color: var(--danger); font-size: 13px;
+  }
+  .format-error svg { width: 16px; height: 16px; flex: none; margin-top: 2px; }
+  .format-error p { color: var(--muted); margin-top: 2px; }
+
+  .crop-stage {
+    position: relative; width: 260px; height: 260px; margin-inline: auto;
+    border-radius: 50%; overflow: hidden;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    cursor: grab;
+  }
+  .crop-stage.dragging { cursor: grabbing; }
+  .crop-img {
+    position: absolute; inset: 0;
+    background:
+      linear-gradient(135deg, var(--accent-soft), transparent 60%),
+      var(--surface-2);
+    transform-origin: center;
+    will-change: transform;
+  }
+  .crop-img::after {
+    content: "卡"; position: absolute; inset: 0;
+    display: grid; place-items: center;
+    font-family: var(--font-display); font-size: 64px; color: var(--muted);
+  }
+  .crop-cross {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    color: var(--muted); pointer-events: none;
+  }
+  .crop-cross svg { width: 24px; height: 24px; }
+  .crop-ring {
+    position: absolute; inset: 8px; border-radius: 50%;
+    border: 1px dashed var(--muted); pointer-events: none;
+  }
+
+  .zoom-row { display: flex; align-items: center; gap: var(--gap-sm); }
+  .zoom-row svg { width: 16px; height: 16px; color: var(--muted); flex: none; }
+  .zoom-row input[type="range"] { flex: 1; accent-color: var(--accent); min-height: 40px; }
+  .zoom-row .num { min-width: 44px; text-align: right; }
+
+  .preview-circle {
+    width: 120px; height: 120px; border-radius: 50%;
+    border: 1px solid var(--border);
+    background:
+      linear-gradient(135deg, var(--accent-soft), transparent 60%),
+      var(--surface-2);
+    display: grid; place-items: center;
+    font-family: var(--font-display); font-size: 40px; color: var(--muted);
+  }
+  .preview-circle-sm { width: 72px; height: 72px; font-size: 24px; }
+
+  .avatar-round {
+    width: 72px; height: 72px; border-radius: 50%; flex: none;
+    display: grid; place-items: center;
+    background: var(--surface-2); border: 1px solid var(--border);
+    font-family: var(--font-display); font-size: 26px; color: var(--muted);
+  }
+  .avatar-empty { border-style: dashed; }
+
+  .state-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap-md); }
+  .state-card { display: flex; flex-direction: column; gap: var(--gap-md); }
+  .state-card .ops { display: flex; gap: 4px; border-top: 1px solid var(--border); padding-top: var(--gap-sm); }
+  .warn-row { display: flex; align-items: center; gap: 8px; color: var(--warn); font-size: 13px; }
+  .warn-row svg { width: 16px; height: 16px; flex: none; }
+
+  @media (max-width: 920px) {
+    .state-grid { grid-template-columns: 1fr; }
+    .flow-modal { width: 420px; }
+    .crop-stage { width: 220px; height: 220px; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <!-- ─── left rail ─── -->
+  <aside class="rail" data-od-id="rail">
+    <div class="brand">
+      Partner Harness
+      <span class="meta">v0.4.0 · 角色卡原型</span>
+    </div>
+    <nav class="rail-group" data-od-id="rail-nav-main">
+      <span class="rail-label">角色</span>
+      <a class="nav" href="character-library.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="3" y="15" width="7" height="7" rx="1.5"/><rect x="14" y="15" width="7" height="7" rx="1.5"/></svg>
+        角色库
+      </a>
+      <a class="nav active" href="character-create.html" aria-current="page">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 5v14M5 12h14"/></svg>
+        创建角色
+      </a>
+      <a class="nav" href="character-import.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        导入
+      </a>
+      <a class="nav" href="character-export.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 15V3m0 12 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        导出
+      </a>
+    </nav>
+    <nav class="rail-group" data-od-id="rail-nav-tools">
+      <span class="rail-label">扩展</span>
+      <a class="nav" href="worldbook-editor.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>
+        世界书
+      </a>
+      <a class="nav" href="voice-create.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+        角色语音
+      </a>
+      <a class="nav" href="onboarding.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.7.35-1.1.8-1.1 1.8"/><path d="M12 17h.01"/></svg>
+        新用户引导
+      </a>
+    </nav>
+    <div class="rail-foot">
+      <button class="theme-toggle" data-theme-toggle data-od-id="theme-toggle">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <span data-theme-label>切换浅色主题</span>
+      </button>
+      <a class="meta" href="index.html" style="padding: 0 var(--gap-sm);">← 原型总览</a>
+    </div>
+  </aside>
+
+  <!-- ─── main ─── -->
+  <div class="main">
+    <header class="topbar" data-od-id="topbar">
+      <div class="crumbs">创建角色 / <b>头像设置</b><span class="mock-tag">样例数据</span></div>
+      <div class="row">
+        <span class="meta">组件演示 · <span class="num">3</span> 步弹层</span>
+      </div>
+    </header>
+
+    <main class="content stack" id="content" style="gap: var(--gap-lg);">
+      <div data-od-id="page-head">
+        <h1 class="h1">头像设置弹层</h1>
+        <p class="muted" style="margin-top: 8px; font-size: 13.5px;">角色卡创建 / 编辑流程中的头像设置组件演示：选择 → 裁切 → 确认三步弹层，以及 PNG / JSON 角色卡的头像状态。</p>
+      </div>
+
+      <!-- demo trigger card -->
+      <section class="card" data-od-id="demo-trigger" style="display: flex; align-items: center; gap: var(--gap-md); flex-wrap: wrap;">
+        <div class="avatar avatar-lg avatar-geo">卡</div>
+        <div style="flex: 1; min-width: 200px;">
+          <div class="h3">卡芙卡 <span class="mock-tag" style="margin-left: 6px;">样例数据</span></div>
+          <p class="muted" style="font-size: 13px; margin-top: 2px;">当前头像为占位几何块。点击下方按钮打开三步设置弹层。</p>
+        </div>
+        <button class="btn btn-primary" id="open-flow" data-od-id="cta-open-flow">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="9" r="3.5"/><path d="M4.5 19a7.5 7.5 0 0 1 15 0"/></svg>
+          打开头像设置
+        </button>
+      </section>
+
+      <!-- static state cards -->
+      <section data-od-id="state-cards">
+        <div class="row-between" style="margin-bottom: var(--gap-md);">
+          <h2 class="h3">导出形态下的头像状态</h2>
+          <span class="mock-tag">样例数据</span>
+        </div>
+        <div class="state-grid">
+          <!-- card 1: PNG -->
+          <article class="card state-card" data-od-id="state-png">
+            <div class="row">
+              <div class="avatar-round avatar-geo">卡</div>
+              <div>
+                <div class="h3">PNG 角色卡</div>
+                <span class="meta">kafka_v3.png · <span class="num">1.4</span> MB</span>
+              </div>
+            </div>
+            <p class="muted" style="font-size: 13px;">头像已嵌入 PNG，随卡片文件一并分发。接收方导入后无需二次设置。</p>
+            <span class="row" style="gap: 6px;"><span class="dot dot-ok"></span><span class="meta">头像已嵌入 PNG</span></span>
+            <div class="ops">
+              <button class="btn btn-ghost" data-replace>替换</button>
+              <button class="btn btn-danger" data-delete-avatar="PNG 角色卡头像">删除</button>
+            </div>
+          </article>
+
+          <!-- card 2: JSON -->
+          <article class="card state-card" data-od-id="state-json">
+            <div class="row">
+              <div class="avatar-round avatar-empty" aria-label="无头像占位">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width: 22px; height: 22px;"><circle cx="12" cy="9" r="3.5"/><path d="M4.5 19a7.5 7.5 0 0 1 15 0"/></svg>
+              </div>
+              <div>
+                <div class="h3">JSON 角色卡</div>
+                <span class="meta">fuxuan_v3.json · <span class="num">86</span> KB</span>
+              </div>
+            </div>
+            <p class="muted" style="font-size: 13px;">JSON 仅保存字段数据，不携带图片。无内嵌头像，显示首字符占位。</p>
+            <span class="warn-row">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3 2.5 20h19L12 3z"/><path d="M12 10v4m0 3h.01"/></svg>
+              无内嵌头像 · 可稍后补传
+            </span>
+            <div class="ops">
+              <button class="btn btn-ghost" data-replace>替换</button>
+              <button class="btn btn-danger" data-delete-avatar="JSON 角色卡头像">删除</button>
+            </div>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<!-- avatar flow modal -->
+<div class="modal-mask" id="flow-modal" data-od-id="flow-modal" role="dialog" aria-modal="true" aria-label="头像设置">
+  <div class="card modal flow-modal stack">
+    <div class="row-between">
+      <div class="h3" id="flow-title">设置头像 · 选择</div>
+      <div class="step-dots" data-od-id="step-dots">
+        <span class="step on" data-step-dot="1"><span class="n">1</span>选择</span>
+        <span class="sep"></span>
+        <span class="step" data-step-dot="2"><span class="n">2</span>裁切</span>
+        <span class="sep"></span>
+        <span class="step" data-step-dot="3"><span class="n">3</span>确认</span>
+      </div>
+    </div>
+
+    <!-- step 1: pick -->
+    <div class="stack" data-step-pane="1">
+      <div class="drop-zone" id="drop-zone" data-od-id="drop-zone" tabindex="0" role="button" aria-label="拖放或选择头像图片">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 15V3m0 0 4 4m-4-4-4 4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        <div>
+          <b style="color: var(--fg);">拖放图片到此处</b>
+          <p style="font-size: 13px; margin-top: 4px;">支持 PNG / JPEG，大小不超过 <span class="num">2</span> MB，建议正方形构图</p>
+        </div>
+      </div>
+      <div class="format-error" id="format-error" data-od-id="format-error" role="alert" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3 2.5 20h19L12 3z"/><path d="M12 10v4m0 3h.01"/></svg>
+        <div>
+          <b>不支持该图片格式（.webp / .gif）</b>
+          <p>头像仅支持 PNG / JPEG 静态图片，请转换格式后重新选择。</p>
+        </div>
+      </div>
+      <div class="row" style="justify-content: space-between;">
+        <span class="meta">或从本地文件选择</span>
+        <button class="btn btn-secondary" id="pick-file">选择图片…</button>
+      </div>
+      <div class="row">
+        <span class="mock-tag">样例数据</span>
+        <button class="btn btn-ghost" id="demo-format-error" data-od-id="demo-format-error" aria-pressed="false">演示格式不支持</button>
+      </div>
+      <div class="row" style="justify-content: flex-end; border-top: 1px solid var(--border); padding-top: var(--gap-md);">
+        <button class="btn btn-ghost" data-close-flow>取消</button>
+      </div>
+    </div>
+
+    <!-- step 2: crop -->
+    <div class="stack" data-step-pane="2" hidden>
+      <p class="muted" style="font-size: 13px;">拖动调整构图，滑动缩放。<span class="mock-tag" style="margin-left: 6px;">样例数据</span></p>
+      <div class="crop-stage" id="crop-stage" data-od-id="crop-stage" tabindex="0" aria-label="裁切预览，可拖动构图">
+        <div class="crop-img" id="crop-img"></div>
+        <span class="crop-ring"></span>
+        <span class="crop-cross">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 4v16M4 12h16"/></svg>
+        </span>
+      </div>
+      <div class="zoom-row">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5M8 11h6"/></svg>
+        <input type="range" id="zoom-range" min="100" max="250" value="120" step="1" aria-label="缩放比例" />
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5M11 8v6M8 11h6"/></svg>
+        <span class="num" id="zoom-val">120%</span>
+      </div>
+      <div class="row" style="justify-content: flex-end; border-top: 1px solid var(--border); padding-top: var(--gap-md);">
+        <button class="btn btn-ghost" data-flow-back="1">上一步</button>
+        <button class="btn btn-secondary" data-flow-next="3">下一步</button>
+      </div>
+    </div>
+
+    <!-- step 3: confirm -->
+    <div class="stack" data-step-pane="3" hidden>
+      <div style="display: flex; flex-direction: column; align-items: center; gap: var(--gap-md); padding: var(--gap-md) 0;">
+        <div class="preview-circle" id="final-preview" data-od-id="final-preview">卡</div>
+        <div style="text-align: center;">
+          <b>最终头像预览</b>
+          <p class="muted" style="font-size: 13px; margin-top: 4px;">将以 1:1 圆形裁切保存，并嵌入 PNG 角色卡。<span class="mock-tag" style="margin-left: 6px;">样例数据</span></p>
+        </div>
+        <div class="row" style="gap: var(--gap-lg);">
+          <div style="text-align: center;"><div class="preview-circle preview-circle-sm" style="margin-inline: auto;">卡</div><span class="meta">列表 <span class="num">72</span>px</span></div>
+          <div style="text-align: center;"><div class="avatar avatar-geo" style="margin-inline: auto; border-radius: 50%;">卡</div><span class="meta">顶栏 <span class="num">44</span>px</span></div>
+        </div>
+      </div>
+      <div class="row" style="justify-content: flex-end; border-top: 1px solid var(--border); padding-top: var(--gap-md);">
+        <button class="btn btn-ghost" data-flow-back="2">上一步</button>
+        <button class="btn btn-secondary" id="confirm-use" data-od-id="cta-confirm-use">确认使用</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- delete confirm modal -->
+<div class="modal-mask" id="delete-modal" data-od-id="delete-modal" role="dialog" aria-modal="true" aria-label="删除头像确认">
+  <div class="card modal stack">
+    <div class="h3">删除「<span id="delete-name">头像</span>」？</div>
+    <p class="muted" style="font-size: 13.5px;">删除后角色卡将回退为首字符占位头像，PNG 卡片中的内嵌图片会被一并移除。原型阶段此操作仅演示确认流程，不改动数据。</p>
+    <div class="row" style="justify-content: flex-end;">
+      <button class="btn btn-secondary" data-close-modal>取消</button>
+      <button class="btn btn-primary-danger" data-close-modal>确认删除</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // theme: dark default, persisted
+  (function () {
+    var saved = localStorage.getItem('hp-theme');
+    if (saved) document.documentElement.setAttribute('data-theme', saved);
+    function sync() {
+      var light = document.documentElement.getAttribute('data-theme') === 'light';
+      document.querySelectorAll('[data-theme-label]').forEach(function (el) {
+        el.textContent = light ? '切换暗色主题' : '切换浅色主题';
+      });
+    }
+    document.querySelectorAll('[data-theme-toggle]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('hp-theme', next);
+        sync();
+      });
+    });
+    sync();
+  })();
+
+  // avatar flow modal: 3-step wizard
+  (function () {
+    var mask = document.getElementById('flow-modal');
+    var title = document.getElementById('flow-title');
+    var stepNames = { 1: '选择', 2: '裁切', 3: '确认' };
+    var zoom = 1.2, tx = 0, ty = 0;
+
+    function setStep(n) {
+      mask.querySelectorAll('[data-step-pane]').forEach(function (p) {
+        p.hidden = p.getAttribute('data-step-pane') !== String(n);
+      });
+      mask.querySelectorAll('[data-step-dot]').forEach(function (d) {
+        var i = Number(d.getAttribute('data-step-dot'));
+        d.classList.toggle('on', i === n);
+        d.classList.toggle('done', i < n);
+      });
+      title.textContent = '设置头像 · ' + stepNames[n];
+      mask.scrollTo(0, 0);
+    }
+
+    document.getElementById('open-flow').addEventListener('click', function () {
+      setStep(1);
+      setFormatError(false);
+      mask.classList.add('open');
+    });
+    mask.querySelectorAll('[data-flow-next]').forEach(function (b) {
+      b.addEventListener('click', function () { setStep(Number(b.getAttribute('data-flow-next'))); });
+    });
+    mask.querySelectorAll('[data-flow-back]').forEach(function (b) {
+      b.addEventListener('click', function () { setStep(Number(b.getAttribute('data-flow-back'))); });
+    });
+    mask.querySelectorAll('[data-close-flow]').forEach(function (b) {
+      b.addEventListener('click', function () { mask.classList.remove('open'); });
+    });
+    document.getElementById('confirm-use').addEventListener('click', function () {
+      mask.classList.remove('open');
+    });
+    document.getElementById('pick-file').addEventListener('click', function () { setStep(2); });
+
+    // unsupported-format error state demo (toggle)
+    var fmtError = document.getElementById('format-error');
+    var demoFmtBtn = document.getElementById('demo-format-error');
+    function setFormatError(on) {
+      fmtError.hidden = !on;
+      dz.classList.toggle('invalid', on);
+      demoFmtBtn.setAttribute('aria-pressed', String(on));
+      demoFmtBtn.textContent = on ? '恢复正常状态' : '演示格式不支持';
+    }
+    demoFmtBtn.addEventListener('click', function () { setFormatError(fmtError.hidden); });
+    mask.addEventListener('click', function (e) { if (e.target === mask) mask.classList.remove('open'); });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') mask.classList.remove('open');
+    });
+
+    // drop zone demo: drag highlight + keyboard/click advances to crop
+    var dz = document.getElementById('drop-zone');
+    ['dragenter', 'dragover'].forEach(function (ev) {
+      dz.addEventListener(ev, function (e) { e.preventDefault(); dz.classList.add('dragover'); });
+    });
+    ['dragleave', 'drop'].forEach(function (ev) {
+      dz.addEventListener(ev, function (e) {
+        e.preventDefault();
+        dz.classList.remove('dragover');
+        if (ev === 'drop') setStep(2);
+      });
+    });
+    dz.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setStep(2); }
+    });
+
+    // crop: zoom slider + pointer drag to compose
+    var stage = document.getElementById('crop-stage');
+    var img = document.getElementById('crop-img');
+    var range = document.getElementById('zoom-range');
+    var zoomVal = document.getElementById('zoom-val');
+
+    function apply() {
+      img.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + zoom + ')';
+      zoomVal.textContent = Math.round(zoom * 100) + '%';
+    }
+    range.addEventListener('input', function () {
+      zoom = Number(range.value) / 100;
+      apply();
+    });
+
+    var dragging = false, sx = 0, sy = 0;
+    stage.addEventListener('mousedown', function (e) {
+      dragging = true; sx = e.clientX - tx; sy = e.clientY - ty;
+      stage.classList.add('dragging');
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', function (e) {
+      if (!dragging) return;
+      tx = e.clientX - sx; ty = e.clientY - sy;
+      apply();
+    });
+    document.addEventListener('mouseup', function () {
+      dragging = false;
+      stage.classList.remove('dragging');
+    });
+    apply();
+  })();
+
+  // delete confirm demo
+  (function () {
+    var mask = document.getElementById('delete-modal');
+    document.querySelectorAll('[data-delete-avatar]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        document.getElementById('delete-name').textContent = btn.getAttribute('data-delete-avatar');
+        mask.classList.add('open');
+      });
+    });
+    mask.querySelectorAll('[data-close-modal]').forEach(function (b) {
+      b.addEventListener('click', function () { mask.classList.remove('open'); });
+    });
+    mask.addEventListener('click', function (e) { if (e.target === mask) mask.classList.remove('open'); });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') mask.classList.remove('open'); });
+  })();
+
+  // replace demo: reopens flow modal
+  (function () {
+    document.querySelectorAll('[data-replace]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        document.getElementById('open-flow').click();
+      });
+    });
+  })();
+</script>
+</body>
+</html>

@@ -1,0 +1,632 @@
+<!doctype html>
+<!--
+  HSR Partner Harness V0.4.0 角色卡 · 快速创建
+  共享设计基底复制自 character-library.html（范式页）：
+  - 双主题：暗色默认，data-theme="light" 切换浅色，localStorage 记忆
+  - 琥珀橙唯一 accent（oklch），严禁蓝紫；图标一律线性 SVG，严禁 emoji
+  - 8px 基线 / 8px 圆角 / 1px 边框
+-->
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>创建角色 · HSR Partner Harness 原型</title>
+<style>
+  /* ─── tokens ────────────────────────────────────────────────────── */
+  :root {
+    --bg:      oklch(0.14 0.008 60);
+    --surface: oklch(0.18 0.008 60);
+    --fg:      oklch(0.95 0.005 70);
+    --muted:   oklch(0.62 0.012 60);
+    --border:  oklch(0.25 0.008 60);
+    --accent:  oklch(0.72 0.15 65);
+
+    --ok:      oklch(0.7 0.15 150);
+    --warn:    oklch(0.78 0.14 85);
+    --danger:  oklch(0.6 0.2 25);
+
+    --accent-soft: color-mix(in oklch, var(--accent) 14%, transparent);
+    --fg-soft:     color-mix(in oklch, var(--fg) 6%, transparent);
+    --surface-2:   color-mix(in oklch, var(--surface) 60%, var(--bg));
+
+    --font-display: 'Noto Serif SC', 'Source Han Serif SC', Georgia, serif;
+    --font-body:    'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    --font-mono:    'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+    --fs-h1: 28px; --fs-h2: 22px; --fs-h3: 16px; --fs-body: 14px; --fs-meta: 12px;
+
+    --gap-xs: 8px; --gap-sm: 12px; --gap-md: 16px; --gap-lg: 24px; --gap-xl: 32px;
+    --radius: 8px; --radius-lg: 12px;
+  }
+  [data-theme="light"] {
+    --bg:      oklch(0.97 0.005 75);
+    --surface: oklch(0.99 0.004 75);
+    --fg:      oklch(0.22 0.01 60);
+    --muted:   oklch(0.5 0.012 60);
+    --border:  oklch(0.88 0.006 70);
+    --accent:  oklch(0.62 0.16 60);
+    --ok:      oklch(0.55 0.14 150);
+    --warn:    oklch(0.6 0.14 80);
+    --danger:  oklch(0.5 0.18 25);
+    --surface-2: color-mix(in oklch, var(--surface) 55%, var(--bg));
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: var(--font-body); font-size: var(--fs-body); line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  img, svg { display: block; }
+  a { color: inherit; text-decoration: none; }
+  button { font: inherit; cursor: pointer; color: inherit; }
+  h1, h2, h3, h4 { margin: 0; text-wrap: balance; }
+  p { margin: 0; text-wrap: pretty; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+  /* ─── app shell ─────────────────────────────────────────────────── */
+  .shell { display: grid; grid-template-columns: 224px 1fr; min-height: 100vh; }
+  .rail {
+    border-right: 1px solid var(--border);
+    padding: var(--gap-md) var(--gap-sm);
+    display: flex; flex-direction: column; gap: var(--gap-lg);
+    position: sticky; top: 0; height: 100vh;
+  }
+  .rail .brand {
+    font-family: var(--font-display); font-size: 17px; font-weight: 600;
+    padding: var(--gap-xs) var(--gap-sm); letter-spacing: 0.01em;
+  }
+  .rail .brand .meta { display: block; margin-top: 2px; }
+  .rail-group { display: flex; flex-direction: column; gap: 2px; }
+  .rail-label {
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted); padding: 0 var(--gap-sm) 6px;
+  }
+  .rail a.nav {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px var(--gap-sm); border-radius: var(--radius);
+    color: var(--muted); font-size: 13.5px; min-height: 40px;
+  }
+  .rail a.nav svg { width: 16px; height: 16px; flex: none; }
+  .rail a.nav:hover { background: var(--fg-soft); color: var(--fg); }
+  .rail a.nav.active { background: var(--accent-soft); color: var(--fg); }
+  .rail a.nav.active svg { color: var(--accent); }
+  .rail-foot { margin-top: auto; display: flex; flex-direction: column; gap: var(--gap-sm); }
+
+  .main { min-width: 0; display: flex; flex-direction: column; }
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md);
+    padding: 14px var(--gap-xl); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10;
+    background: color-mix(in oklch, var(--bg) 88%, transparent);
+    backdrop-filter: blur(10px);
+  }
+  .topbar .crumbs { font-size: 13px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  .topbar .crumbs b { color: var(--fg); font-weight: 600; }
+  .content { padding: var(--gap-xl); max-width: 1280px; width: 100%; margin-inline: auto; }
+
+  /* ─── type & primitives ─────────────────────────────────────────── */
+  .h1 { font-family: var(--font-display); font-size: var(--fs-h1); font-weight: 600; letter-spacing: 0.01em; }
+  .h2 { font-family: var(--font-display); font-size: var(--fs-h2); font-weight: 600; }
+  .h3 { font-size: var(--fs-h3); font-weight: 600; }
+  .meta { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--muted); }
+  .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); }
+  .row { display: flex; align-items: center; gap: var(--gap-sm); }
+  .row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md); }
+  .stack { display: flex; flex-direction: column; gap: var(--gap-md); }
+
+  /* ─── buttons ───────────────────────────────────────────────────── */
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    min-height: 40px; padding: 8px 16px;
+    border-radius: var(--radius); border: 1px solid transparent;
+    font-size: 13.5px; font-weight: 500; white-space: nowrap;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  .btn svg { width: 16px; height: 16px; }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--accent); color: oklch(0.14 0.008 60); border-color: var(--accent); font-weight: 600; }
+  [data-theme="light"] .btn-primary { color: oklch(0.99 0.004 75); }
+  .btn-primary:hover { background: color-mix(in oklch, var(--accent) 88%, black); color: oklch(0.98 0.005 70); }
+  .btn-secondary { background: transparent; color: var(--fg); border-color: var(--border); }
+  .btn-secondary:hover { border-color: var(--muted); background: var(--fg-soft); }
+  .btn-ghost { background: transparent; color: var(--muted); padding-inline: 8px; }
+  .btn-ghost:hover { color: var(--fg); background: var(--fg-soft); }
+  .btn-danger { background: transparent; color: var(--danger); border-color: transparent; padding-inline: 8px; }
+  .btn-danger:hover { background: color-mix(in oklch, var(--danger) 12%, transparent); }
+  .btn-primary-danger { background: var(--danger); color: oklch(0.98 0.005 70); border-color: var(--danger); font-weight: 600; }
+  .btn-primary-danger:hover { background: color-mix(in oklch, var(--danger) 85%, black); }
+  .icon-btn {
+    width: 36px; height: 36px; display: grid; place-items: center;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: transparent; color: var(--muted);
+  }
+  .icon-btn:hover { color: var(--fg); background: var(--fg-soft); }
+  .icon-btn svg { width: 16px; height: 16px; }
+
+  /* ─── badges / pills ────────────────────────────────────────────── */
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 9px; border-radius: 999px;
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+    background: var(--fg-soft); color: var(--muted); border: 1px solid transparent;
+  }
+  .pill svg { width: 12px; height: 12px; }
+  .pill-accent { background: var(--accent-soft); color: var(--accent); }
+  .pill-ok { background: color-mix(in oklch, var(--ok) 14%, transparent); color: var(--ok); }
+  .pill-warn { background: color-mix(in oklch, var(--warn) 14%, transparent); color: var(--warn); }
+  .pill-danger { background: color-mix(in oklch, var(--danger) 14%, transparent); color: var(--danger); }
+  .dot { width: 7px; height: 7px; border-radius: 999px; flex: none; }
+  .dot-ok { background: var(--ok); }
+  .dot-warn { background: var(--warn); }
+  .dot-danger { background: var(--danger); }
+  .dot-muted { background: var(--muted); }
+  .dot-progress { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+
+  .mock-tag {
+    display: inline-flex; align-items: center;
+    padding: 2px 8px; border: 1px dashed var(--muted); border-radius: 4px;
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em;
+    color: var(--muted); text-transform: uppercase;
+  }
+
+  /* ─── cards ─────────────────────────────────────────────────────── */
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); padding: var(--gap-lg);
+  }
+  .grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--gap-md); }
+
+  /* ─── form ──────────────────────────────────────────────────────── */
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-size: 12.5px; color: var(--muted); }
+  .input, .textarea, .select {
+    width: 100%; padding: 9px 12px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); color: var(--fg); font: inherit; font-size: 13.5px;
+  }
+  .input:focus, .textarea:focus, .select:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .textarea { min-height: 96px; resize: vertical; }
+  .search {
+    display: flex; align-items: center; gap: 8px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); padding: 0 12px; min-height: 40px; width: 280px;
+  }
+  .search svg { width: 15px; height: 15px; color: var(--muted); flex: none; }
+  .search input { border: 0; background: none; color: var(--fg); font: inherit; font-size: 13.5px; width: 100%; }
+  .search input:focus { outline: none; }
+  .search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+  /* ─── table ─────────────────────────────────────────────────────── */
+  .ds-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .ds-table th, .ds-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+  .ds-table th { color: var(--muted); font-weight: 500; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; }
+  .ds-table tbody tr:hover { background: var(--fg-soft); }
+
+  /* ─── avatar placeholder ────────────────────────────────────────── */
+  .avatar {
+    width: 44px; height: 44px; border-radius: var(--radius); flex: none;
+    display: grid; place-items: center;
+    background: var(--surface-2); border: 1px solid var(--border);
+    font-family: var(--font-display); font-size: 18px; color: var(--muted);
+  }
+  .avatar-lg { width: 64px; height: 64px; font-size: 26px; }
+  .avatar-geo {
+    background:
+      linear-gradient(135deg, var(--accent-soft), transparent 60%),
+      var(--surface-2);
+  }
+
+  /* ─── modal ─────────────────────────────────────────────────────── */
+  .modal-mask {
+    position: fixed; inset: 0; z-index: 50; display: none;
+    background: color-mix(in oklch, var(--bg) 70%, transparent);
+    backdrop-filter: blur(4px);
+    align-items: center; justify-content: center;
+  }
+  .modal-mask.open { display: flex; }
+  .modal { width: 420px; max-width: calc(100vw - 48px); }
+
+  /* ─── theme toggle ──────────────────────────────────────────────── */
+  .theme-toggle {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px var(--gap-sm); border-radius: var(--radius);
+    border: 1px solid var(--border); background: transparent;
+    color: var(--muted); font-size: 12.5px; min-height: 40px; width: 100%;
+  }
+  .theme-toggle:hover { color: var(--fg); background: var(--fg-soft); }
+  .theme-toggle svg { width: 15px; height: 15px; }
+
+  @media (max-width: 920px) {
+    .shell { grid-template-columns: 1fr; }
+    .rail { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; border-right: 0; border-bottom: 1px solid var(--border); }
+    .rail-foot { margin-top: 0; }
+    .content { padding: var(--gap-md); }
+    .search { width: 100%; }
+  }
+
+  /* ─── page: create ──────────────────────────────────────────────── */
+  .mode-switch {
+    display: inline-flex; gap: 2px; padding: 3px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface);
+  }
+  .mode-switch a {
+    display: inline-flex; align-items: center; min-height: 34px;
+    padding: 6px 14px; border-radius: 6px; font-size: 13px; color: var(--muted);
+  }
+  .mode-switch a:hover { color: var(--fg); background: var(--fg-soft); }
+  .mode-switch a.active { background: var(--accent-soft); color: var(--fg); font-weight: 600; }
+
+  .create-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: var(--gap-lg); align-items: start; }
+  .form-section { display: flex; flex-direction: column; gap: var(--gap-md); }
+  .form-section .section-head { display: flex; align-items: center; justify-content: space-between; gap: var(--gap-sm); }
+
+  .tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tag-removable { padding-right: 4px; }
+  .tag-removable .tag-x {
+    display: inline-grid; place-items: center;
+    width: 18px; height: 18px; border: 0; border-radius: 999px;
+    background: transparent; color: inherit; padding: 0;
+  }
+  .tag-removable .tag-x:hover { background: var(--fg-soft); color: var(--fg); }
+  .tag-x svg { width: 10px; height: 10px; }
+  .tag-add { width: 160px; min-height: 32px; padding: 4px 10px; font-size: 12.5px; }
+
+  .autosize { resize: none; overflow: hidden; min-height: 72px; }
+  .char-count { text-align: right; }
+
+  .field-error {
+    display: none; align-items: center; gap: 6px;
+    color: var(--danger); font-size: 12.5px;
+  }
+  .field-error svg { width: 14px; height: 14px; flex: none; }
+  .field-error.show { display: flex; }
+  .input[aria-invalid="true"] { border-color: var(--danger); }
+
+  .preview-card { position: sticky; top: 88px; display: flex; flex-direction: column; gap: var(--gap-md); }
+  .preview-card .tags { display: flex; flex-wrap: wrap; gap: 6px; }
+  .preview-placeholder { color: var(--muted); font-style: normal; }
+  .unsaved-badge { display: inline-flex; align-items: center; gap: 8px; }
+
+  .action-bar {
+    display: flex; justify-content: flex-end; gap: var(--gap-sm);
+    border-top: 1px solid var(--border); padding-top: var(--gap-lg);
+  }
+
+  @media (max-width: 920px) {
+    .create-grid { grid-template-columns: 1fr; }
+    .preview-card { position: static; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <!-- ─── left rail ─── -->
+  <aside class="rail" data-od-id="rail">
+    <div class="brand">
+      Partner Harness
+      <span class="meta">v0.4.0 · 角色卡原型</span>
+    </div>
+    <nav class="rail-group" data-od-id="rail-nav-main">
+      <span class="rail-label">角色</span>
+      <a class="nav" href="character-library.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="3" y="15" width="7" height="7" rx="1.5"/><rect x="14" y="15" width="7" height="7" rx="1.5"/></svg>
+        角色库
+      </a>
+      <a class="nav active" href="character-create.html" aria-current="page">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 5v14M5 12h14"/></svg>
+        创建角色
+      </a>
+      <a class="nav" href="character-import.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        导入
+      </a>
+      <a class="nav" href="character-export.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 15V3m0 12 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        导出
+      </a>
+    </nav>
+    <nav class="rail-group" data-od-id="rail-nav-tools">
+      <span class="rail-label">扩展</span>
+      <a class="nav" href="worldbook-editor.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>
+        世界书
+      </a>
+      <a class="nav" href="voice-create.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+        角色语音
+      </a>
+      <a class="nav" href="onboarding.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.7.35-1.1.8-1.1 1.8"/><path d="M12 17h.01"/></svg>
+        新用户引导
+      </a>
+    </nav>
+    <div class="rail-foot">
+      <button class="theme-toggle" data-theme-toggle data-od-id="theme-toggle">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <span data-theme-label>切换浅色主题</span>
+      </button>
+      <a class="meta" href="index.html" style="padding: 0 var(--gap-sm);">← 原型总览</a>
+    </div>
+  </aside>
+
+  <!-- ─── main ─── -->
+  <div class="main">
+    <header class="topbar" data-od-id="topbar">
+      <div class="crumbs"><a href="character-library.html">角色库</a><span>/</span><b>创建角色</b><span class="mock-tag">样例数据</span></div>
+      <div class="row">
+        <span class="meta">草稿自动保存 · 每 <span class="num">30</span> 秒</span>
+      </div>
+    </header>
+
+    <main class="content stack" id="content" style="gap: var(--gap-lg);">
+      <div class="row-between" data-od-id="create-toolbar" style="flex-wrap: wrap;">
+        <div class="row" style="flex-wrap: wrap;">
+          <h1 class="h1">快速创建</h1>
+          <span class="unsaved-badge" data-od-id="unsaved-badge">
+            <span class="dot dot-warn" aria-hidden="true"></span>
+            <span class="meta" style="color: var(--warn);">未保存更改</span>
+          </span>
+        </div>
+        <div class="mode-switch" data-od-id="mode-switch" role="group" aria-label="编辑模式切换">
+          <a href="character-create.html" class="active" aria-current="page">快速创建</a>
+          <a href="character-editor.html" title="切换到高级编辑，已填写内容保留">高级编辑</a>
+        </div>
+      </div>
+
+      <div class="create-grid">
+        <!-- ─── form column ─── -->
+        <form class="stack" data-od-id="create-form" id="create-form" novalidate style="gap: var(--gap-lg);">
+
+          <section class="card form-section" data-od-id="section-basic">
+            <div class="section-head">
+              <div class="h3">基础信息</div>
+              <span class="meta">必填 1 项</span>
+            </div>
+            <div class="field">
+              <label for="f-name">名称 <span style="color: var(--danger);">*</span></label>
+              <input class="input" id="f-name" type="text" placeholder="例如：卡芙卡" autocomplete="off" aria-describedby="f-name-error" />
+              <p class="field-error" id="f-name-error" role="alert">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3 2.5 20h19L12 3z"/><path d="M12 10v4m0 3h.01"/></svg>
+                名称为必填项，填写后才能完成创建
+              </p>
+            </div>
+            <div class="field">
+              <label>头像</label>
+              <div class="row">
+                <div class="avatar avatar-lg avatar-geo" id="f-avatar-preview" aria-hidden="true">?</div>
+                <div class="stack" style="gap: 4px;">
+                  <a class="btn btn-secondary" href="avatar-flow.html" data-od-id="btn-set-avatar">设置头像</a>
+                  <span class="meta">未设置时使用名称首字符占位</span>
+                </div>
+              </div>
+            </div>
+            <div class="field">
+              <label for="f-tag-input">标签</label>
+              <div class="tag-list" id="tag-list" data-od-id="tag-list">
+                <span class="pill tag-removable">冷静<button type="button" class="tag-x" aria-label="删除标签「冷静」"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg></button></span>
+                <span class="pill tag-removable">星核猎手<button type="button" class="tag-x" aria-label="删除标签「星核猎手」"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg></button></span>
+                <input class="input tag-add" id="f-tag-input" type="text" placeholder="输入后回车添加" aria-label="添加标签" />
+              </div>
+            </div>
+            <div class="field">
+              <label for="f-summary">简介</label>
+              <input class="input" id="f-summary" type="text" placeholder="一句话介绍这个角色" autocomplete="off" />
+            </div>
+          </section>
+
+          <section class="card form-section" data-od-id="section-persona">
+            <div class="section-head">
+              <div class="h3">人格设定</div>
+              <span class="meta">textarea 自动增高</span>
+            </div>
+            <div class="field">
+              <label for="f-personality">性格</label>
+              <textarea class="textarea autosize" id="f-personality" maxlength="2000" data-max="2000" placeholder="描述角色的性格、说话方式、价值观…"></textarea>
+              <span class="meta char-count num" data-count-for="f-personality">0 / 2000 字</span>
+            </div>
+            <div class="field">
+              <label for="f-scenario">对话场景</label>
+              <textarea class="textarea autosize" id="f-scenario" maxlength="2000" data-max="2000" placeholder="故事发生的背景、时间、地点…"></textarea>
+              <span class="meta char-count num" data-count-for="f-scenario">0 / 2000 字</span>
+            </div>
+            <div class="field">
+              <label for="f-first-msg">第一条消息</label>
+              <textarea class="textarea autosize" id="f-first-msg" maxlength="2000" data-max="2000" placeholder="角色开场说的第一句话…"></textarea>
+              <span class="meta char-count num" data-count-for="f-first-msg">0 / 2000 字</span>
+            </div>
+            <div class="field">
+              <label for="f-example">示例对话</label>
+              <textarea class="textarea autosize" id="f-example" maxlength="2000" data-max="2000" placeholder="一段示例对话，帮助模型把握语气…"></textarea>
+              <span class="meta char-count num" data-count-for="f-example">0 / 2000 字</span>
+            </div>
+          </section>
+
+          <div class="action-bar" data-od-id="action-bar">
+            <button type="button" class="btn btn-secondary" id="btn-draft">保存草稿</button>
+            <button type="submit" class="btn btn-primary" id="btn-submit" data-od-id="btn-finish">完成创建</button>
+          </div>
+        </form>
+
+        <!-- ─── preview column ─── -->
+        <aside class="card preview-card" data-od-id="live-preview" aria-label="角色卡实时预览">
+          <div class="row-between">
+            <span class="meta">实时预览</span>
+            <span class="mock-tag">样例数据</span>
+          </div>
+          <div class="row">
+            <div class="avatar avatar-lg avatar-geo" id="pv-avatar">?</div>
+            <div style="min-width: 0;">
+              <div class="h3" id="pv-name"><span class="preview-placeholder">未填写名称</span></div>
+              <span class="meta">v1 · 创建 · 草稿</span>
+            </div>
+          </div>
+          <div class="tags" id="pv-tags">
+            <span class="preview-placeholder meta">未添加标签</span>
+          </div>
+          <p class="muted" id="pv-summary" style="font-size: 13px; border-top: 1px solid var(--border); padding-top: var(--gap-sm);">
+            <span class="preview-placeholder">未填写简介</span>
+          </p>
+          <div class="row" style="gap: 6px;">
+            <span class="dot dot-muted"></span>
+            <span class="meta">音色未配置 · 可在创建后前往「角色语音」</span>
+          </div>
+        </aside>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+  // theme: dark default, persisted
+  (function () {
+    var saved = localStorage.getItem('hp-theme');
+    if (saved) document.documentElement.setAttribute('data-theme', saved);
+    function sync() {
+      var light = document.documentElement.getAttribute('data-theme') === 'light';
+      document.querySelectorAll('[data-theme-label]').forEach(function (el) {
+        el.textContent = light ? '切换暗色主题' : '切换浅色主题';
+      });
+    }
+    document.querySelectorAll('[data-theme-toggle]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('hp-theme', next);
+        sync();
+      });
+    });
+    sync();
+  })();
+  // page: create — autosize textareas + char counters
+  (function () {
+    document.querySelectorAll('.autosize').forEach(function (ta) {
+      function fit() {
+        ta.style.height = 'auto';
+        ta.style.height = ta.scrollHeight + 'px';
+      }
+      ta.addEventListener('input', fit);
+      fit();
+    });
+    document.querySelectorAll('[data-count-for]').forEach(function (counter) {
+      var ta = document.getElementById(counter.getAttribute('data-count-for'));
+      var max = ta.getAttribute('data-max');
+      function update() {
+        counter.textContent = ta.value.length + ' / ' + max + ' 字';
+      }
+      ta.addEventListener('input', update);
+      update();
+    });
+  })();
+  // page: create — live preview
+  (function () {
+    var nameInput = document.getElementById('f-name');
+    var summaryInput = document.getElementById('f-summary');
+    var pvName = document.getElementById('pv-name');
+    var pvSummary = document.getElementById('pv-summary');
+    var pvAvatar = document.getElementById('pv-avatar');
+    var formAvatar = document.getElementById('f-avatar-preview');
+    var pvTags = document.getElementById('pv-tags');
+    var tagList = document.getElementById('tag-list');
+    var tagInput = document.getElementById('f-tag-input');
+
+    function renderName() {
+      var v = nameInput.value.trim();
+      pvName.innerHTML = '';
+      var span = document.createElement('span');
+      if (v) { span.textContent = v; }
+      else { span.className = 'preview-placeholder'; span.textContent = '未填写名称'; }
+      pvName.appendChild(span);
+      var ch = v ? v.charAt(0) : '?';
+      pvAvatar.textContent = ch;
+      formAvatar.textContent = ch;
+    }
+    function renderSummary() {
+      var v = summaryInput.value.trim();
+      pvSummary.innerHTML = '';
+      var span = document.createElement('span');
+      if (v) { span.textContent = v; }
+      else { span.className = 'preview-placeholder'; span.textContent = '未填写简介'; }
+      pvSummary.appendChild(span);
+    }
+    function renderTags() {
+      pvTags.innerHTML = '';
+      var tags = tagList.querySelectorAll('.tag-removable');
+      if (!tags.length) {
+        var empty = document.createElement('span');
+        empty.className = 'preview-placeholder meta';
+        empty.textContent = '未添加标签';
+        pvTags.appendChild(empty);
+        return;
+      }
+      tags.forEach(function (t) {
+        var pill = document.createElement('span');
+        pill.className = 'pill';
+        pill.textContent = t.firstChild.textContent;
+        pvTags.appendChild(pill);
+      });
+    }
+
+    nameInput.addEventListener('input', renderName);
+    summaryInput.addEventListener('input', renderSummary);
+
+    tagList.addEventListener('click', function (e) {
+      var btn = e.target.closest('.tag-x');
+      if (!btn) return;
+      btn.parentElement.remove();
+      renderTags();
+    });
+    tagInput.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      var v = tagInput.value.trim();
+      if (!v) return;
+      var pill = document.createElement('span');
+      pill.className = 'pill tag-removable';
+      pill.textContent = v;
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'tag-x';
+      btn.setAttribute('aria-label', '删除标签「' + v + '」');
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>';
+      pill.appendChild(btn);
+      tagList.insertBefore(pill, tagInput);
+      tagInput.value = '';
+      renderTags();
+    });
+
+    renderName(); renderSummary(); renderTags();
+  })();
+  // page: create — required validation + draft demo
+  (function () {
+    var form = document.getElementById('create-form');
+    var nameInput = document.getElementById('f-name');
+    var error = document.getElementById('f-name-error');
+
+    function clearError() {
+      error.classList.remove('show');
+      nameInput.removeAttribute('aria-invalid');
+    }
+    nameInput.addEventListener('input', clearError);
+
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      if (!nameInput.value.trim()) {
+        error.classList.add('show');
+        nameInput.setAttribute('aria-invalid', 'true');
+        nameInput.focus();
+        return;
+      }
+      clearError();
+    });
+    document.getElementById('btn-draft').addEventListener('click', clearError);
+  })();
+</script>
+</body>
+</html>

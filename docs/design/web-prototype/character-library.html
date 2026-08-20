@@ -1,0 +1,713 @@
+<!doctype html>
+<!--
+  HSR Partner Harness V0.4.0 角色卡 · 角色库
+  共享设计基底（本文件为范式页，其余页面复制 <style> 与外壳脚本）：
+  - 双主题：暗色默认，data-theme="light" 切换浅色，localStorage 记忆
+  - 琥珀橙唯一 accent（oklch），严禁蓝紫；图标一律线性 SVG，严禁 emoji
+  - 8px 基线 / 8px 圆角 / 1px 边框
+-->
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>角色库 · HSR Partner Harness 原型</title>
+<style>
+  /* ─── tokens ────────────────────────────────────────────────────── */
+  :root {
+    --bg:      oklch(0.14 0.008 60);
+    --surface: oklch(0.18 0.008 60);
+    --fg:      oklch(0.95 0.005 70);
+    --muted:   oklch(0.62 0.012 60);
+    --border:  oklch(0.25 0.008 60);
+    --accent:  oklch(0.72 0.15 65);
+
+    --ok:      oklch(0.7 0.15 150);
+    --warn:    oklch(0.78 0.14 85);
+    --danger:  oklch(0.6 0.2 25);
+
+    --accent-soft: color-mix(in oklch, var(--accent) 14%, transparent);
+    --fg-soft:     color-mix(in oklch, var(--fg) 6%, transparent);
+    --surface-2:   color-mix(in oklch, var(--surface) 60%, var(--bg));
+
+    --font-display: 'Noto Serif SC', 'Source Han Serif SC', Georgia, serif;
+    --font-body:    'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    --font-mono:    'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+    --fs-h1: 28px; --fs-h2: 22px; --fs-h3: 16px; --fs-body: 14px; --fs-meta: 12px;
+
+    --gap-xs: 8px; --gap-sm: 12px; --gap-md: 16px; --gap-lg: 24px; --gap-xl: 32px;
+    --radius: 8px; --radius-lg: 12px;
+  }
+  [data-theme="light"] {
+    --bg:      oklch(0.97 0.005 75);
+    --surface: oklch(0.99 0.004 75);
+    --fg:      oklch(0.22 0.01 60);
+    --muted:   oklch(0.5 0.012 60);
+    --border:  oklch(0.88 0.006 70);
+    --accent:  oklch(0.62 0.16 60);
+    --ok:      oklch(0.55 0.14 150);
+    --warn:    oklch(0.6 0.14 80);
+    --danger:  oklch(0.5 0.18 25);
+    --surface-2: color-mix(in oklch, var(--surface) 55%, var(--bg));
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: var(--font-body); font-size: var(--fs-body); line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  img, svg { display: block; }
+  a { color: inherit; text-decoration: none; }
+  button { font: inherit; cursor: pointer; color: inherit; }
+  h1, h2, h3, h4 { margin: 0; text-wrap: balance; }
+  p { margin: 0; text-wrap: pretty; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+  /* ─── app shell ─────────────────────────────────────────────────── */
+  .shell { display: grid; grid-template-columns: 224px 1fr; min-height: 100vh; }
+  .rail {
+    border-right: 1px solid var(--border);
+    padding: var(--gap-md) var(--gap-sm);
+    display: flex; flex-direction: column; gap: var(--gap-lg);
+    position: sticky; top: 0; height: 100vh;
+  }
+  .rail .brand {
+    font-family: var(--font-display); font-size: 17px; font-weight: 600;
+    padding: var(--gap-xs) var(--gap-sm); letter-spacing: 0.01em;
+  }
+  .rail .brand .meta { display: block; margin-top: 2px; }
+  .rail-group { display: flex; flex-direction: column; gap: 2px; }
+  .rail-label {
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted); padding: 0 var(--gap-sm) 6px;
+  }
+  .rail a.nav {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px var(--gap-sm); border-radius: var(--radius);
+    color: var(--muted); font-size: 13.5px; min-height: 40px;
+  }
+  .rail a.nav svg { width: 16px; height: 16px; flex: none; }
+  .rail a.nav:hover { background: var(--fg-soft); color: var(--fg); }
+  .rail a.nav.active { background: var(--accent-soft); color: var(--fg); }
+  .rail a.nav.active svg { color: var(--accent); }
+  .rail-foot { margin-top: auto; display: flex; flex-direction: column; gap: var(--gap-sm); }
+
+  .main { min-width: 0; display: flex; flex-direction: column; }
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md);
+    padding: 14px var(--gap-xl); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10;
+    background: color-mix(in oklch, var(--bg) 88%, transparent);
+    backdrop-filter: blur(10px);
+  }
+  .topbar .crumbs { font-size: 13px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  .topbar .crumbs b { color: var(--fg); font-weight: 600; }
+  .content { padding: var(--gap-xl); max-width: 1280px; width: 100%; margin-inline: auto; }
+
+  /* ─── type & primitives ─────────────────────────────────────────── */
+  .h1 { font-family: var(--font-display); font-size: var(--fs-h1); font-weight: 600; letter-spacing: 0.01em; }
+  .h2 { font-family: var(--font-display); font-size: var(--fs-h2); font-weight: 600; }
+  .h3 { font-size: var(--fs-h3); font-weight: 600; }
+  .meta { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--muted); }
+  .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); }
+  .row { display: flex; align-items: center; gap: var(--gap-sm); }
+  .row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md); }
+  .stack { display: flex; flex-direction: column; gap: var(--gap-md); }
+
+  /* ─── buttons ───────────────────────────────────────────────────── */
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    min-height: 40px; padding: 8px 16px;
+    border-radius: var(--radius); border: 1px solid transparent;
+    font-size: 13.5px; font-weight: 500; white-space: nowrap;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  .btn svg { width: 16px; height: 16px; }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--accent); color: oklch(0.14 0.008 60); border-color: var(--accent); font-weight: 600; }
+  [data-theme="light"] .btn-primary { color: oklch(0.99 0.004 75); }
+  .btn-primary:hover { background: color-mix(in oklch, var(--accent) 88%, black); color: oklch(0.98 0.005 70); }
+  .btn-secondary { background: transparent; color: var(--fg); border-color: var(--border); }
+  .btn-secondary:hover { border-color: var(--muted); background: var(--fg-soft); }
+  .btn-ghost { background: transparent; color: var(--muted); padding-inline: 8px; }
+  .btn-ghost:hover { color: var(--fg); background: var(--fg-soft); }
+  .btn-danger { background: transparent; color: var(--danger); border-color: transparent; padding-inline: 8px; }
+  .btn-danger:hover { background: color-mix(in oklch, var(--danger) 12%, transparent); }
+  .btn-primary-danger { background: var(--danger); color: oklch(0.98 0.005 70); border-color: var(--danger); font-weight: 600; }
+  .btn-primary-danger:hover { background: color-mix(in oklch, var(--danger) 85%, black); }
+  .icon-btn {
+    width: 36px; height: 36px; display: grid; place-items: center;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: transparent; color: var(--muted);
+  }
+  .icon-btn:hover { color: var(--fg); background: var(--fg-soft); }
+  .icon-btn svg { width: 16px; height: 16px; }
+
+  /* ─── badges / pills ────────────────────────────────────────────── */
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 9px; border-radius: 999px;
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+    background: var(--fg-soft); color: var(--muted); border: 1px solid transparent;
+  }
+  .pill svg { width: 12px; height: 12px; }
+  .pill-accent { background: var(--accent-soft); color: var(--accent); }
+  .pill-ok { background: color-mix(in oklch, var(--ok) 14%, transparent); color: var(--ok); }
+  .pill-warn { background: color-mix(in oklch, var(--warn) 14%, transparent); color: var(--warn); }
+  .pill-danger { background: color-mix(in oklch, var(--danger) 14%, transparent); color: var(--danger); }
+  .dot { width: 7px; height: 7px; border-radius: 999px; flex: none; }
+  .dot-ok { background: var(--ok); }
+  .dot-warn { background: var(--warn); }
+  .dot-danger { background: var(--danger); }
+  .dot-muted { background: var(--muted); }
+  .dot-progress { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+
+  .mock-tag {
+    display: inline-flex; align-items: center;
+    padding: 2px 8px; border: 1px dashed var(--muted); border-radius: 4px;
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em;
+    color: var(--muted); text-transform: uppercase;
+  }
+
+  /* ─── cards ─────────────────────────────────────────────────────── */
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); padding: var(--gap-lg);
+  }
+  .grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--gap-md); }
+
+  /* ─── form ──────────────────────────────────────────────────────── */
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-size: 12.5px; color: var(--muted); }
+  .input, .textarea, .select {
+    width: 100%; padding: 9px 12px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); color: var(--fg); font: inherit; font-size: 13.5px;
+  }
+  .input:focus, .textarea:focus, .select:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .textarea { min-height: 96px; resize: vertical; }
+  .search {
+    display: flex; align-items: center; gap: 8px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); padding: 0 12px; min-height: 40px; width: 280px;
+  }
+  .search svg { width: 15px; height: 15px; color: var(--muted); flex: none; }
+  .search input { border: 0; background: none; color: var(--fg); font: inherit; font-size: 13.5px; width: 100%; }
+  .search input:focus { outline: none; }
+  .search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+  /* ─── table ─────────────────────────────────────────────────────── */
+  .ds-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .ds-table th, .ds-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+  .ds-table th { color: var(--muted); font-weight: 500; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; }
+  .ds-table tbody tr:hover { background: var(--fg-soft); }
+
+  /* ─── avatar placeholder ────────────────────────────────────────── */
+  .avatar {
+    width: 44px; height: 44px; border-radius: var(--radius); flex: none;
+    display: grid; place-items: center;
+    background: var(--surface-2); border: 1px solid var(--border);
+    font-family: var(--font-display); font-size: 18px; color: var(--muted);
+  }
+  .avatar-lg { width: 64px; height: 64px; font-size: 26px; }
+  .avatar-geo {
+    background:
+      linear-gradient(135deg, var(--accent-soft), transparent 60%),
+      var(--surface-2);
+  }
+
+  /* ─── modal ─────────────────────────────────────────────────────── */
+  .modal-mask {
+    position: fixed; inset: 0; z-index: 50; display: none;
+    background: color-mix(in oklch, var(--bg) 70%, transparent);
+    backdrop-filter: blur(4px);
+    align-items: center; justify-content: center;
+  }
+  .modal-mask.open { display: flex; }
+  .modal { width: 420px; max-width: calc(100vw - 48px); }
+
+  /* ─── theme toggle ──────────────────────────────────────────────── */
+  .theme-toggle {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px var(--gap-sm); border-radius: var(--radius);
+    border: 1px solid var(--border); background: transparent;
+    color: var(--muted); font-size: 12.5px; min-height: 40px; width: 100%;
+  }
+  .theme-toggle:hover { color: var(--fg); background: var(--fg-soft); }
+  .theme-toggle svg { width: 15px; height: 15px; }
+
+  @media (max-width: 920px) {
+    .shell { grid-template-columns: 1fr; }
+    .rail { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; border-right: 0; border-bottom: 1px solid var(--border); }
+    .rail-foot { margin-top: 0; }
+    .content { padding: var(--gap-md); }
+    .search { width: 100%; }
+  }
+
+  /* ─── page: library ─────────────────────────────────────────────── */
+  .char-card { position: relative; display: flex; flex-direction: column; gap: var(--gap-md); transition: border-color 0.15s ease; }
+  .char-card:hover { border-color: var(--muted); }
+  .char-card .tags { display: flex; flex-wrap: wrap; gap: 6px; }
+  .char-actions {
+    position: absolute; top: 12px; right: 12px;
+    display: none; gap: 4px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 4px;
+  }
+  .char-card:hover .char-actions, .char-card:focus-within .char-actions { display: flex; }
+  .char-actions .icon-btn { width: 30px; height: 30px; border: 0; }
+  .char-actions .icon-btn.danger { color: var(--danger); }
+  .char-actions .icon-btn.danger:hover { background: color-mix(in oklch, var(--danger) 12%, transparent); }
+  .char-foot { display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--border); padding-top: var(--gap-sm); }
+  .char-card.archived { opacity: 0.55; }
+  .char-card.archived:hover { opacity: 0.8; }
+  .archived-badge {
+    position: absolute; top: 12px; right: 12px;
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 9px; border-radius: 999px;
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+    background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+  }
+  .archived-badge svg { width: 12px; height: 12px; }
+  .char-card.archived .char-actions { top: 44px; }
+  .pager {
+    display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md);
+    padding: var(--gap-sm) var(--gap-lg); flex-wrap: wrap;
+  }
+  .pager .pager-pages { display: flex; align-items: center; gap: 4px; }
+  .empty-state { text-align: center; padding: 80px 24px; display: flex; flex-direction: column; align-items: center; gap: var(--gap-md); }
+  .empty-mark {
+    width: 96px; height: 96px; border-radius: var(--radius-lg);
+    border: 1px dashed var(--border); display: grid; place-items: center; color: var(--muted);
+  }
+  .empty-mark svg { width: 40px; height: 40px; }
+  .state-bar { display: flex; align-items: center; gap: var(--gap-xs); flex-wrap: wrap; }
+  .state-bar .btn { min-height: 40px; }
+  .state-bar .btn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  .state-panel { display: none; }
+  .state-panel.open { display: block; }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+  .skeleton {
+    background: linear-gradient(90deg, var(--fg-soft) 25%, var(--surface-2) 50%, var(--fg-soft) 75%);
+    background-size: 200% 100%; animation: shimmer 1.6s linear infinite;
+    border-radius: 4px; color: transparent;
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <!-- ─── left rail ─── -->
+  <aside class="rail" data-od-id="rail">
+    <div class="brand">
+      Partner Harness
+      <span class="meta">v0.4.0 · 角色卡原型</span>
+    </div>
+    <nav class="rail-group" data-od-id="rail-nav-main">
+      <span class="rail-label">角色</span>
+      <a class="nav active" href="character-library.html" aria-current="page">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="3" y="15" width="7" height="7" rx="1.5"/><rect x="14" y="15" width="7" height="7" rx="1.5"/></svg>
+        角色库
+      </a>
+      <a class="nav" href="character-create.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 5v14M5 12h14"/></svg>
+        创建角色
+      </a>
+      <a class="nav" href="character-import.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        导入
+      </a>
+      <a class="nav" href="character-export.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 15V3m0 12 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        导出
+      </a>
+    </nav>
+    <nav class="rail-group" data-od-id="rail-nav-tools">
+      <span class="rail-label">扩展</span>
+      <a class="nav" href="worldbook-editor.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>
+        世界书
+      </a>
+      <a class="nav" href="voice-create.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+        角色语音
+      </a>
+      <a class="nav" href="onboarding.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.7.35-1.1.8-1.1 1.8"/><path d="M12 17h.01"/></svg>
+        新用户引导
+      </a>
+    </nav>
+    <div class="rail-foot">
+      <button class="theme-toggle" data-theme-toggle data-od-id="theme-toggle">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <span data-theme-label>切换浅色主题</span>
+      </button>
+      <a class="meta" href="index.html" style="padding: 0 var(--gap-sm);">← 原型总览</a>
+    </div>
+  </aside>
+
+  <!-- ─── main ─── -->
+  <div class="main">
+    <header class="topbar" data-od-id="topbar">
+      <div class="crumbs"><b>角色库</b><span class="mock-tag">样例数据</span></div>
+      <div class="row">
+        <span class="meta">共 <span class="num">128</span> 个角色 · 本页 <span class="num">7</span> 个 · 2 个草稿 · 6 个已归档</span>
+      </div>
+    </header>
+
+    <main class="content stack" id="content" style="gap: var(--gap-lg);">
+      <div class="row-between" data-od-id="library-toolbar" style="flex-wrap: wrap;">
+        <h1 class="h1">角色库</h1>
+        <div class="row" style="flex-wrap: wrap;">
+          <div class="search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input type="search" placeholder="搜索名称、标签…" aria-label="搜索角色" />
+          </div>
+          <select class="select" style="width: 132px; min-height: 40px;" aria-label="按来源筛选">
+            <option>全部来源</option><option>内置</option><option>创建</option><option>导入</option><option>草稿</option><option>已归档</option>
+          </select>
+          <select class="select" style="width: 132px; min-height: 40px;" aria-label="按音色状态筛选">
+            <option>音色状态</option><option>已绑定</option><option>未配置</option><option>创建中</option><option>失败</option>
+          </select>
+          <a class="btn btn-secondary" href="character-import.html">导入角色</a>
+          <a class="btn btn-primary" href="character-create.html" data-od-id="cta-create">创建角色</a>
+        </div>
+      </div>
+
+      <!-- in-use character strip -->
+      <section class="card" data-od-id="in-use-strip" style="display: flex; align-items: center; gap: var(--gap-md); padding: var(--gap-md) var(--gap-lg);">
+        <div class="avatar avatar-geo">卡</div>
+        <div style="flex: 1; min-width: 0;">
+          <div class="row"><b>卡芙卡</b><span class="pill pill-accent">使用中</span><span class="pill"><span class="dot dot-ok"></span>音色已绑定</span></div>
+          <p class="muted" style="font-size: 13px; margin-top: 2px;">当前会话角色 · 世界书 12 条 · 最近编辑 2026-08-15 21:40</p>
+        </div>
+        <a class="btn btn-ghost" href="character-editor.html">继续编辑</a>
+      </section>
+
+      <!-- card grid -->
+      <section class="grid-cards" data-od-id="char-grid" aria-label="角色列表">
+
+        <article class="card char-card" data-od-id="char-card-kafka">
+          <div class="char-actions">
+            <button class="icon-btn" title="编辑" aria-label="编辑卡芙卡"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16v4z"/></svg></button>
+            <button class="icon-btn" title="复制" aria-label="复制卡芙卡"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+            <button class="icon-btn" title="导出" aria-label="导出卡芙卡"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 15V3m0 12 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></button>
+            <button class="icon-btn" title="归档" aria-label="归档卡芙卡" data-archive="卡芙卡"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg></button>
+            <button class="icon-btn danger" title="删除" aria-label="删除卡芙卡" data-delete="卡芙卡"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m3 0v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V7"/></svg></button>
+          </div>
+          <div class="row">
+            <div class="avatar avatar-lg avatar-geo">卡</div>
+            <div>
+              <div class="h3">卡芙卡</div>
+              <span class="meta">v3 · 创建 · 12 条世界书</span>
+            </div>
+          </div>
+          <div class="tags">
+            <span class="pill">冷静</span><span class="pill">掌控感</span><span class="pill">星核猎手</span>
+          </div>
+          <div class="char-foot">
+            <span class="row" style="gap: 6px;"><span class="dot dot-ok"></span><span class="meta">音色已绑定</span></span>
+            <span class="meta num">08-15 21:40</span>
+          </div>
+        </article>
+
+        <article class="card char-card" data-od-id="char-card-fuxuan">
+          <div class="char-actions">
+            <a class="icon-btn" href="onboarding.html" title="使用该角色开始配对" aria-label="使用符玄开始配对" data-od-id="pair-fuxuan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9" r="2.5"/><path d="M15.5 20a5.5 5.5 0 0 1 6-5.4"/></svg></a>
+            <button class="icon-btn" title="编辑" aria-label="编辑符玄"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16v4z"/></svg></button>
+            <button class="icon-btn" title="复制" aria-label="复制符玄"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+            <button class="icon-btn" title="导出" aria-label="导出符玄"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 15V3m0 12 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></button>
+            <button class="icon-btn" title="归档" aria-label="归档符玄" data-archive="符玄"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg></button>
+            <button class="icon-btn danger" title="删除" aria-label="删除符玄" data-delete="符玄"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m3 0v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V7"/></svg></button>
+          </div>
+          <div class="row">
+            <div class="avatar avatar-lg">符</div>
+            <div>
+              <div class="h3">符玄</div>
+              <span class="meta">v3 · 导入 · 8 条世界书</span>
+            </div>
+          </div>
+          <div class="tags">
+            <span class="pill">太卜司</span><span class="pill">傲娇</span><span class="pill pill-warn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v5m0 3h.01"/></svg>导入缺头像</span>
+          </div>
+          <div class="char-foot">
+            <span class="row" style="gap: 6px;"><span class="dot dot-muted"></span><span class="meta">音色未配置</span></span>
+            <span class="meta num">08-14 09:12</span>
+          </div>
+        </article>
+
+        <article class="card char-card" data-od-id="char-card-jingliu">
+          <div class="char-actions">
+            <a class="icon-btn" href="onboarding.html" title="使用该角色开始配对" aria-label="使用镜流开始配对" data-od-id="pair-jingliu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9" r="2.5"/><path d="M15.5 20a5.5 5.5 0 0 1 6-5.4"/></svg></a>
+            <button class="icon-btn" title="编辑" aria-label="编辑镜流"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16v4z"/></svg></button>
+            <button class="icon-btn" title="复制" aria-label="复制镜流"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+            <button class="icon-btn" title="导出" aria-label="导出镜流"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 15V3m0 12 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></button>
+            <button class="icon-btn" title="归档" aria-label="归档镜流" data-archive="镜流"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg></button>
+            <button class="icon-btn danger" title="删除" aria-label="删除镜流" data-delete="镜流"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m3 0v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V7"/></svg></button>
+          </div>
+          <div class="row">
+            <div class="avatar avatar-lg avatar-geo">镜</div>
+            <div>
+              <div class="h3">镜流 <span class="pill" style="margin-left: 4px;">草稿</span></div>
+              <span class="meta">v3 · 创建 · 未保存更改</span>
+            </div>
+          </div>
+          <div class="tags">
+            <span class="pill">罗浮剑首</span><span class="pill">魔阴身</span>
+          </div>
+          <div class="char-foot">
+            <span class="row" style="gap: 6px;"><span class="dot dot-progress"></span><span class="meta">音色创建中 <span class="skeleton" style="padding: 0 18px;">···</span></span></span>
+            <span class="meta num">08-16 23:05</span>
+          </div>
+        </article>
+
+        <article class="card char-card" data-od-id="char-card-import-fail">
+          <div class="char-actions">
+            <button class="icon-btn" title="查看错误" aria-label="查看导入错误"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M12 8v5m0 3h.01"/></svg></button>
+            <button class="icon-btn danger" title="移除" aria-label="移除失败条目" data-delete="导入失败条目"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m3 0v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V7"/></svg></button>
+          </div>
+          <div class="row">
+            <div class="avatar avatar-lg" style="color: var(--danger); border-style: dashed;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width: 22px; height: 22px;"><path d="M12 3 2.5 20h19L12 3z"/><path d="M12 10v4m0 3h.01"/></svg>
+            </div>
+            <div>
+              <div class="h3">blade_v2.json</div>
+              <span class="meta">导入失败 · 未创建角色</span>
+            </div>
+          </div>
+          <p class="muted" style="font-size: 13px;">解析中断：<span class="meta" style="color: var(--danger);">spec_version 字段缺失</span>。文件未被静默替换，可修复后重试。</p>
+          <div class="char-foot">
+            <span class="row" style="gap: 6px;"><span class="dot dot-danger"></span><span class="meta">失败 · 可重试</span></span>
+            <span class="meta num">08-16 18:44</span>
+          </div>
+        </article>
+
+        <article class="card char-card" data-od-id="char-card-builtin">
+          <div class="char-actions">
+            <button class="icon-btn" title="查看" aria-label="查看内置助手"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></button>
+          </div>
+          <div class="row">
+            <div class="avatar avatar-lg avatar-geo">助</div>
+            <div>
+              <div class="h3">内置助手</div>
+              <span class="meta">内置 · 只读</span>
+            </div>
+          </div>
+          <div class="tags">
+            <span class="pill">编程协作</span><span class="pill">系统默认</span>
+          </div>
+          <div class="char-foot">
+            <span class="row" style="gap: 6px;"><span class="dot dot-muted"></span><span class="meta">不适用音色</span></span>
+            <span class="meta">—</span>
+          </div>
+        </article>
+
+        <!-- voice creation failed -->
+        <article class="card char-card" data-od-id="char-card-xueyi-voice-fail">
+          <div class="char-actions">
+            <a class="icon-btn" href="onboarding.html" title="使用该角色开始配对" aria-label="使用雪衣开始配对" data-od-id="pair-xueyi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9" r="2.5"/><path d="M15.5 20a5.5 5.5 0 0 1 6-5.4"/></svg></a>
+            <button class="icon-btn" title="编辑" aria-label="编辑雪衣"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16v4z"/></svg></button>
+            <button class="icon-btn" title="归档" aria-label="归档雪衣" data-archive="雪衣"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg></button>
+            <button class="icon-btn danger" title="删除" aria-label="删除雪衣" data-delete="雪衣"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m3 0v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V7"/></svg></button>
+          </div>
+          <div class="row">
+            <div class="avatar avatar-lg avatar-geo">雪</div>
+            <div>
+              <div class="h3">雪衣</div>
+              <span class="meta">v3 · 创建 · 5 条世界书</span>
+            </div>
+          </div>
+          <div class="tags">
+            <span class="pill">十王司</span><span class="pill">判官</span>
+          </div>
+          <p class="meta" style="color: var(--danger); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="voice_create failed: provider timeout after 30s (job 8f2c…e41a)">voice_create failed: provider timeout after 30s</p>
+          <div class="char-foot">
+            <span class="row" style="gap: 6px;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width: 14px; height: 14px; color: var(--warn);"><path d="M12 3 2.5 20h19L12 3z"/><path d="M12 10v4m0 3h.01"/></svg>
+              <span class="meta" style="color: var(--warn);">音色创建失败</span>
+              <a class="btn btn-ghost" href="voice-create.html" style="min-height: 28px; padding: 2px 8px; font-size: 12px;" data-od-id="voice-retry-xueyi">重试</a>
+            </span>
+            <span class="meta num">08-17 10:02</span>
+          </div>
+        </article>
+
+        <!-- archived sample (visible when 来源筛选 = 已归档) -->
+        <article class="card char-card archived" data-od-id="char-card-archived-sample">
+          <span class="archived-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>已归档</span>
+          <div class="char-actions">
+            <button class="icon-btn" title="恢复" aria-label="恢复停云" data-restore="停云"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/></svg></button>
+            <button class="icon-btn danger" title="删除" aria-label="删除停云" data-delete="停云"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m3 0v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V7"/></svg></button>
+          </div>
+          <div class="row">
+            <div class="avatar avatar-lg">停</div>
+            <div>
+              <div class="h3">停云</div>
+              <span class="meta">v2 · 导入 · 归档于 2026-07-30</span>
+            </div>
+          </div>
+          <div class="tags">
+            <span class="pill">鸣火商团</span><span class="pill">接渡使</span>
+          </div>
+          <div class="char-foot">
+            <span class="row" style="gap: 6px;"><span class="dot dot-muted"></span><span class="meta">已归档 · 列表默认隐藏</span></span>
+            <button class="btn btn-ghost" style="min-height: 28px; padding: 2px 8px; font-size: 12px;" data-restore="停云" data-od-id="restore-tingyun">恢复</button>
+          </div>
+        </article>
+      </section>
+
+      <!-- pagination / count bar -->
+      <section class="card pager" data-od-id="library-pager" aria-label="分页">
+        <span class="meta">第 <span class="num">1</span> 页 · 共 <span class="num">5</span> 页 / <span class="num">128</span> 个角色</span>
+        <div class="pager-pages">
+          <button class="icon-btn" disabled aria-label="上一页" title="上一页" style="opacity: 0.4; cursor: not-allowed;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m15 6-6 6 6 6"/></svg></button>
+          <span class="meta num" style="padding: 0 8px;">1 / 5</span>
+          <button class="icon-btn" aria-label="下一页" title="下一页"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m9 6 6 6-6 6"/></svg></button>
+        </div>
+      </section>
+
+      <!-- empty state demo: filter no-result vs zero-character library -->
+      <section class="card stack" data-od-id="library-empty-demo">
+        <div class="row-between" style="flex-wrap: wrap;">
+          <div>
+            <div class="h3">空态演示</div>
+            <span class="meta">两种空角色库状态</span>
+          </div>
+          <div class="state-bar" role="group" aria-label="切换空态">
+            <button class="btn btn-secondary" data-empty-state="filter" aria-pressed="true">筛选无结果</button>
+            <button class="btn btn-secondary" data-empty-state="zero" aria-pressed="false">零角色空库</button>
+          </div>
+        </div>
+        <div class="state-panel open" id="empty-panel-filter">
+          <div class="empty-state" data-od-id="library-empty">
+            <div class="empty-mark">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="3" y="15" width="7" height="7" rx="1.5"/><path d="M17.5 15v7M14 18.5h7"/></svg>
+            </div>
+            <div>
+              <div class="h2">还没有符合筛选的角色</div>
+              <p class="muted" style="margin-top: 8px;">清空筛选，或创建第一个角色——快速创建只需要三分钟。</p>
+            </div>
+            <div class="row">
+              <button class="btn btn-ghost">清空筛选</button>
+              <a class="btn btn-primary" href="character-create.html" data-od-id="cta-create-empty">创建第一个角色</a>
+            </div>
+          </div>
+        </div>
+        <div class="state-panel" id="empty-panel-zero">
+          <div class="empty-state" data-od-id="library-empty-zero">
+            <div class="empty-mark">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 9h16M9 4v5"/></svg>
+            </div>
+            <div>
+              <div class="h2">角色库还是空的</div>
+              <p class="muted" style="margin-top: 8px;">从空白创建第一个角色，或导入酒馆角色卡开始。所有角色都会集中在这里管理。</p>
+            </div>
+            <div class="row">
+              <a class="btn btn-primary" href="character-create.html" data-od-id="cta-create-zero">创建第一个角色</a>
+              <a class="btn btn-secondary" href="character-import.html" data-od-id="cta-import-zero">导入角色卡</a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<!-- delete confirm modal -->
+<div class="modal-mask" id="delete-modal" data-od-id="delete-modal">
+  <div class="card modal stack">
+    <div class="h3">删除「<span id="delete-name">角色</span>」？</div>
+    <p class="muted" style="font-size: 13.5px;">角色的全部字段、世界书条目与头像将被移除，且无法恢复。已绑定的音色会一并解除绑定。原型阶段此操作仅演示确认流程，不改动数据。</p>
+    <div class="row" style="justify-content: flex-end;">
+      <button class="btn btn-secondary" data-close-modal>取消</button>
+      <button class="btn btn-primary-danger" data-close-modal>确认删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- archive confirm modal -->
+<div class="modal-mask" id="archive-modal" data-od-id="archive-modal">
+  <div class="card modal stack">
+    <div class="h3">归档「<span id="archive-name">角色</span>」？</div>
+    <p class="muted" style="font-size: 13.5px;">归档后角色将从列表默认隐藏，不删除任何数据。需要时可在来源筛选中选择「已归档」查看，并随时恢复。原型阶段此操作仅演示确认流程，不改动数据。</p>
+    <div class="row" style="justify-content: flex-end;">
+      <button class="btn btn-secondary" data-close-modal>取消</button>
+      <button class="btn btn-primary" data-close-modal>确认归档</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // theme: dark default, persisted
+  (function () {
+    var saved = localStorage.getItem('hp-theme');
+    if (saved) document.documentElement.setAttribute('data-theme', saved);
+    function sync() {
+      var light = document.documentElement.getAttribute('data-theme') === 'light';
+      document.querySelectorAll('[data-theme-label]').forEach(function (el) {
+        el.textContent = light ? '切换暗色主题' : '切换浅色主题';
+      });
+    }
+    document.querySelectorAll('[data-theme-toggle]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('hp-theme', next);
+        sync();
+      });
+    });
+    sync();
+  })();
+  // delete confirm demo
+  (function () {
+    var mask = document.getElementById('delete-modal');
+    document.querySelectorAll('[data-delete]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        document.getElementById('delete-name').textContent = btn.getAttribute('data-delete');
+        mask.classList.add('open');
+      });
+    });
+    mask.querySelectorAll('[data-close-modal]').forEach(function (b) {
+      b.addEventListener('click', function () { mask.classList.remove('open'); });
+    });
+    mask.addEventListener('click', function (e) { if (e.target === mask) mask.classList.remove('open'); });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') mask.classList.remove('open'); });
+  })();
+  // archive confirm demo
+  (function () {
+    var mask = document.getElementById('archive-modal');
+    document.querySelectorAll('[data-archive]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        document.getElementById('archive-name').textContent = btn.getAttribute('data-archive');
+        mask.classList.add('open');
+      });
+    });
+    mask.querySelectorAll('[data-close-modal]').forEach(function (b) {
+      b.addEventListener('click', function () { mask.classList.remove('open'); });
+    });
+    mask.addEventListener('click', function (e) { if (e.target === mask) mask.classList.remove('open'); });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') mask.classList.remove('open'); });
+  })();
+  // empty state demo switcher
+  (function () {
+    var buttons = document.querySelectorAll('[data-empty-state]');
+    var panelFilter = document.getElementById('empty-panel-filter');
+    var panelZero = document.getElementById('empty-panel-zero');
+    function show(key) {
+      buttons.forEach(function (b) {
+        b.setAttribute('aria-pressed', String(b.getAttribute('data-empty-state') === key));
+      });
+      panelFilter.classList.toggle('open', key === 'filter');
+      panelZero.classList.toggle('open', key === 'zero');
+    }
+    buttons.forEach(function (btn) {
+      btn.addEventListener('click', function () { show(btn.getAttribute('data-empty-state')); });
+    });
+  })();
+</script>
+</body>
+</html>

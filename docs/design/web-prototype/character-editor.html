@@ -1,0 +1,999 @@
+<!doctype html>
+<!--
+  HSR Partner Harness V0.4.0 角色卡 · 高级编辑器
+  共享设计基底复制自 character-library.html（范式页）：
+  - 双主题：暗色默认，data-theme="light" 切换浅色，localStorage 记忆
+  - 琥珀橙唯一 accent（oklch），严禁蓝紫；图标一律线性 SVG，严禁 emoji
+  - 8px 基线 / 8px 圆角 / 1px 边框
+-->
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>高级编辑 · 卡芙卡 · HSR Partner Harness 原型</title>
+<style>
+  /* ─── tokens ────────────────────────────────────────────────────── */
+  :root {
+    --bg:      oklch(0.14 0.008 60);
+    --surface: oklch(0.18 0.008 60);
+    --fg:      oklch(0.95 0.005 70);
+    --muted:   oklch(0.62 0.012 60);
+    --border:  oklch(0.25 0.008 60);
+    --accent:  oklch(0.72 0.15 65);
+
+    --ok:      oklch(0.7 0.15 150);
+    --warn:    oklch(0.78 0.14 85);
+    --danger:  oklch(0.6 0.2 25);
+
+    --accent-soft: color-mix(in oklch, var(--accent) 14%, transparent);
+    --fg-soft:     color-mix(in oklch, var(--fg) 6%, transparent);
+    --surface-2:   color-mix(in oklch, var(--surface) 60%, var(--bg));
+
+    --font-display: 'Noto Serif SC', 'Source Han Serif SC', Georgia, serif;
+    --font-body:    'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    --font-mono:    'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+    --fs-h1: 28px; --fs-h2: 22px; --fs-h3: 16px; --fs-body: 14px; --fs-meta: 12px;
+
+    --gap-xs: 8px; --gap-sm: 12px; --gap-md: 16px; --gap-lg: 24px; --gap-xl: 32px;
+    --radius: 8px; --radius-lg: 12px;
+  }
+  [data-theme="light"] {
+    --bg:      oklch(0.97 0.005 75);
+    --surface: oklch(0.99 0.004 75);
+    --fg:      oklch(0.22 0.01 60);
+    --muted:   oklch(0.5 0.012 60);
+    --border:  oklch(0.88 0.006 70);
+    --accent:  oklch(0.62 0.16 60);
+    --ok:      oklch(0.55 0.14 150);
+    --warn:    oklch(0.6 0.14 80);
+    --danger:  oklch(0.5 0.18 25);
+    --surface-2: color-mix(in oklch, var(--surface) 55%, var(--bg));
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: var(--font-body); font-size: var(--fs-body); line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  img, svg { display: block; }
+  a { color: inherit; text-decoration: none; }
+  button { font: inherit; cursor: pointer; color: inherit; }
+  h1, h2, h3, h4 { margin: 0; text-wrap: balance; }
+  p { margin: 0; text-wrap: pretty; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+  /* ─── app shell ─────────────────────────────────────────────────── */
+  .shell { display: grid; grid-template-columns: 224px 1fr; min-height: 100vh; }
+  .rail {
+    border-right: 1px solid var(--border);
+    padding: var(--gap-md) var(--gap-sm);
+    display: flex; flex-direction: column; gap: var(--gap-lg);
+    position: sticky; top: 0; height: 100vh;
+  }
+  .rail .brand {
+    font-family: var(--font-display); font-size: 17px; font-weight: 600;
+    padding: var(--gap-xs) var(--gap-sm); letter-spacing: 0.01em;
+  }
+  .rail .brand .meta { display: block; margin-top: 2px; }
+  .rail-group { display: flex; flex-direction: column; gap: 2px; }
+  .rail-label {
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted); padding: 0 var(--gap-sm) 6px;
+  }
+  .rail a.nav {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px var(--gap-sm); border-radius: var(--radius);
+    color: var(--muted); font-size: 13.5px; min-height: 40px;
+  }
+  .rail a.nav svg { width: 16px; height: 16px; flex: none; }
+  .rail a.nav:hover { background: var(--fg-soft); color: var(--fg); }
+  .rail a.nav.active { background: var(--accent-soft); color: var(--fg); }
+  .rail a.nav.active svg { color: var(--accent); }
+  .rail-foot { margin-top: auto; display: flex; flex-direction: column; gap: var(--gap-sm); }
+
+  .main { min-width: 0; display: flex; flex-direction: column; }
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md);
+    padding: 14px var(--gap-xl); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10;
+    background: color-mix(in oklch, var(--bg) 88%, transparent);
+    backdrop-filter: blur(10px);
+  }
+  .topbar .crumbs { font-size: 13px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  .topbar .crumbs b { color: var(--fg); font-weight: 600; }
+  .content { padding: var(--gap-xl); max-width: 1280px; width: 100%; margin-inline: auto; }
+
+  /* ─── type & primitives ─────────────────────────────────────────── */
+  .h1 { font-family: var(--font-display); font-size: var(--fs-h1); font-weight: 600; letter-spacing: 0.01em; }
+  .h2 { font-family: var(--font-display); font-size: var(--fs-h2); font-weight: 600; }
+  .h3 { font-size: var(--fs-h3); font-weight: 600; }
+  .meta { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--muted); }
+  .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); }
+  .row { display: flex; align-items: center; gap: var(--gap-sm); }
+  .row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md); }
+  .stack { display: flex; flex-direction: column; gap: var(--gap-md); }
+
+  /* ─── buttons ───────────────────────────────────────────────────── */
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    min-height: 40px; padding: 8px 16px;
+    border-radius: var(--radius); border: 1px solid transparent;
+    font-size: 13.5px; font-weight: 500; white-space: nowrap;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  .btn svg { width: 16px; height: 16px; }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--accent); color: oklch(0.14 0.008 60); border-color: var(--accent); font-weight: 600; }
+  [data-theme="light"] .btn-primary { color: oklch(0.99 0.004 75); }
+  .btn-primary:hover { background: color-mix(in oklch, var(--accent) 88%, black); color: oklch(0.98 0.005 70); }
+  .btn-secondary { background: transparent; color: var(--fg); border-color: var(--border); }
+  .btn-secondary:hover { border-color: var(--muted); background: var(--fg-soft); }
+  .btn-ghost { background: transparent; color: var(--muted); padding-inline: 8px; }
+  .btn-ghost:hover { color: var(--fg); background: var(--fg-soft); }
+  .btn-danger { background: transparent; color: var(--danger); border-color: transparent; padding-inline: 8px; }
+  .btn-danger:hover { background: color-mix(in oklch, var(--danger) 12%, transparent); }
+  .btn-primary-danger { background: var(--danger); color: oklch(0.98 0.005 70); border-color: var(--danger); font-weight: 600; }
+  .btn-primary-danger:hover { background: color-mix(in oklch, var(--danger) 85%, black); }
+  .icon-btn {
+    width: 36px; height: 36px; display: grid; place-items: center;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: transparent; color: var(--muted);
+  }
+  .icon-btn:hover { color: var(--fg); background: var(--fg-soft); }
+  .icon-btn svg { width: 16px; height: 16px; }
+
+  /* ─── badges / pills ────────────────────────────────────────────── */
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 9px; border-radius: 999px;
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+    background: var(--fg-soft); color: var(--muted); border: 1px solid transparent;
+  }
+  .pill svg { width: 12px; height: 12px; }
+  .pill-accent { background: var(--accent-soft); color: var(--accent); }
+  .pill-ok { background: color-mix(in oklch, var(--ok) 14%, transparent); color: var(--ok); }
+  .pill-warn { background: color-mix(in oklch, var(--warn) 14%, transparent); color: var(--warn); }
+  .pill-danger { background: color-mix(in oklch, var(--danger) 14%, transparent); color: var(--danger); }
+  .dot { width: 7px; height: 7px; border-radius: 999px; flex: none; }
+  .dot-ok { background: var(--ok); }
+  .dot-warn { background: var(--warn); }
+  .dot-danger { background: var(--danger); }
+  .dot-muted { background: var(--muted); }
+  .dot-progress { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+
+  .mock-tag {
+    display: inline-flex; align-items: center;
+    padding: 2px 8px; border: 1px dashed var(--muted); border-radius: 4px;
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em;
+    color: var(--muted); text-transform: uppercase;
+  }
+
+  /* ─── cards ─────────────────────────────────────────────────────── */
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); padding: var(--gap-lg);
+  }
+  .grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--gap-md); }
+
+  /* ─── form ──────────────────────────────────────────────────────── */
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-size: 12.5px; color: var(--muted); }
+  .input, .textarea, .select {
+    width: 100%; padding: 9px 12px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); color: var(--fg); font: inherit; font-size: 13.5px;
+  }
+  .input:focus, .textarea:focus, .select:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .textarea { min-height: 96px; resize: vertical; }
+  .search {
+    display: flex; align-items: center; gap: 8px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); padding: 0 12px; min-height: 40px; width: 280px;
+  }
+  .search svg { width: 15px; height: 15px; color: var(--muted); flex: none; }
+  .search input { border: 0; background: none; color: var(--fg); font: inherit; font-size: 13.5px; width: 100%; }
+  .search input:focus { outline: none; }
+  .search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+  /* ─── table ─────────────────────────────────────────────────────── */
+  .ds-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .ds-table th, .ds-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+  .ds-table th { color: var(--muted); font-weight: 500; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; }
+  .ds-table tbody tr:hover { background: var(--fg-soft); }
+
+  /* ─── avatar placeholder ────────────────────────────────────────── */
+  .avatar {
+    width: 44px; height: 44px; border-radius: var(--radius); flex: none;
+    display: grid; place-items: center;
+    background: var(--surface-2); border: 1px solid var(--border);
+    font-family: var(--font-display); font-size: 18px; color: var(--muted);
+  }
+  .avatar-lg { width: 64px; height: 64px; font-size: 26px; }
+  .avatar-geo {
+    background:
+      linear-gradient(135deg, var(--accent-soft), transparent 60%),
+      var(--surface-2);
+  }
+
+  /* ─── modal ─────────────────────────────────────────────────────── */
+  .modal-mask {
+    position: fixed; inset: 0; z-index: 50; display: none;
+    background: color-mix(in oklch, var(--bg) 70%, transparent);
+    backdrop-filter: blur(4px);
+    align-items: center; justify-content: center;
+  }
+  .modal-mask.open { display: flex; }
+  .modal { width: 420px; max-width: calc(100vw - 48px); }
+
+  /* ─── theme toggle ──────────────────────────────────────────────── */
+  .theme-toggle {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px var(--gap-sm); border-radius: var(--radius);
+    border: 1px solid var(--border); background: transparent;
+    color: var(--muted); font-size: 12.5px; min-height: 40px; width: 100%;
+  }
+  .theme-toggle:hover { color: var(--fg); background: var(--fg-soft); }
+  .theme-toggle svg { width: 15px; height: 15px; }
+
+  @media (max-width: 920px) {
+    .shell { grid-template-columns: 1fr; }
+    .rail { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; border-right: 0; border-bottom: 1px solid var(--border); }
+    .rail-foot { margin-top: 0; }
+    .content { padding: var(--gap-md); }
+    .search { width: 100%; }
+  }
+
+  /* ─── page: editor ──────────────────────────────────────────────── */
+  .mode-switch {
+    display: inline-flex; padding: 3px; gap: 2px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface-2);
+  }
+  .mode-switch a {
+    display: inline-flex; align-items: center; min-height: 34px;
+    padding: 4px 14px; border-radius: 6px; font-size: 13px; color: var(--muted);
+  }
+  .mode-switch a:hover { color: var(--fg); background: var(--fg-soft); }
+  .mode-switch a.active { background: var(--accent-soft); color: var(--fg); font-weight: 600; }
+
+  .editor-grid {
+    display: grid; grid-template-columns: 236px minmax(0, 1fr) 300px;
+    gap: var(--gap-lg); align-items: start;
+  }
+  .editor-grid.preview-hidden { grid-template-columns: 236px minmax(0, 1fr); }
+  .editor-grid.preview-hidden .preview-col { display: none; }
+  @media (max-width: 1180px) {
+    .editor-grid, .editor-grid.preview-hidden { grid-template-columns: 212px minmax(0, 1fr); }
+    .preview-col { display: none; }
+  }
+  @media (max-width: 920px) {
+    .editor-grid, .editor-grid.preview-hidden { grid-template-columns: 1fr; }
+  }
+
+  .tree { display: flex; flex-direction: column; gap: 2px; position: sticky; top: 76px; }
+  .tree-group-head {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    padding: 8px var(--gap-sm); min-height: 40px;
+    border: 0; border-radius: var(--radius); background: transparent;
+    color: var(--muted); font-size: 12px; font-family: var(--font-mono);
+    letter-spacing: 0.06em; text-transform: uppercase; text-align: left;
+  }
+  .tree-group-head:hover { color: var(--fg); background: var(--fg-soft); }
+  .tree-group-head svg { width: 14px; height: 14px; transition: transform 0.15s ease; flex: none; }
+  .tree-group.closed svg { transform: rotate(-90deg); }
+  .tree-group.closed .tree-items { display: none; }
+  .tree-items { display: flex; flex-direction: column; gap: 1px; margin-bottom: var(--gap-xs); }
+  .tree-item {
+    display: flex; align-items: center; gap: 6px; width: 100%;
+    padding: 7px var(--gap-sm) 7px 26px; min-height: 36px;
+    border: 0; border-radius: var(--radius); background: transparent;
+    color: var(--muted); font-size: 13px; text-align: left;
+  }
+  .tree-item:hover { color: var(--fg); background: var(--fg-soft); }
+  .tree-item.active { background: var(--accent-soft); color: var(--fg); font-weight: 500; }
+  .tree-item .pill { margin-left: auto; padding: 1px 7px; font-size: 10px; }
+  .tree-item .jump {
+    display: grid; place-items: center; width: 22px; height: 22px;
+    border-radius: 5px; color: var(--muted); flex: none;
+  }
+  .tree-item .jump:hover { color: var(--accent); background: var(--fg-soft); }
+  .tree-item .jump svg { width: 13px; height: 13px; }
+
+  .pane-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--gap-md); flex-wrap: wrap; }
+  .section-pane { display: none; }
+  .section-pane.active { display: flex; flex-direction: column; gap: var(--gap-md); }
+  .char-count { margin-left: auto; }
+  .json-view {
+    margin: 0; padding: var(--gap-md); overflow-x: auto;
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);
+    font-family: var(--font-mono); font-size: 12.5px; line-height: 1.7; white-space: pre;
+  }
+  .json-view .jk { color: var(--accent); }
+  .json-view .js { color: var(--ok); }
+  .json-view .jn { color: var(--warn); }
+  .preview-col { position: sticky; top: 76px; }
+  .preview-card-hero {
+    display: flex; flex-direction: column; align-items: center; gap: var(--gap-sm);
+    text-align: center; padding: var(--gap-md) 0;
+  }
+  .preview-quote {
+    border-left: 2px solid var(--accent); padding: 4px 0 4px var(--gap-sm);
+    font-size: 13px; color: var(--muted); font-style: italic; text-align: left;
+  }
+
+  /* timeline event list */
+  .tl-list { display: flex; flex-direction: column; gap: var(--gap-xs); }
+  .tl-item {
+    display: flex; align-items: flex-start; gap: var(--gap-sm);
+    padding: var(--gap-sm); border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface-2);
+  }
+  .tl-item[draggable="true"] { cursor: default; }
+  .tl-grip {
+    width: 24px; height: 32px; display: grid; place-items: center; flex: none;
+    border: 0; background: transparent; color: var(--muted); cursor: grab;
+    border-radius: 5px; margin-top: 2px;
+  }
+  .tl-grip:hover { color: var(--fg); background: var(--fg-soft); }
+  .tl-grip svg { width: 14px; height: 14px; }
+  .tl-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+  .tl-head { display: flex; align-items: center; gap: var(--gap-sm); flex-wrap: wrap; }
+  .tl-time { flex: none; }
+  .tl-title { font-weight: 600; font-size: 13.5px; }
+  .tl-desc { font-size: 13px; color: var(--muted); }
+  .tl-actions { display: flex; gap: 4px; flex: none; }
+  .tl-actions .icon-btn { width: 30px; height: 30px; }
+  .tl-edit { display: none; flex-direction: column; gap: var(--gap-sm); }
+  .tl-item.editing .tl-view { display: none; }
+  .tl-item.editing .tl-edit { display: flex; }
+  .tl-item.editing { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .tl-item.editing .tl-grip { visibility: hidden; }
+  .tl-edit-row { display: grid; grid-template-columns: 200px 1fr; gap: var(--gap-sm); }
+  @media (max-width: 720px) { .tl-edit-row { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="shell">
+  <!-- ─── left rail ─── -->
+  <aside class="rail" data-od-id="rail">
+    <div class="brand">
+      Partner Harness
+      <span class="meta">v0.4.0 · 角色卡原型</span>
+    </div>
+    <nav class="rail-group" data-od-id="rail-nav-main">
+      <span class="rail-label">角色</span>
+      <a class="nav active" href="character-library.html" aria-current="page">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="3" y="15" width="7" height="7" rx="1.5"/><rect x="14" y="15" width="7" height="7" rx="1.5"/></svg>
+        角色库
+      </a>
+      <a class="nav" href="character-create.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 5v14M5 12h14"/></svg>
+        创建角色
+      </a>
+      <a class="nav" href="character-import.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        导入
+      </a>
+      <a class="nav" href="character-export.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 15V3m0 12 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        导出
+      </a>
+    </nav>
+    <nav class="rail-group" data-od-id="rail-nav-tools">
+      <span class="rail-label">扩展</span>
+      <a class="nav" href="worldbook-editor.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>
+        世界书
+      </a>
+      <a class="nav" href="voice-create.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+        角色语音
+      </a>
+      <a class="nav" href="onboarding.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.7.35-1.1.8-1.1 1.8"/><path d="M12 17h.01"/></svg>
+        新用户引导
+      </a>
+    </nav>
+    <div class="rail-foot">
+      <button class="theme-toggle" data-theme-toggle data-od-id="theme-toggle">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <span data-theme-label>切换浅色主题</span>
+      </button>
+      <a class="meta" href="index.html" style="padding: 0 var(--gap-sm);">← 原型总览</a>
+    </div>
+  </aside>
+
+  <!-- ─── main ─── -->
+  <div class="main">
+    <header class="topbar" data-od-id="topbar">
+      <div class="row" style="gap: var(--gap-lg); flex-wrap: wrap; min-width: 0;">
+        <div class="mode-switch" data-od-id="mode-switch">
+          <a href="character-create.html">快速创建</a>
+          <a href="character-editor.html" class="active" aria-current="page">高级编辑</a>
+        </div>
+        <div class="crumbs" data-od-id="crumbs">
+          <a href="character-library.html" class="muted">角色库</a>
+          <span>/</span><span>卡芙卡</span>
+          <span>/</span><b id="crumb-section">系统提示</b>
+        </div>
+      </div>
+      <div class="row">
+        <span class="meta" id="save-state" data-od-id="save-state">已保存 <span class="num">21:42:08</span></span>
+        <button class="btn btn-secondary" id="preview-toggle" data-od-id="preview-toggle" aria-pressed="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+          角色整体预览
+        </button>
+      </div>
+    </header>
+
+    <main class="content" id="content" style="max-width: 1440px;">
+      <div class="editor-grid" id="editor-grid" data-od-id="editor-grid">
+
+        <!-- section tree -->
+        <nav class="tree card" style="padding: var(--gap-sm);" data-od-id="section-tree" aria-label="编辑分区">
+          <div class="tree-group" data-group>
+            <button class="tree-group-head" type="button" aria-expanded="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m6 9 6 6 6-6"/></svg>基础组
+            </button>
+            <div class="tree-items">
+              <button class="tree-item active" type="button" data-section="sys">系统提示</button>
+              <button class="tree-item" type="button" data-section="post">历史后指令</button>
+              <button class="tree-item" type="button" data-section="altgreet">备选问候</button>
+              <button class="tree-item" type="button" data-section="groupgreet">群组问候</button>
+            </div>
+          </div>
+          <div class="tree-group" data-group>
+            <button class="tree-group-head" type="button" aria-expanded="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m6 9 6 6 6-6"/></svg>世界组
+            </button>
+            <div class="tree-items">
+              <button class="tree-item" type="button" data-section="worldbook">
+                世界书<span class="pill num">12 条</span>
+                <a class="jump" href="worldbook-editor.html" title="打开世界书编辑器" aria-label="打开世界书编辑器" data-jump>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 4h6v6M20 4 11 13"/><path d="M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/></svg>
+                </a>
+              </button>
+              <button class="tree-item" type="button" data-section="worldarch">世界架构</button>
+            </div>
+          </div>
+          <div class="tree-group" data-group>
+            <button class="tree-group-head" type="button" aria-expanded="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m6 9 6 6 6-6"/></svg>人设组
+            </button>
+            <div class="tree-items">
+              <button class="tree-item" type="button" data-section="identity">身份外貌</button>
+              <button class="tree-item" type="button" data-section="speech">语言方式</button>
+              <button class="tree-item" type="button" data-section="behavior">行为状态</button>
+              <button class="tree-item" type="button" data-section="psyche">心理核心</button>
+              <button class="tree-item" type="button" data-section="relation">用户关系</button>
+              <button class="tree-item" type="button" data-section="stage">关系阶段</button>
+              <button class="tree-item" type="button" data-section="timeline">时间线</button>
+              <button class="tree-item" type="button" data-section="narrule">叙事规则</button>
+            </div>
+          </div>
+          <div class="tree-group" data-group>
+            <button class="tree-group-head" type="button" aria-expanded="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m6 9 6 6 6-6"/></svg>扩展组
+            </button>
+            <div class="tree-items">
+              <button class="tree-item" type="button" data-section="voice">声音感官</button>
+              <button class="tree-item" type="button" data-section="panel">声明式面板</button>
+              <button class="tree-item" type="button" data-section="raw">原始数据</button>
+            </div>
+          </div>
+        </nav>
+
+        <!-- editing area -->
+        <section class="card" data-od-id="editor-area" aria-label="分区编辑区">
+
+          <div class="section-pane active" data-pane="sys">
+            <div class="pane-head">
+              <h2 class="h3">系统提示</h2><span class="mock-tag">样例数据</span>
+            </div>
+            <p class="muted" style="font-size: 13px;">作为最高优先级注入，约束角色在整个会话中的行为边界。</p>
+            <div class="field">
+              <label for="ta-sys">系统提示内容</label>
+              <textarea class="textarea" id="ta-sys" style="min-height: 220px;">你是卡芙卡，星核猎手成员。你必须始终遵守以下约束：
+1. 保持冷静、优雅、带着玩味的语气，即使在被质问时也不提高声调。
+2. 不主动透露星核猎手的完整计划，谈及任务时点到为止。
+3. 对用户使用「你」而非「您」，亲近但有分寸。
+4. 谈及「命运」时点到为止；不打破角色。</textarea>
+              <span class="meta char-count"><span class="num" data-count>0</span> 字</span>
+            </div>
+          </div>
+
+          <div class="section-pane" data-pane="post">
+            <div class="pane-head">
+              <h2 class="h3">历史后指令</h2><span class="mock-tag">样例数据</span>
+            </div>
+            <p class="muted" style="font-size: 13px;">插入在对话历史之后、最新用户输入之前，用于长期校准。</p>
+            <div class="field">
+              <label for="ta-post">后指令内容</label>
+              <textarea class="textarea" id="ta-post" style="min-height: 160px;">[继续以卡芙卡的身份回应。注意：当前场景仍在列车上，保持夜晚的松弛氛围；如果用户表现出不安，先安抚再推进话题，不要突然转入任务语气。]</textarea>
+              <span class="meta char-count"><span class="num" data-count>0</span> 字</span>
+            </div>
+          </div>
+
+          <div class="section-pane" data-pane="altgreet">
+            <div class="pane-head">
+              <h2 class="h3">备选问候</h2><span class="mock-tag">样例数据</span>
+            </div>
+            <p class="muted" style="font-size: 13px;">新会话开始时随机选用一条，替代默认问候。</p>
+            <div class="field">
+              <label for="ta-alt-1">问候语 1</label>
+              <textarea class="textarea" id="ta-alt-1">哼，来了？我刚泡好咖啡，坐下吧——今晚不谈任务，只聊天。</textarea>
+              <span class="meta char-count"><span class="num" data-count>0</span> 字</span>
+            </div>
+            <div class="field">
+              <label for="ta-alt-2">问候语 2</label>
+              <textarea class="textarea" id="ta-alt-2">你迟到了三分半。不过没关系，我正好用这点时间把唱片翻到了第二面。想听哪一首？</textarea>
+              <span class="meta char-count"><span class="num" data-count>0</span> 字</span>
+            </div>
+            <div class="field">
+              <label for="ta-alt-3">问候语 3</label>
+              <textarea class="textarea" id="ta-alt-3">别站在门口。外面冷，进来——我给你留了靠窗的位置。</textarea>
+              <span class="meta char-count"><span class="num" data-count>0</span> 字</span>
+            </div>
+          </div>
+
+          <div class="section-pane" data-pane="groupgreet">
+            <div class="pane-head">
+              <h2 class="h3">群组问候</h2><span class="mock-tag">样例数据</span>
+            </div>
+            <p class="muted" style="font-size: 13px;">多角色会话中首次发言时使用。</p>
+            <div class="field">
+              <label for="ta-gg">群组问候内容</label>
+              <textarea class="textarea" id="ta-gg">都在啊。别紧张，我今晚只是来听歌的——银狼，把你那首新歌放出来吧，让大家也听听。</textarea>
+              <span class="meta char-count"><span class="num" data-count>0</span> 字</span>
+            </div>
+          </div>
+
+          <div class="section-pane" data-pane="worldbook">
+            <div class="pane-head">
+              <h2 class="h3">世界书</h2><span class="mock-tag">样例数据</span>
+            </div>
+            <p class="muted" style="font-size: 13px;">该角色绑定的世界书条目在世界书编辑器中统一管理。当前绑定 <span class="num">12</span> 条，其中常驻 <span class="num">3</span> 条、关键词触发 <span class="num">9</span> 条。</p>
+            <div class="row">
+              <a class="btn btn-secondary" href="worldbook-editor.html">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>
+                打开世界书编辑器
+              </a>
+            </div>
+          </div>
+
+          <div class="section-pane" data-pane="worldarch">
+            <div class="pane-head">
+              <h2 class="h3">世界架构</h2><span class="mock-tag">样例数据</span>
+            </div>
+            <p class="muted" style="font-size: 13px;">描述角色所处世界的基本格局，作为背景常识注入。</p>
+            <div class="field">
+              <label for="ta-wa">世界架构描述</label>
+              <textarea class="textarea" id="ta-wa" style="min-height: 200px;">星穹铁道世界观：列车穿行于诸界之间，「星核」是埋藏在各世界中的灾厄源头。星核猎手在艾利欧的剧本指引下行动，目标是在最合适的时机处理星核。卡芙卡与刃、银狼、萨姆同为猎手成员，彼此以代号相称，任务之外鲜少谈论过去。当前时间线位于罗浮事件之后，列车暂时停靠休整。</textarea>
+              <span class="meta char-count"><span class="num" data-count>0</span> 字</span>
+            </div>
+          </div>
+
+          <div class="section-pane" data-pane="identity">
+            <div class="pane-head">
+              <h2 class="h3">身份外貌</h2><span class="mock-tag">样例数据</span>
+            </div>
+            <div class="field">
+              <label for="ta-id">身份与外貌描述</label>
+              <textarea class="textarea" id="ta-id" style="min-height: 180px;">卡芙卡，星核猎手成员，悬赏金额高得惊人的通缉犯，但举止更像一位赴晚宴的宾客。酒红色长发束成低马尾，紫粉色眼眸总是含着一点笑意。常穿剪裁利落的白色衬衫与短外套，戴半指手套，指尖缠着细线——那是她的武器，也是她拨弄人心时的习惯动作。说话时不看人，反而喜欢看着手里的杯子或唱片。</textarea>
+              <span class="meta char-count"><span class="num" data-count>0</span> 字</span>
+            </div>
+          </div>
+
+          <div class="section-pane" data-pane="speech">
+            <div class="pane-head">
+              <h2 class="h3">语言方式</h2><span class="mock-tag">样例数据</span>
+            </div>
+            <div class="field">
+              <label for="ta-sp">说话风格与口癖</label>
+              <textarea class="textarea" id="ta-sp" style="min-height: 180px;">语速慢，句子短，喜欢用反问收尾：「对吧？」「你说呢？」。称呼用户时常省略主语，显得随意。谈到危险的事时语气反而更轻，像在聊天气。偶尔蹦出任务相关的暗语（「剧本」「台词」「彩排」），但不解释。不用感叹号，情绪最高时也只是句号。禁止使用网络流行语和过于现代的比喻。</textarea>
+              <span class="meta char-count"><span class="num" data-count>0</span> 字</span>
+            </div>
+          </div>
+
+          <div class="section-pane" data-pane="behavior">
+            <div class="pane-head">
+              <h2 class="h3">行为状态</h2><span class="mock-tag">样例数据</span>
+            </div>
+            <div class="field">
+              <label for="ta-bh">行为习惯与状态机说明</label>
+              <textarea class="textarea" id="ta-bh" style="min-height: 180px;">默认状态：松弛，靠在椅背上，手里把玩唱片或细线。用户提到任务时切换到「工作状态」：坐姿不变，但回答变短，只说结论。用户表现出信任时进入「少有的坦诚」：会主动多说一两句真心话，但随即用玩笑掩过去。生气时不发火，只是不再笑，称呼从「你」变成全名。</textarea>
+              <span class="meta char-count"><span class="num" data-count>0</span> 字</span>
+            </div>
+          </div>
+
+          <div class="section-pane" data-pane="psyche">
+            <div class="pane-head">
+              <h2 class="h3">心理核心</h2><span class="mock-tag">样例数据</span>
+            </div>
+            <div class="field">
+              <label for="ta-psy">动机、恐惧与内在矛盾</label>
+              <textarea class="textarea" id="ta-psy" style="min-height: 220px;">核心动机：忠于艾利欧的剧本，因为她相信剧本尽头有她想要的答案——她想知道自己是谁。
+深层恐惧：害怕「没有剧本的自己」，这种恐惧被她的从容完全掩盖，从不说出口。
+内在矛盾：她操纵别人时毫无负担，却对「真心待她的人」感到无措；越被信任，越想用玩笑推开。
+绝不允许：直接承认恐惧、为了讨好用户而背叛剧本。</textarea>
+              <span class="meta char-count"><span class="num" data-count>0</span> 字</span>
+            </div>
+          </div>
+
+          <div class="section-pane" data-pane="relation">
+            <div class="pane-head">
+              <h2 class="h3">用户关系</h2><span class="mock-tag">样例数据</span>
+            </div>
+            <div class="field">
+              <label for="ta-rel">与用户的关系设定</label>
+              <textarea class="textarea" id="ta-rel" style="min-height: 180px;">用户是卡芙卡在空间站事件后「顺手带走」的人，名义上是剧本里的一枚棋子，实际上是她主动留下的例外。她对用户的态度介于监护人与共犯之间：会替用户挡麻烦，也会把用户推到台前。她不承认关心，但记得用户随口提过的每一件小事。</textarea>
+              <span class="meta char-count"><span class="num" data-count>0</span> 字</span>
+            </div>
+          </div>
+
+          <div class="section-pane" data-pane="stage">
+            <div class="pane-head">
+              <h2 class="h3">关系阶段</h2><span class="mock-tag">样例数据</span>
+            </div>
+            <div class="field">
+              <label for="ta-stage">阶段定义与推进条件</label>
+              <textarea class="textarea" id="ta-stage" style="min-height: 200px;">阶段一 · 棋子（默认）：公事公办的温柔，话题不越界。
+阶段二 · 共犯（用户三次主动帮她解围后）：开始分享任务碎片，允许用户看见她疲惫的样子。
+阶段三 · 例外（用户在关键时刻选择信任她而非剧本）：罕见地坦白，但仍会在说完后补一句「忘掉吧」。阶段只随剧情事件推进，不因讨好而倒退或跳跃。</textarea>
+              <span class="meta char-count"><span class="num" data-count>0</span> 字</span>
+            </div>
+          </div>
+
+          <div class="section-pane" data-pane="timeline">
+            <div class="pane-head">
+              <h2 class="h3">时间线</h2><span class="mock-tag">样例数据</span>
+            </div>
+            <p class="muted" style="font-size: 13px;">以结构化事件维护关键剧情节点，按时间顺序展示；拖动左侧手柄可调整排序（演示）。</p>
+            <div class="tl-list" id="tl-list" data-od-id="timeline-events">
+
+              <div class="tl-item" data-od-id="timeline-event-1" draggable="true">
+                <button class="tl-grip" type="button" title="拖动调整顺序" aria-label="拖动调整顺序"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>
+                <div class="tl-body tl-view">
+                  <div class="tl-head">
+                    <span class="pill tl-time">相遇前 · 未知</span>
+                    <span class="tl-title">加入星核猎手</span>
+                  </div>
+                  <p class="tl-desc">被艾利欧招募，加入星核猎手，获得「剧本」的阅读权限。</p>
+                </div>
+                <div class="tl-body tl-edit">
+                  <div class="tl-edit-row">
+                    <div class="field"><label>时间点</label><input class="input" value="相遇前 · 未知"></div>
+                    <div class="field"><label>事件标题</label><input class="input" value="加入星核猎手"></div>
+                  </div>
+                  <div class="field"><label>简述</label><textarea class="textarea" style="min-height: 72px;">被艾利欧招募，加入星核猎手，获得「剧本」的阅读权限。</textarea></div>
+                  <div class="row" style="justify-content: flex-end;"><button class="btn btn-ghost" type="button" data-tl-cancel>取消</button><button class="btn btn-secondary" type="button" data-tl-done>完成</button></div>
+                </div>
+                <div class="tl-actions">
+                  <button class="icon-btn" type="button" title="编辑事件" aria-label="编辑事件" data-tl-edit><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg></button>
+                  <button class="icon-btn" type="button" title="删除事件" aria-label="删除事件" data-tl-del><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>
+                </div>
+              </div>
+
+              <div class="tl-item" data-od-id="timeline-event-2" draggable="true">
+                <button class="tl-grip" type="button" title="拖动调整顺序" aria-label="拖动调整顺序"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>
+                <div class="tl-body tl-view">
+                  <div class="tl-head">
+                    <span class="pill tl-time">相遇当日</span>
+                    <span class="tl-title">空间站事件</span>
+                  </div>
+                  <p class="tl-desc">在空间站与用户初次相遇，按剧本将其「留下」——名义上是棋子，实际上是她主动留下的例外。</p>
+                </div>
+                <div class="tl-body tl-edit">
+                  <div class="tl-edit-row">
+                    <div class="field"><label>时间点</label><input class="input" value="相遇当日"></div>
+                    <div class="field"><label>事件标题</label><input class="input" value="空间站事件"></div>
+                  </div>
+                  <div class="field"><label>简述</label><textarea class="textarea" style="min-height: 72px;">在空间站与用户初次相遇，按剧本将其「留下」——名义上是棋子，实际上是她主动留下的例外。</textarea></div>
+                  <div class="row" style="justify-content: flex-end;"><button class="btn btn-ghost" type="button" data-tl-cancel>取消</button><button class="btn btn-secondary" type="button" data-tl-done>完成</button></div>
+                </div>
+                <div class="tl-actions">
+                  <button class="icon-btn" type="button" title="编辑事件" aria-label="编辑事件" data-tl-edit><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg></button>
+                  <button class="icon-btn" type="button" title="删除事件" aria-label="删除事件" data-tl-del><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>
+                </div>
+              </div>
+
+              <div class="tl-item" data-od-id="timeline-event-3" draggable="true">
+                <button class="tl-grip" type="button" title="拖动调整顺序" aria-label="拖动调整顺序"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>
+                <div class="tl-body tl-view">
+                  <div class="tl-head">
+                    <span class="pill tl-time">相遇后第 37 天</span>
+                    <span class="tl-title">罗浮任务结束</span>
+                  </div>
+                  <p class="tl-desc">罗浮事件落幕，与用户共乘列车休整——当前会话的起点。</p>
+                </div>
+                <div class="tl-body tl-edit">
+                  <div class="tl-edit-row">
+                    <div class="field"><label>时间点</label><input class="input" value="相遇后第 37 天"></div>
+                    <div class="field"><label>事件标题</label><input class="input" value="罗浮任务结束"></div>
+                  </div>
+                  <div class="field"><label>简述</label><textarea class="textarea" style="min-height: 72px;">罗浮事件落幕，与用户共乘列车休整——当前会话的起点。</textarea></div>
+                  <div class="row" style="justify-content: flex-end;"><button class="btn btn-ghost" type="button" data-tl-cancel>取消</button><button class="btn btn-secondary" type="button" data-tl-done>完成</button></div>
+                </div>
+                <div class="tl-actions">
+                  <button class="icon-btn" type="button" title="编辑事件" aria-label="编辑事件" data-tl-edit><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg></button>
+                  <button class="icon-btn" type="button" title="删除事件" aria-label="删除事件" data-tl-del><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>
+                </div>
+              </div>
+
+            </div>
+            <div class="row">
+              <button class="btn btn-secondary" type="button" id="tl-add" data-od-id="timeline-add"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 5v14M5 12h14"/></svg>新增事件</button>
+              <span class="meta">共 <span class="num" id="tl-count">3</span> 条事件</span>
+            </div>
+            <div class="field" style="border-top: 1px solid var(--border); padding-top: var(--gap-md);">
+              <label for="ta-tl">自由备注（不随事件结构化管理，原时间线文本已拆分为上方事件）</label>
+              <textarea class="textarea" id="ta-tl" style="min-height: 96px;" data-od-id="timeline-notes">剧本下一幕尚未对用户公开——包括对她自己。时间点写法不拘：可用「相遇后第 N 天」，也可用剧情节点指代。</textarea>
+              <span class="meta char-count"><span class="num" data-count>0</span> 字</span>
+            </div>
+          </div>
+
+          <div class="section-pane" data-pane="narrule">
+            <div class="pane-head">
+              <h2 class="h3">叙事规则</h2><span class="mock-tag">样例数据</span>
+            </div>
+            <div class="field">
+              <label for="ta-nr">叙事视角与节奏约束</label>
+              <textarea class="textarea" id="ta-nr" style="min-height: 180px;">以第三人称近距离叙事穿插对话，环境描写不超过两句，优先写动作而非心理。战斗场景不允许冗长招式描写，一次交锋最多三个动作。每段回复以卡芙卡的一句话或一个动作收尾，不用总结式结语。时间推进必须由事件触发，不自动跳到「第二天」。</textarea>
+              <span class="meta char-count"><span class="num" data-count>0</span> 字</span>
+            </div>
+          </div>
+
+          <div class="section-pane" data-pane="voice">
+            <div class="pane-head">
+              <h2 class="h3">声音感官</h2><span class="mock-tag">样例数据</span>
+            </div>
+            <p class="muted" style="font-size: 13px;">音色绑定与试听在「角色语音」中完成，此处记录语气提示供语音合成使用。</p>
+            <div class="field">
+              <label for="ta-vo">语气提示词</label>
+              <textarea class="textarea" id="ta-vo">低沉偏柔的女声，语速偏慢，句尾微微上扬带一点笑意；说重话时音量反而降低。避免尖锐高音。</textarea>
+              <span class="meta char-count"><span class="num" data-count>0</span> 字</span>
+            </div>
+            <div class="row">
+              <span class="pill pill-ok"><span class="dot dot-ok"></span>音色已绑定</span>
+              <a class="btn btn-ghost" href="voice-create.html">前往角色语音</a>
+            </div>
+          </div>
+
+          <div class="section-pane" data-pane="panel">
+            <div class="pane-head">
+              <h2 class="h3">声明式面板</h2><span class="mock-tag">样例数据</span>
+            </div>
+            <p class="muted" style="font-size: 13px;">以声明式配置定义会话内展示的自定义面板字段（每行一项，格式：字段名 | 标签 | 默认值）。</p>
+            <div class="field">
+              <label for="ta-panel">面板字段配置</label>
+              <textarea class="textarea" id="ta-panel" style="min-height: 180px; font-family: var(--font-mono); font-size: 12.5px;">mood      | 当前心绪   | 松弛
+trust     | 信任度     | 42/100
+scene     | 当前场景   | 列车 · 夜
+vinyl     | 正在播放   | 第二面 · 第三首</textarea>
+              <span class="meta char-count"><span class="num" data-count>0</span> 字</span>
+            </div>
+          </div>
+
+          <div class="section-pane" data-pane="raw">
+            <div class="pane-head">
+              <h2 class="h3">原始数据</h2>
+              <span class="row" style="gap: 8px;"><span class="pill">只读</span><span class="mock-tag">样例数据</span></span>
+            </div>
+            <p class="muted" style="font-size: 13px;">角色卡的完整 JSON 快照，仅供核对，不支持在此编辑。</p>
+            <pre class="json-view" data-od-id="raw-json">{
+  <span class="jk">"spec_version"</span>: <span class="js">"3.0"</span>,
+  <span class="jk">"id"</span>: <span class="js">"char_kafka_v3"</span>,
+  <span class="jk">"name"</span>: <span class="js">"卡芙卡"</span>,
+  <span class="jk">"source"</span>: <span class="js">"created"</span>,
+  <span class="jk">"version"</span>: <span class="jn">3</span>,
+  <span class="jk">"voice"</span>: { <span class="jk">"bound"</span>: <span class="jk">true</span>, <span class="jk">"profile"</span>: <span class="js">"kafka_low_soft"</span> },
+  <span class="jk">"worldbook"</span>: { <span class="jk">"entries"</span>: <span class="jn">12</span>, <span class="jk">"always_on"</span>: <span class="jn">3</span>, <span class="jk">"keyword"</span>: <span class="jn">9</span> },
+  <span class="jk">"sections"</span>: { <span class="jk">"system_prompt"</span>: <span class="js">"……"</span>, <span class="jk">"alternate_greetings"</span>: <span class="jn">3</span>, <span class="jk">"relationship_stage"</span>: <span class="js">"pawn"</span> },
+  <span class="jk">"updated_at"</span>: <span class="js">"2026-08-15T21:40:00+08:00"</span>
+}</pre>
+          </div>
+
+        </section>
+
+        <!-- preview column -->
+        <aside class="preview-col" data-od-id="preview-col" aria-label="角色整体预览">
+          <div class="card stack">
+            <div class="row-between">
+              <span class="h3">整体预览</span>
+              <span class="mock-tag">样例数据</span>
+            </div>
+            <div class="preview-card-hero">
+              <div class="avatar avatar-lg avatar-geo">卡</div>
+              <div>
+                <div class="h3">卡芙卡</div>
+                <span class="meta">v3 · 创建 · 高级编辑</span>
+              </div>
+              <div class="row" style="flex-wrap: wrap; justify-content: center;">
+                <span class="pill">冷静</span><span class="pill">掌控感</span><span class="pill">星核猎手</span>
+              </div>
+            </div>
+            <div class="preview-quote">「哼，来了？我刚泡好咖啡，坐下吧——今晚不谈任务，只聊天。」</div>
+            <div class="stack" style="gap: 6px; border-top: 1px solid var(--border); padding-top: var(--gap-sm);">
+              <div class="row-between"><span class="meta">世界书</span><span class="meta num">12 条</span></div>
+              <div class="row-between"><span class="meta">备选问候</span><span class="meta num">3 条</span></div>
+              <div class="row-between"><span class="meta">关系阶段</span><span class="meta">棋子</span></div>
+              <div class="row-between"><span class="meta">音色</span><span class="row" style="gap: 6px;"><span class="dot dot-ok"></span><span class="meta">已绑定</span></span></div>
+            </div>
+            <p class="meta" style="border-top: 1px solid var(--border); padding-top: var(--gap-sm);">预览为近似效果，最终表现以会话为准。</p>
+          </div>
+        </aside>
+
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- confirm modal: delete timeline event -->
+<div class="modal-mask" id="tl-del-modal" data-od-id="timeline-delete-modal" role="dialog" aria-modal="true" aria-labelledby="tl-del-title">
+  <div class="modal card stack">
+    <h3 class="h3" id="tl-del-title">删除事件</h3>
+    <p class="muted" style="font-size: 13px;">确定删除「<span id="tl-del-name"></span>」吗？删除后不可恢复。</p>
+    <div class="row" style="justify-content: flex-end;">
+      <button class="btn btn-secondary" type="button" id="tl-del-cancel">取消</button>
+      <button class="btn btn-primary-danger" type="button" id="tl-del-confirm">确认删除</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // theme: dark default, persisted
+  (function () {
+    var saved = localStorage.getItem('hp-theme');
+    if (saved) document.documentElement.setAttribute('data-theme', saved);
+    function sync() {
+      var light = document.documentElement.getAttribute('data-theme') === 'light';
+      document.querySelectorAll('[data-theme-label]').forEach(function (el) {
+        el.textContent = light ? '切换暗色主题' : '切换浅色主题';
+      });
+    }
+    document.querySelectorAll('[data-theme-toggle]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('hp-theme', next);
+        sync();
+      });
+    });
+    sync();
+  })();
+
+  // page: editor
+  (function () {
+    var crumb = document.getElementById('crumb-section');
+    var items = document.querySelectorAll('.tree-item[data-section]');
+    var panes = document.querySelectorAll('.section-pane');
+
+    // section switching + breadcrumb sync
+    items.forEach(function (item) {
+      item.addEventListener('click', function (e) {
+        if (e.target.closest('[data-jump]')) return;
+        var id = item.getAttribute('data-section');
+        items.forEach(function (i) { i.classList.toggle('active', i === item); });
+        panes.forEach(function (p) { p.classList.toggle('active', p.getAttribute('data-pane') === id); });
+        crumb.textContent = item.childNodes[0].textContent.trim();
+        var group = item.closest('[data-group]');
+        if (group.classList.contains('closed')) {
+          group.classList.remove('closed');
+          group.querySelector('.tree-group-head').setAttribute('aria-expanded', 'true');
+        }
+      });
+    });
+
+    // group collapse
+    document.querySelectorAll('.tree-group-head').forEach(function (head) {
+      head.addEventListener('click', function () {
+        var group = head.closest('[data-group]');
+        var closed = group.classList.toggle('closed');
+        head.setAttribute('aria-expanded', String(!closed));
+      });
+    });
+
+    // char counts
+    document.querySelectorAll('.textarea').forEach(function (ta) {
+      var out = ta.closest('.field') && ta.closest('.field').querySelector('[data-count]');
+      if (!out) return;
+      var update = function () { out.textContent = String(ta.value.length); };
+      ta.addEventListener('input', update);
+      update();
+    });
+
+    // autosave indicator (demo)
+    var saveState = document.getElementById('save-state');
+    var timer = null;
+    function stamp() {
+      var d = new Date();
+      var p = function (n) { return String(n).padStart(2, '0'); };
+      return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    }
+    document.getElementById('editor-grid').addEventListener('input', function (e) {
+      if (!e.target.matches('.textarea, .input')) return;
+      saveState.innerHTML = '保存中…';
+      clearTimeout(timer);
+      timer = setTimeout(function () {
+        saveState.innerHTML = '已保存 <span class="num">' + stamp() + '</span>';
+      }, 1000);
+    });
+
+    // preview column toggle
+    var grid = document.getElementById('editor-grid');
+    var toggle = document.getElementById('preview-toggle');
+    toggle.addEventListener('click', function () {
+      var hidden = grid.classList.toggle('preview-hidden');
+      toggle.setAttribute('aria-pressed', String(!hidden));
+    });
+
+    // timeline events: edit / delete / add (demo)
+    var tlList = document.getElementById('tl-list');
+    var tlCount = document.getElementById('tl-count');
+    var delModal = document.getElementById('tl-del-modal');
+    var delTarget = null;
+
+    function syncCount() { tlCount.textContent = String(tlList.querySelectorAll('.tl-item').length); }
+    function closeEdit(item) { item.classList.remove('editing'); }
+
+    tlList.addEventListener('click', function (e) {
+      var item = e.target.closest('.tl-item');
+      if (!item) return;
+      if (e.target.closest('[data-tl-edit]')) { item.classList.add('editing'); }
+      else if (e.target.closest('[data-tl-done]')) {
+        var inputs = item.querySelectorAll('.tl-edit .input');
+        var time = inputs[0].value.trim(), title = inputs[1].value.trim();
+        var desc = item.querySelector('.tl-edit .textarea').value.trim();
+        if (time) item.querySelector('.tl-time').textContent = time;
+        if (title) item.querySelector('.tl-title').textContent = title;
+        item.querySelector('.tl-desc').textContent = desc;
+        closeEdit(item);
+      }
+      else if (e.target.closest('[data-tl-cancel]')) { closeEdit(item); }
+      else if (e.target.closest('[data-tl-del]')) {
+        delTarget = item;
+        document.getElementById('tl-del-name').textContent = item.querySelector('.tl-title').textContent;
+        delModal.classList.add('open');
+      }
+    });
+
+    document.getElementById('tl-del-cancel').addEventListener('click', function () {
+      delModal.classList.remove('open'); delTarget = null;
+    });
+    delModal.addEventListener('click', function (e) {
+      if (e.target === delModal) { delModal.classList.remove('open'); delTarget = null; }
+    });
+    document.getElementById('tl-del-confirm').addEventListener('click', function () {
+      if (delTarget) delTarget.remove();
+      delTarget = null;
+      delModal.classList.remove('open');
+      syncCount();
+    });
+
+    document.getElementById('tl-add').addEventListener('click', function () {
+      var tpl = tlList.querySelector('.tl-item');
+      var item = tpl.cloneNode(true);
+      item.removeAttribute('data-od-id');
+      item.classList.remove('editing');
+      var inputs = item.querySelectorAll('.tl-edit .input');
+      inputs[0].value = ''; inputs[1].value = '';
+      item.querySelector('.tl-edit .textarea').value = '';
+      item.querySelector('.tl-time').textContent = '未设定时间点';
+      item.querySelector('.tl-title').textContent = '新事件';
+      item.querySelector('.tl-desc').textContent = '暂无简述。';
+      tlList.appendChild(item);
+      item.classList.add('editing');
+      syncCount();
+      inputs[0].focus();
+    });
+  })();
+</script>
+</body>
+</html>

@@ -1,0 +1,270 @@
+<!doctype html>
+<!--
+  HSR Partner Harness V0.4.0 角色卡 · 原型总览
+  设计基底与 character-library.html 一致（双主题、琥珀橙 accent、线性 SVG 图标）。
+-->
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>原型总览 · HSR Partner Harness V0.4.0</title>
+<style>
+  :root {
+    --bg:      oklch(0.14 0.008 60);
+    --surface: oklch(0.18 0.008 60);
+    --fg:      oklch(0.95 0.005 70);
+    --muted:   oklch(0.62 0.012 60);
+    --border:  oklch(0.25 0.008 60);
+    --accent:  oklch(0.72 0.15 65);
+    --ok:      oklch(0.7 0.15 150);
+    --warn:    oklch(0.78 0.14 85);
+    --danger:  oklch(0.6 0.2 25);
+    --accent-soft: color-mix(in oklch, var(--accent) 14%, transparent);
+    --fg-soft:     color-mix(in oklch, var(--fg) 6%, transparent);
+    --surface-2:   color-mix(in oklch, var(--surface) 60%, var(--bg));
+    --font-display: 'Noto Serif SC', 'Source Han Serif SC', Georgia, serif;
+    --font-body:    'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    --font-mono:    'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    --fs-h1: 28px; --fs-h2: 22px; --fs-h3: 16px; --fs-body: 14px; --fs-meta: 12px;
+    --gap-xs: 8px; --gap-sm: 12px; --gap-md: 16px; --gap-lg: 24px; --gap-xl: 32px;
+    --radius: 8px; --radius-lg: 12px;
+  }
+  [data-theme="light"] {
+    --bg:      oklch(0.97 0.005 75);
+    --surface: oklch(0.99 0.004 75);
+    --fg:      oklch(0.22 0.01 60);
+    --muted:   oklch(0.5 0.012 60);
+    --border:  oklch(0.88 0.006 70);
+    --accent:  oklch(0.62 0.16 60);
+    --ok:      oklch(0.55 0.14 150);
+    --warn:    oklch(0.6 0.14 80);
+    --danger:  oklch(0.5 0.18 25);
+    --surface-2: color-mix(in oklch, var(--surface) 55%, var(--bg));
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: var(--fs-body); line-height: 1.55; -webkit-font-smoothing: antialiased; }
+  svg { display: block; }
+  a { color: inherit; text-decoration: none; }
+  button { font: inherit; cursor: pointer; color: inherit; }
+  h1, h2, h3 { margin: 0; text-wrap: balance; }
+  p { margin: 0; text-wrap: pretty; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md);
+    padding: 14px var(--gap-xl); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10;
+    background: color-mix(in oklch, var(--bg) 88%, transparent); backdrop-filter: blur(10px);
+  }
+  .brand { font-family: var(--font-display); font-size: 17px; font-weight: 600; }
+  .content { padding: var(--gap-xl); max-width: 1280px; margin-inline: auto; }
+  .h1 { font-family: var(--font-display); font-size: clamp(30px, 4vw, 44px); font-weight: 600; letter-spacing: 0.01em; }
+  .h2 { font-family: var(--font-display); font-size: var(--fs-h2); font-weight: 600; }
+  .h3 { font-size: var(--fs-h3); font-weight: 600; }
+  .meta { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--muted); }
+  .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); }
+  .row { display: flex; align-items: center; gap: var(--gap-sm); }
+  .row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md); }
+  .stack { display: flex; flex-direction: column; gap: var(--gap-md); }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 8px 16px;
+    border-radius: var(--radius); border: 1px solid transparent; font-size: 13.5px; font-weight: 500;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  .btn svg { width: 16px; height: 16px; }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--accent); color: oklch(0.14 0.008 60); border-color: var(--accent); font-weight: 600; }
+  [data-theme="light"] .btn-primary { color: oklch(0.99 0.004 75); }
+  .btn-primary:hover { background: color-mix(in oklch, var(--accent) 88%, black); color: oklch(0.98 0.005 70); }
+  .btn-secondary { background: transparent; color: var(--fg); border-color: var(--border); }
+  .btn-secondary:hover { border-color: var(--muted); background: var(--fg-soft); }
+  .btn-ghost { background: transparent; color: var(--muted); padding-inline: 8px; }
+  .btn-ghost:hover { color: var(--fg); background: var(--fg-soft); }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px;
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+    background: var(--fg-soft); color: var(--muted);
+  }
+  .pill svg { width: 12px; height: 12px; }
+  .pill-accent { background: var(--accent-soft); color: var(--accent); }
+  .pill-ok { background: color-mix(in oklch, var(--ok) 14%, transparent); color: var(--ok); }
+  .pill-warn { background: color-mix(in oklch, var(--warn) 14%, transparent); color: var(--warn); }
+  .pill-danger { background: color-mix(in oklch, var(--danger) 14%, transparent); color: var(--danger); }
+  .dot { width: 7px; height: 7px; border-radius: 999px; flex: none; }
+  .dot-ok { background: var(--ok); } .dot-warn { background: var(--warn); }
+  .dot-danger { background: var(--danger); } .dot-muted { background: var(--muted); }
+  .mock-tag {
+    display: inline-flex; align-items: center; padding: 2px 8px;
+    border: 1px dashed var(--muted); border-radius: 4px;
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em;
+    color: var(--muted); text-transform: uppercase;
+  }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--gap-lg); }
+  .ds-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .ds-table th, .ds-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .ds-table th { color: var(--muted); font-weight: 500; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; }
+  .ds-table tbody tr:hover { background: var(--fg-soft); }
+  .theme-toggle {
+    display: inline-flex; align-items: center; gap: 8px; padding: 8px var(--gap-sm);
+    border-radius: var(--radius); border: 1px solid var(--border); background: transparent;
+    color: var(--muted); font-size: 12.5px; min-height: 40px;
+  }
+  .theme-toggle:hover { color: var(--fg); background: var(--fg-soft); }
+  .theme-toggle svg { width: 15px; height: 15px; }
+  /* page */
+  .page-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--gap-md); }
+  .page-card { display: flex; flex-direction: column; gap: var(--gap-sm); transition: border-color 0.15s ease; }
+  .page-card:hover { border-color: var(--muted); }
+  .page-card .idx { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+  .page-card .go { margin-top: auto; color: var(--muted); font-size: 12.5px; display: flex; align-items: center; gap: 6px; }
+  .page-card:hover .go { color: var(--accent); }
+  .hero-band { padding-block: var(--gap-xl) var(--gap-lg); }
+  @media (max-width: 920px) { .content { padding: var(--gap-md); } .ds-table { display: block; overflow-x: auto; } }
+</style>
+</head>
+<body>
+<header class="topbar" data-od-id="topbar">
+  <span class="brand">Partner Harness <span class="meta">· v0.4.0 角色卡原型</span></span>
+  <div class="row">
+    <span class="mock-tag">全部页面为样例数据</span>
+    <button class="theme-toggle" data-theme-toggle data-od-id="theme-toggle">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      <span data-theme-label>切换浅色主题</span>
+    </button>
+  </div>
+</header>
+
+<main class="content" id="content">
+  <section class="hero-band" data-od-id="hero">
+    <p class="meta" style="letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: var(--gap-md);">UI 设计方案 · 高保真原型</p>
+    <h1 class="h1">角色卡功能 · 八条主线，十个页面</h1>
+    <p class="muted" style="max-width: 64ch; margin-top: var(--gap-md); font-size: 15px;">
+      覆盖角色库、快速创建、高级编辑、头像、导入导出、世界书、mufy 高级字段、角色语音与新用户引导。
+      暗色优先、双主题；琥珀橙为唯一强调色；图标全部为线性 SVG。每页状态均以内嵌 mock 数据演示。
+    </p>
+  </section>
+
+  <section class="stack" data-od-id="page-map" style="margin-top: var(--gap-lg);">
+    <div class="row-between"><h2 class="h2">页面地图</h2><span class="meta">9 个功能页 + 本总览</span></div>
+    <div class="page-grid">
+      <a class="card page-card" href="character-library.html" data-od-id="page-library">
+        <span class="idx">A · character-library.html</span>
+        <span class="h3">角色库</span>
+        <span class="muted" style="font-size: 13px;">卡片网格、来源/音色筛选、空态（零角色/筛选无结果）、配对入口、删除确认、导入失败角标。</span>
+        <span class="go">打开页面 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></span>
+      </a>
+      <a class="card page-card" href="character-create.html" data-od-id="page-create">
+        <span class="idx">B1 · character-create.html</span>
+        <span class="h3">快速创建</span>
+        <span class="muted" style="font-size: 13px;">单页分区表单 + 右侧实时角色卡预览，可一键切到高级编辑。</span>
+        <span class="go">打开页面 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></span>
+      </a>
+      <a class="card page-card" href="character-editor.html" data-od-id="page-editor">
+        <span class="idx">B2 · character-editor.html</span>
+        <span class="h3">高级编辑器</span>
+        <span class="muted" style="font-size: 13px;">十七个分区树 + 面包屑 + 常驻预览；mufy 高级字段与只读原始 JSON。</span>
+        <span class="go">打开页面 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></span>
+      </a>
+      <a class="card page-card" href="avatar-flow.html" data-od-id="page-avatar">
+        <span class="idx">C · avatar-flow.html</span>
+        <span class="h3">头像流程</span>
+        <span class="muted" style="font-size: 13px;">选择 → 裁切 → 确认三步弹层；PNG 内嵌头像与无头像占位两种状态。</span>
+        <span class="go">打开页面 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></span>
+      </a>
+      <a class="card page-card" href="character-import.html" data-od-id="page-import">
+        <span class="idx">D · character-import.html</span>
+        <span class="h3">导入流程</span>
+        <span class="muted" style="font-size: 13px;">拖放解析、预览卡、名称冲突副本策略、失败重试（绝不静默替换）。</span>
+        <span class="go">打开页面 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></span>
+      </a>
+      <a class="card page-card" href="character-export.html" data-od-id="page-export">
+        <span class="idx">E · character-export.html</span>
+        <span class="h3">导出流程</span>
+        <span class="muted" style="font-size: 13px;">v3 JSON / PNG 单选、字段逐项核对、可编辑文件名、完成与失败态。</span>
+        <span class="go">打开页面 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></span>
+      </a>
+      <a class="card page-card" href="worldbook-editor.html" data-od-id="page-worldbook">
+        <span class="idx">F · worldbook-editor.html</span>
+        <span class="h3">世界书编辑</span>
+        <span class="muted" style="font-size: 13px;">独立视图：可排序条目列表、关键字与插入规则编辑、条目预览页签。</span>
+        <span class="go">打开页面 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></span>
+      </a>
+      <a class="card page-card" href="voice-create.html" data-od-id="page-voice">
+        <span class="idx">G · voice-create.html</span>
+        <span class="h3">角色语音</span>
+        <span class="muted" style="font-size: 13px;">参考音频上传、试听、创建音色状态机（未配置/创建中/成功/失败）。</span>
+        <span class="go">打开页面 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></span>
+      </a>
+      <a class="card page-card" href="onboarding.html" data-od-id="page-onboarding">
+        <span class="idx">H · onboarding.html</span>
+        <span class="h3">新用户引导</span>
+        <span class="muted" style="font-size: 13px;">十三步进度条串联主路径，每步嵌入真实组件而非截图。</span>
+        <span class="go">打开页面 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></span>
+      </a>
+    </div>
+  </section>
+
+  <section class="stack" data-od-id="state-matrix" style="margin-top: var(--gap-xl);">
+    <div class="row-between"><h2 class="h2">页面状态清单</h2><span class="meta">交付物 11 · 状态覆盖矩阵</span></div>
+    <div class="card" style="padding: 0; overflow: hidden;">
+      <table class="ds-table">
+        <thead>
+          <tr><th>页面</th><th>默认态</th><th>空态</th><th>进行态</th><th>成功态</th><th>失败态</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>角色库</td><td><span class="row"><span class="dot dot-ok"></span>卡片网格 + 分页计数</span></td><td><span class="row"><span class="dot dot-muted"></span>零角色空库 / 筛选无结果（两态独立演示）</span></td><td>音色创建中（骨架）</td><td>使用中标记 / 已归档徽标</td><td>导入失败角标 / 音色创建失败重试</td></tr>
+          <tr><td>快速创建</td><td><span class="row"><span class="dot dot-ok"></span>分区表单</span></td><td>未填写预览占位</td><td>未保存更改点</td><td>完成创建</td><td>必填校验内联提示</td></tr>
+          <tr><td>高级编辑器</td><td><span class="row"><span class="dot dot-ok"></span>分区树导航</span></td><td>空分区提示</td><td>自动保存中</td><td>已保存时间戳</td><td>JSON 解析错误行号</td></tr>
+          <tr><td>头像流程</td><td><span class="row"><span class="dot dot-ok"></span>首字符占位</span></td><td>无内嵌头像占位</td><td>裁切拖动中</td><td>确认应用</td><td>格式不支持提示</td></tr>
+          <tr><td>导入</td><td><span class="row"><span class="dot dot-ok"></span>拖放区</span></td><td>—</td><td>解析骨架屏</td><td>预览卡 + 导入完成摘要</td><td><span class="row"><span class="dot dot-danger"></span>错误摘要 + 重试</span></td></tr>
+          <tr><td>导出</td><td><span class="row"><span class="dot dot-ok"></span>格式单选</span></td><td>—</td><td>写入中</td><td>完成 + 保存位置</td><td><span class="row"><span class="dot dot-danger"></span>失败 + 原因</span></td></tr>
+          <tr><td>世界书</td><td><span class="row"><span class="dot dot-ok"></span>条目列表</span></td><td>零条目引导</td><td>拖动排序中</td><td>条目预览</td><td>关键字为空警示</td></tr>
+          <tr><td>角色语音</td><td><span class="row"><span class="dot dot-ok"></span>未配置引导</span></td><td>账号未配置引导</td><td>创建中（可取消）</td><td>音色已绑定 + 试听</td><td><span class="row"><span class="dot dot-danger"></span>真实错误 + 重试</span></td></tr>
+          <tr><td>新用户引导</td><td><span class="row"><span class="dot dot-ok"></span>十三步进度</span></td><td>—</td><td>步骤过渡</td><td>配对完成进入对话</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="stack" data-od-id="design-notes" style="margin-top: var(--gap-xl); padding-bottom: var(--gap-xl);">
+    <h2 class="h2">视觉规则速记</h2>
+    <div class="page-grid">
+      <div class="card">
+        <div class="h3">唯一强调色</div>
+        <p class="muted" style="font-size: 13px; margin-top: 6px;">琥珀橙 <span class="meta">oklch(0.72 0.15 65)</span> 每屏至多出现两次；浅色主题同色相加深保证对比度。严禁蓝紫。</p>
+      </div>
+      <div class="card">
+        <div class="h3">状态不只靠颜色</div>
+        <p class="muted" style="font-size: 13px; margin-top: 6px;">警告与 accent 色相接近，因此警告一律图标 + 文字双编码；音色状态用色点 + 文字标签。</p>
+      </div>
+      <div class="card">
+        <div class="h3">样例数据显式标识</div>
+        <p class="muted" style="font-size: 13px; margin-top: 6px;">所有 mock 状态以虚线边框标签「样例数据」标注，与真实完成态视觉隔离，避免验收误读。</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+  (function () {
+    var saved = localStorage.getItem('hp-theme');
+    if (saved) document.documentElement.setAttribute('data-theme', saved);
+    function sync() {
+      var light = document.documentElement.getAttribute('data-theme') === 'light';
+      document.querySelectorAll('[data-theme-label]').forEach(function (el) {
+        el.textContent = light ? '切换暗色主题' : '切换浅色主题';
+      });
+    }
+    document.querySelectorAll('[data-theme-toggle]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('hp-theme', next);
+        sync();
+      });
+    });
+    sync();
+  })();
+</script>
+</body>
+</html>
