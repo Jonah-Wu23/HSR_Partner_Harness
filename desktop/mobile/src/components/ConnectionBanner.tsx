@@ -1,31 +1,83 @@
 import type { MobileConnectionState } from "../lib/wsClient";
+import { useMobileStore } from "../lib/mobileStore";
+import { navigate } from "../lib/router";
+import "./ConnectionBanner.css";
 
-const CONNECTION_LABEL: Record<MobileConnectionState, string> = {
-  disconnected: "未连接",
-  connecting: "连接中…",
-  connected: "已连接",
-  reconnecting: "连接中断，重连中…",
-  unreachable: "无法到达桌面端，请确认 Sidecar 已以 --serve 运行",
-  auth_failed: "配对已失效，请重新配对",
+export interface ConnectionBannerProps {
+  connection: MobileConnectionState;
+}
+
+const CONNECTION_MESSAGES: Record<MobileConnectionState, string> = {
+  disconnected: "已断开与桌面端的连接",
+  connecting: "正在连接桌面端…",
+  connected: "",
+  reconnecting: "与桌面端连接中断，正在重连…",
+  unreachable: "无法连接到桌面端，请确认 Sidecar 已以 --serve 运行且网络通畅",
+  auth_failed: "配对已失效或设备已被撤销，请重新配对",
 };
 
 /**
- * V0.3.3 手机端全局连接状态条（骨架占位实现，由 W4 填充五态视觉与交互）。
+ * V0.3.3 手机端全局连接状态条。
  *
- * TODO(W4)：五态（未连接/已连接/重连中/鉴权失败/电脑离线）视觉分级；
- * 鉴权失败给"重新配对"入口（navigate 到 #/pair）；断线必须醒目如实呈现，
- * 严禁弱化成空闲态；connected 态可收起。数据只能来自 useMobileStore 的
- * connection 字段，不得自行探测。
+ * 五态视觉分级：
+ * - connecting / reconnecting: 警示色 (is-warn)
+ * - unreachable / auth_failed / disconnected: 醒目红色 (is-down)
+ * - connected: 隐藏 (null)
+ *
+ * 交互入口：
+ * - auth_failed 提供「重新配对」按钮（跳转 #/pair）
+ * - unreachable / disconnected 提供「重试」按钮（调用 store reconnect）
  */
-export function ConnectionBanner(props: { connection: MobileConnectionState }) {
-  if (props.connection === "connected") return null;
-  const tone =
-    props.connection === "unreachable" || props.connection === "auth_failed"
-      ? "is-down"
-      : "is-warn";
+export function ConnectionBanner({ connection }: ConnectionBannerProps) {
+  if (connection === "connected") {
+    return null;
+  }
+
+  const isDown =
+    connection === "unreachable" ||
+    connection === "auth_failed" ||
+    connection === "disconnected";
+  const toneClass = isDown ? "is-down" : "is-warn";
+
+  const handleReconnect = () => {
+    useMobileStore.getState().reconnect();
+  };
+
+  const handleRePair = () => {
+    navigate({ name: "pair" });
+  };
+
   return (
-    <div className={`conn-banner ${tone}`} role="status">
-      {CONNECTION_LABEL[props.connection]}
-    </div>
+    <aside
+      className={`conn-banner ${toneClass}`}
+      role="status"
+      aria-live="polite"
+      data-testid="connection-banner"
+      data-state={connection}
+    >
+      <span className="conn-banner-message">{CONNECTION_MESSAGES[connection]}</span>
+      <div className="conn-banner-actions">
+        {connection === "auth_failed" && (
+          <button
+            type="button"
+            className="conn-banner-btn"
+            onClick={handleRePair}
+            data-testid="btn-repair"
+          >
+            重新配对
+          </button>
+        )}
+        {(connection === "unreachable" || connection === "disconnected") && (
+          <button
+            type="button"
+            className="conn-banner-btn"
+            onClick={handleReconnect}
+            data-testid="btn-reconnect"
+          >
+            重试
+          </button>
+        )}
+      </div>
+    </aside>
   );
 }
