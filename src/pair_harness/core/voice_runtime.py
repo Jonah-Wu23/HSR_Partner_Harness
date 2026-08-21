@@ -1,6 +1,6 @@
 """VoiceRuntime：上行（麦克风→VAD→ASR→Orchestrator）与下行（消息→TTS→播放）协调器。
 
-设计依据：``docs/plans/2026-08-11-b2-voice-detailed-design.md`` §5。
+设计依据：千问语音 API 参考（``docs/design/dashscope/``）。
 
 上行：VoiceRuntime 持有唯一采集流，逐块 tee——
 - 喂给 VAD（``VoiceActivityDetector.detect`` 的事件流驱动语音段生命周期）；

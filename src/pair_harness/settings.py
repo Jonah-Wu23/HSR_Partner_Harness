@@ -96,7 +96,7 @@ class Settings:
     def resolved_ws_url(self) -> str:
         """WebSocket 地址：默认按专属端点推导（B2 联调验证点 R5）。
 
-        推导规则与 docs/design/千问语音识别文档.md 一致：北京/新加坡
+        推导规则与 docs/design/dashscope/千问语音识别文档.md 一致：北京/新加坡
         Key 与地址必须同地域，ws 地址由 HTTP 服务地址的 host 推导
         （北京 ``wss://{host}.cn-beijing.../api-ws/v1/inference``、
         新加坡 ``wss://{host}.ap-southeast-1.../api-ws/v1/inference``），

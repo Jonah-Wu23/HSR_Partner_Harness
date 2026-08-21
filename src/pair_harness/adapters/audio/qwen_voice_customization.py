@@ -3,8 +3,8 @@
 供 CLI（``scripts/create_qwen_voice.py``）与桌面命令（``voice.provision``）
 共用同一份请求构建、响应解析和错误映射，避免两套实现漂移。
 
-契约依据 ``docs/design/千问声音复刻文档.md`` 与
-``docs/design/千问声音设计文档.md``：
+契约依据 ``docs/design/dashscope/千问声音复刻文档.md`` 与
+``docs/design/dashscope/千问声音设计文档.md``：
 
 - 复刻：``POST {http_base_url}/services/audio/tts/customization``，
   ``model="voice-enrollment"``，``input.action="create_voice"``，

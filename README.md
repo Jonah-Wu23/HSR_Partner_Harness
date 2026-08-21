@@ -18,7 +18,7 @@
   <a href="README.en.md">English</a> ·
   <a href="https://jonah-wu23.github.io/HSR_Partner_Harness/">项目介绍网站</a> ·
   <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases">Windows x64 下载</a> ·
-  <a href="docs/architecture_V0.2.0.md">架构说明</a>
+  <a href="AGENTS.md">架构说明</a>
 </p>
 
 ## 30 秒了解

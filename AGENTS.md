@@ -35,6 +35,21 @@ Python 包位于 `src/pair_harness/`。Sidecar 入口是 `pair_harness.desktop_b
 
 桌面界面统一放在 `desktop/`。Python 包保留 Sidecar 所需的业务代码。
 
+## 文档索引
+
+`docs/` 按渐进式披露组织：本节只记录顶层，各子目录的 `README.md` 再披露其下文档，需要细节时逐层进入。
+
+- `docs/README.md` — docs 总索引（完整入口）。
+- `docs/index.html` 与 `docs/assets/website/` — 项目官网，GitHub Pages 从 `docs/` 根目录发布，两者位置不可移动。
+- `docs/plans/` — 开发计划，现行路线图 `V0.3.3-V0.4.0-Plan.md`。
+- `docs/release-notes/` — 版本发布说明（v0.2.0 / v0.3.2 / v0.3.2-patch1）。
+- `docs/character-card/` — 角色卡数据契约、字段映射、状态枚举与接入清单。
+- `docs/design/` — `research/` 外部调研（mufy、SillyTavern、DeepSeek-Reasonix）、`dashscope/` 千问语音 API 参考、`web-prototype/` V0.4.0 视觉原型、`旧版/` v0.2.0 时代文档。
+- `docs/website/` — 官网文案规则。
+- `docs/promo/` — 宣发工作目录，Git 忽略，仅存本地。
+
+维护规则：新增文档放进对应子目录并更新该目录 `README.md`；移动或重命名 `docs/character-card/`、`docs/design/dashscope/` 下的文档时，同步更新 `src/` 代码注释中的路径引用。
+
 ## 产品边界
 
 角色负责对话，也可以形成结构化委派。文件操作和命令执行由助手完成。

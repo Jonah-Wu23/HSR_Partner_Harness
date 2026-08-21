@@ -207,7 +207,7 @@ The finished installer is written to `desktop/src-tauri/target/release/bundle/ns
 | `config/` | Pair configuration and prompts. |
 | `assets/` | Runtime model files. |
 | `tests/` | Python tests. |
-| `docs/architecture.md` | Desktop architecture notes. |
+| `docs/` | Documentation; start from `docs/README.md` (Chinese). |
 
 ## Third-party code
 
