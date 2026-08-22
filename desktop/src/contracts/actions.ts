@@ -83,6 +83,30 @@ export interface HarnessActions {
   /** V0.3.2 M6：在当前账号的百炼下生成专属音色（5 复刻 + 1 设计）。
       speakerIds 缺省表示全部缺失项；replaceExisting=true 用于显式重新生成。 */
   provisionVoices(speakerIds?: string[], replaceExisting?: boolean): Promise<VoiceProvisionResult>;
+  /* —— V0.3.3 角色卡（card.* 命令）—— */
+  /** 拉取角色卡列表写入 store.characterLibrary（含归档差集标记）；失败写入 slice.error。 */
+  listCards(): Promise<void>;
+  /** 打开角色库视图并触发 listCards。 */
+  openCharacterLibrary(): Promise<void>;
+  /** 打开角色创作视图；cardId 非空时经 card.get 载入该卡（只读卡 readOnly=true）。 */
+  openCharacterCreate(cardId?: string): Promise<void>;
+  /** 返回聊天工作区视图。 */
+  openChat(): void;
+  /** 创建最小草稿，返回 card_id；同时记为创作页当前草稿。 */
+  createCardDraft(name: string): Promise<string>;
+  /** 以完整 v3 JSON 覆盖保存角色卡。 */
+  updateCard(cardId: string, card: Record<string, unknown>): Promise<void>;
+  duplicateCard(cardId: string): Promise<void>;
+  archiveCard(cardId: string): Promise<void>;
+  /** 删除角色卡；页面确认后才允许调用（confirm=true 固定由本方法携带）。 */
+  deleteCard(cardId: string): Promise<void>;
+  selectActiveCard(cardId: string): Promise<void>;
+  /* —— V0.3.3 手机远程配对（remote.* 命令）—— */
+  /** 生成一次性短期配对码，写入 store.remotePairing。 */
+  issuePairingCode(): Promise<void>;
+  listRemoteDevices(): Promise<void>;
+  /** 按设备名撤销其全部 token 并刷新设备列表。 */
+  revokeRemoteDevice(deviceName: string): Promise<void>;
 }
 
 /** voice.provision 的真实返回：completed 或 partial_failed + 每项结果。 */

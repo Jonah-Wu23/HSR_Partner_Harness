@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pair_harness.config.pairs import repository_root
+from pair_harness.config.pairs import list_pair_configs, repository_root
 from pair_harness.voice_models import VOICE_TTS_MODEL
 
 MANIFEST_RELATIVE_PATH = Path("config") / "voices" / "reference_voice_manifest.json"
@@ -44,6 +44,16 @@ DESIGN_SPEAKER_IDS = frozenset({"ancient_machine"})
 # 古代机械声音设计固定试听文本（与 scripts/create_qwen_voice.py 的真实
 # 生成流程一致；改文本视为换音色素材，需按正式版本处理）
 ANCIENT_MACHINE_PREVIEW_TEXT = "你好，我是神秘的古代机械。核心模块已启动，正在等待指令。"
+
+
+def assistant_speaker_ids(*, root: Path | None = None) -> frozenset[str]:
+    """运行时从配对目录推导全部助手侧说话方 id 集合（V0.3.3）。
+
+    助手永不使用 TTS。provision / preview 对助手侧说话方的拒绝判定以
+    此集合为唯一依据，禁止在代码里硬编码说话方名单——说话方随
+    ``config/pairs/*.yaml`` 的 ``assistant.id`` 推导。
+    """
+    return frozenset(pair.assistant.id for pair in list_pair_configs(root=root))
 
 _PREFIX_RE = re.compile(r"^[a-z0-9]{1,10}$")
 

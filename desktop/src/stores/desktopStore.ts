@@ -19,6 +19,12 @@ import type {
   Turn,
   VoiceState,
 } from "../contracts/protocol";
+import type {
+  CharacterCreateViewModel,
+  CharacterLibraryViewModel,
+  MainView,
+  RemotePairingViewModel,
+} from "../contracts/view-models";
 
 export type DesktopStatus = "booting" | "ready" | "disconnected" | "error";
 
@@ -82,6 +88,17 @@ export interface DesktopState {
   activeConversationId: string | null;
   /** V0.3.2 M5：本窗口当前标签所属项目；不随 Sidecar 全局导航指针变化。 */
   activeProjectId: string | null;
+
+  /* —— V0.3.3 角色卡与远程配对 slice（形状见 contracts/view-models.ts）—— */
+  /** 主工作区视图：聊天 / 角色库 / 角色创作。 */
+  mainView: MainView;
+  characterLibrary: CharacterLibraryViewModel;
+  characterCreate: CharacterCreateViewModel;
+  remotePairing: RemotePairingViewModel;
+  setMainView(view: MainView): void;
+  setCharacterLibrary(partial: Partial<CharacterLibraryViewModel>): void;
+  setCharacterCreate(partial: Partial<CharacterCreateViewModel>): void;
+  setRemotePairing(partial: Partial<RemotePairingViewModel>): void;
   hydrate(snapshot: DesktopSnapshot): void;
   applyEvents(events: DesktopEvent[]): void;
   /** V0.3.2 M5：装载 conversation.open 的只读结果并打开对应标签（不改全局当前聊天）。 */
@@ -144,6 +161,10 @@ export type DesktopRenderState = Pick<
   | "openConversationIds"
   | "activeConversationId"
   | "activeProjectId"
+  | "mainView"
+  | "characterLibrary"
+  | "characterCreate"
+  | "remotePairing"
 >;
 
 const emptyVoice: VoiceState = {
@@ -195,6 +216,10 @@ function createInitialState(): Omit<
   | "dismissToast"
   | "pushToast"
   | "setConfigSnapshot"
+  | "setMainView"
+  | "setCharacterLibrary"
+  | "setCharacterCreate"
+  | "setRemotePairing"
 > {
   return {
     status: "booting",
@@ -237,6 +262,17 @@ function createInitialState(): Omit<
     openConversationIds: [],
     activeConversationId: null,
     activeProjectId: null,
+    mainView: "chat",
+    characterLibrary: { cards: [], loading: false, error: null, loaded: false },
+    characterCreate: { cardId: null, card: null, readOnly: false, loading: false, error: null },
+    remotePairing: {
+      code: null,
+      ttlSeconds: 300,
+      issuedAtEpochMs: null,
+      devices: [],
+      loading: false,
+      error: null,
+    },
   };
 }
 
@@ -1316,6 +1352,18 @@ export const desktopStore = createStore<DesktopState>((set) => ({
   setConfigSnapshot(snapshot) {
     set({ configSnapshot: snapshot });
   },
+  setMainView(mainView) {
+    set({ mainView });
+  },
+  setCharacterLibrary(patch) {
+    set((state) => ({ characterLibrary: { ...state.characterLibrary, ...patch } }));
+  },
+  setCharacterCreate(patch) {
+    set((state) => ({ characterCreate: { ...state.characterCreate, ...patch } }));
+  },
+  setRemotePairing(patch) {
+    set((state) => ({ remotePairing: { ...state.remotePairing, ...patch } }));
+  },
 }));
 
 export function useDesktopStore<T>(selector: (state: DesktopState) => T): T {
@@ -1372,4 +1420,8 @@ export const selectDesktopRenderState = (state: DesktopState): DesktopRenderStat
   openConversationIds: state.openConversationIds,
   activeConversationId: state.activeConversationId,
   activeProjectId: state.activeProjectId,
+  mainView: state.mainView,
+  characterLibrary: state.characterLibrary,
+  characterCreate: state.characterCreate,
+  remotePairing: state.remotePairing,
 });

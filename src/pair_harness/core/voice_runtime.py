@@ -42,7 +42,6 @@ from pair_harness.core.ports import (
     VoiceActivityDetector,
 )
 from pair_harness.core.voice_policy import (
-    extract_speech_segments,
     is_readable_text,
     is_tts_eligible,
 )
@@ -126,10 +125,6 @@ class VoiceRuntime:
         self._tts_failed = False
         # 古代机械语音默认关闭；由账号级语音设置显式开启。
         self._assistant_voice_enabled = False
-        # 古代机械的阶段性说明会先于最终执行回执到达。记录已提前入队的
-        # 文本，最终消息再次落库时只保留一份语音。
-        self._preannounced_assistant_texts: set[str] = set()
-        self._progress_message_index = 0
 
     @property
     def speech_queue_len(self) -> int:
@@ -137,7 +132,11 @@ class VoiceRuntime:
         return self._queue.pending
 
     def set_assistant_voice_enabled(self, enabled: bool) -> None:
-        """设置古代机械是否自动朗读消息。"""
+        """V0.3.3：助手永不使用 TTS——此开关仅保留给账号配置同步路径调用。
+
+        已不再影响任何 TTS 入队：助手消息一律由 ``is_tts_eligible`` 拦截，
+        这里只维护一个供桌面端读回的状态标记。
+        """
         self._assistant_voice_enabled = bool(enabled)
 
     # ------------------------------------------------------------ 生命周期
@@ -422,9 +421,8 @@ class VoiceRuntime:
     def on_message(self, message: Message) -> None:
         """消息监听入口（由 Orchestrator 在持久化后调用）。
 
-        仅 tts_eligible 的消息进入 TTS：character.speech 全文入队；
-        assistant.natural_language 按 ``extract_speech_segments`` 分段落入队。
-        voice_id 按来源选 pair 配置的 character/assistant 音色。
+        V0.3.3：仅 ``tts_eligible`` 的消息进入 TTS——只有 character.speech
+        全文入队；助手及其余来源一律静音。
         """
         if message.conversation_id != self._conversation_id:
             return
@@ -432,19 +430,20 @@ class VoiceRuntime:
             return
         if not is_tts_eligible(message.source, message.kind):
             return
-        if message.source == MessageSource.ASSISTANT and not self._assistant_voice_enabled:
-            return
         self._enqueue_for_playback(message)
 
     def replay_message(self, message: Message) -> None:
         """逐条朗读（voice.tts_play）：用户主动指定重播，无视 tts_eligible。
 
-        USER/CHARACTER 消息用角色音色全文朗读；assistant 及其余来源用
-        助手音色按段落朗读。不可读文本（省略号/纯标点）仍被过滤。
+        用户/角色消息用角色音色全文朗读；不可读文本（省略号/纯标点）仍被过滤。
+        V0.3.3：助手消息（ASSISTANT 来源）在朗读入口被冻结拒绝，这里同样
+        短路返回，绝不入队。
         """
         if message.conversation_id != self._conversation_id:
             return
         if message.pair_id != self._pair_config.pair_id:
+            return
+        if message.source == MessageSource.ASSISTANT:
             return
         self._enqueue_for_playback(message)
 
@@ -466,71 +465,25 @@ class VoiceRuntime:
         )
 
     def _enqueue_for_playback(self, message: Message) -> None:
-        """按消息来源选音色/分段，过滤不可读文本后入队。
+        """角色/用户消息全文入队（助手消息已被上层拦截，不再按分段朗读）。
 
-        V0.3.2 M6：说话方有效音色为空（账号未生成且无开发机作者 Key）
-        时跳过该消息——TTS 未开通，不得拿空 ID 或作者 ID 调 DashScope。
+        V0.3.2 M6：说话方有效音色为空（账号未生成且无开发机作者 Key）时
+        跳过该消息——TTS 未开通，不得拿空 ID 或作者 ID 调 DashScope。
         """
-        if message.source == MessageSource.ASSISTANT:
-            voice_id = self._pair_config.assistant.voice_id
-            segments = extract_speech_segments(message.text)
-        else:
-            voice_id = self._pair_config.character.voice_id
-            segments = [message.text]
+        voice_id = self._pair_config.character.voice_id
         if not voice_id:
             return
-        for segment in segments:
-            text = segment.strip()
-            # V0.2 问题 2：入队前再次检查有效自然语言——省略号/纯标点
-            # 降级文本不创建可朗读请求（DashScope 会报 input text is invalid）
-            if not is_readable_text(text):
-                continue
-            if message.source == MessageSource.ASSISTANT:
-                key = self._speech_key(text)
-                if key in self._preannounced_assistant_texts:
-                    self._preannounced_assistant_texts.discard(key)
-                    continue
-            self._queue.enqueue(
-                SpeechRequest(
-                    text=text, voice_id=voice_id, message_id=message.message_id
-                )
-            )
-
-    @staticmethod
-    def _speech_key(text: str) -> str:
-        return " ".join(str(text).split())
-
-    def enqueue_assistant_progress(
-        self, text: str, *, conversation_id: str | None = None
-    ) -> None:
-        """把古代机械的阶段性说明立即送入语音队列。
-
-        V0.3.2 M6：助手有效音色为空时直接跳过（音色未生成，TTS 不可用）。
-        """
-        if conversation_id is not None and conversation_id != self._conversation_id:
-            return
-        if not self._assistant_voice_enabled:
-            return
-        if not self._pair_config.assistant.voice_id:
-            return
-        text = str(text or "").strip()
+        text = message.text.strip()
         if not is_readable_text(text):
             return
-        key = self._speech_key(text)
-        self._preannounced_assistant_texts.add(key)
-        self._progress_message_index += 1
         self._queue.enqueue(
-            SpeechRequest(
-                text=text,
-                voice_id=self._pair_config.assistant.voice_id,
-                message_id=f"assistant-progress:{self._progress_message_index}",
-            )
+            SpeechRequest(text=text, voice_id=voice_id, message_id=message.message_id)
         )
+
 
     def set_context(self, conversation_id: str, pair_config: PairConfig) -> None:
         """切换语音所属聊天与搭档，并停止旧聊天的待播语音。"""
         self.stop_speaking()
-        self._preannounced_assistant_texts.clear()
         self._conversation_id = conversation_id
         self._pair_config = pair_config
 
@@ -542,7 +495,6 @@ class VoiceRuntime:
         ):
             return
         await self.stop_speaking_async()
-        self._preannounced_assistant_texts.clear()
         self._conversation_id = conversation_id
         self._pair_config = pair_config
 
@@ -550,7 +502,6 @@ class VoiceRuntime:
         """在事件循环中更新队列，再在线程中完成 PortAudio 停止。"""
         self._queue.stop()
         self._skip = False
-        self._preannounced_assistant_texts.clear()
         await asyncio.to_thread(self._player.stop)
 
     def stop_speaking(self) -> None:
@@ -562,9 +513,6 @@ class VoiceRuntime:
         self._player.stop()
         self._queue.stop()
         self._skip = False
-        # 阶段性说明可能已被丢弃（未播报）：最终消息落库时不得再被
-        # 去重跳过，否则助手最终回复将彻底无声。
-        self._preannounced_assistant_texts.clear()
 
     def skip_playing(self) -> None:
         """跳过当前句：立即停声并放弃当前合成，继续播队列下一句。

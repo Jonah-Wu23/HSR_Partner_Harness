@@ -40,3 +40,24 @@ class ExecutionContext:
     approval_mode: ApprovalMode = ApprovalMode.REQUEST_APPROVAL
     reasoning_effort: str = "low"
     assistant_instructions: str = ""
+
+
+class AssistantInstructionError(ValueError):
+    """助手提示词装配断言失败：重复注入或混入非助手内容。"""
+
+
+def assert_single_assistant_markdown(
+    instructions: str, expected_markdown: str
+) -> None:
+    """V0.3.3 装配断言：助手上下文恰好注入一个助手 Markdown。
+
+    正常上下文与未来（V0.3.9）压缩后重建的上下文都必须满足：
+    注入文本与 ``load_prompt(pair.assistant.prompt)`` 的单一来源完全一致；
+    同一 Markdown 拼接两次、或混入角色卡/世界书等任何其他内容都视为
+    装配违规，直接失败（Let It Fail），不得静默截断或修正。
+    """
+    if instructions != expected_markdown:
+        raise AssistantInstructionError(
+            "助手提示词装配断言失败：注入内容与单一助手 Markdown 不一致"
+            "（可能重复注入或混入了角色卡内容）"
+        )

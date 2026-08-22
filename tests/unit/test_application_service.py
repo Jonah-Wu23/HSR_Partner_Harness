@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import traceback
 from pathlib import Path
@@ -17,11 +18,13 @@ from pair_harness.core.contracts import (
     ApprovalMode,
     CharacterTurn,
     DialogueEvent,
+    Message,
     MessageKind,
     MessageOrigin,
     MessageSource,
     MessageStatus,
     MessageTarget,
+    PendingOperation,
 )
 from pair_harness.desktop_backend.application_service import (
     ServiceError,
@@ -78,6 +81,47 @@ async def test_bootstrap_contains_projects_conversation_and_voice_shape(tmp_path
         service.emitter.emit("test.event", {})
         next_snapshot = service.bootstrap()
         assert next_snapshot["sequence"] == events[-1]["sequence"]
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_approvals_json_serializable_with_pending(tmp_path: Path) -> None:
+    """V0.3.3 走查发现：broker.snapshot() 曾直接返回 PendingOperation 对象，
+    有挂起审批时 app.bootstrap 响应编码失败，请求方永远等不到响应。"""
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+    )
+    try:
+        op = PendingOperation(
+            tool_kind="shell", command="npm test", paths=(), summary="跑测试"
+        )
+        request_task = asyncio.create_task(
+            service.approval_broker.request(op, "a1", "风险规则", "conv-1", "task-1")
+        )
+        await asyncio.sleep(0)  # 让 request 注册进 _pending
+
+        snapshot = await service.handle_command(command("1", "app.bootstrap"))
+        json.dumps(snapshot)  # 响应必须可编码，不抛即通过
+        assert snapshot["approvals"] == [
+            {
+                "approval_id": "a1",
+                "conversation_id": "conv-1",
+                "task_id": "task-1",
+                "operation": {
+                    "tool_kind": "shell",
+                    "command": "npm test",
+                    "paths": [],
+                    "patch_file_count": None,
+                    "summary": "跑测试",
+                },
+                "reason": "风险规则",
+            }
+        ]
+
+        service.approval_broker.resolve("a1", "deny")
+        await request_task
     finally:
         await service.shutdown()
 
@@ -1367,10 +1411,10 @@ async def test_voice_provision_completed_event_carries_voice_id(
 
 
 @pytest.mark.asyncio
-async def test_voice_preview_accepts_all_account_manifest_voices_without_fallback(
+async def test_voice_preview_allows_character_but_rejects_assistant_speakers(
     tmp_path: Path,
 ) -> None:
-    """V0.3.2 M6：设置页的六个专属音色都按各自 ID 试听。"""
+    """V0.3.3：试听只放行角色侧声源；助手侧说话人声源一律拒绝 assistant_tts_disabled。"""
 
     class FakeVoiceRuntime:
         on_message = lambda self, _message: None
@@ -1392,7 +1436,7 @@ async def test_voice_preview_accepts_all_account_manifest_voices_without_fallbac
     )
     runtime = FakeVoiceRuntime()
     service.attach_voice_runtime(runtime)  # type: ignore[arg-type]
-    expected_voice_ids = {
+    all_voice_ids = {
         "phainon": "voice-phainon",
         "firefly": "voice-firefly",
         "sam": "voice-sam",
@@ -1401,7 +1445,7 @@ async def test_voice_preview_accepts_all_account_manifest_voices_without_fallbac
         "ancient_machine": "voice-ancient-machine",
     }
     service.store.set_secret(service.current_account_id, "voice.api_key", "test-key")
-    for speaker_id, voice_id in expected_voice_ids.items():
+    for speaker_id, voice_id in all_voice_ids.items():
         service.store.set_config(
             service.current_account_id,
             f"voice.profile.{speaker_id}.voice_id",
@@ -1409,19 +1453,35 @@ async def test_voice_preview_accepts_all_account_manifest_voices_without_fallbac
         )
     service._account_config = None
 
+    character_voice_ids = ["voice-phainon", "voice-firefly", "voice-march7"]
+    assistant_voice_ids = ["voice-sam", "voice-fourth-mirror", "voice-ancient-machine"]
+
     try:
-        for speaker_id, voice_id in expected_voice_ids.items():
+        for voice_id in character_voice_ids:
             await service.handle_command(
                 command(
-                    f"preview-{speaker_id}",
+                    f"preview-{voice_id}",
                     "voice.preview",
-                    text=f"试听{speaker_id}",
+                    text="试听角色",
                     voice_id=voice_id,
                 )
             )
+        assert set(runtime.preview_voice_ids) == set(character_voice_ids)
 
-        assert runtime.preview_voice_ids == list(expected_voice_ids.values())
+        # V0.3.3：助手侧声源全部被拒
+        for voice_id in assistant_voice_ids:
+            with pytest.raises(ServiceError) as exc_info:
+                await service.handle_command(
+                    command(
+                        f"preview-assistant-{voice_id}",
+                        "voice.preview",
+                        text="试听助手",
+                        voice_id=voice_id,
+                    )
+                )
+            assert exc_info.value.code == "assistant_tts_disabled"
 
+        # 显式传入未知 ID 仍如实报错，不静默回退到角色音色
         with pytest.raises(ServiceError) as exc_info:
             await service.handle_command(
                 command(
@@ -1432,11 +1492,99 @@ async def test_voice_preview_accepts_all_account_manifest_voices_without_fallbac
                 )
             )
         assert exc_info.value.code == "voice_preview_not_allowed"
-        assert runtime.preview_voice_ids == list(expected_voice_ids.values())
+
+        assert set(runtime.preview_voice_ids) == set(character_voice_ids)
+    finally:
+        await service.shutdown()
+
+@pytest.mark.asyncio
+async def test_voice_tts_play_rejects_assistant_message(tmp_path: Path) -> None:
+    """V0.3.3：手动重播助手消息在语音入口被拒，返回 assistant_tts_disabled。"""
+    events: list[dict] = []
+
+    class FakeVoiceRuntime:
+        on_message = lambda self, _message: None
+        speech_queue_len = 0
+
+        def __init__(self) -> None:
+            self.replayed: list[Any] = []
+
+        def replay_message(self, message: Any) -> None:
+            self.replayed.append(message)
+
+        async def set_context_async(
+            self, conversation_id: str, pair_config: Any
+        ) -> None:
+            del conversation_id, pair_config
+
+        async def shutdown(self) -> None:
+            pass
+
+    service = build_demo_service(
+        database=tmp_path / "data" / "voice-play-assistant.db",
+        project_root=tmp_path,
+        event_sink=events.append,
+    )
+    runtime = FakeVoiceRuntime()
+    service.attach_voice_runtime(runtime)  # type: ignore[arg-type]
+    service.store.set_secret(service.current_account_id, "voice.api_key", "test-key")
+    service.store.set_config(
+        service.current_account_id,
+        "voice.profile.phainon.voice_id",
+        "voice-phainon",
+    )
+    service._account_config = None
+    try:
+        conversation_id = service.current_conversation_id
+        assistant = Message(
+            conversation_id=conversation_id,
+            pair_id="phainon_ancient_machine",
+            source=MessageSource.ASSISTANT,
+            kind=MessageKind.ASSISTANT_NATURAL_LANGUAGE,
+            text="好的，我马上检查项目目录。",
+        )
+        service.store.save_message(assistant)
+
+        with pytest.raises(ServiceError) as exc_info:
+            await service.handle_command(
+                command(
+                    "play-assistant",
+                    "voice.tts_play",
+                    message_id=assistant.message_id,
+                )
+            )
+        assert exc_info.value.code == "assistant_tts_disabled"
+        assert runtime.replayed == []
     finally:
         await service.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_voice_provision_rejects_assistant_speaker(tmp_path: Path) -> None:
+    """V0.3.3：voice.provision 拒绝助手侧说话人，返回 assistant_voice_disabled。"""
+    service = build_demo_service(
+        database=tmp_path / "data" / "voice-provision-assistant.db",
+        project_root=tmp_path,
+    )
+    service.store.set_secret(service.current_account_id, "voice.api_key", "account-key")
+    service.store.set_config(
+        service.current_account_id,
+        "voice.base_url",
+        "https://dashscope.aliyuncs.com/api/v1",
+    )
+    service._account_config = None
+    try:
+        with pytest.raises(ServiceError) as exc_info:
+            await service.handle_command(
+                command(
+                    "provision-assistant",
+                    "voice.provision",
+                    speaker_ids=["sam"],
+                )
+            )
+        assert exc_info.value.code == "assistant_voice_disabled"
+    finally:
+        await service.shutdown()
 @pytest.mark.asyncio
 async def test_config_get_returns_saved_dialogue_reasoning_effort(tmp_path: Path) -> None:
     """M5.2：config.get 必须回读保存的 dialogue.reasoning_effort，不能硬编码 auto。"""

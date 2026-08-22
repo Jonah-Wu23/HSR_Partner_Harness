@@ -14,6 +14,8 @@ import { ToastStack } from "./status/ToastStack";
 import { AccountGate } from "./gate/AccountGate";
 import { Onboarding } from "./gate/Onboarding";
 import { SettingsCenter, type SettingsPage } from "./settings/SettingsCenter";
+import { CharacterLibraryPage } from "./character-library/CharacterLibraryPage";
+import { CharacterCreatePage } from "./character-create/CharacterCreatePage";
 import type { TestResult } from "./settings/types";
 import type { ConnectionViewStatus } from "./status/types";
 
@@ -22,6 +24,7 @@ import "../styles/base.css";
 import "../styles/app.css";
 import "../styles/status.css";
 import "../styles/settings.css";
+import "../styles/characters.css";
 
 interface AppShellProps {
   vm: AppShellViewModel;
@@ -200,7 +203,11 @@ export function AppShell({ vm, actions }: AppShellProps) {
                 </button>
               </div>
             ) : null}
-            {workspace ? (
+            {vm.mainView === "characters" ? (
+              <CharacterLibraryPage vm={vm.characterLibrary} actions={actions} />
+            ) : vm.mainView === "characterCreate" ? (
+              <CharacterCreatePage vm={vm.characterCreate} actions={actions} />
+            ) : workspace ? (
               <Workspace
                 workspace={workspace}
                 pair={pair ?? vm.navigation.currentPair}
@@ -274,6 +281,10 @@ export function AppShell({ vm, actions }: AppShellProps) {
         voice={vm.settings.voice}
         modelTest={modelTest}
         voicePreview={voicePreview}
+        remote={vm.remotePairing}
+        onIssuePairingCode={() => void actions.issuePairingCode()}
+        onListRemoteDevices={() => void actions.listRemoteDevices()}
+        onRevokeRemoteDevice={(deviceName) => void actions.revokeRemoteDevice(deviceName)}
         onSaveProfile={(displayName) => void actions.updateAccountProfile(displayName)}
         onChangePassword={(oldPassword, newPassword) =>
           void actions.changePassword(oldPassword, newPassword)

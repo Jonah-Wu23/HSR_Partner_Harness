@@ -6,12 +6,26 @@ import type {
 } from "../contracts/actions";
 import type {
   ApprovalMode,
+  CardArchiveResult,
+  CardCreateDraftResult,
+  CardDeleteResult,
+  CardDuplicateResult,
+  CardGetResult,
+  CardListResult,
+  CardUpdateResult,
   ConversationOpenResult,
   DesktopCommand,
   DesktopCommandMethod,
   DesktopSnapshot,
   ReasoningEffort,
+  RemoteIssueCodeResult,
+  RemoteListDevicesResult,
+  RemoteRevokeResult,
 } from "../contracts/protocol";
+import type {
+  CharacterCardSummaryView,
+  RemoteDeviceView,
+} from "../contracts/view-models";
 import type { DesktopBackend } from "./backend";
 import { RequestIdFactory } from "./backend";
 import { isDesktopSnapshot } from "./mockDesktopBackend";
@@ -339,6 +353,129 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       const config = await request<Record<string, unknown>>("config.get");
       desktopStore.getState().setConfigSnapshot(config);
       return result;
+    },
+    /* —— V0.3.3 角色卡（card.*）—— */
+    async listCards() {
+      desktopStore.getState().setCharacterLibrary({ loading: true, error: null });
+      try {
+        // card.list 不携带归档标记：对 include_archived 两次结果做差集推导。
+        const [visible, all] = await Promise.all([
+          request<CardListResult>("card.list", { include_archived: false }),
+          request<CardListResult>("card.list", { include_archived: true }),
+        ]);
+        const visibleIds = new Set((visible.cards ?? []).map((card) => card.card_id));
+        const cards: CharacterCardSummaryView[] = (all.cards ?? []).map((card) => ({
+          cardId: card.card_id,
+          name: card.name,
+          state: card.state,
+          source: card.source,
+          updatedAt: card.updated_at,
+          hasAvatar: card.has_avatar,
+          voiceState: card.voice_state,
+          active: card.active,
+          readOnly: card.read_only,
+          archived: !visibleIds.has(card.card_id),
+        }));
+        desktopStore.getState().setCharacterLibrary({ cards, loading: false, loaded: true });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        desktopStore
+          .getState()
+          .setCharacterLibrary({ loading: false, error: message, loaded: true });
+      }
+    },
+    async openCharacterLibrary() {
+      desktopStore.getState().setMainView("characters");
+      await this.listCards();
+    },
+    async openCharacterCreate(cardId) {
+      desktopStore.getState().setMainView("characterCreate");
+      if (!cardId) {
+        desktopStore.getState().setCharacterCreate({
+          cardId: null,
+          card: null,
+          readOnly: false,
+          loading: false,
+          error: null,
+        });
+        return;
+      }
+      desktopStore.getState().setCharacterCreate({ loading: true, error: null });
+      try {
+        const result = await request<CardGetResult>("card.get", { card_id: cardId });
+        desktopStore.getState().setCharacterCreate({
+          cardId: result.card_id,
+          card: result.card,
+          readOnly: result.read_only,
+          loading: false,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        desktopStore.getState().setCharacterCreate({ loading: false, error: message });
+      }
+    },
+    openChat() {
+      desktopStore.getState().setMainView("chat");
+    },
+    async createCardDraft(name) {
+      const result = await request<CardCreateDraftResult>("card.create_draft", { name });
+      desktopStore.getState().setCharacterCreate({ cardId: result.card_id });
+      return result.card_id;
+    },
+    async updateCard(cardId, card) {
+      await request<CardUpdateResult>("card.update", { card_id: cardId, card });
+    },
+    async duplicateCard(cardId) {
+      await request<CardDuplicateResult>("card.duplicate", { card_id: cardId });
+      await this.listCards();
+    },
+    async archiveCard(cardId) {
+      await request<CardArchiveResult>("card.archive", { card_id: cardId });
+      await this.listCards();
+    },
+    async deleteCard(cardId) {
+      await request<CardDeleteResult>("card.delete", { card_id: cardId, confirm: true });
+      await this.listCards();
+    },
+    async selectActiveCard(cardId) {
+      await request("card.select_active", { card_id: cardId });
+      await this.listCards();
+    },
+    /* —— V0.3.3 手机远程配对（remote.*）—— */
+    async issuePairingCode() {
+      desktopStore.getState().setRemotePairing({ loading: true, error: null });
+      try {
+        const result = await request<RemoteIssueCodeResult>("remote.issue_code");
+        desktopStore.getState().setRemotePairing({
+          code: result.code,
+          ttlSeconds: result.ttl_seconds,
+          issuedAtEpochMs: Date.now(),
+          loading: false,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        desktopStore.getState().setRemotePairing({ loading: false, error: message });
+      }
+    },
+    async listRemoteDevices() {
+      desktopStore.getState().setRemotePairing({ loading: true, error: null });
+      try {
+        const result = await request<RemoteListDevicesResult>("remote.list_devices");
+        const devices: RemoteDeviceView[] = (result.devices ?? []).map((device) => ({
+          deviceName: device.device_name,
+          issuedAt: device.issued_at,
+          lastUsedAt: device.last_used_at,
+          revoked: device.revoked,
+        }));
+        desktopStore.getState().setRemotePairing({ devices, loading: false });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        desktopStore.getState().setRemotePairing({ loading: false, error: message });
+      }
+    },
+    async revokeRemoteDevice(deviceName) {
+      await request<RemoteRevokeResult>("remote.revoke", { device_name: deviceName });
+      await this.listRemoteDevices();
     },
     dismissToast(id) {
       // V0.2 M4：Toast 是本地 UI 状态，不经过后端

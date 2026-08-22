@@ -21,6 +21,14 @@ import {
   type MockScenario,
   type MockScenarioName,
 } from "../mocks/scenarios";
+import {
+  MOCK_BUILTIN_CARDS,
+  MOCK_ARCHIVED_CARD_IDS,
+  MOCK_REMOTE_DEVICES,
+  MOCK_USER_CARDS,
+  mockCardPayload,
+} from "../mocks/characterCards";
+import type { CardSummaryPayload } from "../contracts/protocol";
 
 export class MockDesktopBackend implements DesktopBackend {
   private readonly listeners = new Set<(event: DesktopEvent) => void>();
@@ -29,6 +37,10 @@ export class MockDesktopBackend implements DesktopBackend {
   private sequence: number;
   /** 记录全部 request 命令（供测试断言接线与参数，不参与 mock 行为）。 */
   readonly recordedRequests: DesktopCommand[] = [];
+
+  /* V0.3.3：角色卡 mock 可变状态（card.* 命令模拟；样例数据见 mocks/characterCards）。 */
+  private cards: CardSummaryPayload[] = MOCK_USER_CARDS.map((card) => ({ ...card }));
+  private archivedCardIds = new Set<string>(MOCK_ARCHIVED_CARD_IDS);
 
   constructor(scenarioName: MockScenarioName = "single-project") {
     this.scenario = createMockScenario(scenarioName);
@@ -132,6 +144,34 @@ export class MockDesktopBackend implements DesktopBackend {
         return { voice: this.scenario.snapshot.voice } as T;
       case "voice.provision":
         throw new Error("Mock 后端不提供真实音色生成；请在 Tauri + Python Sidecar 中联调");
+      /* —— V0.3.3 角色卡（card.*）与远程配对（remote.*）—— */
+      case "card.list":
+        return this.cardList(command.params) as T;
+      case "card.get":
+        return this.cardGet(command.params) as T;
+      case "card.create_draft":
+        return this.cardCreateDraft(command.params) as T;
+      case "card.update":
+        return this.cardUpdate(command.params) as T;
+      case "card.duplicate":
+        return this.cardDuplicate(command.params) as T;
+      case "card.archive":
+        return this.cardArchive(command.params) as T;
+      case "card.delete":
+        return this.cardDelete(command.params) as T;
+      case "card.select_active":
+        return this.cardSelectActive(command.params) as T;
+      case "remote.issue_code":
+        return { code: "483920", ttl_seconds: 300 } as T;
+      case "remote.pair":
+        return { token: "mock-remote-token" } as T;
+      case "remote.list_devices":
+        return { devices: MOCK_REMOTE_DEVICES } as T;
+      case "remote.revoke":
+        return {
+          device_name: String(command.params.device_name ?? ""),
+          revoked_tokens: 1,
+        } as T;
       default:
         // 尚未实现的 V0.2 命令在 mock 中返回空对象（不阻断前端流程）
         return {} as T;
@@ -157,6 +197,112 @@ export class MockDesktopBackend implements DesktopBackend {
       source: "sidecar",
     });
     this.emit("connection.status", { status: "connected" });
+  }
+
+  /* —— V0.3.3 card.* mock 实现（真实失败直接抛错，不合成成功）—— */
+
+  private activeCardId: string | null = "card-saved-002";
+
+  private cardList(params: Record<string, unknown>): { cards: CardSummaryPayload[] } {
+    const includeArchived = params.include_archived === true;
+    const cards = this.cards
+      .filter((card) => includeArchived || !this.archivedCardIds.has(card.card_id))
+      .map((card) => ({ ...card, active: card.card_id === this.activeCardId }));
+    return { cards: [...cards, ...MOCK_BUILTIN_CARDS.map((card) => ({ ...card }))] };
+  }
+
+  private cardGet(params: Record<string, unknown>) {
+    const cardId = String(params.card_id ?? "");
+    const builtin = MOCK_BUILTIN_CARDS.find((card) => card.card_id === cardId);
+    if (builtin) {
+      return {
+        card_id: builtin.card_id,
+        state: builtin.state,
+        source: builtin.source,
+        created_at: "",
+        updated_at: "",
+        card: mockCardPayload(builtin.name),
+        read_only: true,
+      };
+    }
+    const found = this.cards.find((card) => card.card_id === cardId);
+    if (!found) throw new Error("角色卡不存在");
+    return {
+      card_id: found.card_id,
+      state: found.state,
+      source: found.source,
+      created_at: found.updated_at,
+      updated_at: found.updated_at,
+      card: mockCardPayload(found.name),
+      read_only: false,
+    };
+  }
+
+  private cardCreateDraft(params: Record<string, unknown>) {
+    const name = String(params.name ?? "").trim();
+    if (!name) throw new Error("card.create_draft 需要 name");
+    const cardId = `card-mock-${this.cards.length + 1}`;
+    const now = new Date().toISOString();
+    this.cards = [
+      {
+        card_id: cardId,
+        name,
+        state: "draft",
+        source: "user_created",
+        updated_at: now,
+        has_avatar: false,
+        voice_state: "voice_unconfigured" as const,
+        active: false,
+        read_only: false,
+      },
+      ...this.cards,
+    ];
+    return { card_id: cardId, state: "draft" };
+  }
+
+  private cardUpdate(params: Record<string, unknown>) {
+    const cardId = String(params.card_id ?? "");
+    const now = new Date().toISOString();
+    this.cards = this.cards.map((card) =>
+      card.card_id === cardId ? { ...card, updated_at: now } : card,
+    );
+    return { card_id: cardId, updated_at: now };
+  }
+
+  private cardDuplicate(params: Record<string, unknown>) {
+    const cardId = String(params.card_id ?? "");
+    const source = this.cards.find((card) => card.card_id === cardId);
+    if (!source) throw new Error("角色卡不存在");
+    const newId = `card-mock-copy-${this.cards.length + 1}`;
+    const name = `${source.name}（副本）`;
+    this.cards = [{ ...source, card_id: newId, name, active: false }, ...this.cards];
+    return { card_id: newId, name };
+  }
+
+  private cardArchive(params: Record<string, unknown>) {
+    const cardId = String(params.card_id ?? "");
+    const source = this.cards.find((card) => card.card_id === cardId);
+    if (!source) throw new Error("角色卡不存在");
+    if (source.state === "draft") throw new Error("草稿不能归档，请先保存");
+    this.archivedCardIds.add(cardId);
+    return { card_id: cardId, archived: true };
+  }
+
+  private cardDelete(params: Record<string, unknown>) {
+    const cardId = String(params.card_id ?? "");
+    if (params.confirm !== true) throw new Error("删除需要确认");
+    this.cards = this.cards.filter((card) => card.card_id !== cardId);
+    this.archivedCardIds.delete(cardId);
+    return { card_id: cardId, deleted: true };
+  }
+
+  private cardSelectActive(params: Record<string, unknown>) {
+    const cardId = String(params.card_id ?? "");
+    if (this.archivedCardIds.has(cardId)) {
+      throw new Error(`已归档角色卡不能设为当前使用: ${cardId}`);
+    }
+    this.activeCardId = cardId;
+    return { card_id: cardId };
   }
 
   subscribe(listener: (event: DesktopEvent) => void): () => void {

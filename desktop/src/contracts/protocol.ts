@@ -303,7 +303,19 @@ export type DesktopCommandMethod =
   | "codex.oauth_start"
   | "codex.oauth_status"
   | "codex.logout"
-  | "codex.api_login";
+  | "codex.api_login"
+  | "card.list"
+  | "card.get"
+  | "card.create_draft"
+  | "card.update"
+  | "card.duplicate"
+  | "card.archive"
+  | "card.delete"
+  | "card.select_active"
+  | "remote.issue_code"
+  | "remote.pair"
+  | "remote.list_devices"
+  | "remote.revoke";
 
 export interface DesktopCommand {
   kind: "request";
@@ -380,4 +392,104 @@ export interface VoiceProvisionEventPayload {
   total: number;
   error: string | null;
   voice_id?: string | null;
+}
+
+/* ------------------------------------------------------------------ *
+ * V0.3.3 角色卡与手机远程：与 Sidecar card.* / remote.* 命令对齐的线缆类型。
+ * 字段保持 snake_case（与线缆一致）；camelCase 视图模型在 view-models.ts。
+ * ------------------------------------------------------------------ */
+
+/** 角色卡生命周期（character_cards/states.py CharacterCardState）。 */
+export type CharacterCardState = "draft" | "saved" | "imported" | "invalid";
+/** 角色卡来源。 */
+export type CharacterCardSource =
+  | "builtin"
+  | "user_created"
+  | "imported_json"
+  | "imported_png";
+/** 角色卡音色绑定状态（CharacterVoiceState）。 */
+export type CharacterVoiceState =
+  | "voice_unconfigured"
+  | "voice_creating"
+  | "voice_ready"
+  | "voice_failed";
+
+/** card.list 的单条摘要（内置角色 card_id 形如 builtin:<speaker> 且 read_only=true）。 */
+export interface CardSummaryPayload {
+  card_id: string;
+  name: string;
+  state: CharacterCardState;
+  source: CharacterCardSource;
+  updated_at: string;
+  has_avatar: boolean;
+  voice_state: CharacterVoiceState;
+  active: boolean;
+  read_only: boolean;
+}
+
+export interface CardListResult {
+  cards: CardSummaryPayload[];
+}
+
+/** card.get：card 为酒馆 v3 JSON 对象（未知扩展原样保留在 data.extensions）。 */
+export interface CardGetResult {
+  card_id: string;
+  state: CharacterCardState;
+  source: CharacterCardSource;
+  created_at: string;
+  updated_at: string;
+  card: Record<string, unknown>;
+  read_only: boolean;
+}
+
+export interface CardCreateDraftResult {
+  card_id: string;
+  state: CharacterCardState;
+}
+
+export interface CardUpdateResult {
+  card_id: string;
+  updated_at: string;
+}
+
+export interface CardDuplicateResult {
+  card_id: string;
+  name: string;
+}
+
+export interface CardArchiveResult {
+  card_id: string;
+  archived: boolean;
+}
+
+export interface CardDeleteResult {
+  card_id: string;
+  deleted: boolean;
+}
+
+/** remote.issue_code：配对码一次性、短期有效（当前 ttl 300 秒）。 */
+export interface RemoteIssueCodeResult {
+  code: string;
+  ttl_seconds: number;
+}
+
+export interface RemotePairResult {
+  token: string;
+}
+
+export interface RemoteDevice {
+  device_name: string;
+  issued_at: string;
+  last_used_at: string;
+  revoked: boolean;
+}
+
+export interface RemoteListDevicesResult {
+  devices: RemoteDevice[];
+}
+
+/** remote.revoke 按设备名撤销其全部 token。 */
+export interface RemoteRevokeResult {
+  device_name: string;
+  revoked_tokens: number;
 }

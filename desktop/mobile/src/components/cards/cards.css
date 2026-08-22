@@ -1,0 +1,471 @@
+/* V0.3.3 手机端卡片视觉样式（OKLch 暖色暗色体系，触控目标 ≥44px，零 emoji，无 #5e6ad2） */
+
+@keyframes mobile-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes mobile-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.mobile-icon-spin {
+  animation: mobile-spin 1s linear infinite;
+}
+
+/* ========== 工具卡片 ========== */
+
+.mobile-tool-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--muted);
+  border-radius: 12px;
+  margin: 6px 0;
+  overflow: hidden;
+  transition: border-color 0.2s ease;
+}
+
+.mobile-tool-card-running {
+  border-left-color: var(--warn);
+}
+.mobile-tool-card-succeeded {
+  border-left-color: var(--ok);
+}
+.mobile-tool-card-failed {
+  border-left-color: var(--danger);
+}
+.mobile-tool-card-denied {
+  border-left-color: var(--warn);
+}
+
+.mobile-tool-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 14px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  text-align: left;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.mobile-tool-card-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.mobile-tool-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+}
+
+.mobile-tool-icon-running {
+  color: var(--warn);
+}
+.mobile-tool-icon-succeeded {
+  color: var(--ok);
+}
+.mobile-tool-icon-failed {
+  color: var(--danger);
+}
+.mobile-tool-icon-denied {
+  color: var(--warn);
+}
+
+.mobile-tool-title {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-tool-status-text {
+  font-size: 13px;
+  font-weight: 600;
+  flex: none;
+}
+
+.mobile-tool-status-running {
+  color: var(--warn);
+}
+.mobile-tool-status-succeeded {
+  color: var(--ok);
+}
+.mobile-tool-status-failed {
+  color: var(--danger);
+}
+.mobile-tool-status-denied {
+  color: var(--warn);
+}
+
+.mobile-tool-chevron {
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  transition: transform 0.2s ease;
+  flex: none;
+}
+
+.mobile-tool-body {
+  display: grid;
+  gap: 8px;
+  padding: 0 14px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.mobile-tool-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.mobile-tool-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.mobile-tool-pre {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+/* ========== 委派卡片 ========== */
+
+.mobile-delegation-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin: 6px 0;
+}
+
+.mobile-delegation-card-running {
+  border-left-color: var(--warn);
+}
+.mobile-delegation-card-completed {
+  border-left-color: var(--ok);
+}
+.mobile-delegation-card-failed {
+  border-left-color: var(--danger);
+}
+.mobile-delegation-card-cancelled {
+  border-left-color: var(--muted);
+}
+
+.mobile-delegation-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.mobile-delegation-origin {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.mobile-delegation-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mobile-delegation-status-running {
+  color: var(--warn);
+}
+.mobile-delegation-status-completed {
+  color: var(--ok);
+}
+.mobile-delegation-status-failed {
+  color: var(--danger);
+}
+.mobile-delegation-status-cancelled {
+  color: var(--muted);
+}
+
+.mobile-delegation-summary {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--fg);
+  word-break: break-word;
+}
+
+.mobile-delegation-error {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: oklch(0.2 0.05 25);
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+}
+
+.mobile-delegation-error-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--danger);
+  margin-bottom: 4px;
+}
+
+.mobile-delegation-error-text {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ========== 等待审批卡片（只读） ========== */
+
+.mobile-approval-card {
+  background: var(--surface);
+  border: 1px solid var(--warn);
+  border-radius: 14px;
+  padding: 14px;
+  margin: 8px 0;
+}
+
+.mobile-approval-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.mobile-approval-title-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mobile-approval-shield-icon {
+  display: inline-flex;
+  color: var(--warn);
+}
+
+.mobile-approval-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.mobile-approval-readonly-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  background: oklch(0.24 0.05 85);
+  border: 1px solid var(--warn);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--warn);
+}
+
+.mobile-approval-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mobile-approval-summary {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.mobile-approval-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mobile-approval-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.mobile-approval-code {
+  display: inline-block;
+  padding: 6px 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--fg);
+  word-break: break-all;
+}
+
+.mobile-approval-reason {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.mobile-approval-conv-title {
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.mobile-approval-footer {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.mobile-approval-hint {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+/* ========== 思考缎带 ========== */
+
+.mobile-reasoning-ribbon {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s ease;
+}
+
+.mobile-reasoning-ribbon.is-streaming {
+  border-color: var(--accent);
+}
+
+.mobile-reasoning-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  text-align: left;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.mobile-reasoning-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.mobile-reasoning-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.mobile-reasoning-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+}
+
+.mobile-reasoning-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.mobile-reasoning-action {
+  font-size: 12px;
+  color: var(--muted);
+  flex: none;
+}
+
+.mobile-reasoning-chevron {
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  transition: transform 0.2s ease;
+  flex: none;
+}
+
+.mobile-reasoning-body {
+  padding: 0 12px 10px;
+  border-top: 1px solid var(--border);
+  max-height: 180px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.mobile-reasoning-text {
+  margin: 8px 0 0;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mobile-streaming-caret {
+  display: inline-block;
+  width: 6px;
+  height: 13px;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  border-radius: 1px;
+  background: var(--accent);
+  animation: mobile-pulse 0.9s ease-in-out infinite;
+}

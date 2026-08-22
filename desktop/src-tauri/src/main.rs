@@ -250,6 +250,30 @@ where
         .any(|arg| matches!(arg.as_str(), "--debug-console" | "--console"))
 }
 
+/// 手机远程 WS 服务器端口。必须与前端 `RemotePairingPanel` 二维码 payload
+/// 中的 ws 端口保持一致；sidecar 侧端口被占时降级为桌面专用并上报
+/// `serve_start_failed`（见 `desktop_backend/__main__.py`）。
+const REMOTE_SERVE_PORT: &str = "8765";
+
+fn pwa_static_dir(
+    packaged: bool,
+    resource_root: Option<&Path>,
+    runtime_root: &Path,
+) -> Option<PathBuf> {
+    if packaged {
+        let root = resource_root?;
+        for base in [root, &root.join("resources")] {
+            let candidate = base.join("mobile-dist");
+            if candidate.is_dir() {
+                return Some(candidate);
+            }
+        }
+        return None;
+    }
+    let candidate = runtime_root.join("desktop").join("mobile").join("dist");
+    candidate.is_dir().then_some(candidate)
+}
+
 #[cfg(windows)]
 #[link(name = "kernel32")]
 extern "system" {
@@ -426,14 +450,30 @@ fn launch_sidecar(
     if packaged.is_some() {
         command
             .arg(mode)
+            .arg("--serve")
+            .arg(REMOTE_SERVE_PORT)
             .arg("--project")
             .arg(&initial_project_root);
     } else {
         command
-            .args(["-m", "pair_harness.desktop_backend", mode, "--project"])
+            .args([
+                "-m",
+                "pair_harness.desktop_backend",
+                mode,
+                "--serve",
+                REMOTE_SERVE_PORT,
+                "--project",
+            ])
             .arg(&initial_project_root);
     }
     command.env("PAIR_HARNESS_STREAM_ID", stream_id.to_string());
+    if let Some(pwa_dir) = pwa_static_dir(
+        packaged.is_some(),
+        app.path().resource_dir().ok().as_deref(),
+        &runtime_root,
+    ) {
+        command.env("PAIR_HARNESS_PWA_DIR", pwa_dir);
+    }
     if let Some(env_file) = env_file {
         command.env("PAIR_HARNESS_ENV_FILE", env_file);
     }
@@ -1002,8 +1042,8 @@ fn main() {
 mod tests {
     use super::{
         backoff_delay, classify_exit, debug_console_requested, encode_request_line,
-        env_content_has_real_config, fail_pending, request_timeout_secs, stream_id_value,
-        ExitClass, PendingMap,
+        env_content_has_real_config, fail_pending, pwa_static_dir, request_timeout_secs,
+        stream_id_value, ExitClass, PendingMap, REMOTE_SERVE_PORT,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -1193,5 +1233,47 @@ mod tests {
         assert!(!env_content_has_real_config(
             "PAIR_HARNESS_DIALOGUE_BASE_URL=https://example.test\nPAIR_HARNESS_DIALOGUE_API_KEY=replace-with-your-api-key\nPAIR_HARNESS_DIALOGUE_MODEL=model\n"
         ));
+    }
+
+    #[test]
+    fn remote_serve_port_matches_frontend_qrcode_payload() {
+        // 前端 RemotePairingPanel 的二维码 payload 硬编码同一端口，改动需两侧同步。
+        assert_eq!(REMOTE_SERVE_PORT, "8765");
+    }
+
+    #[test]
+    fn pwa_static_dir_resolves_dev_dist_and_packaged_resource() {
+        let base = std::env::temp_dir().join(format!("ph-pwa-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+
+        // dev：仓库 desktop/mobile/dist 存在时注入
+        let dev_dist = base
+            .join("repo")
+            .join("desktop")
+            .join("mobile")
+            .join("dist");
+        std::fs::create_dir_all(&dev_dist).unwrap();
+        assert_eq!(
+            pwa_static_dir(false, None, &base.join("repo")),
+            Some(dev_dist)
+        );
+        // dev：目录不存在不注入（sidecar / 返回 404，如实暴露）
+        assert_eq!(pwa_static_dir(false, None, &base.join("repo-none")), None);
+
+        // packaged：resource 根或 resources/ 下的 mobile-dist
+        let pkg_root = base.join("pkg");
+        let pkg_dist = pkg_root.join("resources").join("mobile-dist");
+        std::fs::create_dir_all(&pkg_dist).unwrap();
+        assert_eq!(
+            pwa_static_dir(true, Some(&pkg_root), &base.join("repo")),
+            Some(pkg_dist)
+        );
+        // packaged 资源缺失时不回落 dev 目录
+        assert_eq!(
+            pwa_static_dir(true, Some(&base.join("pkg-empty")), &base.join("repo")),
+            None
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
