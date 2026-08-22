@@ -171,6 +171,7 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsCenter>[0]>
       devices: [],
       loading: false,
       error: null,
+      serveAddress: null,
     },
     onIssuePairingCode: vi.fn(),
     onListRemoteDevices: vi.fn(),
@@ -349,11 +350,11 @@ describe("SettingsCenter", () => {
     }));
   });
 
-  it("语音页把四项生成委派给 voice.provision", async () => {
+  it("语音页把三项生成委派给 voice.provision", async () => {
     const onProvisionVoices = vi.fn().mockResolvedValue({
       status: "completed",
-      completed: 4,
-      total: 4,
+      completed: 3,
+      total: 3,
       results: [],
     });
     renderSettings({
@@ -373,10 +374,10 @@ describe("SettingsCenter", () => {
       },
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "生成 4 个专属音色" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成 3 个专属音色" }));
     await waitFor(() =>
       expect(onProvisionVoices).toHaveBeenCalledWith(
-        ["phainon", "firefly", "march7", "fourth_mirror"],
+        ["phainon", "firefly", "march7"],
         false,
       ),
     );

@@ -92,13 +92,21 @@ export function useChatTimeline(conversationId: string) {
           const deltaConvId = payload.conversation_id as string;
           const deltaText = (payload.delta as string) || "";
           const deltaKind = payload.kind as string;
+          const deltaSource = payload.source as string | undefined;
+          const deltaChannel = payload.channel as string | undefined;
+          // 与桌面 desktopStore 一致：角色思考流 kind=character.speech +
+          // channel=reasoning，助手思考流 kind=assistant.reasoning（V0.3.4 缺陷 8）。
+          const isReasoningDelta =
+            (deltaSource === "character" && deltaChannel === "reasoning") ||
+            deltaKind === "assistant.reasoning";
 
           if (deltaConvId === conversationId && deltaMsgId) {
             setLocalMessages((prev) => {
               const existingIndex = prev.findIndex((m) => m.message_id === deltaMsgId);
               if (existingIndex >= 0) {
                 const existing = prev[existingIndex]!;
-                const isReasoning = deltaKind === "assistant.reasoning" || existing.kind === "assistant.reasoning";
+                const isReasoning =
+                  isReasoningDelta || existing.kind === "assistant.reasoning";
 
                 if (isReasoning) {
                   const currentReasoning = (existing.payload?.reasoning as string) || existing.text || "";
@@ -128,7 +136,6 @@ export function useChatTimeline(conversationId: string) {
               }
 
               // 新流式消息首次到达
-              const isReasoning = deltaKind === "assistant.reasoning";
               const newMsg: Message = {
                 message_id: deltaMsgId,
                 conversation_id: deltaConvId,
@@ -136,8 +143,8 @@ export function useChatTimeline(conversationId: string) {
                 engine_turn_id: null,
                 source: (payload.source as Message["source"]) || "assistant",
                 kind: (deltaKind as Message["kind"]) || "assistant.natural_language",
-                text: isReasoning ? "" : deltaText,
-                payload: isReasoning
+                text: isReasoningDelta ? "" : deltaText,
+                payload: isReasoningDelta
                   ? { reasoning: deltaText, reasoning_streaming: true }
                   : {},
                 tts_eligible: false,

@@ -185,6 +185,9 @@ export interface RemotePairingViewModel {
   devices: RemoteDeviceView[];
   loading: boolean;
   error: string | null;
+  /** V0.3.4：Sidecar --serve 实际监听地址（serve.started 事件上报），
+      二维码按它生成；null 表示远程服务未就绪（serve 未启动/启动失败）。 */
+  serveAddress: { host: string; port: number } | null;
 }
 
 export interface AppShellViewModel {

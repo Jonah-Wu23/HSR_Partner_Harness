@@ -91,6 +91,9 @@ class PairingService:
         self._revoked_hashes: set[str] = set()
         # 审计日志
         self._audit: list[dict] = []
+        # 撤销监听器：revoke 成功后以 (token, device_name) 回调，
+        # 供 WS 服务器立即断开仍持有该 token 的已建立连接（V0.3.4 缺陷 7）。
+        self._revoke_listeners: list[Callable[[str, str], None]] = []
 
     # ── 审计 ────────────────────────────────────────────────
 
@@ -253,7 +256,8 @@ class PairingService:
     def revoke(self, token: str) -> bool:
         """撤销指定 token。
 
-        撤销后 ``authorize`` 立即拒绝。
+        撤销后 ``authorize`` 立即拒绝，并通知所有撤销监听器（如 WS 服务器
+        断开该 token 的已建立连接）。
         返回是否撤销成功（未知 token 返回 False）。
         """
         entry = self._lookup_token(token)
@@ -264,7 +268,13 @@ class PairingService:
         entry.revoked = True
         self._revoked_hashes.add(token)
         self._audit_log("command", f"revoke device={entry.device_name}")
+        for listener in list(self._revoke_listeners):
+            listener(token, entry.device_name)
         return True
+
+    def add_revoke_listener(self, listener: Callable[[str, str], None]) -> None:
+        """注册撤销监听器；revoke 成功后以 (token, device_name) 回调。"""
+        self._revoke_listeners.append(listener)
 
     # ── 设备列表 ────────────────────────────────────────────
 

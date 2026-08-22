@@ -5,8 +5,11 @@ import asyncio
 import faulthandler
 import logging
 import os
+import signal
+import socket
 import sys
 from pathlib import Path
+from typing import Callable
 
 if __package__:
     from .application_service import ServiceError, build_configured_service
@@ -42,6 +45,49 @@ def build_parser() -> argparse.ArgumentParser:
         help="同端口开启 WS 服务器模式（手机远程 P0），与 stdin 循环并行",
     )
     return parser
+
+
+def _detect_lan_ip() -> str:
+    """尽力探测本机在局域网中的源地址（UDP connect 不发包），失败返回回环地址。"""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.settimeout(0)
+        sock.connect(("8.8.8.8", 80))
+        return str(sock.getsockname()[0])
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        sock.close()
+
+
+def _install_sigint_stop(router: SidecarRouter) -> Callable[[], None]:
+    """Ctrl+C 与 app.shutdown 同路径：转为有序停机请求，不硬打断事件循环。
+
+    事件循环原生信号处理（Unix）不可用时退回进程级同步 handler（Windows）；
+    两者都只触发 router.request_stop，二次 Ctrl+C 仍是幂等的停机请求。
+    返回停机后恢复原 SIGINT 处理的回调（进程级 handler 不随事件循环关闭还原）。
+    """
+    loop = asyncio.get_running_loop()
+
+    def request_stop() -> None:
+        loop.call_soon_threadsafe(router.request_stop)
+
+    try:
+        loop.add_signal_handler(signal.SIGINT, request_stop)
+    except NotImplementedError:
+        # Windows 事件循环不支持 add_signal_handler。
+        previous = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, lambda signum, frame: request_stop())
+
+        def restore_signal() -> None:
+            signal.signal(signal.SIGINT, previous)
+
+        return restore_signal
+
+    def remove_loop_handler() -> None:
+        loop.remove_signal_handler(signal.SIGINT)
+
+    return remove_loop_handler
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -103,6 +149,7 @@ async def _run(args: argparse.Namespace) -> int:
     await service.start_voice()
     ws_server: WSServerMode | None = None
     router: SidecarRouter | None = None
+    restore_sigint: Callable[[], None] = lambda: None
     try:
         if args.serve and fanout is not None:
             # WS 服务器模式与 stdin 循环共享同一 service 与 Router；
@@ -144,11 +191,24 @@ async def _run(args: argparse.Namespace) -> int:
                     },
                 )
             else:
+                lan_host = _detect_lan_ip()
                 logging.getLogger(__name__).info(
-                    "WS 服务器模式已启动 port=%s", args.serve
+                    "WS 服务器模式已启动 port=%s lan_host=%s", args.serve, lan_host
                 )
+                # 上报真实监听地址：桌面端二维码按它生成（V0.3.4 缺陷 6）。
+                service.emitter.emit(
+                    "serve.started", {"host": lan_host, "port": args.serve}
+                )
+                # 撤销 token 时立即断开仍持有该 token 的已建立连接（V0.3.4 缺陷 7）。
+                service.pairing_service.add_revoke_listener(
+                    ws_server.close_connections_for_token
+                )
+        if router is None:
+            router = SidecarRouter(service, writer)
+        restore_sigint = _install_sigint_stop(router)
         await run_stdin(service, writer=writer, stdin=sys.stdin, router=router)
     finally:
+        restore_sigint()
         if ws_server is not None:
             await ws_server.stop()
         if service is not None and not service._shutdown:
@@ -160,7 +220,12 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     faulthandler.enable(file=sys.stderr, all_threads=True)
     logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
-    return asyncio.run(_run(args))
+    try:
+        return asyncio.run(_run(args))
+    except KeyboardInterrupt:
+        # SIGINT 已转为有序停机；这里只兜底停机期间的二次硬打断，
+        # 不让 traceback 刷屏，退出码保持 0。
+        return 0
 
 
 if __name__ == "__main__":

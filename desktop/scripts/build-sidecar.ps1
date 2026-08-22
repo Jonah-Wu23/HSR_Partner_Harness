@@ -161,3 +161,38 @@ if ($env:PAIR_HARNESS_REASONIX_NATIVE_ROOT) {
 }
 
 Write-Host "Bundled Reasonix prepared from $reasonixSource`: $script:bundledReasonix"
+
+# 构建 mobile PWA 并复制进 Tauri resources（V0.3.4 打包链路）：
+# sidecar --serve 静态伺服 resources/mobile-dist，手机端扫码即达 8765 同端口页面。
+$mobileRoot = Join-Path $desktopRoot "mobile"
+$npmForMobile = Get-Command npm.cmd -ErrorAction SilentlyContinue
+if (-not $npmForMobile) {
+    throw "npm.cmd not found; mobile PWA build requires Node.js/npm."
+}
+
+Push-Location $mobileRoot
+try {
+    if (-not (Test-Path -LiteralPath (Join-Path $mobileRoot "node_modules") -PathType Container)) {
+        & $npmForMobile.Source install
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm install (mobile) failed with exit code $LASTEXITCODE."
+        }
+    }
+    & $npmForMobile.Source run build
+    if ($LASTEXITCODE -ne 0) {
+        throw "mobile PWA build failed with exit code $LASTEXITCODE."
+    }
+} finally {
+    Pop-Location
+}
+
+$mobileDist = Join-Path $mobileRoot "dist"
+if (-not (Test-Path -LiteralPath (Join-Path $mobileDist "index.html") -PathType Leaf)) {
+    throw "mobile build output missing index.html: $mobileDist"
+}
+$mobileResourceRoot = Join-Path $resourceRoot "mobile-dist"
+if (Test-Path -LiteralPath $mobileResourceRoot) {
+    Remove-Item -LiteralPath $mobileResourceRoot -Recurse -Force
+}
+Copy-Item -LiteralPath $mobileDist -Destination $mobileResourceRoot -Recurse -Force
+Write-Host "Bundled mobile PWA prepared: $mobileResourceRoot"

@@ -82,8 +82,8 @@ function lastSentFrame(): Record<string, unknown> {
 
 /** 走通 pair 流程并留下已水合状态（lastSequence=10）。 */
 async function pairAndBootstrap(): Promise<void> {
-  const pairPromise = useMobileStore.getState().pair("654321", "我的小米");
-  // pair() 内部先 await 连接就绪，remote.pair 帧在 microtask 后才发出。
+  const pairPromise = useMobileStore.getState().pairDevice("654321", "我的小米");
+  // pairDevice() 内部先 await 连接就绪，remote.pair 帧在 microtask 后才发出。
   await vi.waitFor(() => {
     expect(lastSentFrame().method).toBe("remote.pair");
   });
@@ -116,6 +116,8 @@ beforeEach(() => {
     messages: [],
     toolRuns: [],
     approvals: [],
+    pair: null,
+    activeTask: null,
     lastSequence: 0,
     bootstrapped: false,
   });
@@ -310,5 +312,111 @@ describe("mobileStore 会话操作", () => {
     });
     await openPromise;
     expect(useMobileStore.getState().activeConversationId).toBe("c1");
+  });
+
+  it("V0.3.4 submitMessage 发 target=character 且不带 mode 参数", async () => {
+    await pairAndBootstrap();
+    const openPromise = useMobileStore.getState().openConversation("c1");
+    await vi.waitFor(() => {
+      expect(lastSentFrame().method).toBe("conversation.open");
+    });
+    const openFrame = lastSentFrame();
+    lastInstance().emit({
+      kind: "response",
+      id: openFrame.id,
+      ok: true,
+      result: {
+        conversation: CONVERSATION,
+        project: null,
+        pair: null,
+        messages: [],
+        tool_runs: [],
+        turns: [],
+        queue_items: [],
+        active_task: null,
+      },
+    });
+    await openPromise;
+
+    const submitPromise = useMobileStore.getState().submitMessage("今天好累");
+    const submitFrame = lastSentFrame();
+    expect(submitFrame).toMatchObject({
+      method: "chat.submit",
+      params: {
+        conversation_id: "c1",
+        target: "character",
+        text: "今天好累",
+      },
+    });
+    // 角色消息不带 mode：避免顺带切换会话模式。
+    expect(submitFrame.params).not.toHaveProperty("mode");
+    lastInstance().emit({ kind: "response", id: submitFrame.id, ok: true, result: {} });
+    await submitPromise;
+  });
+
+  it("V0.3.4 setConversationMode 发 conversation.set_mode 且不做乐观更新", async () => {
+    await pairAndBootstrap();
+    // 用 chat 模式的会话验证：切换请求成功后 last_mode 仍等 conversation.changed。
+    useMobileStore.setState({
+      conversationsById: { c1: { ...CONVERSATION, last_mode: "chat" } },
+    });
+    const modePromise = useMobileStore.getState().setConversationMode("c1", "collaboration");
+    const frame = lastSentFrame();
+    expect(frame).toMatchObject({
+      method: "conversation.set_mode",
+      params: { conversation_id: "c1", mode: "collaboration" },
+    });
+    lastInstance().emit({ kind: "response", id: frame.id, ok: true, result: { conversation_id: "c1", mode: "collaboration" } });
+    await modePromise;
+    // 不做乐观更新：response 成功也不改 last_mode。
+    expect(useMobileStore.getState().conversationsById.c1?.last_mode).toBe("chat");
+
+    // conversation.changed 事件到达后才更新。
+    lastInstance().emit({
+      kind: "event",
+      event: "conversation.changed",
+      sequence: 11,
+      payload: { conversation: CONVERSATION },
+    });
+    expect(useMobileStore.getState().conversationsById.c1?.last_mode).toBe("collaboration");
+  });
+
+  it("V0.3.4 openConversation 水合 pair 与 active_task（委派卡数据源）", async () => {
+    await pairAndBootstrap();
+    const pairRecord = {
+      pair_id: "pair-default",
+      character: { id: "phainon", name: "白厄", voice_id: "" },
+      assistant: { id: "fourth_mirror", name: "第四面镜", voice_id: "" },
+      theme: { id: "ancient_machine", name: "古代机械" },
+    };
+    const activeTask = {
+      project_id: "p1",
+      conversation_id: "c1",
+      task_id: "task-7",
+      engine_turn_id: null,
+    };
+    const openPromise = useMobileStore.getState().openConversation("c1");
+    await vi.waitFor(() => {
+      expect(lastSentFrame().method).toBe("conversation.open");
+    });
+    const openFrame = lastSentFrame();
+    lastInstance().emit({
+      kind: "response",
+      id: openFrame.id,
+      ok: true,
+      result: {
+        conversation: CONVERSATION,
+        project: null,
+        pair: pairRecord,
+        messages: [],
+        tool_runs: [],
+        turns: [],
+        queue_items: [],
+        active_task: activeTask,
+      },
+    });
+    await openPromise;
+    expect(useMobileStore.getState().pair).toEqual(pairRecord);
+    expect(useMobileStore.getState().activeTask).toEqual(activeTask);
   });
 });

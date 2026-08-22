@@ -10,11 +10,15 @@ interface RemotePairingPanelProps {
 }
 
 /**
- * 组装手机端接入地址 URL。
- * 形如 http://<局域网地址>:1421/?ws=ws://<局域网地址>:8765/ws&code=<配对码>
+ * 组装手机端接入地址 URL（PWA 静态伺服与 /ws 同端口）。
+ * 形如 http://<局域网地址>:8765/?ws=ws://<局域网地址>:8765/ws&code=<配对码>
  */
-export function buildPairingUrl(code: string, host = "127.0.0.1"): string {
-  return `http://${host}:1421/?ws=ws://${host}:8765/ws&code=${encodeURIComponent(code)}`;
+export function buildPairingUrl(
+  code: string,
+  host: string,
+  port = 8765,
+): string {
+  return `http://${host}:${port}/?ws=ws://${host}:${port}/ws&code=${encodeURIComponent(code)}`;
 }
 
 /**
@@ -52,10 +56,14 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
   const remainingSeconds = Math.max(0, ttlSeconds - elapsedSeconds);
   const isExpired = vm.issuedAtEpochMs !== null && remainingSeconds <= 0;
 
-  const lanHost =
-    (typeof window !== "undefined" && window.location && window.location.hostname) ||
-    "127.0.0.1";
-  const pairingUrl = vm.code ? buildPairingUrl(vm.code, lanHost) : "";
+  // V0.3.4 缺陷 6：Tauri WebView 的 window.location.hostname 是内部地址，
+  // 二维码只能按 Sidecar serve.started 上报的真实局域网地址生成；
+  // 地址未知（serve 未启动/启动失败）时如实提示，不生成不可达地址。
+  const serveAddress = vm.serveAddress;
+  const pairingUrl =
+    vm.code && serveAddress
+      ? buildPairingUrl(vm.code, serveAddress.host, serveAddress.port)
+      : "";
 
   const formatCountdown = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -116,14 +124,25 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "8px", padding: "12px 0" }}>
-            <QrCode value={pairingUrl} size={180} label="手机配对二维码" />
-            <p className="settings-hint" style={{ fontSize: "12px", textAlign: "center" }}>
-              用手机浏览器扫描二维码，或打开网页后输入配对码
-            </p>
+            {pairingUrl ? (
+              <>
+                <QrCode value={pairingUrl} size={180} label="手机配对二维码" />
+                <p className="settings-hint" style={{ fontSize: "12px", textAlign: "center" }}>
+                  用手机浏览器扫描二维码，或打开网页后输入配对码
+                </p>
+                <p className="settings-hint" style={{ fontSize: "12px", textAlign: "center" }}>
+                  接入地址：<code>{serveAddress ? `${serveAddress.host}:${serveAddress.port}` : ""}</code>
+                </p>
+              </>
+            ) : (
+              <p className="field-error" data-testid="pairing-qr-unavailable" role="alert" style={{ fontSize: "12px" }}>
+                远程服务地址未就绪：Sidecar --serve 未启动或启动失败，二维码暂不可用，请先核对桌面端启动提示。
+              </p>
+            )}
           </div>
 
           <p className="settings-hint" style={{ fontSize: "12px" }}>
-            局域网地址以 Sidecar --serve 实际监听为准，请核对桌面端启动提示。
+            二维码按 Sidecar --serve 实际监听地址生成；未开启 --serve 时手机端无法连接。
           </p>
 
           <div className="settings-row">

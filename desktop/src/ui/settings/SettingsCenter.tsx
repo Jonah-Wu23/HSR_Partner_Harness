@@ -84,13 +84,14 @@ function TestResultNote({ result, okClass, testingLabel }: TestResultNoteProps) 
 const FIXED_ASR_MODEL = "qwen-audio-3.0-asr-flash-streaming";
 const FIXED_TTS_MODEL = "qwen-audio-3.0-tts-flash";
 
+// V0.3.4：助手侧说话方一律不出现在声音复刻中（fourth_mirror 是
+// march7_fourth_mirror 配对的助手侧，服务端已冻结拒绝助手 TTS）。
 const VOICE_SPEAKER_DEFINITIONS: Array<
   Pick<VoiceSpeakerStatus, "speakerId" | "name" | "method">
 > = [
   { speakerId: "phainon", name: "白厄", method: "clone" },
   { speakerId: "firefly", name: "流萤", method: "clone" },
   { speakerId: "march7", name: "三月七", method: "clone" },
-  { speakerId: "fourth_mirror", name: "第四面镜", method: "clone" },
 ];
 
 function normalizeSpeakerState(
@@ -663,7 +664,7 @@ function VoicePage(props: SettingsCenterProps) {
 
       <h3 className="settings-subhead">专属音色</h3>
       <p className="settings-hint">
-        当前账号将依次提交 4 次声音复刻。生成请求使用当前百炼账号的额度；是否计费以该账号页面和真实响应为准。
+        当前账号将依次提交 {VOICE_SPEAKER_DEFINITIONS.length} 次声音复刻。生成请求使用当前百炼账号的额度；是否计费以该账号页面和真实响应为准。助手侧说话方不支持语音，不在生成列表中。
       </p>
       {!hasConfig ? (
         <div className="settings-status-card" role="alert">
@@ -690,7 +691,7 @@ function VoicePage(props: SettingsCenterProps) {
               ? "重试失败项"
               : completedCount > 0
                 ? "继续生成剩余音色"
-                : "生成 4 个专属音色"}
+                : `生成 ${VOICE_SPEAKER_DEFINITIONS.length} 个专属音色`}
         </button>
       </div>
       {provisionError ? <p className="field-error" role="alert">{provisionError}</p> : null}

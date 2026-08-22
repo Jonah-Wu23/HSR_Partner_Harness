@@ -13,6 +13,7 @@ function createMockPanelProps(overrides: Partial<RemotePairingViewModel> = {}) {
     devices: [],
     loading: false,
     error: null,
+    serveAddress: null,
     ...overrides,
   };
 
@@ -25,9 +26,9 @@ function createMockPanelProps(overrides: Partial<RemotePairingViewModel> = {}) {
 }
 
 describe("RemotePairingPanel (V0.3.3 远程设备配对面板)", () => {
-  it("buildPairingUrl 组装正确的手机接入 URL", () => {
-    const url = buildPairingUrl("654321", "192.168.1.50");
-    expect(url).toBe("http://192.168.1.50:1421/?ws=ws://192.168.1.50:8765/ws&code=654321");
+  it("buildPairingUrl 按 serve 监听地址组装手机接入 URL（PWA 与 /ws 同端口）", () => {
+    const url = buildPairingUrl("654321", "192.168.1.50", 8765);
+    expect(url).toBe("http://192.168.1.50:8765/?ws=ws://192.168.1.50:8765/ws&code=654321");
   });
 
   it("组件挂载时调用 onListRemoteDevices", () => {
@@ -56,22 +57,36 @@ describe("RemotePairingPanel (V0.3.3 远程设备配对面板)", () => {
     expect(props.onIssuePairingCode).toHaveBeenCalledTimes(1);
   });
 
-  it("配对码生成成功：展示六位配对码、二维码、倒计时与局域网说明", () => {
+  it("配对码生成成功且 serve 已上报：展示配对码、二维码、接入地址与倒计时", () => {
     const now = Date.now();
     const props = createMockPanelProps({
       code: "839201",
       issuedAtEpochMs: now,
       ttlSeconds: 300,
+      serveAddress: { host: "192.168.1.50", port: 8765 },
     });
 
     render(<RemotePairingPanel {...props} />);
 
     expect(screen.getByTestId("pairing-code")).toHaveTextContent("839201");
     expect(screen.getByTestId("pairing-countdown")).toBeInTheDocument();
-    expect(
-      screen.getByText("局域网地址以 Sidecar --serve 实际监听为准，请核对桌面端启动提示。"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("192.168.1.50:8765")).toBeInTheDocument();
+    expect(screen.queryByTestId("pairing-qr-unavailable")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "重新生成配对码" })).toBeInTheDocument();
+  });
+
+  it("V0.3.4 缺陷 6：serve 地址未知时不生成二维码，如实提示不可用", () => {
+    const props = createMockPanelProps({
+      code: "839201",
+      issuedAtEpochMs: Date.now(),
+      ttlSeconds: 300,
+      serveAddress: null,
+    });
+
+    render(<RemotePairingPanel {...props} />);
+
+    expect(screen.getByTestId("pairing-qr-unavailable")).toBeInTheDocument();
+    expect(screen.getByTestId("pairing-code")).toHaveTextContent("839201");
   });
 
   it("倒计时递减并在过期后展示「已过期，请重新生成」，过期码不再可用", () => {

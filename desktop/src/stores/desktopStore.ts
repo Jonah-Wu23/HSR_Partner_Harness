@@ -272,6 +272,7 @@ function createInitialState(): Omit<
       devices: [],
       loading: false,
       error: null,
+      serveAddress: null,
     },
   };
 }
@@ -1116,6 +1117,17 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
     }
     case "error.reported":
       return applyErrorReported(next, event);
+    case "serve.started": {
+      // V0.3.4 缺陷 6：Sidecar --serve 上报真实监听地址，二维码按它生成。
+      const payload = event.payload as { host?: unknown; port?: unknown };
+      if (typeof payload.host === "string" && typeof payload.port === "number") {
+        next.remotePairing = {
+          ...next.remotePairing,
+          serveAddress: { host: payload.host, port: payload.port },
+        };
+      }
+      break;
+    }
     case "account.changed": {
       // V0.2 M4：账号变更事件水合当前账号与账号列表（登录/注册/切换）
       const payload = event.payload as { account?: AccountRecord; accounts?: AccountListItem[] };
