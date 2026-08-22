@@ -64,7 +64,11 @@ export function ChatListPage() {
                   <button
                     type="button"
                     className="primary chat-list-retry-btn"
-                    onClick={() => navigate({ name: "pair" })}
+                    onClick={() => {
+                      // 与 ConnectionBanner 一致：先清凭据再跳转，否则被路由守卫弹回。
+                      useMobileStore.getState().disconnect();
+                      navigate({ name: "pair" });
+                    }}
                     data-testid="chat-list-btn-repair"
                   >
                     重新配对

@@ -61,8 +61,9 @@ describe("ChatListPage 组件", () => {
     expect(reconnectSpy).toHaveBeenCalled();
   });
 
-  it("未水合且处于 auth_failed 时展示鉴权失败提示与重新配对按钮", () => {
+  it("未水合且处于 auth_failed 时「重新配对」先清凭据再跳转", () => {
     const navigateSpy = vi.spyOn(router, "navigate");
+    const disconnectSpy = vi.spyOn(useMobileStore.getState(), "disconnect");
     useMobileStore.setState({
       bootstrapped: false,
       connection: "auth_failed",
@@ -75,6 +76,8 @@ describe("ChatListPage 组件", () => {
 
     const repairBtn = screen.getByTestId("chat-list-btn-repair");
     fireEvent.click(repairBtn);
+    // 只 navigate 会被 App 路由守卫按 token 存在性弹回列表页，必须先 disconnect 清凭据
+    expect(disconnectSpy).toHaveBeenCalledTimes(1);
     expect(navigateSpy).toHaveBeenCalledWith({ name: "pair" });
   });
 

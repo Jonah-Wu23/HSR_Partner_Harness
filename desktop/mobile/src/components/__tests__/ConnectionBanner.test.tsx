@@ -48,8 +48,9 @@ describe("ConnectionBanner 组件", () => {
     expect(reconnectSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("auth_failed 态展示醒目红色并提供「重新配对」按钮，点击跳转 pair 页", () => {
+  it("auth_failed 态「重新配对」先清本地凭据再跳转 pair 页", () => {
     const navigateSpy = vi.spyOn(router, "navigate");
+    const disconnectSpy = vi.spyOn(useMobileStore.getState(), "disconnect");
     render(<ConnectionBanner connection="auth_failed" />);
     const banner = screen.getByTestId("connection-banner");
     expect(banner).toHaveClass("is-down");
@@ -58,6 +59,8 @@ describe("ConnectionBanner 组件", () => {
     const repairBtn = screen.getByTestId("btn-repair");
     expect(repairBtn).toHaveTextContent("重新配对");
     fireEvent.click(repairBtn);
+    // 只 navigate 会被 App 路由守卫按 token 存在性弹回列表页，必须先 disconnect 清凭据
+    expect(disconnectSpy).toHaveBeenCalledTimes(1);
     expect(navigateSpy).toHaveBeenCalledWith({ name: "pair" });
   });
 

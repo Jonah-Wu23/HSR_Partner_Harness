@@ -124,10 +124,29 @@ async def _run(args: argparse.Namespace) -> int:
                 static_root=static_root,
                 port=args.serve,
             )
-            await ws_server.start()
-            logging.getLogger(__name__).info(
-                "WS 服务器模式已启动 port=%s", args.serve
-            )
+            try:
+                await ws_server.start()
+            except OSError as exc:
+                # 端口被占等环境失败：远程能力如实标记不可用，桌面 stdin 路径继续。
+                ws_server = None
+                router = None
+                logging.getLogger(__name__).error(
+                    "WS 服务器启动失败，远程功能不可用 port=%s: %s", args.serve, exc
+                )
+                service.emitter.emit(
+                    "error.reported",
+                    {
+                        "code": "serve_start_failed",
+                        "message": f"远程服务启动失败（端口 {args.serve}）：{exc}",
+                        "severity": "error",
+                        "fatal": False,
+                        "source": "sidecar",
+                    },
+                )
+            else:
+                logging.getLogger(__name__).info(
+                    "WS 服务器模式已启动 port=%s", args.serve
+                )
         await run_stdin(service, writer=writer, stdin=sys.stdin, router=router)
     finally:
         if ws_server is not None:

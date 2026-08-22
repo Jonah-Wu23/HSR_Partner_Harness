@@ -44,6 +44,9 @@ export function ConnectionBanner({ connection }: ConnectionBannerProps) {
   };
 
   const handleRePair = () => {
+    // 必须先清本地凭据再跳转：App 路由守卫按 token 存在性拦截，
+    // 只 navigate 会被守卫立即弹回列表页（V0.3.3 真机验收发现）。
+    useMobileStore.getState().disconnect();
     navigate({ name: "pair" });
   };
 
