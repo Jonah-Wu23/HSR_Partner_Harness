@@ -97,7 +97,7 @@ describe("PairPage 组件", () => {
 
   it("配对成功时调用 store.pair", async () => {
     const pairSpy = vi.fn().mockResolvedValue(undefined);
-    useMobileStore.setState({ pair: pairSpy });
+    useMobileStore.setState({ pairDevice: pairSpy });
 
     render(<PairPage />);
     const codeInput = screen.getByTestId("input-pair-code");
@@ -119,7 +119,7 @@ describe("PairPage 组件", () => {
     const pairSpy = vi
       .fn()
       .mockRejectedValue(new RemoteCommandError("pairing_invalid_code", "配对码错误或已失效"));
-    useMobileStore.setState({ pair: pairSpy });
+    useMobileStore.setState({ pairDevice: pairSpy });
 
     render(<PairPage />);
     const codeInput = screen.getByTestId("input-pair-code");
@@ -146,7 +146,7 @@ describe("PairPage 组件", () => {
 
   it("连接问题（普通 Error）如实展示网络错误", async () => {
     const pairSpy = vi.fn().mockRejectedValue(new Error("WebSocket 未连接"));
-    useMobileStore.setState({ pair: pairSpy });
+    useMobileStore.setState({ pairDevice: pairSpy });
 
     render(<PairPage />);
     const codeInput = screen.getByTestId("input-pair-code");

@@ -29,6 +29,6 @@
     "active": true,
     "targets": ["nsis", "msi"],
     "icon": ["icons/icon.ico"],
-    "resources": ["resources/sidecar/**/*", "resources/codex/**/*", "resources/reasonix/**/*"]
+    "resources": ["resources/sidecar/**/*", "resources/codex/**/*", "resources/reasonix/**/*", "resources/mobile-dist/**/*"]
   }
 }

@@ -54,6 +54,8 @@ class _RemoteConnection:
         self._closed = False
         # 该连接是否已完成一次带 token 的鉴权并订阅 fanout
         self.authenticated = False
+        # 完成鉴权后该连接使用的 token 原文；撤销联动按它定位连接（V0.3.4 缺陷 7）
+        self.token: str | None = None
         self._writer_task = asyncio.create_task(self._writer_loop())
 
     async def _writer_loop(self) -> None:
@@ -87,7 +89,11 @@ class _RemoteConnection:
             self._subscription.unsubscribe()
             self._subscription = None
 
-    async def close(self) -> None:
+    def detach(self) -> None:
+        """同步退订并停写（幂等）：撤销联动时立即切断事件下发。"""
+        self._teardown()
+
+    async def close(self, *, code: int = 1000, message: bytes = b"") -> None:
         self._teardown()
         task = self._writer_task
         if not task.done() and task is not asyncio.current_task():
@@ -95,6 +101,12 @@ class _RemoteConnection:
             try:
                 await task
             except (asyncio.CancelledError, Exception):
+                pass
+        # 真正断开底层 WS，让对端与 handler 循环感知连接已关闭。
+        if self._ws is not None:
+            try:
+                await self._ws.close(code=code, message=message)
+            except Exception:  # noqa: BLE001 - 对端已断开时关闭即无事可做
                 pass
 
 
@@ -150,6 +162,27 @@ class WSServerMode:
             await self._runner.cleanup()
             self._runner = None
         self._site = None
+
+    def close_connections_for_token(self, token: str, device_name: str = "") -> int:
+        """撤销联动：立即断开仍以该 token 鉴权的已建立连接，返回断开数。
+
+        先同步退订（事件扇出立即停止），再调度真正的 WS 关闭；
+        ``device_name`` 仅用于日志。必须在事件循环线程内调用。
+        """
+        matched = [conn for conn in self._connections if conn.token == token]
+        for conn in matched:
+            self._connections.discard(conn)
+            conn.detach()
+        if matched:
+            logger.info(
+                "撤销 token：断开 %d 条已建立连接 device=%r",
+                len(matched),
+                device_name,
+            )
+            loop = asyncio.get_running_loop()
+            for conn in matched:
+                loop.create_task(conn.close(code=4401, message=b"token revoked"))
+        return len(matched)
 
     async def _handle_ws(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse()
@@ -213,6 +246,8 @@ class WSServerMode:
         # remote.pair 握手阶段不下发业务/系统事件。
         if not conn.authenticated and method not in UNAUTHENTICATED_METHODS:
             conn.authenticated = True
+            if isinstance(token, str):
+                conn.token = token
             conn.subscribe()
             logger.info("远程连接鉴权完成 device=%r", decision.device_name)
 

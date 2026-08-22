@@ -45,6 +45,7 @@ function createMockVoiceProps(overrides: Partial<VoicePageView> = {}) {
       devices: [],
       loading: false,
       error: null,
+      serveAddress: null,
     },
     onIssuePairingCode: vi.fn(),
     onListRemoteDevices: vi.fn(),
@@ -77,15 +78,15 @@ describe("VoiceSettings (V0.3.3 角色语音与助手无 TTS 改造)", () => {
     expect(screen.queryByText(/古代机械/)).not.toBeInTheDocument();
   });
 
-  it("仅保留 4 位角色说话方（白厄、流萤、三月七、第四面镜）", () => {
+  it("仅保留 3 位角色侧说话方（白厄、流萤、三月七），助手侧第四面镜不再出现", () => {
     const props = createMockVoiceProps();
     render(<SettingsCenter {...props} />);
 
     expect(screen.getByText("白厄")).toBeInTheDocument();
     expect(screen.getByText("流萤")).toBeInTheDocument();
     expect(screen.getByText("三月七")).toBeInTheDocument();
-    expect(screen.getByText("第四面镜")).toBeInTheDocument();
-    expect(screen.getByText(/4 次声音复刻/)).toBeInTheDocument();
+    expect(screen.queryByText("第四面镜")).not.toBeInTheDocument();
+    expect(screen.getByText(/3 次声音复刻/)).toBeInTheDocument();
   });
 
   it("展示角色音色四态（未配置 / 创建中 / 已绑定 / 失败）与试听", () => {
@@ -102,7 +103,7 @@ describe("VoiceSettings (V0.3.3 角色语音与助手无 TTS 改造)", () => {
           speakerId: "firefly",
           name: "流萤",
           method: "clone",
-          state: "creating",
+          state: "not_generated",
         },
         {
           speakerId: "march7",
@@ -111,22 +112,17 @@ describe("VoiceSettings (V0.3.3 角色语音与助手无 TTS 改造)", () => {
           state: "failed",
           error: "百炼 API 402: 余额不足",
         },
-        {
-          speakerId: "fourth_mirror",
-          name: "第四面镜",
-          method: "clone",
-          state: "not_generated",
-        },
       ],
     });
 
     render(<SettingsCenter {...props} />);
 
     expect(screen.getByText("已绑定")).toBeInTheDocument();
-    expect(screen.getByText("创建中")).toBeInTheDocument();
     expect(screen.getByText("失败")).toBeInTheDocument();
     expect(screen.getByText("未配置")).toBeInTheDocument();
     expect(screen.getByText("百炼 API 402: 余额不足")).toBeInTheDocument();
+    // V0.3.4：助手侧（第四面镜）不再出现在专属音色列表
+    expect(screen.queryByText("第四面镜")).not.toBeInTheDocument();
 
     const previewBtn = screen.getByRole("button", { name: "试听" });
     fireEvent.click(previewBtn);

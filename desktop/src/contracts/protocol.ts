@@ -358,7 +358,8 @@ export type DesktopEventName =
   | "voice.state_changed"
   | "voice.provision_changed"
   | "connection.status"
-  | "error.reported";
+  | "error.reported"
+  | "serve.started";
 
 export interface DesktopEvent<T = Record<string, unknown>> {
   kind: "event";

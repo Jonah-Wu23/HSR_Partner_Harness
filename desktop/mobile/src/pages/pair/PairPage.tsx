@@ -54,7 +54,7 @@ function extractPairCode(raw: string): string {
 }
 
 export function PairPage() {
-  const pair = useMobileStore((state) => state.pair);
+  const pair = useMobileStore((state) => state.pairDevice);
 
   // 从 URL 查询参数 ?code= 预填配对码
   const [code, setCode] = useState(() => {

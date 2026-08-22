@@ -1,9 +1,12 @@
 import { create } from "zustand";
 import type {
+  ActiveTask,
+  ConversationMode,
   ConversationOpenResult,
   ConversationRecord,
   DesktopSnapshot,
   Message,
+  PairRecord,
   PendingApproval,
   ProjectRecord,
   ToolRun,
@@ -35,15 +38,23 @@ export interface MobileState {
   messages: Message[];
   toolRuns: ToolRun[];
   approvals: PendingApproval[];
+  /** V0.3.4：当前配对（委派卡「来自 <角色名> 的委派」数据源）。 */
+  pair: PairRecord | null;
+  /** V0.3.4：当前活动任务（委派卡运行状态与 delegation_id 对齐）。 */
+  activeTask: ActiveTask | null;
   lastSequence: number;
   bootstrapped: boolean;
 
   start: () => void;
   /** 手动重连入口（unreachable/auth_failed 后由 UI 重试按钮调用）。 */
   reconnect: () => void;
-  pair: (code: string, deviceName: string) => Promise<void>;
+  pairDevice: (code: string, deviceName: string) => Promise<void>;
   openConversation: (conversationId: string) => Promise<void>;
   submitDelegation: (text: string) => Promise<void>;
+  /** V0.3.4 缺陷 3：手机端普通角色消息输入（target=character，任何模式可用）。 */
+  submitMessage: (text: string) => Promise<void>;
+  /** V0.3.4 缺陷 4：会话模式切换（chat/collaboration），委派仅在协作模式可用。 */
+  setConversationMode: (conversationId: string, mode: ConversationMode) => Promise<void>;
   resolveApproval: (approvalId: string, decision: string) => Promise<void>;
   disconnect: () => void;
 }
@@ -67,13 +78,49 @@ function indexConversations(projects: ProjectRecord[]): Record<string, Conversat
 function applySnapshot(
   set: (partial: Partial<MobileState>) => void,
   snapshot: DesktopSnapshot,
+  get: () => MobileState,
 ): void {
+  // 手机当前会话上下文（委派卡的角色名与运行状态）必须与会话对齐：全局快照
+  // 的 pair/active_task 属于桌面当前会话，不能覆盖本会话（V0.3.4 Codex 建议 B）。
+  // 有打开的会话时，只从快照的全量集合（pairs / active_tasks）按当前会话重新选择；
+  // 快照不携带本会话信息时保留现状，不跨会话覆盖、也不臆测为 null。
+  const activeConvId = get().activeConversationId;
+  const activeConv =
+    typeof activeConvId === "string" && activeConvId
+      ? get().conversationsById[activeConvId] ||
+        indexConversations(snapshot.projects)[activeConvId]
+      : null;
+  const activePairId = activeConv?.pair_id;
+
+  let pair: PairRecord | null = get().pair;
+  let activeTask: ActiveTask | null = get().activeTask;
+  if (!activeConvId) {
+    // 尚未打开会话：直接采用全局快照的配对与全局活动任务。
+    pair = snapshot.pair;
+    activeTask = snapshot.active_task;
+  } else {
+    if (activePairId) {
+      const selected = snapshot.pairs.find((p) => p.pair_id === activePairId);
+      pair =
+        selected ??
+        (snapshot.pair?.pair_id === activePairId ? snapshot.pair : get().pair);
+    }
+    if (Array.isArray(snapshot.active_tasks)) {
+      activeTask =
+        snapshot.active_tasks.find((t) => t.conversation_id === activeConvId) ?? null;
+    } else if (snapshot.active_task?.conversation_id === activeConvId) {
+      activeTask = snapshot.active_task;
+    }
+  }
+
   set({
     projects: snapshot.projects,
     conversationsById: indexConversations(snapshot.projects),
     messages: snapshot.messages,
     toolRuns: snapshot.tool_runs,
     approvals: snapshot.approvals,
+    pair,
+    activeTask,
     lastSequence: snapshot.sequence,
     bootstrapped: true,
   });
@@ -105,7 +152,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
     bootstrapping = (async () => {
       try {
         const snapshot = await client.request<DesktopSnapshot>("app.bootstrap");
-        applySnapshot(set, snapshot);
+        applySnapshot(set, snapshot, get);
       } finally {
         bootstrapping = null;
       }
@@ -127,7 +174,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
     switch (event.event) {
       case "state.snapshot": {
         const payload = event.payload as unknown as DesktopSnapshot;
-        applySnapshot(set, payload);
+        applySnapshot(set, payload, get);
         break;
       }
       case "conversation.changed": {
@@ -160,6 +207,42 @@ export const useMobileStore = create<MobileState>((set, get) => {
         }
         break;
       }
+      case "message.status_changed": {
+        // V0.3.4 Codex 建议 A：委派执行的完成/失败/取消由 message.status_changed
+        // 推进消息状态；按 message_id upsert，委派卡据此退出「运行中」。
+        const message = (event.payload as { message?: Message }).message;
+        if (
+          message &&
+          typeof message.message_id === "string" &&
+          typeof message.conversation_id === "string" &&
+          typeof message.status === "string"
+        ) {
+          const rest = get().messages.filter((m) => m.message_id !== message.message_id);
+          set({ messages: [...rest, message] });
+        }
+        break;
+      }
+      case "task.busy_changed": {
+        // V0.3.4 Codex 建议 A/B：活动任务是会话级权威状态；任务结束（busy=false）
+        // 时清空当前会话的活动任务，委派卡不再误判为运行中。只取当前会话条目，
+        // 不被其他会话任务干扰。
+        const payload = event.payload as {
+          busy?: boolean;
+          active_task?: ActiveTask | null;
+          active_tasks?: ActiveTask[];
+        };
+        const convId = get().activeConversationId;
+        let activeTask: ActiveTask | null = null;
+        if (Array.isArray(payload.active_tasks)) {
+          activeTask = payload.active_tasks.find((t) => t.conversation_id === convId) ?? null;
+        } else if (payload.active_task && payload.active_task.conversation_id === convId) {
+          activeTask = payload.active_task;
+        } else if (payload.busy === false) {
+          activeTask = null;
+        }
+        set({ activeTask });
+        break;
+      }
       // TODO(W5)：message.created/delta/finalized、tool_run.upserted 等
       // 流式事件的细粒度合并，在聊天页实现时补齐；骨架依赖缺口重 bootstrap
       // 与 conversation.open 重新装载保证一致性。
@@ -177,6 +260,8 @@ export const useMobileStore = create<MobileState>((set, get) => {
     messages: [],
     toolRuns: [],
     approvals: [],
+    pair: null,
+    activeTask: null,
     lastSequence: 0,
     bootstrapped: false,
 
@@ -199,7 +284,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
       client.connect();
     },
 
-    async pair(code, deviceName) {
+    async pairDevice(code, deviceName) {
       client.connect();
       await waitForConnected();
       const result = await client.request<{ token: string }>(
@@ -214,7 +299,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
 
     async openConversation(conversationId) {
       // 页面刷新直接落在聊天页时，装载可能先于 WS 握手完成；
-      // 与 pair() 同模式等待连接就绪，避免 mount 竞态报「WebSocket 未连接」。
+      // 与 pairDevice() 同模式等待连接就绪，避免 mount 竞态报「WebSocket 未连接」。
       client.connect();
       await waitForConnected();
       const result = await client.request<ConversationOpenResult>("conversation.open", {
@@ -225,6 +310,8 @@ export const useMobileStore = create<MobileState>((set, get) => {
         activeConversationId: conversationId,
         messages: result.messages,
         toolRuns: result.tool_runs,
+        pair: result.pair,
+        activeTask: result.active_task,
       });
     },
 
@@ -237,6 +324,25 @@ export const useMobileStore = create<MobileState>((set, get) => {
         target: "assistant",
         mode,
         text,
+      });
+    },
+
+    async submitMessage(text) {
+      const conversationId = get().activeConversationId;
+      if (!conversationId) throw new Error("尚未打开会话");
+      // 角色消息任何模式都可发送；不带 mode 参数，避免顺带切换会话模式。
+      await client.request("chat.submit", {
+        conversation_id: conversationId,
+        target: "character",
+        text,
+      });
+    },
+
+    async setConversationMode(conversationId, mode) {
+      // 不做乐观更新：conversation.changed 事件回来后 last_mode 才变化。
+      await client.request("conversation.set_mode", {
+        conversation_id: conversationId,
+        mode,
       });
     },
 
@@ -256,6 +362,8 @@ export const useMobileStore = create<MobileState>((set, get) => {
         messages: [],
         toolRuns: [],
         approvals: [],
+        pair: null,
+        activeTask: null,
         lastSequence: 0,
         bootstrapped: false,
       });

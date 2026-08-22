@@ -1,24 +1,52 @@
 import { useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import type { ActiveTask, ConversationMode, Message } from "@shared/contracts/protocol";
 import { ApprovalCard } from "../../components/cards/ApprovalCard";
 import { ArrowDownIcon, BackIcon } from "../../components/cards/icons";
+import { DelegationCard, type DelegationStatus } from "../../components/cards/DelegationCard";
 import { ToolCard } from "../../components/cards/ToolCard";
 import { useMobileStore } from "../../lib/mobileStore";
 import { navigate } from "../../lib/router";
-import { DelegationComposer } from "./DelegationComposer";
+import { ChatComposer, type ChatComposerTarget } from "./ChatComposer";
 import { MessageBubble } from "./MessageBubble";
-import { useChatTimeline } from "./useChatTimeline";
+import { useChatTimeline, type TimelineItem } from "./useChatTimeline";
 import "./chat.css";
 
 export interface ChatPageProps {
   conversationId: string;
 }
 
+/** 委派卡状态映射：与桌面 presenters.presentDelegation 同语义
+（活动任务匹配或 processing → running，failed/cancelled 同名，其余 completed）。 */
+function delegationStatusOf(
+  message: Message,
+  activeTask: ActiveTask | null,
+): DelegationStatus {
+  if (activeTask?.task_id && activeTask.task_id === message.delegation_id) {
+    return "running";
+  }
+  if (message.status === "processing") return "running";
+  if (message.status === "failed") return "failed";
+  if (message.status === "cancelled") return "cancelled";
+  return "completed";
+}
+
+/** V0.3.4 缺陷 2：origin=character_delegation 的 user 消息不是用户气泡，
+渲染为「来自 <角色名> 的委派」卡片（与桌面 presenters 判定一致）。 */
+function isDelegationMessage(message: Message): boolean {
+  return (
+    message.source === "user" &&
+    message.origin === "character_delegation" &&
+    Boolean(message.delegation_id)
+  );
+}
+
 /**
  * V0.3.3 手机端聊天页：
  * - 消息时间线与结构化工具卡片混合流（虚拟滚动优化）
  * - 消息来源清晰可区分，思考段默认折叠可展开
- * - 「交给助手」委派输入区与任务执行状态展示
+ * - 「发给角色」普通消息与「交给助手」委派输入明确区分（V0.3.4）
+ * - 会话模式切换控件：委派仅协作模式可用，前置禁用并说明（V0.3.4）
  * - 等待审批只读卡片（严禁批准/拒绝按钮，标注「请在电脑端处理」）
  * - 全程静音，零 emoji，触控目标 ≥44px
  */
@@ -28,6 +56,10 @@ export function ChatPage({ conversationId }: ChatPageProps) {
   );
   const openConversation = useMobileStore((state) => state.openConversation);
   const submitDelegation = useMobileStore((state) => state.submitDelegation);
+  const submitMessage = useMobileStore((state) => state.submitMessage);
+  const setConversationMode = useMobileStore((state) => state.setConversationMode);
+  const pair = useMobileStore((state) => state.pair);
+  const activeTask = useMobileStore((state) => state.activeTask);
   const allApprovals = useMobileStore((state) => state.approvals);
   const approvals = (allApprovals ?? []).filter(
     (a) => a.conversation_id === conversationId,
@@ -35,6 +67,9 @@ export function ChatPage({ conversationId }: ChatPageProps) {
 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [pinned, setPinned] = useState(true);
+  const [target, setTarget] = useState<ChatComposerTarget>("character");
+  const [modeSwitching, setModeSwitching] = useState(false);
+  const [modeError, setModeError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // 装载会话
@@ -91,10 +126,47 @@ export function ChatPage({ conversationId }: ChatPageProps) {
     setPinned(true);
   };
 
-  const modeText =
-    conversation?.last_mode === "collaboration"
-      ? "协作模式"
-      : "对话模式";
+  const mode: ConversationMode = conversation?.last_mode === "collaboration" ? "collaboration" : "chat";
+  const modeText = mode === "collaboration" ? "协作模式" : "对话模式";
+  const assistantBlocked = target === "assistant" && mode !== "collaboration";
+
+  const handleModeChange = async (next: ConversationMode) => {
+    if (modeSwitching || next === mode) return;
+    setModeSwitching(true);
+    setModeError(null);
+    try {
+      await setConversationMode(conversationId, next);
+    } catch (err) {
+      // Let It Fail：切换失败如实展示真实错误；last_mode 以服务端事件为准不回滚猜测
+      setModeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setModeSwitching(false);
+    }
+  };
+
+  const handleSubmit = (text: string) =>
+    target === "assistant" ? submitDelegation(text) : submitMessage(text);
+
+  const characterName = pair?.character?.name || "角色";
+
+  const renderTimelineItem = (item: TimelineItem, key?: string) => {
+    if (item.kind === "tool_run") {
+      return <ToolCard key={key ?? item.id} run={item.toolRun} />;
+    }
+    const message = item.message;
+    if (isDelegationMessage(message)) {
+      return (
+        <DelegationCard
+          key={key ?? item.id}
+          delegationId={message.delegation_id ?? ""}
+          fromName={characterName}
+          summary={message.text}
+          status={delegationStatusOf(message, activeTask)}
+        />
+      );
+    }
+    return <MessageBubble key={key ?? item.id} message={message} />;
+  };
 
   return (
     <main className="mobile-chat-container" data-testid="chat-page">
@@ -148,7 +220,7 @@ export function ChatPage({ conversationId }: ChatPageProps) {
         {items.length === 0 ? (
           <div className="mobile-chat-empty">
             <p>暂无消息</p>
-            <p className="hint">输入任务交给助手执行，或在电脑端继续对话。</p>
+            <p className="hint">给角色发消息，或切换到协作模式后把任务交给助手。</p>
           </div>
         ) : shouldVirtualize ? (
           <div
@@ -169,23 +241,13 @@ export function ChatPage({ conversationId }: ChatPageProps) {
                     transform: `translateY(${virtualRow.start}px)`,
                   }}
                 >
-                  {item.kind === "message" ? (
-                    <MessageBubble message={item.message} />
-                  ) : (
-                    <ToolCard run={item.toolRun} />
-                  )}
+                  {renderTimelineItem(item)}
                 </div>
               );
             })}
           </div>
         ) : (
-          items.map((item) =>
-            item.kind === "message" ? (
-              <MessageBubble key={item.id} message={item.message} />
-            ) : (
-              <ToolCard key={item.id} run={item.toolRun} />
-            ),
-          )
+          items.map((item) => renderTimelineItem(item, item.id))
         )}
       </div>
 
@@ -202,12 +264,67 @@ export function ChatPage({ conversationId }: ChatPageProps) {
         </button>
       ) : null}
 
-      {/* 委派输入区 */}
-      <DelegationComposer
-        onSubmit={async (text) => {
-          await submitDelegation(text);
-        }}
-      />
+      {/* 输入区：会话模式切换 + 发送目标切换 + 输入框（V0.3.4 缺陷 3/4） */}
+      <footer className="mobile-composer" data-testid="chat-composer-area">
+        <div className="mobile-chat-controls">
+          <div className="mobile-segmented" role="group" aria-label="会话模式切换">
+            <button
+              type="button"
+              className={`mobile-segmented-btn${mode === "chat" ? " active" : ""}`}
+              aria-pressed={mode === "chat"}
+              data-testid="mode-btn-chat"
+              disabled={modeSwitching}
+              onClick={() => void handleModeChange("chat")}
+            >
+              对话
+            </button>
+            <button
+              type="button"
+              className={`mobile-segmented-btn${mode === "collaboration" ? " active" : ""}`}
+              aria-pressed={mode === "collaboration"}
+              data-testid="mode-btn-collaboration"
+              disabled={modeSwitching}
+              onClick={() => void handleModeChange("collaboration")}
+            >
+              协作
+            </button>
+          </div>
+          <div className="mobile-segmented" role="group" aria-label="发送目标切换">
+            <button
+              type="button"
+              className={`mobile-segmented-btn${target === "character" ? " active" : ""}`}
+              aria-pressed={target === "character"}
+              data-testid="target-btn-character"
+              onClick={() => setTarget("character")}
+            >
+              发给角色
+            </button>
+            <button
+              type="button"
+              className={`mobile-segmented-btn${target === "assistant" ? " active" : ""}`}
+              aria-pressed={target === "assistant"}
+              data-testid="target-btn-assistant"
+              onClick={() => setTarget("assistant")}
+            >
+              交给助手
+            </button>
+          </div>
+        </div>
+        {modeError ? (
+          <p className="mobile-composer-hint mobile-composer-hint-error" role="alert" data-testid="mode-switch-error">
+            模式切换失败：{modeError}
+          </p>
+        ) : null}
+        <ChatComposer
+          target={target}
+          disabled={assistantBlocked}
+          disabledHint={assistantBlocked
+            ? "对话模式下助手不接收委派，请先切换到协作模式。"
+            : null}
+          onSubmit={handleSubmit}
+        />
+      </footer>
     </main>
   );
 }
+

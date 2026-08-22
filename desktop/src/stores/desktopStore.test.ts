@@ -266,6 +266,35 @@ describe("desktopStore event projection", () => {
     expect(state.needsBootstrap).toBe(true);
   });
 
+  it("V0.3.4 serve.started 上报地址进 remotePairing.serveAddress；缺字段不覆盖", () => {
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "serve.started",
+        sequence: 1,
+        payload: { host: "192.168.1.42", port: 8765 },
+      },
+    ]);
+    expect(desktopStore.getState().remotePairing.serveAddress).toEqual({
+      host: "192.168.1.42",
+      port: 8765,
+    });
+
+    // 载荷缺 port：协议违规，不本地猜测地址，保持原值
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "serve.started",
+        sequence: 2,
+        payload: { host: "192.168.1.99" },
+      },
+    ]);
+    expect(desktopStore.getState().remotePairing.serveAddress).toEqual({
+      host: "192.168.1.42",
+      port: 8765,
+    });
+  });
+
   it("error.reported recoverable 入 Toast 队列（同 code+message 去重，最多 5 条）", () => {
     const reported = (sequence: number, code: string, message: string) => ({
       kind: "event" as const,

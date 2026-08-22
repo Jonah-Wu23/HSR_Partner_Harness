@@ -49,6 +49,10 @@ class SidecarHarness:
             static_root=None,
             port=self.port,
         )
+        # 与 __main__._run 相同装配：撤销 token 立即断开已建立连接（V0.3.4 缺陷 7）。
+        self.service.pairing_service.add_revoke_listener(
+            self.server.close_connections_for_token
+        )
 
     async def start(self) -> None:
         await self.server.start()
@@ -142,11 +146,17 @@ async def test_serve_mode_full_remote_path(tmp_path) -> None:
         assert bad["ok"] is False
         assert bad["error"]["code"] == "unauthorized"
 
-        # 7. 撤销后立即拒绝
+        # 7. 撤销后立即拒绝：旧连接被服务端主动关闭（V0.3.4 缺陷 7 修复行为），
+        #    重连后带已撤销 token 的请求仍被拒
         harness.service.pairing_service.revoke(token)
+        closed = await asyncio.wait_for(ws.receive(), timeout=5.0)
+        assert closed.type == aiohttp.WSMsgType.CLOSE, closed
+        assert ws.close_code == 4401
+        ws = await session.ws_connect(f"http://127.0.0.1:{harness.port}/ws")
         revoked = await _request(ws, "app.bootstrap", "r5", token=token)
         assert revoked["ok"] is False
         assert revoked["error"]["code"] == "unauthorized"
+        assert revoked["error"]["message"] == "revoked_token"
 
         await ws.close()
     finally:
@@ -205,8 +215,8 @@ async def test_serve_port_conflict_degrades_to_stdin_only(
 
     blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # 与 WSServerMode 的 0.0.0.0 同地址族占用；绑 127.0.0.1 在 Windows 下
-    # 会被 0.0.0.0 叠加绑定而不报错，测不出端口冲突。
-    blocker.bind(("0.0.0.0", 0))
+    # 会被 0.0.0.0 叠加绑定而不报错，测不出端口冲突（测试刻意行为）。
+    blocker.bind(("0.0.0.0", 0))  # codeql[py/bind-socket-all-network-interfaces]
     blocker.listen(1)
     port = int(blocker.getsockname()[1])
     try:
@@ -238,3 +248,128 @@ async def test_serve_port_conflict_degrades_to_stdin_only(
         assert payload["fatal"] is False
     finally:
         blocker.close()
+
+
+@pytest.mark.asyncio
+async def test_revoke_closes_established_connection(tmp_path) -> None:
+    """V0.3.4 缺陷 7 回归：撤销 token 后，静默在线的已建立连接立即断开、
+    不再收到任何事件；其他 token 的连接不受影响。"""
+    harness = SidecarHarness(tmp_path, io.StringIO())
+    await harness.start()
+    session = aiohttp.ClientSession()
+    try:
+        code1 = harness.service.pairing_service.issue_code()
+        token1 = harness.service.pairing_service.claim(code1, device_name="手机A")
+        code2 = harness.service.pairing_service.issue_code()
+        token2 = harness.service.pairing_service.claim(code2, device_name="手机B")
+
+        ws1 = await session.ws_connect(f"http://127.0.0.1:{harness.port}/ws")
+        ws2 = await session.ws_connect(f"http://127.0.0.1:{harness.port}/ws")
+        for ws, token, rid in ((ws1, token1, "a1"), (ws2, token2, "a2")):
+            boot = await _request(ws, "app.bootstrap", rid, token=token)
+            assert boot["ok"] is True
+
+        # 撤销 token1：手机A 的连接应被服务端主动关闭
+        assert harness.service.pairing_service.revoke(token1) is True
+        raw = await asyncio.wait_for(ws1.receive(), timeout=5.0)
+        assert raw.type == aiohttp.WSMsgType.CLOSE, raw
+        assert ws1.close_code == 4401
+
+        # 撤销后手机A 静默在线也不再收到事件：下一条只可能是关闭状态而非 TEXT
+        harness.service.emitter.emit("test.after_revoke", {"seq": 9})
+        event = await _recv_message(ws2)
+        assert event["event"] == "test.after_revoke"
+        after = await asyncio.wait_for(ws1.receive(), timeout=1.0)
+        assert after.type != aiohttp.WSMsgType.TEXT, after
+
+        await ws2.close()
+        await ws1.close()
+    finally:
+        await session.close()
+        await harness.stop()
+
+
+@pytest.mark.asyncio
+async def test_serve_started_reports_lan_address(tmp_path, monkeypatch) -> None:
+    """V0.3.4 缺陷 6：serve 启动成功后上报 serve.started（host/port），
+    桌面端二维码按它生成；stdin 正常 EOF 退出 0。"""
+    import argparse
+    import sys
+
+    import pair_harness.desktop_backend.__main__ as backend_main
+
+    port = _free_port()
+    out = io.StringIO()
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(backend_main, "_detect_lan_ip", lambda: "192.168.1.42")
+    args = argparse.Namespace(
+        serve=port,
+        demo=True,
+        real=False,
+        pair="phainon_ancient_machine",
+        project=tmp_path,
+        data_dir=tmp_path / "data",
+    )
+    rc = await backend_main._run(args)
+    assert rc == 0
+
+    lines = [json.loads(line) for line in out.getvalue().splitlines()]
+    serve_events = [m for m in lines if m.get("event") == "serve.started"]
+    assert len(serve_events) == 1
+    assert serve_events[0]["payload"] == {"host": "192.168.1.42", "port": port}
+
+
+@pytest.mark.asyncio
+async def test_sigint_routes_to_orderly_stop(tmp_path, monkeypatch) -> None:
+    """V0.3.4 缺陷 5：Ctrl+C 安装为与 app.shutdown 相同的有序停机路径。
+
+    两条安装分支（事件循环 handler / Windows 进程级 handler）触发后都应
+    请求 router 停机；安装函数返回恢复回调，不污染宿主进程的 SIGINT 处理。
+    """
+    import signal
+
+    import pair_harness.desktop_backend.__main__ as backend_main
+    from pair_harness.desktop_backend.router import SidecarRouter
+
+    stdout = io.StringIO()
+    harness = SidecarHarness(tmp_path, stdout)
+    try:
+        router = SidecarRouter(harness.service, JsonlWriter(io.StringIO()))
+        loop = asyncio.get_running_loop()
+        previous = signal.getsignal(signal.SIGINT)
+        try:
+            # 分支 1：强制走 Windows 式进程级 handler
+            def unsupported(sig, callback):
+                raise NotImplementedError
+
+            monkeypatch.setattr(loop, "add_signal_handler", unsupported)
+            restore = backend_main._install_sigint_stop(router)
+            fallback_handler = signal.getsignal(signal.SIGINT)
+            assert callable(fallback_handler)
+            fallback_handler(signal.SIGINT, None)
+            await asyncio.wait_for(router.wait_stopped(), timeout=1.0)
+            restore()
+            assert signal.getsignal(signal.SIGINT) is previous
+
+            # 分支 2：事件循环原生 handler（Unix 路径；Windows 上移除接口同样
+            # 不可用，一并替换以隔离宿主事件循环）
+            installed: dict[int, object] = {}
+            removed: list[int] = []
+            monkeypatch.setattr(
+                loop, "add_signal_handler", lambda sig, cb: installed.setdefault(sig, cb)
+            )
+            monkeypatch.setattr(
+                loop, "remove_signal_handler", lambda sig: removed.append(sig)
+            )
+            router2 = SidecarRouter(harness.service, JsonlWriter(io.StringIO()))
+            restore2 = backend_main._install_sigint_stop(router2)
+            assert signal.SIGINT in installed
+            installed[signal.SIGINT]()
+            await asyncio.wait_for(router2.wait_stopped(), timeout=1.0)
+            restore2()
+            assert removed == [signal.SIGINT]
+        finally:
+            signal.signal(signal.SIGINT, previous)
+    finally:
+        await harness.stop()

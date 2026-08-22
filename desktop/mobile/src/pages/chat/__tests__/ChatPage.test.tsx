@@ -125,6 +125,8 @@ describe("ChatPage 移动端聊天页集成测试", () => {
       messages: [],
       toolRuns: [],
       approvals: [],
+      pair: null,
+      activeTask: null,
       lastSequence: 10,
       bootstrapped: true,
     });
@@ -218,12 +220,14 @@ describe("ChatPage 移动端聊天页集成测试", () => {
       },
     });
 
-    const input = screen.getByTestId("delegation-input");
-    const submitBtn = screen.getByTestId("delegation-submit-btn");
-
     await waitFor(() => {
       expect(useMobileStore.getState().activeConversationId).toBe("c1");
     });
+
+    // V0.3.4：切到「交给助手」目标（协作模式下可用）
+    fireEvent.click(screen.getByTestId("target-btn-assistant"));
+    const input = screen.getByTestId("chat-input");
+    const submitBtn = screen.getByTestId("chat-submit-btn");
 
     fireEvent.change(input, { target: { value: "把所有单元测试运行一遍" } });
     fireEvent.click(submitBtn);
@@ -276,12 +280,13 @@ describe("ChatPage 移动端聊天页集成测试", () => {
       },
     });
 
-    const input = screen.getByTestId("delegation-input");
-    const submitBtn = screen.getByTestId("delegation-submit-btn");
-
     await waitFor(() => {
       expect(useMobileStore.getState().activeConversationId).toBe("c1");
     });
+
+    fireEvent.click(screen.getByTestId("target-btn-assistant"));
+    const input = screen.getByTestId("chat-input");
+    const submitBtn = screen.getByTestId("chat-submit-btn");
 
     fireEvent.change(input, { target: { value: "启动构建" } });
     fireEvent.click(submitBtn);
@@ -300,9 +305,124 @@ describe("ChatPage 移动端聊天页集成测试", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByTestId("delegation-error")).toBeInTheDocument();
+      expect(screen.getByTestId("chat-composer-error")).toBeInTheDocument();
       expect(screen.getByText(/桌面端正在执行其他任务/)).toBeInTheDocument();
     });
+  });
+
+  it("V0.3.4 缺陷 3：「发给角色」提交 target=character 的 chat.submit", async () => {
+    render(<ChatPage conversationId="c1" />);
+
+    await vi.waitFor(() => {
+      expect(lastSentFrame().method).toBe("conversation.open");
+    });
+    const openFrame = lastSentFrame();
+    lastInstance().emit({
+      kind: "response",
+      id: openFrame.id,
+      ok: true,
+      result: {
+        conversation: CONVERSATION,
+        project: null,
+        pair: null,
+        messages: [],
+        tool_runs: [],
+        turns: [],
+        queue_items: [],
+        active_task: null,
+      },
+    });
+
+    await waitFor(() => {
+      expect(useMobileStore.getState().activeConversationId).toBe("c1");
+    });
+
+    // 默认目标即「发给角色」
+    const input = screen.getByTestId("chat-input");
+    fireEvent.change(input, { target: { value: "今天好累，陪我聊聊" } });
+    fireEvent.click(screen.getByTestId("chat-submit-btn"));
+
+    await vi.waitFor(() => {
+      expect(lastSentFrame().method).toBe("chat.submit");
+    });
+    const submitFrame = lastSentFrame();
+    expect(submitFrame.params).toMatchObject({
+      conversation_id: "c1",
+      target: "character",
+      text: "今天好累，陪我聊聊",
+    });
+    expect(submitFrame.params).not.toHaveProperty("mode");
+  });
+
+  it("V0.3.4 缺陷 4：对话模式下助手输入前置禁用，切换模式发 conversation.set_mode", async () => {
+    useMobileStore.setState({
+      conversationsById: { c1: { ...CONVERSATION, last_mode: "chat" } },
+    });
+    render(<ChatPage conversationId="c1" />);
+
+    await vi.waitFor(() => {
+      expect(lastSentFrame().method).toBe("conversation.open");
+    });
+    const openFrame = lastSentFrame();
+    lastInstance().emit({
+      kind: "response",
+      id: openFrame.id,
+      ok: true,
+      result: {
+        conversation: { ...CONVERSATION, last_mode: "chat" },
+        project: null,
+        pair: null,
+        messages: [],
+        tool_runs: [],
+        turns: [],
+        queue_items: [],
+        active_task: null,
+      },
+    });
+    await waitFor(() => {
+      expect(useMobileStore.getState().activeConversationId).toBe("c1");
+    });
+
+    // 对话模式：切到助手目标后前置禁用并说明
+    fireEvent.click(screen.getByTestId("target-btn-assistant"));
+    expect(screen.getByTestId("chat-input")).toBeDisabled();
+    expect(screen.getByTestId("chat-submit-btn")).toBeDisabled();
+    expect(screen.getByTestId("chat-composer-hint")).toHaveTextContent(
+      /对话模式下助手不接收委派/,
+    );
+
+    // 切换到协作模式：发出 conversation.set_mode
+    fireEvent.click(screen.getByTestId("mode-btn-collaboration"));
+    await vi.waitFor(() => {
+      expect(lastSentFrame().method).toBe("conversation.set_mode");
+    });
+    const modeFrame = lastSentFrame();
+    expect(modeFrame.params).toMatchObject({
+      conversation_id: "c1",
+      mode: "collaboration",
+    });
+
+    // conversation.changed 到达前 UI 仍是禁用（不乐观更新）
+    expect(screen.getByTestId("chat-input")).toBeDisabled();
+
+    lastInstance().emit({
+      kind: "response",
+      id: modeFrame.id,
+      ok: true,
+      result: { conversation_id: "c1", mode: "collaboration" },
+    });
+    lastInstance().emit({
+      kind: "event",
+      event: "conversation.changed",
+      sequence: 11,
+      payload: { conversation: CONVERSATION },
+    });
+
+    // 协作模式生效后助手输入解锁
+    await waitFor(() => {
+      expect(screen.getByTestId("chat-input")).not.toBeDisabled();
+    });
+    expect(screen.getByText("协作模式")).toBeInTheDocument();
   });
 
   it("接收实时 message.delta 与 message.finalized 事件并增量渲染", async () => {
@@ -384,5 +504,137 @@ describe("ChatPage 移动端聊天页集成测试", () => {
     await waitFor(() => {
       expect(screen.getByText("正在解析配置...解析成功，一切正常。")).toBeInTheDocument();
     });
+  });
+
+  it("V0.3.4 缺陷 8：角色思考流（character.speech + channel=reasoning）进折叠思考段，不混入正文", async () => {
+    render(<ChatPage conversationId="c1" />);
+
+    await vi.waitFor(() => {
+      expect(lastSentFrame().method).toBe("conversation.open");
+    });
+    const openFrame = lastSentFrame();
+    lastInstance().emit({
+      kind: "response",
+      id: openFrame.id,
+      ok: true,
+      result: {
+        conversation: CONVERSATION,
+        project: null,
+        pair: null,
+        messages: [],
+        tool_runs: [],
+        turns: [],
+        queue_items: [],
+        active_task: null,
+      },
+    });
+    await waitFor(() => {
+      expect(useMobileStore.getState().activeConversationId).toBe("c1");
+    });
+
+    // 角色思考增量：kind=character.speech + channel=reasoning
+    lastInstance().emit({
+      kind: "event",
+      event: "message.delta",
+      sequence: 11,
+      payload: {
+        message_id: "m-char-think",
+        conversation_id: "c1",
+        source: "character",
+        kind: "character.speech",
+        channel: "reasoning",
+        delta: "他今天似乎很累，我先关心一下。",
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("reasoning-ribbon")).toBeInTheDocument();
+      expect(screen.getByTestId("reasoning-body")).toHaveTextContent(
+        "他今天似乎很累，我先关心一下。",
+      );
+    });
+    // 思考文本不得拼进正文气泡（.mobile-msg-text）
+    const bodyTexts = Array.from(document.querySelectorAll(".mobile-msg-text"));
+    expect(
+      bodyTexts.some((el) => el.textContent?.includes("他今天似乎很累")),
+    ).toBe(false);
+
+    // 同消息的正文增量与思考分开
+    lastInstance().emit({
+      kind: "event",
+      event: "message.delta",
+      sequence: 12,
+      payload: {
+        message_id: "m-char-think",
+        conversation_id: "c1",
+        source: "character",
+        kind: "character.speech",
+        delta: "辛苦了，今天想聊些什么？",
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("辛苦了，今天想聊些什么？")).toBeInTheDocument();
+    });
+    // 思考段仍然独立存在
+    expect(screen.getByTestId("reasoning-body")).toHaveTextContent(
+      "他今天似乎很累，我先关心一下。",
+    );
+  });
+
+  it("V0.3.4 缺陷 2：角色委派消息渲染为「来自 <角色名> 的委派」卡片而非用户气泡", async () => {
+    const delegationMessage: Message = {
+      message_id: "msg-del-1",
+      conversation_id: "c1",
+      pair_id: "pair-1",
+      engine_turn_id: null,
+      source: "user",
+      kind: "user.text",
+      text: "查看项目目录结构",
+      payload: {},
+      tts_eligible: false,
+      created_at: "2026-08-20T00:02:00Z",
+      origin: "character_delegation",
+      delegation_id: "task-del-1",
+      status: "processing",
+    };
+    const pairRecord = {
+      pair_id: "pair-1",
+      character: { id: "phainon", name: "白厄", voice_id: "" },
+      assistant: { id: "fourth_mirror", name: "第四面镜", voice_id: "" },
+      theme: { id: "ancient_machine", name: "古代机械" },
+    };
+
+    render(<ChatPage conversationId="c1" />);
+
+    await vi.waitFor(() => {
+      expect(lastSentFrame().method).toBe("conversation.open");
+    });
+    const openFrame = lastSentFrame();
+    lastInstance().emit({
+      kind: "response",
+      id: openFrame.id,
+      ok: true,
+      result: {
+        conversation: CONVERSATION,
+        project: null,
+        pair: pairRecord,
+        messages: [SAMPLE_MESSAGE, delegationMessage],
+        tool_runs: [],
+        turns: [],
+        queue_items: [],
+        active_task: null,
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("delegation-card")).toBeInTheDocument();
+    });
+    const card = screen.getByTestId("delegation-card");
+    // 来自角色（白厄）的委派，运行中（status=processing），而非「你」的用户气泡
+    expect(card).toHaveTextContent("来自 白厄 的委派");
+    expect(card).toHaveTextContent("查看项目目录结构");
+    expect(card).toHaveAttribute("data-delegation-status", "running");
+    expect(screen.queryByText("你")).toBeNull();
   });
 });

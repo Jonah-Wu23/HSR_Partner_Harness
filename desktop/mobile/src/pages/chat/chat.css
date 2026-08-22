@@ -240,7 +240,7 @@
   outline: 2px solid var(--accent);
 }
 
-/* ========== 委派输入区 ========== */
+/* ========== 聊天输入区（V0.3.4：模式/目标切换 + 通用输入） ========== */
 
 .mobile-composer {
   background: var(--surface);
@@ -248,6 +248,63 @@
   padding: 10px 12px max(10px, var(--safe-bottom));
   flex: none;
   z-index: 10;
+}
+
+/* 模式切换 + 发送目标切换控制条 */
+.mobile-chat-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.mobile-segmented {
+  display: inline-flex;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.mobile-segmented-btn {
+  min-height: 36px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mobile-segmented-btn.active {
+  background: var(--accent);
+  color: var(--surface);
+}
+
+.mobile-segmented-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.mobile-composer-hint {
+  margin: 0 0 6px;
+  padding: 6px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.mobile-composer-hint-error {
+  border-color: var(--danger);
+  color: var(--fg);
 }
 
 .mobile-composer-error {

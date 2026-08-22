@@ -243,6 +243,26 @@ class TestRevoke:
         assert decision.allowed is False
         assert decision.reason == "revoked_token"
 
+    def test_revoke_notifies_listeners_with_token_and_device(self) -> None:
+        svc = PairingService()
+        code = svc.issue_code()
+        token = svc.claim(code, device_name="phone")
+        notified: list[tuple[str, str]] = []
+        svc.add_revoke_listener(lambda t, d: notified.append((t, d)))
+        svc.revoke(token)
+        assert notified == [(token, "phone")]
+
+    def test_revoke_skips_listeners_when_nothing_revoked(self) -> None:
+        svc = PairingService()
+        notified: list[tuple[str, str]] = []
+        svc.add_revoke_listener(lambda t, d: notified.append((t, d)))
+        assert svc.revoke("nonexistent") is False
+        code = svc.issue_code()
+        token = svc.claim(code, device_name="phone")
+        svc.revoke(token)
+        svc.revoke(token)  # 已撤销，二次撤销不再通知
+        assert len(notified) == 1
+
 
 # ============================================================
 # 设备列表
