@@ -85,8 +85,7 @@ jobs:
           Set-Content -Path resources/sidecar/ci-placeholder.txt -Value "CI resource placeholder" -NoNewline
           Set-Content -Path resources/codex/ci-placeholder.txt -Value "CI resource placeholder" -NoNewline
           Set-Content -Path resources/reasonix/ci-placeholder.txt -Value "CI resource placeholder" -NoNewline
-          Set-Content -Path resources/mobile-dist/ci-placeholder.txt -Value "CI resource placeholder" -NoNewline resource placeholder" -NoNewline
-          Set-Content -Path resources/reasonix/ci-placeholder.txt -Value "CI resource placeholder" -NoNewline
+          Set-Content -Path resources/mobile-dist/ci-placeholder.txt -Value "CI resource placeholder" -NoNewline
 
       - name: Check formatting
         run: cargo fmt --check
