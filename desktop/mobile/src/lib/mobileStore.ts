@@ -78,15 +78,49 @@ function indexConversations(projects: ProjectRecord[]): Record<string, Conversat
 function applySnapshot(
   set: (partial: Partial<MobileState>) => void,
   snapshot: DesktopSnapshot,
+  get: () => MobileState,
 ): void {
+  // 手机当前会话上下文（委派卡的角色名与运行状态）必须与会话对齐：全局快照
+  // 的 pair/active_task 属于桌面当前会话，不能覆盖本会话（V0.3.4 Codex 建议 B）。
+  // 有打开的会话时，只从快照的全量集合（pairs / active_tasks）按当前会话重新选择；
+  // 快照不携带本会话信息时保留现状，不跨会话覆盖、也不臆测为 null。
+  const activeConvId = get().activeConversationId;
+  const activeConv =
+    typeof activeConvId === "string" && activeConvId
+      ? get().conversationsById[activeConvId] ||
+        indexConversations(snapshot.projects)[activeConvId]
+      : null;
+  const activePairId = activeConv?.pair_id;
+
+  let pair: PairRecord | null = get().pair;
+  let activeTask: ActiveTask | null = get().activeTask;
+  if (!activeConvId) {
+    // 尚未打开会话：直接采用全局快照的配对与全局活动任务。
+    pair = snapshot.pair;
+    activeTask = snapshot.active_task;
+  } else {
+    if (activePairId) {
+      const selected = snapshot.pairs.find((p) => p.pair_id === activePairId);
+      pair =
+        selected ??
+        (snapshot.pair?.pair_id === activePairId ? snapshot.pair : get().pair);
+    }
+    if (Array.isArray(snapshot.active_tasks)) {
+      activeTask =
+        snapshot.active_tasks.find((t) => t.conversation_id === activeConvId) ?? null;
+    } else if (snapshot.active_task?.conversation_id === activeConvId) {
+      activeTask = snapshot.active_task;
+    }
+  }
+
   set({
     projects: snapshot.projects,
     conversationsById: indexConversations(snapshot.projects),
     messages: snapshot.messages,
     toolRuns: snapshot.tool_runs,
     approvals: snapshot.approvals,
-    pair: snapshot.pair,
-    activeTask: snapshot.active_task,
+    pair,
+    activeTask,
     lastSequence: snapshot.sequence,
     bootstrapped: true,
   });
@@ -118,7 +152,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
     bootstrapping = (async () => {
       try {
         const snapshot = await client.request<DesktopSnapshot>("app.bootstrap");
-        applySnapshot(set, snapshot);
+        applySnapshot(set, snapshot, get);
       } finally {
         bootstrapping = null;
       }
@@ -140,7 +174,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
     switch (event.event) {
       case "state.snapshot": {
         const payload = event.payload as unknown as DesktopSnapshot;
-        applySnapshot(set, payload);
+        applySnapshot(set, payload, get);
         break;
       }
       case "conversation.changed": {
@@ -171,6 +205,42 @@ export const useMobileStore = create<MobileState>((set, get) => {
         if (approvalId) {
           set({ approvals: get().approvals.filter((item) => item.approval_id !== approvalId) });
         }
+        break;
+      }
+      case "message.status_changed": {
+        // V0.3.4 Codex 建议 A：委派执行的完成/失败/取消由 message.status_changed
+        // 推进消息状态；按 message_id upsert，委派卡据此退出「运行中」。
+        const message = (event.payload as { message?: Message }).message;
+        if (
+          message &&
+          typeof message.message_id === "string" &&
+          typeof message.conversation_id === "string" &&
+          typeof message.status === "string"
+        ) {
+          const rest = get().messages.filter((m) => m.message_id !== message.message_id);
+          set({ messages: [...rest, message] });
+        }
+        break;
+      }
+      case "task.busy_changed": {
+        // V0.3.4 Codex 建议 A/B：活动任务是会话级权威状态；任务结束（busy=false）
+        // 时清空当前会话的活动任务，委派卡不再误判为运行中。只取当前会话条目，
+        // 不被其他会话任务干扰。
+        const payload = event.payload as {
+          busy?: boolean;
+          active_task?: ActiveTask | null;
+          active_tasks?: ActiveTask[];
+        };
+        const convId = get().activeConversationId;
+        let activeTask: ActiveTask | null = null;
+        if (Array.isArray(payload.active_tasks)) {
+          activeTask = payload.active_tasks.find((t) => t.conversation_id === convId) ?? null;
+        } else if (payload.active_task && payload.active_task.conversation_id === convId) {
+          activeTask = payload.active_task;
+        } else if (payload.busy === false) {
+          activeTask = null;
+        }
+        set({ activeTask });
         break;
       }
       // TODO(W5)：message.created/delta/finalized、tool_run.upserted 等

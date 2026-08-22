@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ConversationRecord, DesktopSnapshot } from "@shared/contracts/protocol";
+import type { ConversationRecord, DesktopSnapshot, Message, PairRecord } from "@shared/contracts/protocol";
 import { mobileWsClient, useMobileStore } from "./mobileStore";
 import { getStoredToken } from "./wsClient";
 
@@ -418,5 +418,146 @@ describe("mobileStore 会话操作", () => {
     await openPromise;
     expect(useMobileStore.getState().pair).toEqual(pairRecord);
     expect(useMobileStore.getState().activeTask).toEqual(activeTask);
+  });
+
+  it("V0.3.4 Codex 建议 A：message.status_changed 推进委派消息状态", async () => {
+    await pairAndBootstrap();
+    const delegationMsg: Message = {
+      message_id: "msg-del",
+      conversation_id: "c1",
+      pair_id: "pair-1",
+      engine_turn_id: null,
+      source: "user",
+      kind: "user.text",
+      text: "把 README 翻成英文",
+      payload: {},
+      tts_eligible: false,
+      created_at: "2026-08-20T00:02:00Z",
+      origin: "character_delegation",
+      delegation_id: "task-1",
+      status: "processing",
+    };
+    useMobileStore.setState({ activeConversationId: "c1", messages: [delegationMsg] });
+
+    lastInstance().emit({
+      kind: "event",
+      event: "message.status_changed",
+      sequence: 11,
+      payload: { message: { ...delegationMsg, status: "done" } },
+    });
+    expect(useMobileStore.getState().messages).toHaveLength(1);
+    expect(useMobileStore.getState().messages[0]!.status).toBe("done");
+  });
+
+  it("V0.3.4 Codex 建议 A：task.busy_changed 结束当前会话活动任务", async () => {
+    await pairAndBootstrap();
+    const activeTask = {
+      project_id: "p1",
+      conversation_id: "c1",
+      task_id: "task-1",
+      engine_turn_id: null,
+    };
+    useMobileStore.setState({ activeConversationId: "c1", activeTask });
+
+    // 任务结束：busy=false（无归属字段的旧语义清空当前会话）
+    lastInstance().emit({
+      kind: "event",
+      event: "task.busy_changed",
+      sequence: 11,
+      payload: { busy: false, conversation_id: "c1" },
+    });
+    expect(useMobileStore.getState().activeTask).toBeNull();
+  });
+
+  it("V0.3.4 Codex 建议 B：重新 bootstrap 不覆盖当前会话的 pair，activeTask 按会话选取", async () => {
+    await pairAndBootstrap();
+    const pairA: PairRecord = {
+      pair_id: "pair-1",
+      character: { id: "phainon", name: "白厄", voice_id: "" },
+      assistant: { id: "fourth_mirror", name: "第四面镜", voice_id: "" },
+      theme: {
+        character_text: "#fff",
+        character_primary: "#ffd",
+        character_deep: "#aa8",
+        character_active: "#ff0",
+        assistant_primary: "#aaf",
+        assistant_bright: "#ccf",
+        assistant_shadow: "#558",
+      },
+    };
+    const taskC1 = {
+      project_id: "p1",
+      conversation_id: "c1",
+      task_id: "task-c1",
+      engine_turn_id: null,
+    };
+    useMobileStore.setState({
+      activeConversationId: "c1",
+      conversationsById: { c1: CONVERSATION },
+      pair: pairA,
+      activeTask: taskC1,
+    });
+
+    // 重连/缺口重 bootstrap：全局快照属于桌面当前会话 B，携带不同的 pair 与任务
+    const otherPair: PairRecord = {
+      pair_id: "pair-B",
+      character: { id: "firefly", name: "流萤", voice_id: "" },
+      assistant: { id: "sam", name: "萨姆", voice_id: "" },
+      theme: {
+        character_text: "#fff",
+        character_primary: "#ffd",
+        character_deep: "#aa8",
+        character_active: "#ff0",
+        assistant_primary: "#aaf",
+        assistant_bright: "#ccf",
+        assistant_shadow: "#558",
+      },
+    };
+    const snapshot = {
+      projects: [{ project_id: "p1", name: "演示项目", conversations: [CONVERSATION] }],
+      messages: [],
+      tool_runs: [],
+      approvals: [],
+      sequence: 20,
+      pair: otherPair,
+      pairs: [otherPair],
+      active_task: { project_id: "p9", conversation_id: "c9", task_id: "task-B", engine_turn_id: null },
+    } as unknown as DesktopSnapshot;
+    lastInstance().emit({ kind: "event", event: "state.snapshot", sequence: 11, payload: snapshot });
+
+    // 快照不含当前会话（c1）的配对：保留既有 pairA，不被桌面会话 B 覆盖
+    expect(useMobileStore.getState().pair).toEqual(pairA);
+    // 快照没有本会话任务信息：保留既有 activeTask
+    expect(useMobileStore.getState().activeTask).toEqual(taskC1);
+  });
+
+  it("V0.3.4 Codex 建议 B：快照权威 active_tasks 为空时清空残留任务", async () => {
+    await pairAndBootstrap();
+    const staleTask = {
+      project_id: "p1",
+      conversation_id: "c1",
+      task_id: "task-c1",
+      engine_turn_id: null,
+    };
+    useMobileStore.setState({
+      activeConversationId: "c1",
+      conversationsById: { c1: CONVERSATION },
+      activeTask: staleTask,
+    });
+
+    // 新协议：active_tasks 是完整权威集合，空数组 → 当前会话任务已结束，清空
+    const snapshot = {
+      projects: [{ project_id: "p1", name: "演示项目", conversations: [CONVERSATION] }],
+      messages: [],
+      tool_runs: [],
+      approvals: [],
+      sequence: 20,
+      pair: null,
+      pairs: [],
+      active_task: null,
+      active_tasks: [],
+    } as unknown as DesktopSnapshot;
+    lastInstance().emit({ kind: "event", event: "state.snapshot", sequence: 11, payload: snapshot });
+    expect(useMobileStore.getState().activeTask).toBeNull();
   });
 });

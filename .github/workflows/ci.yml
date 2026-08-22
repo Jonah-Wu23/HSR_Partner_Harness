@@ -81,9 +81,11 @@ jobs:
       - name: Prepare Tauri resource globs
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path resources/sidecar, resources/codex, resources/reasonix | Out-Null
+          New-Item -ItemType Directory -Force -Path resources/sidecar, resources/codex, resources/reasonix, resources/mobile-dist | Out-Null
           Set-Content -Path resources/sidecar/ci-placeholder.txt -Value "CI resource placeholder" -NoNewline
           Set-Content -Path resources/codex/ci-placeholder.txt -Value "CI resource placeholder" -NoNewline
+          Set-Content -Path resources/reasonix/ci-placeholder.txt -Value "CI resource placeholder" -NoNewline
+          Set-Content -Path resources/mobile-dist/ci-placeholder.txt -Value "CI resource placeholder" -NoNewline resource placeholder" -NoNewline
           Set-Content -Path resources/reasonix/ci-placeholder.txt -Value "CI resource placeholder" -NoNewline
 
       - name: Check formatting

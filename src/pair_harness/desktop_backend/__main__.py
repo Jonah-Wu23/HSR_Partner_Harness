@@ -47,15 +47,19 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _detect_lan_ip() -> str:
-    """尽力探测本机在局域网中的源地址（UDP connect 不发包），失败返回回环地址。"""
+def _detect_lan_ip() -> str | None:
+    """尽力探测本机在局域网中的源地址（UDP connect 不发包）。
+
+    返回 None 表示探测失败（如实暴露，不伪造可达地址）：调用方不得上报
+    一个只能本机访问的回环地址当作成功。
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         sock.settimeout(0)
         sock.connect(("8.8.8.8", 80))
         return str(sock.getsockname()[0])
     except OSError:
-        return "127.0.0.1"
+        return None
     finally:
         sock.close()
 
@@ -195,10 +199,12 @@ async def _run(args: argparse.Namespace) -> int:
                 logging.getLogger(__name__).info(
                     "WS 服务器模式已启动 port=%s lan_host=%s", args.serve, lan_host
                 )
-                # 上报真实监听地址：桌面端二维码按它生成（V0.3.4 缺陷 6）。
-                service.emitter.emit(
-                    "serve.started", {"host": lan_host, "port": args.serve}
-                )
+                if lan_host is not None:
+                    # 上报真实监听地址：桌面端二维码按它生成（V0.3.4 缺陷 6）。
+                    # 探测失败时如实不下发地址，桌面端保持「地址未就绪」占位，不伪造可达地址。
+                    service.emitter.emit(
+                        "serve.started", {"host": lan_host, "port": args.serve}
+                    )
                 # 撤销 token 时立即断开仍持有该 token 的已建立连接（V0.3.4 缺陷 7）。
                 service.pairing_service.add_revoke_listener(
                     ws_server.close_connections_for_token
