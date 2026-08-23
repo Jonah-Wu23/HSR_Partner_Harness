@@ -267,4 +267,5 @@ class WSServerMode:
             conn.subscribe()
             logger.info("远程连接鉴权完成 device=%r", decision.device_name)
 
-        self.dispatch(text, conn.send)
+        # V0.3.5：远程命令标记 origin=remote，供审批仲裁区分双端应答。
+        self.dispatch(text, conn.send, origin="remote")

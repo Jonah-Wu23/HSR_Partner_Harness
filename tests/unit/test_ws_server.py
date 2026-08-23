@@ -44,8 +44,11 @@ class FakeDispatch:
         self.auto_reply = auto_reply
         self.invoked: list[dict[str, Any]] = []
 
-    def __call__(self, line: str, reply_sink: Any) -> None:
+    def __call__(
+        self, line: str, reply_sink: Any, *, origin: str = "desktop"
+    ) -> None:
         payload = json.loads(line)
+        payload["_origin"] = origin
         self.invoked.append(payload)
         if self.auto_reply and reply_sink is not None and payload.get("id"):
             self._reply(reply_sink, payload["id"], {"echo": payload["method"]})

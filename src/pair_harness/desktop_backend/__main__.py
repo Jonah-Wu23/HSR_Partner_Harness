@@ -168,6 +168,8 @@ async def _run(args: argparse.Namespace) -> int:
                     static_root,
                 )
                 static_root = None
+            # V0.3.5：手机语音事件经 fanout 的 remote-only 通道下发。
+            service.attach_event_fanout(fanout)
             ws_server = WSServerMode(
                 dispatch=router.dispatch,
                 authenticator=service.pairing_service,

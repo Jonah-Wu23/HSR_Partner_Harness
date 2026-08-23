@@ -201,6 +201,23 @@ class CharacterCardRepository:
         )
         self.connection.commit()
 
+    def publish_card(self, card_id: str) -> CardRecord:
+        """V0.3.5：draft → saved（完成创建）。非 draft 幂等返回当前记录。"""
+        record = self.get_card(card_id)
+        if record.state != "draft":
+            return record
+        self.connection.execute(
+            "UPDATE character_cards SET state = 'saved', updated_at = ? "
+            "WHERE card_id = ?",
+            (_now(), card_id),
+        )
+        self.connection.commit()
+        return self.get_card(card_id)
+
+    def is_archived(self, card_id: str) -> bool:
+        """V0.3.5：卡是否在归档集合（active 快照判断用）。"""
+        return card_id in self._archived_ids()
+
     def get_active_card_id(self) -> str | None:
         row = self.connection.execute(
             "SELECT value FROM app_state WHERE key = ?", (ACTIVE_KEY,)

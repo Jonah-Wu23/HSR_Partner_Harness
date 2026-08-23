@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +84,7 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
         temperature: float | None = None,
+        character_prompt_resolver: Callable[[str], Any] | None = None,
     ) -> None:
         self.base_url = base_url or os.getenv("PAIR_HARNESS_DIALOGUE_BASE_URL", "")
         self.api_key = api_key or os.getenv("PAIR_HARNESS_DIALOGUE_API_KEY", "")
@@ -99,6 +100,11 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         self.reasoning_effort = reasoning_effort
         # B1：采样温度；None 表示不写入请求体（服务端默认，DeepSeek 为 1）。
         self.temperature = temperature
+        # V0.3.5：按 conversation_id 解析对话绑定的自定义角色卡装配结果
+        # （docs/plans/V0.3.5-契约冻结.md §4.2）。命中时角色侧 system 文本
+        # 来自装配器；助手 brief 与输出协议仍取内置 pair YAML，卡内容不
+        # 进入。resolver 返回 None（未绑定/卡已删除）一律回退内置 YAML。
+        self.character_prompt_resolver = character_prompt_resolver
 
     # ---- client 生命周期（O3.2）----
 
@@ -122,11 +128,21 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             self._client = None
             self._owns_client = False
 
-    # ---- 提示词装配（O3.2）----
+    # ---- 提示词装配（O3.2；V0.3.5 角色卡覆盖）----
 
-    def _system_prompt(self, pair_id: str) -> str:
+    def _system_prompt(self, pair_id: str, conversation_id: str | None = None) -> str:
         config = load_pair_config(pair_id, root=self._config_root)
         character_card = load_prompt(config.character.prompt, root=self._config_root)
+        if conversation_id is not None and self.character_prompt_resolver is not None:
+            assembled = self.character_prompt_resolver(conversation_id)
+            if assembled is not None:
+                # 自定义角色卡对话：角色侧文本来自装配器（不改写原文），
+                # 助手 brief 与输出协议指令保持内置来源，两段永不互换。
+                assistant_brief = self._assistant_brief(config.assistant.prompt)
+                return (
+                    f"{assembled.system_text}\n\n"
+                    f"{assistant_brief}\n\n{_OUTPUT_FORMAT_INSTRUCTION}"
+                )
         assistant_brief = self._assistant_brief(config.assistant.prompt)
         return f"{character_card}\n\n{assistant_brief}\n\n{_OUTPUT_FORMAT_INSTRUCTION}"
 
@@ -140,7 +156,12 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         self, request: DialogueRequest, *, delegation_retry: bool = False
     ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": self._system_prompt(request.pair_id)}
+            {
+                "role": "system",
+                "content": self._system_prompt(
+                    request.pair_id, request.conversation_id
+                ),
+            }
         ]
         for message in request.recent_messages:
             role = {

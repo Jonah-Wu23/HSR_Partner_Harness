@@ -30,9 +30,17 @@ from pair_harness.config.voices import (
     assistant_speaker_ids,
     load_reference_voice_manifest,
 )
-from pair_harness.character_cards.codec import dump_card_v3, load_card_payload
+from pair_harness.character_cards.codec import (
+    CardImportError,
+    dump_card_v3,
+    load_card_json,
+    load_card_payload,
+)
 from pair_harness.character_cards.models import CharacterCard
 from pair_harness.character_cards.repository import CharacterCardRepository
+from pair_harness.character_cards.assets import CharacterAssetService
+from pair_harness.character_cards.states import CharacterVoiceState
+from pair_harness.core.character_prompt_assembler import AssembledPrompt, assemble_character_prompt
 from pair_harness.core.context import ExecutionContext, assert_single_assistant_markdown
 from pair_harness.core.contracts import (
     ApprovalDecision,
@@ -40,6 +48,8 @@ from pair_harness.core.contracts import (
     EngineEvent,
     EngineEventType,
     Message,
+    MessageKind,
+    MessageOrigin,
     MessageSource,
     ProjectRef,
     PendingOperation,
@@ -59,11 +69,22 @@ from pair_harness.voice_models import VOICE_ASR_MODEL, VOICE_TTS_MODEL
 from .commands import DesktopCommand
 from .engine_factory import build_coding_engine
 from .events import EventEmitter, EventSink, to_jsonable
+from .mobile_audio import (
+    MobileAsrSessionManager,
+    MobileAudioError,
+    MobileTtsSequencer,
+)
 from .voice_factory import (
     build_real_voice_runtime,
     effective_pair_config,
     resolve_effective_voice_profile,
 )
+
+
+def _params_card_id(params: Mapping[str, Any]) -> str | None:
+    """params.character_card_id 的显式值；空/缺失返回 None（走 active 快照）。"""
+    value = str(params.get("character_card_id") or "").strip()
+    return value or None
 
 
 logger = logging.getLogger(__name__)
@@ -87,6 +108,10 @@ class ApprovalBroker:
     def __init__(self, emitter: EventEmitter) -> None:
         self._emitter = emitter
         self._pending: dict[str, dict[str, Any]] = {}
+        # V0.3.5：已决审批的短时结果记录——双端并发应答同一审批时，后到者
+        # 收到 approval_already_resolved 与先到者的真实结果，双端状态收敛
+        # （docs/plans/V0.3.5-契约冻结.md §6）。容量有界，防长会话累积。
+        self._resolved: dict[str, dict[str, Any]] = {}
 
     @property
     def pending(self) -> dict[str, dict[str, Any]]:
@@ -124,9 +149,18 @@ class ApprovalBroker:
         finally:
             self._pending.pop(approval_id, None)
 
-    def resolve(self, approval_id: str, decision: str) -> None:
+    def resolve(
+        self, approval_id: str, decision: str, *, resolved_by: str = "desktop"
+    ) -> dict[str, Any]:
         item = self._pending.get(approval_id)
         if item is None:
+            prior = self._resolved.get(approval_id)
+            if prior is not None:
+                raise ServiceError(
+                    f"审批已由 {prior['resolved_by']} 应答（{prior['decision']}），"
+                    "不能重复应答",
+                    code="approval_already_resolved",
+                )
             raise ServiceError(
                 f"审批请求不存在或已经完成：{approval_id}",
                 code="approval_not_found",
@@ -138,6 +172,14 @@ class ApprovalBroker:
         future = cast(asyncio.Future[ApprovalDecision], item["future"])
         if not future.done():
             future.set_result(parsed)
+        # 先到者立即占位：并发第二答在 pending 已移除后走 already_resolved，
+        # 不会因 future 已 done 而静默成功（request 的 finally pop 幂等）。
+        self._pending.pop(approval_id, None)
+        outcome = {"decision": parsed.value, "resolved_by": resolved_by}
+        self._resolved[approval_id] = outcome
+        if len(self._resolved) > 256:
+            self._resolved.pop(next(iter(self._resolved)))
+        return outcome
 
     def cancel_all(self) -> None:
         for approval_id, item in tuple(self._pending.items()):
@@ -226,6 +268,10 @@ class DesktopApplicationService:
         self.store = store
         # V0.3.3：角色卡仓库（迁移 9 已建表）与远程配对服务（状态存 app_state）。
         self.card_repository = CharacterCardRepository(store)
+        # V0.3.5：受管理资产服务（头像/参考音频，character_assets 表首次启用）。
+        self.asset_service = CharacterAssetService(
+            store, store.database.parent / "character_assets"
+        )
         self.pairing_service = PairingService()
         self._restore_pairing_state()
         self.orchestrator = orchestrator
@@ -312,6 +358,36 @@ class DesktopApplicationService:
         self.orchestrator.on_execution_started = self._on_execution_started
         self.orchestrator.on_execution_finished = self._on_execution_finished
         self._restore_current_conversation()
+        # ---------------- V0.3.5（契约冻结 docs/plans/V0.3.5-契约冻结.md） ----------------
+        # --serve 模式下由 __main__ 注入事件扇出；手机语音事件走 remote-only
+        # 通道（只发远程连接，不写 stdout）。非 serve 模式保持 None。
+        self._event_fanout: Any = None
+        # 卡音色创建的每卡互斥锁（voice_card_provision_in_progress）。
+        self._card_provision_locks: dict[str, asyncio.Lock] = {}
+        # 手机上行转写会话（后台线程泵驱动识别器，回调需线程安全转回主循环）。
+        self._mobile_asr = MobileAsrSessionManager(
+            on_transcript=self._on_mobile_transcript
+        )
+        self._mobile_asr_conversations: dict[str, str] = {}
+        self._mobile_asr_watchdogs: dict[str, asyncio.Task[None]] = {}
+        # 手机下行 TTS 分片编目与在途下发任务。
+        self._mobile_tts = MobileTtsSequencer()
+        self._mobile_tts_tasks: dict[str, asyncio.Task[None]] = {}
+        # 装配结果缓存（card_id → (updated_at, AssembledPrompt)）。
+        self._assembled_cache: dict[str, tuple[str, AssembledPrompt]] = {}
+        # 转写回调线程需要主循环引用做 call_soon_threadsafe；同步上下文
+        # （部分测试 fixture）没有运行中的循环时置 None——该场景下无
+        # remote 连接，转写事件本就无处可发，回调按无循环如实跳过。
+        try:
+            self._main_loop: Any = asyncio.get_running_loop()
+        except RuntimeError:
+            self._main_loop = None
+        # 角色卡装配 resolver 后绑定：dialogue_model 在 service 构造前创建，
+        # 这里把按 conversation_id 解析装配结果的回调挂进对话模型。
+        if isinstance(self.dialogue_model, OpenAICompatibleDialogueModel):
+            self.dialogue_model.character_prompt_resolver = (
+                self._resolve_character_prompt
+            )
 
     # ------------------------------------------------------------------ 生命周期
 
@@ -929,11 +1005,30 @@ class DesktopApplicationService:
             "card.archive": self._card_archive,
             "card.delete": self._card_delete,
             "card.select_active": self._card_select_active,
+            "card.peek_import_json": self._card_peek_import_json,
+            "card.import_json": self._card_import_json,
+            "card.export_json": self._card_export_json,
+            "card.publish": self._card_publish,
+            "card.set_avatar": self._card_set_avatar,
+            "card.remove_avatar": self._card_remove_avatar,
+            "voice.card_bind_reference": self._voice_card_bind_reference,
+            "voice.card_create": self._voice_card_create,
+            "voice.card_unbind": self._voice_card_unbind,
+            "voice.card_preview": self._voice_card_preview,
+            "voice.mobile_ptt_start": self._voice_mobile_ptt_start,
+            "voice.mobile_audio_chunk": self._voice_mobile_audio_chunk,
+            "voice.mobile_ptt_stop": self._voice_mobile_ptt_stop,
+            "voice.mobile_tts_stop": self._voice_mobile_tts_stop,
             "remote.issue_code": self._remote_issue_code,
             "remote.pair": self._remote_pair,
             "remote.list_devices": self._remote_list_devices,
             "remote.revoke": self._remote_revoke,
         }
+        if command.method == "approval.resolve":
+            # V0.3.5：审批应答需要命令来源做双端仲裁，其余 handler 只收 params。
+            return await self._approval_resolve(
+                command.params, origin=command.origin
+            )
         handler = handlers[command.method]
         return await handler(command.params)
 
@@ -976,6 +1071,7 @@ class DesktopApplicationService:
         conversation = self._find_or_create_conversation(
             project.project_id,
             pair_id=pair_id,
+            character_card_id=_params_card_id(params),
         )
         await self._select_conversation_context(conversation.conversation_id, emit=True)
         return self.bootstrap()
@@ -1089,12 +1185,24 @@ class DesktopApplicationService:
         project_id = str(params.get("project_id") or self.current_project_id)
         project = self._current_account_project(project_id)
         title = str(params.get("title") or "新聊天")
+        # V0.3.5：显式 character_card_id 优先；缺省快照当时有效的 active 卡。
+        card_id = str(params.get("character_card_id") or "").strip() or None
+        if card_id is None:
+            card_id = self._effective_active_card_id()
         conversation = self.store.create_conversation(
             project_id=project.project_id,
             pair_id=pair_id,
             title=title,
             account_id=self.current_account_id,
+            character_card_id=card_id,
         )
+        if card_id:
+            try:
+                record = self.card_repository.get_card(card_id)
+            except KeyError:
+                record = None
+            if record is not None:
+                self._insert_character_greeting(conversation, record.card)
         await self._select_conversation_context(conversation.conversation_id, emit=True)
         return self.bootstrap()
 
@@ -1120,6 +1228,22 @@ class DesktopApplicationService:
             project = self._current_account_project(
                 conversation.project_id, conversation_mismatch=True
             )
+        # V0.3.5：绑定卡已被删除时如实提示回退内置角色，不静默换人（契约 §4.2）。
+        if conversation.character_card_id:
+            try:
+                self.card_repository.get_card(conversation.character_card_id)
+            except KeyError:
+                self.emitter.emit(
+                    "conversation.card_missing",
+                    {
+                        "conversation_id": conversation_id,
+                        "card_id": conversation.character_card_id,
+                        "message": (
+                            "该聊天绑定的角色卡已被删除，"
+                            "本轮起回退为内置角色"
+                        ),
+                    },
+                )
         snapshot = self.store.load_conversation(conversation_id)
         # 只读装载：恢复内存历史与工具缓存（幂等），不改写 current_*。
         # 返回体所有会话运行态都在 await 前物化；随后事件由调用端按游标重放。
@@ -1621,11 +1745,22 @@ class DesktopApplicationService:
             )
         }
 
-    async def _approval_resolve(self, params: Mapping[str, Any]) -> dict[str, Any]:
+    async def _approval_resolve(
+        self, params: Mapping[str, Any], *, origin: str = "desktop"
+    ) -> dict[str, Any]:
         approval_id = self._required_string(params, "approval_id")
         decision = self._required_string(params, "decision")
-        self.approval_broker.resolve(approval_id, decision)
-        return {"approval_id": approval_id, "accepted": True}
+        # V0.3.5：origin 由传输层注入（stdin=desktop、WS=remote），前端
+        # 参数不可伪造；响应携带 resolved_by 供双端收敛展示。
+        outcome = self.approval_broker.resolve(
+            approval_id, decision, resolved_by=origin
+        )
+        return {
+            "approval_id": approval_id,
+            "accepted": True,
+            "resolved_by": outcome["resolved_by"],
+            "decision": outcome["decision"],
+        }
 
     async def _voice_vad_set(self, params: Mapping[str, Any]) -> dict[str, Any]:
         enabled = bool(params.get("enabled", False))
@@ -1897,6 +2032,22 @@ class DesktopApplicationService:
             )
         return summaries
 
+    def _card_avatar_payload(self, card: CharacterCard) -> dict[str, Any] | None:
+        """card.get 的 avatar 字段：有资产时随响应整体下发（契约 §2.5）。"""
+        hsr = card.hsr
+        if hsr is None or hsr.avatar_asset is None or not hsr.avatar_asset.asset_id:
+            return None
+        try:
+            import base64
+
+            data, mime = self.asset_service.get_asset(hsr.avatar_asset.asset_id)
+        except Exception:  # noqa: BLE001 - 资产缺失时如实返回 null，不阻断卡读取
+            return None
+        return {
+            "mime_type": mime,
+            "data_base64": base64.b64encode(data).decode("ascii"),
+        }
+
     def _require_writable_card(self, card_id: str) -> None:
         if card_id.startswith(self._BUILTIN_PREFIX):
             raise ServiceError(
@@ -1961,6 +2112,8 @@ class DesktopApplicationService:
             "updated_at": record.updated_at,
             "card": json.loads(dump_card_v3(record.card)),
             "read_only": False,
+            # V0.3.5：头像随 get 整体下发（契约 §2.5）；列表摘要仍只有布尔。
+            "avatar": self._card_avatar_payload(record.card),
         }
 
     async def _card_create_draft(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -2021,6 +2174,8 @@ class DesktopApplicationService:
             self.card_repository.delete_card(card_id, confirm=confirm)
         except ValueError as exc:
             raise ServiceError(str(exc), code="card_confirm_required") from exc
+        # V0.3.5：删除卡时同步清理头像与参考音频资产（契约 §2.5）。
+        self.asset_service.delete_assets_for_card(card_id)
         return {"card_id": card_id, "deleted": True}
 
     async def _card_select_active(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -2031,6 +2186,838 @@ class DesktopApplicationService:
         except ValueError as exc:
             raise ServiceError(str(exc), code="card_invalid_state") from exc
         return {"card_id": card_id}
+
+    # ------------------------------------------------------------------ V0.3.5 角色卡导入导出与发布
+
+    @staticmethod
+    def _compat_report_payload(report: Any) -> dict[str, Any]:
+        return {
+            "applied": list(report.applied),
+            "preserved": list(report.preserved),
+            "not_executed": list(report.not_executed),
+            "normalized_from_root": list(report.normalized_from_root),
+            "warnings": list(report.warnings),
+            "errors": list(report.errors),
+        }
+
+    def _peek_card_from_path(self, params: Mapping[str, Any]):
+        """读取并解析 JSON 角色卡文件（不落库）；失败保留原始错误。"""
+        path_text = self._required_string(params, "path")
+        path = Path(path_text).expanduser()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ServiceError(
+                f"读取角色卡文件失败：{exc}", code="card_import_failed"
+            ) from exc
+        try:
+            return load_card_json(text)
+        except CardImportError as exc:
+            raise ServiceError(
+                f"角色卡解析失败：{exc}", code="card_import_failed"
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 - 非预期解析错误同样如实暴露
+            raise ServiceError(
+                f"角色卡解析失败：{exc}", code="card_import_failed"
+            ) from exc
+
+    def _import_preview_payload(
+        self, card: CharacterCard, report: Any
+    ) -> dict[str, Any]:
+        return {
+            "name": card.name,
+            "spec_version": card.spec_version or "2.0",
+            "avatar_available": bool(card.root_extras.get("avatar")),
+            "greeting_count": card.greeting_count(),
+            "world_book_entries": (
+                len(card.character_book.entries)
+                if card.character_book is not None
+                else 0
+            ),
+            "tags": list(card.tags),
+            "report": self._compat_report_payload(report),
+        }
+
+    async def _card_peek_import_json(
+        self, params: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        result = self._peek_card_from_path(params)
+        return {"preview": self._import_preview_payload(result.card, result.report)}
+
+    async def _card_import_json(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        result = self._peek_card_from_path(params)
+        as_duplicate = params.get("as_duplicate") is True
+        record = self.card_repository.import_card(
+            result.card, as_duplicate=as_duplicate
+        )
+        return {
+            "card_id": record.card_id,
+            "name": record.card.name,
+            "state": record.state,
+            "report": self._compat_report_payload(result.report),
+        }
+
+    async def _card_export_json(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        card_id = self._required_string(params, "card_id")
+        if card_id.startswith(self._BUILTIN_PREFIX):
+            raise ServiceError(
+                "内置角色为只读，请先复制为可编辑卡再导出", code="card_read_only"
+            )
+        path_text = self._required_string(params, "path")
+        path = Path(path_text).expanduser()
+        try:
+            record = self.card_repository.get_card(card_id)
+        except KeyError as exc:
+            raise ServiceError("角色卡不存在", code="card_not_found") from exc
+        payload = dump_card_v3(record.card)
+        try:
+            path.write_text(payload, encoding="utf-8")
+        except OSError as exc:
+            raise ServiceError(
+                f"写出角色卡文件失败：{exc}", code="card_export_failed"
+            ) from exc
+        avatar_saved = False
+        if params.get("save_avatar") is True:
+            hsr = record.card.hsr
+            asset_id = (
+                hsr.avatar_asset.asset_id
+                if hsr is not None and hsr.avatar_asset is not None
+                else ""
+            )
+            if asset_id:
+                data = b""
+                mime = ""
+                try:
+                    data, mime = self.asset_service.get_asset(asset_id)
+                except Exception:  # noqa: BLE001 - 头像缺失时如实不另存
+                    data, mime = b"", ""
+                if data:
+                    extension = (
+                        mime.split("/")[-1].split(";")[0] or "png"
+                    )
+                    avatar_path = path.with_suffix(f".avatar.{extension}")
+                    try:
+                        avatar_path.write_bytes(data)
+                        avatar_saved = True
+                    except OSError as exc:
+                        raise ServiceError(
+                            f"另存头像失败：{exc}", code="card_export_failed"
+                        ) from exc
+        return {"exported": True, "path": str(path), "avatar_saved": avatar_saved}
+
+    async def _card_publish(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        card_id = self._required_string(params, "card_id")
+        self._require_writable_card(card_id)
+        try:
+            record = self.card_repository.get_card(card_id)
+        except KeyError as exc:
+            raise ServiceError("角色卡不存在", code="card_not_found") from exc
+        if record.state == "draft":
+            labels = {"name": "角色名称", "first_mes": "第一条消息"}
+            missing = [
+                labels[key]
+                for key, value in (
+                    ("name", record.card.name.strip()),
+                    ("first_mes", record.card.first_mes.strip()),
+                )
+                if not value
+            ]
+            if missing:
+                raise ServiceError(
+                    "完成创建前必填：" + "、".join(missing),
+                    code="card_publish_invalid",
+                )
+        published = self.card_repository.publish_card(card_id)
+        return {"card_id": card_id, "state": published.state}
+
+    # ------------------------------------------------------------------ V0.3.5 头像资产
+
+    @classmethod
+    def _probe_image_mime(cls, data: bytes) -> str | None:
+        if data[:12] == b"RIFF" and data[8:12] == b"WEBP":
+            return "image/webp"
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if data.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+        return None
+
+    def _delete_avatar_assets(self, card_id: str) -> None:
+        for record in self.asset_service.list_assets_for_card(card_id):
+            if record.kind == "avatar":
+                self.asset_service.delete_asset(record.asset_id)
+
+    async def _card_set_avatar(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        card_id = self._required_string(params, "card_id")
+        self._require_writable_card(card_id)
+        path_text = self._required_string(params, "path")
+        path = Path(path_text).expanduser()
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise ServiceError(
+                f"读取头像文件失败：{exc}", code="card_avatar_invalid"
+            ) from exc
+        if len(data) > 5 * 1024 * 1024:
+            raise ServiceError("头像文件超过 5MB 上限", code="card_avatar_too_large")
+        mime = self._probe_image_mime(data)
+        if mime is None:
+            raise ServiceError(
+                "头像仅支持 PNG / JPEG / WebP 图片", code="card_avatar_unsupported"
+            )
+        try:
+            record = self.card_repository.get_card(card_id)
+        except KeyError as exc:
+            raise ServiceError("角色卡不存在", code="card_not_found") from exc
+        self._delete_avatar_assets(card_id)
+        extension = (
+            "png" if mime == "image/png" else ("webp" if mime == "image/webp" else "jpg")
+        )
+        asset_id = self.asset_service.store_asset(
+            card_id=card_id,
+            data=data,
+            kind="avatar",
+            mime_type=mime,
+            source="user_upload",
+            source_ref=path.name,
+            extension=extension,
+        )
+        card = record.card
+        if card.hsr is None:
+            from pair_harness.character_cards.models import HsrExtension
+
+            card.hsr = HsrExtension()
+        from pair_harness.character_cards.models import AvatarAsset
+
+        card.hsr.avatar_asset = AvatarAsset(
+            asset_id=asset_id,
+            source="user_upload",
+            source_ref=path.name,
+            mime_type=mime,
+        )
+        self.card_repository.update_card(card_id, card)
+        return {"card_id": card_id, "asset_id": asset_id, "mime_type": mime}
+
+    async def _card_remove_avatar(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        card_id = self._required_string(params, "card_id")
+        self._require_writable_card(card_id)
+        try:
+            record = self.card_repository.get_card(card_id)
+        except KeyError as exc:
+            raise ServiceError("角色卡不存在", code="card_not_found") from exc
+        self._delete_avatar_assets(card_id)
+        card = record.card
+        if card.hsr is not None and card.hsr.avatar_asset is not None:
+            card.hsr.avatar_asset = None
+            self.card_repository.update_card(card_id, card)
+        return {"card_id": card_id, "removed": True}
+
+    # ------------------------------------------------------------------ V0.3.5 角色卡音色
+
+    _REFERENCE_AUDIO_LIMIT = 10 * 1024 * 1024
+
+    @staticmethod
+    def _probe_wav_duration(data: bytes) -> float | None:
+        """WAV 时长精确探测；非法 WAV 返回 None（不猜测）。"""
+        import io as _io
+        import wave
+
+        try:
+            with wave.open(_io.BytesIO(data)) as handle:
+                return handle.getnframes() / float(handle.getframerate())
+        except Exception:  # noqa: BLE001 - 探测失败如实返回 None
+            return None
+
+    async def _voice_card_bind_reference(
+        self, params: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        card_id = self._required_string(params, "card_id")
+        self._require_writable_card(card_id)
+        path_text = self._required_string(params, "path")
+        path = Path(path_text).expanduser()
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise ServiceError(
+                f"读取参考音频失败：{exc}", code="voice_reference_invalid"
+            ) from exc
+        extension = path.suffix.lower().lstrip(".")
+        mime_by_ext = {"wav": "audio/wav", "mp3": "audio/mpeg", "m4a": "audio/mp4"}
+        mime = mime_by_ext.get(extension)
+        if mime is None:
+            raise ServiceError(
+                "参考音频仅支持 WAV / MP3 / M4A", code="voice_reference_invalid"
+            )
+        if len(data) > self._REFERENCE_AUDIO_LIMIT:
+            raise ServiceError(
+                "参考音频超过 10MB 上限", code="voice_reference_invalid"
+            )
+        # WAV 本地精确校验 60 秒边界；MP3/M4A 不做不可靠的近似时长判断，
+        # 大小之外交由 DashScope 真实裁决并如实回显错误（不猜测时长）。
+        duration = self._probe_wav_duration(data) if extension == "wav" else None
+        if duration is not None and duration > 60.0:
+            raise ServiceError(
+                f"参考音频 {duration:.0f} 秒，超过 60 秒上限",
+                code="voice_reference_invalid",
+            )
+        try:
+            record = self.card_repository.get_card(card_id)
+        except KeyError as exc:
+            raise ServiceError("角色卡不存在", code="card_not_found") from exc
+        asset_id = self.asset_service.store_asset(
+            card_id=card_id,
+            data=data,
+            kind="reference_audio",
+            mime_type=mime,
+            source="user_upload",
+            source_ref=path.name,
+            extension=extension,
+        )
+        card = record.card
+        if card.hsr is None:
+            from pair_harness.character_cards.models import HsrExtension
+
+            card.hsr = HsrExtension()
+        if card.hsr.voice_profile is None:
+            from pair_harness.character_cards.models import VoiceProfile
+
+            card.hsr.voice_profile = VoiceProfile()
+        card.hsr.voice_profile.reference_audio_asset = asset_id
+        self.card_repository.update_card(card_id, card)
+        return {
+            "card_id": card_id,
+            "asset_id": asset_id,
+            "duration_seconds": duration,
+            "size_bytes": len(data),
+            "mime_type": mime,
+        }
+
+    def _card_provision_emit(
+        self,
+        card_id: str,
+        state: str,
+        *,
+        voice_id: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        self.emitter.emit(
+            "voice.card_provision_changed",
+            {
+                "card_id": card_id,
+                "state": state,
+                "voice_id": voice_id,
+                "error": error,
+            },
+        )
+
+    @staticmethod
+    def _default_prefix(card_name: str) -> str:
+        cleaned = "".join(
+            ch for ch in card_name.lower() if ch.isascii() and ch.isalnum()
+        )[:10]
+        return cleaned or "card"
+
+    async def _voice_card_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        card_id = self._required_string(params, "card_id")
+        self._require_writable_card(card_id)
+        mode = self._required_string(params, "mode")
+        if mode not in {"clone", "design"}:
+            raise ServiceError("mode 必须是 clone 或 design", code="invalid_params")
+        lock = self._card_provision_locks.setdefault(card_id, asyncio.Lock())
+        if lock.locked():
+            raise ServiceError(
+                "该角色卡正在创建音色，请等待完成后再试",
+                code="voice_card_provision_in_progress",
+            )
+        async with lock:
+            config = self._load_account_config()
+            api_key = (config.get("voice.api_key") or "").strip()
+            base_url = (config.get("voice.base_url") or "").strip()
+            if not api_key or not base_url:
+                raise ServiceError(
+                    "请先在语音页保存 DashScope API Key 与服务地址，再为角色创建音色",
+                    code="voice_not_configured",
+                )
+            try:
+                record = self.card_repository.get_card(card_id)
+            except KeyError as exc:
+                raise ServiceError("角色卡不存在", code="card_not_found") from exc
+            card = record.card
+            prefix = (
+                str(params.get("prefix") or "").strip()
+                or self._default_prefix(card.name)
+            )
+            if not (
+                prefix.isascii()
+                and prefix.isalnum()
+                and prefix.islower()
+                and len(prefix) <= 10
+            ):
+                raise ServiceError(
+                    "prefix 必须是 ≤10 位小写字母/数字", code="voice_invalid_request"
+                )
+            if card.hsr is None:
+                from pair_harness.character_cards.models import HsrExtension
+
+                card.hsr = HsrExtension()
+            if card.hsr.voice_profile is None:
+                from pair_harness.character_cards.models import VoiceProfile
+
+                card.hsr.voice_profile = VoiceProfile()
+            profile = card.hsr.voice_profile
+
+            from pair_harness.adapters.audio.qwen_voice_customization import (
+                QwenVoiceCustomizationClient,
+                VoiceCustomizationError,
+                audio_file_to_data_uri,
+            )
+
+            client = QwenVoiceCustomizationClient(
+                api_key=api_key, http_base_url=base_url
+            )
+
+            def persist(state: str, **updates: Any) -> None:
+                profile.state = state
+                for key, value in updates.items():
+                    setattr(profile, key, value)
+                profile.updated_at = utc_now().isoformat()
+                self.card_repository.update_card(card_id, card)
+
+            if mode == "clone":
+                if not profile.reference_audio_asset:
+                    raise ServiceError(
+                        "请先绑定参考音频（voice.card_bind_reference）",
+                        code="voice_reference_missing",
+                    )
+                asset = next(
+                    (
+                        item
+                        for item in self.asset_service.list_assets_for_card(card_id)
+                        if item.asset_id == profile.reference_audio_asset
+                    ),
+                    None,
+                )
+                if asset is None:
+                    raise ServiceError(
+                        "绑定的参考音频资产缺失，请重新绑定",
+                        code="voice_reference_missing",
+                    )
+                audio_url = audio_file_to_data_uri(Path(asset.file_path))
+                voice_prompt = ""
+            else:
+                voice_prompt = str(params.get("voice_prompt") or "").strip()
+                if not voice_prompt:
+                    raise ServiceError(
+                        "声音设计需要非空 voice_prompt", code="voice_invalid_request"
+                    )
+                audio_url = ""
+
+            self._card_provision_emit(card_id, CharacterVoiceState.CREATING.value)
+            persist(CharacterVoiceState.CREATING.value)
+            try:
+                if mode == "clone":
+                    result = await asyncio.to_thread(
+                        client.create_cloned_voice,
+                        prefix=prefix,
+                        url=audio_url,
+                    )
+                else:
+                    preview_text = (
+                        str(params.get("preview_text") or "").strip()
+                        or "你好，很高兴认识你。"
+                    )
+                    result = await asyncio.to_thread(
+                        client.create_designed_voice,
+                        prefix=prefix,
+                        voice_prompt=voice_prompt,
+                        preview_text=preview_text,
+                    )
+            except VoiceCustomizationError as exc:
+                detail = (
+                    f"HTTP {exc.http_status} "
+                    if exc.http_status is not None
+                    else ""
+                ) + self._redact_voice_error(exc, api_key)
+                # 失败保留旧 voice_id 与真实错误；不合成成功结果。
+                persist(CharacterVoiceState.FAILED.value, last_error=detail)
+                self._card_provision_emit(
+                    card_id,
+                    CharacterVoiceState.FAILED.value,
+                    voice_id=profile.voice_id or None,
+                    error=detail,
+                )
+                raise ServiceError(
+                    detail, code="voice_card_create_failed"
+                ) from exc
+            except Exception as exc:  # noqa: BLE001 - 供应商/网络真实失败如实暴露
+                detail = self._redact_voice_error(
+                    str(exc) or type(exc).__name__, api_key
+                )
+                persist(CharacterVoiceState.FAILED.value, last_error=detail)
+                self._card_provision_emit(
+                    card_id,
+                    CharacterVoiceState.FAILED.value,
+                    voice_id=profile.voice_id or None,
+                    error=detail,
+                )
+                raise ServiceError(
+                    detail, code="voice_card_create_failed"
+                ) from exc
+
+            persist(
+                CharacterVoiceState.READY.value,
+                voice_id=result.voice_id,
+                creation_mode=mode,
+                prefix=prefix,
+                last_error="",
+            )
+            self._card_provision_emit(
+                card_id,
+                CharacterVoiceState.READY.value,
+                voice_id=result.voice_id,
+            )
+            return {
+                "card_id": card_id,
+                "state": CharacterVoiceState.READY.value,
+                "voice_id": result.voice_id,
+            }
+
+    async def _voice_card_unbind(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        card_id = self._required_string(params, "card_id")
+        self._require_writable_card(card_id)
+        try:
+            record = self.card_repository.get_card(card_id)
+        except KeyError as exc:
+            raise ServiceError("角色卡不存在", code="card_not_found") from exc
+        card = record.card
+        if card.hsr is not None and card.hsr.voice_profile is not None:
+            profile = card.hsr.voice_profile
+            # 旧 voice_id 不在用户供应商账号侧自动删除；本地解绑并保留参考音频。
+            profile.voice_id = ""
+            profile.state = CharacterVoiceState.UNCONFIGURED.value
+            profile.creation_mode = ""
+            profile.last_error = ""
+            profile.updated_at = utc_now().isoformat()
+            self.card_repository.update_card(card_id, card)
+        return {
+            "card_id": card_id,
+            "state": CharacterVoiceState.UNCONFIGURED.value,
+        }
+
+    async def _voice_card_preview(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        card_id = self._required_string(params, "card_id")
+        if self.voice_runtime is None:
+            raise ServiceError("语音运行时未启用", code="voice_unavailable")
+        text = str(params.get("text") or "").strip() or "你好，这是该角色的语音。"
+        if not is_readable_text(text):
+            raise ServiceError("试听文本为空或只有标点", code="invalid_text")
+        try:
+            record = self.card_repository.get_card(card_id)
+        except KeyError as exc:
+            raise ServiceError("角色卡不存在", code="card_not_found") from exc
+        profile = (
+            record.card.hsr.voice_profile if record.card.hsr is not None else None
+        )
+        if (
+            profile is None
+            or profile.state != CharacterVoiceState.READY.value
+            or not profile.voice_id
+        ):
+            raise ServiceError("该角色卡尚未创建可用音色", code="voice_card_not_ready")
+        # 卡音色属于角色侧；助手侧音色永不进入试听（voice_policy 边界）。
+        self.voice_runtime.enqueue_text(text, voice_id=profile.voice_id)
+        return {"voice": self._voice_snapshot()}
+
+    # ------------------------------------------------------------------ V0.3.5 对话绑定角色卡（装配）
+
+    def _effective_active_card_id(self) -> str | None:
+        """当前可作为新对话角色身份的 active 卡；draft 与归档卡不生效。"""
+        card_id = self.card_repository.get_active_card_id()
+        if not card_id:
+            return None
+        try:
+            record = self.card_repository.get_card(card_id)
+        except KeyError:
+            return None
+        if record.state not in {"saved", "imported"}:
+            return None
+        if self.card_repository.is_archived(card_id):
+            return None
+        return card_id
+
+    def _resolve_character_prompt(
+        self, conversation_id: str
+    ) -> "AssembledPrompt | None":
+        """按对话绑定的角色卡装配提示词；未绑定或卡已删除返回 None。"""
+        try:
+            conversation = self.store.get_conversation(conversation_id)
+        except KeyError:
+            return None
+        card_id = conversation.character_card_id
+        if not card_id:
+            return None
+        try:
+            record = self.card_repository.get_card(card_id)
+        except KeyError:
+            # 卡已被删除：回退内置角色；降级提示由 conversation.open 发出。
+            return None
+        cached = self._assembled_cache.get(card_id)
+        if cached is not None and cached[0] == record.updated_at:
+            return cached[1]
+        assembled = assemble_character_prompt(record.card)
+        self._assembled_cache[card_id] = (record.updated_at, assembled)
+        return assembled
+
+    def _insert_character_greeting(
+        self, conversation: Any, card: CharacterCard
+    ) -> None:
+        """绑定卡的对话创建后插入 first_mes 开场白（走既有消息路径）。"""
+        text = card.first_mes.strip()
+        if not text:
+            return
+        message = Message(
+            conversation_id=conversation.conversation_id,
+            pair_id=conversation.pair_id,
+            source=MessageSource.CHARACTER,
+            kind=MessageKind.CHARACTER_SPEECH,
+            text=text,
+            tts_eligible=True,
+            origin=MessageOrigin.SYSTEM,
+        )
+        self.store.save_message(message)
+        self.emitter.emit("message.created", {"message": message})
+
+    # ------------------------------------------------------------------ V0.3.5 手机语音（契约 §5）
+
+    def attach_event_fanout(self, fanout: Any) -> None:
+        """--serve 模式由 __main__ 注入事件扇出；手机语音事件经它下发。"""
+        self._event_fanout = fanout
+
+    def _publish_remote_only(self, event: str, payload: dict[str, Any]) -> None:
+        fanout = self._event_fanout
+        if fanout is None:
+            return
+        envelope = {
+            "kind": "event",
+            "event": event,
+            "stream_id": self.emitter.stream_id,
+            "sequence": self.emitter.next_sequence,
+            "payload": payload,
+        }
+        # 音频分片只发远程连接，不写桌面 stdout 协议（契约 §5.2）。
+        fanout.publish(envelope, remote_only=True)
+
+    def _on_mobile_transcript(
+        self, conversation_id: str, session_id: str, text: str, is_final: bool
+    ) -> None:
+        # 回调来自会话泵线程；线程安全转回主事件循环再发布。无运行
+        # 循环（非事件循环上下文构造）时无处可发，如实跳过。
+        if self._main_loop is None:
+            return
+        self._main_loop.call_soon_threadsafe(
+            self._publish_remote_only,
+            "voice.mobile_transcript",
+            {
+                "conversation_id": conversation_id,
+                "session_id": session_id,
+                "text": text,
+                "is_final": is_final,
+            },
+        )
+
+    def _mobile_asr_factory(self):
+        from pair_harness.adapters.audio.qwen_asr import QwenStreamingRecognizer
+
+        config = self._load_account_config()
+        settings = Settings.overlay(Settings.from_environment(), config)
+        api_key = (config.get("voice.api_key") or "").strip() or (
+            settings.dashscope_api_key or ""
+        )
+        if not api_key:
+            raise ServiceError(
+                "请先在语音页保存 DashScope API Key，再使用手机语音",
+                code="voice_not_configured",
+            )
+
+        def factory() -> QwenStreamingRecognizer:
+            return QwenStreamingRecognizer(
+                api_key=api_key, ws_url=settings.resolved_ws_url
+            )
+
+        return factory
+
+    async def _voice_mobile_ptt_start(
+        self, params: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        conversation_id = self._required_string(params, "conversation_id")
+        self._current_account_conversation(conversation_id)
+        connection_key = str(params.get("device_name") or "remote")
+        factory = self._mobile_asr_factory()
+        try:
+            session_id = self._mobile_asr.start_session(
+                conversation_id, connection_key, factory
+            )
+        except MobileAudioError as exc:
+            raise ServiceError(str(exc) or exc.code, code=exc.code) from exc
+        self._mobile_asr_conversations[session_id] = conversation_id
+
+        async def watchdog() -> None:
+            # 连接断开未显式 stop 的兜底：超时静默取消，避免会话悬挂。
+            await asyncio.sleep(120)
+            self._mobile_asr.cancel_session(session_id)
+
+        task = asyncio.create_task(watchdog())
+        self._mobile_asr_watchdogs[session_id] = task
+        return {"session_id": session_id, "conversation_id": conversation_id}
+
+    async def _voice_mobile_audio_chunk(
+        self, params: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        session_id = self._required_string(params, "session_id")
+        seq_raw = params.get("seq")
+        if not isinstance(seq_raw, int) or isinstance(seq_raw, bool):
+            raise ServiceError("seq 必须是整数", code="invalid_params")
+        data = params.get("data")
+        if not isinstance(data, str) or not data:
+            raise ServiceError(
+                "data 必须是非空 base64 字符串", code="invalid_params"
+            )
+        try:
+            self._mobile_asr.feed_chunk(session_id, seq_raw, data)
+        except MobileAudioError as exc:
+            raise ServiceError(str(exc) or exc.code, code=exc.code) from exc
+        return {"accepted": True}
+
+    async def _voice_mobile_ptt_stop(
+        self, params: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        session_id = self._required_string(params, "session_id")
+        watchdog = self._mobile_asr_watchdogs.pop(session_id, None)
+        if watchdog is not None:
+            watchdog.cancel()
+        try:
+            transcript = self._mobile_asr.end_session(session_id)
+        except MobileAudioError as exc:
+            raise ServiceError(str(exc) or exc.code, code=exc.code) from exc
+        text = transcript.strip()
+        if not text:
+            raise ServiceError("未识别到语音内容", code="voice_transcript_empty")
+        # 转写文本以角色消息进入既有提交路径（模式校验/队列/归属全部复用）。
+        conversation_id = self._mobile_asr_conversations.pop(session_id, "")
+        if not conversation_id:
+            raise ServiceError(
+                "转写会话已结束", code="voice_session_not_found"
+            )
+        await self._chat_submit(
+            {"conversation_id": conversation_id, "target": "character", "text": text}
+        )
+        return {"session_id": session_id, "transcript": text}
+
+    async def _voice_mobile_tts_stop(
+        self, params: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        message_id = self._required_string(params, "message_id")
+        self._mobile_tts.stop(message_id)
+        task = self._mobile_tts_tasks.pop(message_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+        return {"message_id": message_id, "stopped": True}
+
+    def _maybe_relay_mobile_tts(self, message: Message) -> None:
+        """角色自然语言回复 → 手机 TTS 下发；助手/工具/思考零下发。"""
+        if self._event_fanout is None:
+            return
+        if not self._event_fanout.has_remote_subscribers():
+            return
+        if message.source != MessageSource.CHARACTER or not message.tts_eligible:
+            return
+        if not message.text.strip():
+            return
+        task = asyncio.create_task(
+            self._relay_mobile_tts_task(message),
+            name=f"mobile-tts:{message.message_id}",
+        )
+        self._mobile_tts_tasks[message.message_id] = task
+        task.add_done_callback(
+            lambda _t: self._mobile_tts_tasks.pop(message.message_id, None)
+        )
+
+    async def _relay_mobile_tts_task(self, message: Message) -> None:
+        try:
+            conversation = self.store.get_conversation(message.conversation_id)
+        except KeyError:
+            return
+        # 音色按对话绑定卡优先（卡级 voice_ready），否则账号级解析。
+        voice_id = ""
+        card_id = conversation.character_card_id
+        if card_id:
+            record = None
+            try:
+                record = self.card_repository.get_card(card_id)
+            except KeyError:
+                record = None
+            if record is not None:
+                profile = (
+                    record.card.hsr.voice_profile
+                    if record.card.hsr is not None
+                    else None
+                )
+                if (
+                    profile is not None
+                    and profile.state == CharacterVoiceState.READY.value
+                    and profile.voice_id
+                ):
+                    voice_id = profile.voice_id
+        if not voice_id:
+            pair = self._effective_voice_pair(
+                conversation.pair_id, message.conversation_id
+            )
+            voice_id = pair.character.voice_id
+        if not voice_id:
+            # 没有可用音色：如实不合成、不发事件（不空耗额度）。
+            return
+        config = self._load_account_config()
+        settings = Settings.overlay(Settings.from_environment(), config)
+        api_key = (config.get("voice.api_key") or "").strip() or (
+            settings.dashscope_api_key or ""
+        )
+        if not api_key:
+            return
+        from pair_harness.adapters.audio.qwen_tts import QwenSpeechSynthesizer
+        from pair_harness.core.contracts import SpeechRequest
+
+        synthesizer = QwenSpeechSynthesizer(
+            api_key=api_key, ws_url=settings.resolved_ws_url
+        )
+        self._mobile_tts.begin(message.message_id, message.conversation_id)
+        end_payload: dict[str, Any] | None = None
+        try:
+            async for chunk in synthesizer.synthesize(
+                SpeechRequest(
+                    text=message.text,
+                    voice_id=voice_id,
+                    message_id=message.message_id,
+                )
+            ):
+                envelope = self._mobile_tts.feed(message.message_id, chunk.pcm)
+                self._publish_remote_only(
+                    "voice.mobile_tts_chunk", envelope["payload"]
+                )
+            end_payload = self._mobile_tts.end(message.message_id)
+        except asyncio.CancelledError:
+            raise
+        except MobileAudioError:
+            return
+        except Exception:  # noqa: BLE001 - 下发失败不影响桌面主链路，留日志
+            logger.warning("手机 TTS 下发失败", exc_info=True)
+            return
+        finally:
+            try:
+                await synthesizer.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+        if end_payload is not None:
+            self._publish_remote_only("voice.mobile_tts_end", end_payload["payload"])
 
     # ------------------------------------------------------------------ V0.3.3 手机远程配对
 
@@ -3063,6 +4050,9 @@ class DesktopApplicationService:
 
     def _on_message(self, message: Message) -> None:
         self.emitter.emit("message.created", {"message": message})
+        # V0.3.5：角色自然语言回复 → 在线手机端 TTS 下发（契约 §5.2）；
+        # 助手/工具/思考/系统消息零音频下发。
+        self._maybe_relay_mobile_tts(message)
 
     def _emit_state_snapshot(self) -> None:
         """发出与事件自身序号一致的完整快照。"""
@@ -3480,8 +4470,14 @@ class DesktopApplicationService:
         assert_single_assistant_markdown(context.assistant_instructions, assistant_md)
         return context
 
-    def _effective_voice_pair(self, pair_id: str) -> PairConfig:
-        """按当前账号解析某个搭档的真实有效音色。"""
+    def _effective_voice_pair(
+        self, pair_id: str, conversation_id: str | None = None
+    ) -> PairConfig:
+        """按当前账号解析某个搭档的真实有效音色。
+
+        V0.3.5：对话绑定卡且卡音色 voice_ready 时，角色侧 voice_id 覆盖为
+        卡音色（契约 §3.4）；助手侧永不覆盖、永不可用。
+        """
         pair_config = load_pair_config(pair_id)
         config = self._load_account_config()
         settings = Settings.overlay(Settings.from_environment(), config)
@@ -3490,7 +4486,40 @@ class DesktopApplicationService:
             settings=settings,
             pair_config=pair_config,
         )
-        return effective_pair_config(pair_config, voices)
+        effective = effective_pair_config(pair_config, voices)
+        if conversation_id is None:
+            return effective
+        card_voice_id = self._conversation_card_voice_id(conversation_id)
+        if card_voice_id:
+            return effective.model_copy(
+                update={
+                    "character": effective.character.model_copy(
+                        update={"voice_id": card_voice_id}
+                    )
+                }
+            )
+        return effective
+
+    def _conversation_card_voice_id(self, conversation_id: str) -> str:
+        try:
+            conversation = self.store.get_conversation(conversation_id)
+        except KeyError:
+            return ""
+        card_id = conversation.character_card_id
+        if not card_id:
+            return ""
+        try:
+            record = self.card_repository.get_card(card_id)
+        except KeyError:
+            return ""
+        profile = record.card.hsr.voice_profile if record.card.hsr else None
+        if (
+            profile is not None
+            and profile.state == CharacterVoiceState.READY.value
+            and profile.voice_id
+        ):
+            return profile.voice_id
+        return ""
 
     async def _focus_voice_context(
         self, conversation_id: str, pair_id: str
@@ -3499,7 +4528,8 @@ class DesktopApplicationService:
         if self.voice_runtime is None:
             return
         await self.voice_runtime.set_context_async(
-            conversation_id, self._effective_voice_pair(pair_id)
+            conversation_id,
+            self._effective_voice_pair(pair_id, conversation_id),
         )
 
     async def _select_conversation_context(self, conversation_id: str, *, emit: bool) -> None:
@@ -3576,18 +4606,34 @@ class DesktopApplicationService:
         self._current_account_project(conversation.project_id, conversation_mismatch=True)
         return conversation
 
-    def _find_or_create_conversation(self, project_id: str, *, pair_id: str):
+    def _find_or_create_conversation(
+        self, project_id: str, *, pair_id: str, character_card_id: str | None = None
+    ):
         conversations = self.store.list_conversations(
             project_id, account_id=self.current_account_id
         )
         if conversations:
             return conversations[0]
-        return self.store.create_conversation(
+        # V0.3.5：新对话快照当时的有效 active 卡（draft/归档不生效）；
+        # 已开对话不受之后切换 active 卡影响（契约 §4.1/§4.3）。
+        card_id = character_card_id
+        if card_id is None:
+            card_id = self._effective_active_card_id()
+        conversation = self.store.create_conversation(
             project_id=project_id,
             pair_id=pair_id,
             title="新聊天",
             account_id=self.current_account_id,
+            character_card_id=card_id,
         )
+        if card_id:
+            try:
+                record = self.card_repository.get_card(card_id)
+            except KeyError:
+                record = None
+            if record is not None:
+                self._insert_character_greeting(conversation, record.card)
+        return conversation
 
     def _schedule_title_generation(self, conversation_id: str, target: str) -> None:
         if conversation_id in self._title_generation_started:

@@ -1,6 +1,6 @@
 [package]
 name = "hsr-partner-harness"
-version = "0.3.4"
+version = "0.3.5"
 description = "HSR Partner Harness desktop shell"
 authors = ["Jonah Wu"]
 edition = "2021"
