@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CloseIcon } from "../../assets/icons/icons";
 import type {
   AccountPageView,
@@ -459,6 +459,14 @@ function VoicePage(props: SettingsCenterProps) {
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [provisionError, setProvisionError] = useState<string | null>(null);
   const [provisioningIds, setProvisioningIds] = useState<string[]>([]);
+  const provisioningIdsRef = useRef(new Set<string>());
+  const voiceGenerationRef = useRef(0);
+  const voiceAccountIdRef = useRef(voice.accountId);
+  if (voiceAccountIdRef.current !== voice.accountId) {
+    voiceAccountIdRef.current = voice.accountId;
+    voiceGenerationRef.current += 1;
+    provisioningIdsRef.current.clear();
+  }
   const [localSpeakers, setLocalSpeakers] = useState<
     Record<string, Partial<VoiceSpeakerStatus>>
   >({});
@@ -468,7 +476,12 @@ function VoicePage(props: SettingsCenterProps) {
     setApiKey("");
     setSaveError(null);
     setSaveNotice(null);
-  }, [voice.baseUrl, voice.apiKeyMasked]);
+    voiceGenerationRef.current += 1;
+    provisioningIdsRef.current.clear();
+    setProvisioningIds([]);
+    setLocalSpeakers({});
+    setProvisionError(null);
+  }, [voice.accountId, voice.baseUrl, voice.apiKeyMasked]);
 
   const draftEndpoints = endpointsForBaseUrl(baseUrl);
   const customizationEndpoint = draftEndpoints.customization || voice.customizationEndpoint || "";
@@ -552,21 +565,28 @@ function VoicePage(props: SettingsCenterProps) {
   };
 
   const provisionVoices = async (speakerIds: string[], replaceExisting = false) => {
+    const pendingIds = speakerIds.filter(
+      (speakerId) => !provisioningIdsRef.current.has(speakerId),
+    );
+    if (pendingIds.length === 0) return;
     setProvisionError(null);
     if (!props.onProvisionVoices) {
       setProvisionError("当前窗口尚未接入 voice.provision 调用，未伪造生成结果。");
       return;
     }
-    setProvisioningIds((current) => [...new Set([...current, ...speakerIds])]);
+    const generation = voiceGenerationRef.current;
+    pendingIds.forEach((speakerId) => provisioningIdsRef.current.add(speakerId));
+    setProvisioningIds(Array.from(provisioningIdsRef.current));
     setLocalSpeakers((current) => {
       const next = { ...current };
-      speakerIds.forEach((speakerId) => {
+      pendingIds.forEach((speakerId) => {
         next[speakerId] = { ...next[speakerId], state: "creating", error: null };
       });
       return next;
     });
     try {
-      const result = await props.onProvisionVoices(speakerIds, replaceExisting);
+      const result = await props.onProvisionVoices(pendingIds, replaceExisting);
+      if (generation !== voiceGenerationRef.current) return;
       if (result?.results) {
         setLocalSpeakers((current) => {
           const next = { ...current };
@@ -583,9 +603,25 @@ function VoicePage(props: SettingsCenterProps) {
         });
       }
     } catch (error: unknown) {
-      setProvisionError(error instanceof Error ? error.message : String(error));
+      if (generation !== voiceGenerationRef.current) return;
+      const message = error instanceof Error ? error.message : String(error);
+      setProvisionError(message);
+      setLocalSpeakers((current) => {
+        const next = { ...current };
+        pendingIds.forEach((speakerId) => {
+          next[speakerId] = {
+            ...next[speakerId],
+            state: "failed",
+            error: message,
+          };
+        });
+        return next;
+      });
     } finally {
-      setProvisioningIds((current) => current.filter((id) => !speakerIds.includes(id)));
+      if (generation === voiceGenerationRef.current) {
+        pendingIds.forEach((speakerId) => provisioningIdsRef.current.delete(speakerId));
+        setProvisioningIds(Array.from(provisioningIdsRef.current));
+      }
     }
   };
 

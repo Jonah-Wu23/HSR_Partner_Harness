@@ -22,15 +22,17 @@ from pair_harness.desktop_backend.ws_server import (
 class StubAuthenticator:
     """测试用桩鉴权：实现 RemoteAuthenticator Protocol。"""
 
-    def __init__(self, valid_token: str = "phone-token") -> None:
-        self.valid_token = valid_token
+    def __init__(self, valid_tokens: str | set[str] = "phone-token") -> None:
+        self.valid_tokens = (
+            {valid_tokens} if isinstance(valid_tokens, str) else set(valid_tokens)
+        )
         self.calls: list[tuple[str | None, Any]] = []
 
     def authorize(self, token: str | None, method: str) -> AuthDecision:
         self.calls.append((token, method))
         if method in UNAUTHENTICATED_METHODS:
             return AuthDecision(allowed=True, reason="", device_name="pairing")
-        if token == self.valid_token:
+        if token in self.valid_tokens:
             return AuthDecision(allowed=True, reason="", device_name="my-phone")
         return AuthDecision(allowed=False, reason="missing_or_invalid_token")
 
@@ -75,11 +77,13 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-async def _start(static_root: Any) -> Harness:
+async def _start(
+    static_root: Any, *, authenticator: StubAuthenticator | None = None
+) -> Harness:
     stdout = io.StringIO()
     fanout = EventFanout(JsonlWriter(stdout))
     fake = FakeDispatch()
-    auth = StubAuthenticator()
+    auth = authenticator or StubAuthenticator()
     port = _free_port()
     server = WSServerMode(
         dispatch=fake,
@@ -176,6 +180,30 @@ async def test_authenticated_command_dispatched_and_response_back_on_same_connec
         assert resp["ok"] is True
         assert h.fake.invoked and h.fake.invoked[-1]["method"] == "chat.submit"
         assert resp["result"] == {"echo": "chat.submit"}
+    finally:
+        await h.server.stop()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_connection_cannot_switch_token() -> None:
+    auth = StubAuthenticator({"phone-token", "other-token"})
+    h = await _start(None, authenticator=auth)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with await session.ws_connect(h.base + "/ws") as ws:
+                await ws.send_str(
+                    json.dumps(_req("chat.submit", "first", token="phone-token"))
+                )
+                assert (await _recv_text(ws, "first"))["ok"] is True
+
+                await ws.send_str(
+                    json.dumps(_req("chat.submit", "second", token="other-token"))
+                )
+                switched = await _recv_text(ws, "second")
+
+        assert switched["ok"] is False
+        assert switched["error"]["code"] == "connection_identity_mismatch"
+        assert [frame["id"] for frame in h.fake.invoked] == ["first"]
     finally:
         await h.server.stop()
 

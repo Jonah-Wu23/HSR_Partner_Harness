@@ -96,7 +96,7 @@ class AcpCodingEngine(CodingEngine):
                 self._transport_generation = generation
             await self.transport.request(
                 "initialize",
-                {"clientInfo": {"name": "pair-harness", "version": "0.3.2"}},
+                {"clientInfo": {"name": "pair-harness", "version": "0.3.4"}},
             )
             self._initialized = True
             self._transport_generation = generation

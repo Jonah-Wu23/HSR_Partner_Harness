@@ -1026,6 +1026,127 @@ describe("desktopStore event projection", () => {
     );
   });
 
+  it("conversation.open 快照后重放请求期间的新消息事件", () => {
+    const base = createMockScenario("single-project").snapshot;
+    const conversation = base.current_conversation;
+    desktopStore.setState({ lastSequence: 30 });
+    desktopStore.getState().hydrateConversationView(
+      {
+        conversation,
+        project: base.current_project,
+        pair: base.pair,
+        messages: [],
+        tool_runs: [],
+        turns: [],
+        queue_items: [],
+        active_task: null,
+        sequence: 10,
+        stream_id: "stream-current",
+      },
+      [
+        {
+          kind: "event",
+          event: "message.created",
+          stream_id: "stream-current",
+          sequence: 11,
+          payload: {
+            message: {
+              message_id: "live-message",
+              conversation_id: conversation.conversation_id,
+              pair_id: conversation.pair_id,
+              engine_turn_id: null,
+              source: "character",
+              kind: "character.speech",
+              text: "请求期间的新消息",
+              payload: {},
+              tts_eligible: true,
+              created_at: "2026-08-22T00:00:00Z",
+            },
+          },
+        },
+        {
+          kind: "event",
+          event: "message.created",
+          stream_id: "stream-current",
+          sequence: 11,
+          payload: { message: { message_id: "duplicate-ignored" } },
+        },
+      ],
+    );
+
+    expect(desktopStore.getState().lastSequence).toBe(30);
+    expect(desktopStore.getState().messagesById["duplicate-ignored"]).toBeUndefined();
+    expect(desktopStore.getState().messagesById["live-message"]?.text).toBe(
+      "请求期间的新消息",
+    );
+  });
+
+  it("账号切换原子清除上一账号的业务与配对状态", () => {
+    const current = desktopStore.getState().currentAccount!;
+    desktopStore.setState({
+      messagesById: { stale: { message_id: "stale" } as never },
+      approvals: [{ approval_id: "approval-old" } as never],
+      pair: { pair_id: "pair-old" } as never,
+      pairs: [{ pair_id: "pair-old" } as never],
+      voice: { ...desktopStore.getState().voice, supported: true },
+      composerDraft: "旧账号草稿",
+      mainView: "characterCreate",
+      characterLibrary: {
+        cards: [{ cardId: "old-card" } as never],
+        loading: false,
+        error: null,
+        loaded: true,
+      },
+      characterCreate: {
+        cardId: "old-card",
+        card: { name: "旧角色" },
+        readOnly: false,
+        loading: false,
+        error: null,
+      },
+      remotePairing: {
+        code: "654321",
+        ttlSeconds: 300,
+        issuedAtEpochMs: Date.now(),
+        devices: [{ device_name: "旧手机" } as never],
+        loading: false,
+        error: null,
+        serveAddress: { host: "192.168.1.2", port: 8765 },
+      },
+    });
+
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "account.changed",
+        sequence: 1,
+        payload: { account: { ...current, account_id: "account-b" } },
+      },
+    ]);
+
+    const state = desktopStore.getState();
+    expect(state.messagesById).toEqual({});
+    expect(state.approvals).toEqual([]);
+    expect(state.pair).toBeNull();
+    expect(state.pairs).toEqual([]);
+    expect(state.voice.supported).toBe(false);
+    expect(state.composerDraft).toBe("");
+    expect(state.accountGeneration).toBeGreaterThan(0);
+    expect(state.mainView).toBe("chat");
+    expect(state.characterLibrary).toEqual({
+      cards: [],
+      loading: false,
+      error: null,
+      loaded: false,
+    });
+    expect(state.characterCreate).toMatchObject({ cardId: null, card: null });
+    expect(state.remotePairing).toMatchObject({
+      code: null,
+      devices: [],
+      serveAddress: null,
+    });
+  });
+
   it("M6: 账号切换后忽略旧账号迟到的音色进度事件", () => {
     const current = desktopStore.getState().currentAccount;
     desktopStore.getState().applyEvents([

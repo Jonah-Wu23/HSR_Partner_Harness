@@ -48,7 +48,9 @@ jobs:
         with:
           node-version: '20'
           cache: npm
-          cache-dependency-path: desktop/package-lock.json
+          cache-dependency-path: |
+            desktop/package-lock.json
+            desktop/mobile/package-lock.json
 
       - name: Install frontend dependencies
         run: npm ci
@@ -60,6 +62,22 @@ jobs:
         run: npm run typecheck
 
       - name: Build frontend
+        run: npm run build
+
+      - name: Install mobile dependencies
+        working-directory: desktop/mobile
+        run: npm ci
+
+      - name: Run mobile tests
+        working-directory: desktop/mobile
+        run: npm test -- --run
+
+      - name: Type-check mobile
+        working-directory: desktop/mobile
+        run: npm run typecheck
+
+      - name: Build mobile
+        working-directory: desktop/mobile
         run: npm run build
 
   rust:

@@ -1121,17 +1121,16 @@ class DesktopApplicationService:
                 conversation.project_id, conversation_mismatch=True
             )
         snapshot = self.store.load_conversation(conversation_id)
-        # 只读装载：恢复内存历史与工具缓存（幂等），不改写 current_*
+        # 只读装载：恢复内存历史与工具缓存（幂等），不改写 current_*。
+        # 返回体所有会话运行态都在 await 前物化；随后事件由调用端按游标重放。
         self.orchestrator.restore_conversation(snapshot)
         for tool_run in snapshot["tool_runs"]:
             self._tool_runs[
                 (tool_run.conversation_id, tool_run.tool_call_id)
             ] = tool_run
-        # conversation.open 不改写全局导航，但当前窗口已聚焦该聊天：
-        # 共享的物理麦克风/TTS 运行时必须同步到该会话的账号音色。
-        await self._focus_voice_context(conversation_id, conversation.pair_id)
         active = self.orchestrator.state.get_for_conversation(conversation_id)
-        return {
+        # 所有可序列化字段先物化成不可变返回体，再采样全局事件游标。
+        result = {
             "conversation": self._conversation_payload(conversation),
             "project": (
                 self._project_payload(project) if project is not None else None
@@ -1143,6 +1142,13 @@ class DesktopApplicationService:
             "queue_items": self.store.list_queue_items(conversation_id),
             "active_task": to_jsonable(active),
         }
+        # 会话快照与全局事件共用同一连接游标；调用端据此重放请求期间事件。
+        result["sequence"] = self.emitter.next_sequence - 1
+        result["stream_id"] = self.emitter.stream_id
+        # 共享的物理麦克风/TTS 运行时在快照切点之后切换；期间事件序号
+        # 大于 result.sequence，客户端会按目标会话重放。
+        await self._focus_voice_context(conversation_id, conversation.pair_id)
+        return result
 
     async def _conversation_rename(self, params: Mapping[str, Any]) -> dict[str, Any]:
         conversation_id = str(params.get("conversation_id") or self.current_conversation_id)

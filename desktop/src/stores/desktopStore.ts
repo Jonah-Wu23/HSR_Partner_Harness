@@ -54,6 +54,8 @@ export interface DesktopState {
   turnIdsByConversation: Record<string, string[]>;
   queueItemsByConversation: Record<string, QueueItem[]>;
   currentAccountId: string;
+  /** 当前账号上下文代次；任何账号切换事件都会推进，用于废弃在途异步结果。 */
+  accountGeneration: number;
   currentAccount: AccountRecord | null;
   accounts: AccountListItem[];
   currentProjectId: string;
@@ -102,7 +104,7 @@ export interface DesktopState {
   hydrate(snapshot: DesktopSnapshot): void;
   applyEvents(events: DesktopEvent[]): void;
   /** V0.3.2 M5：装载 conversation.open 的只读结果并打开对应标签（不改全局当前聊天）。 */
-  hydrateConversationView(result: ConversationOpenResult): void;
+  hydrateConversationView(result: ConversationOpenResult, bufferedEvents?: DesktopEvent[]): void;
   setViewId(viewId: string): void;
   /** V0.3.2 M5：打开（或聚焦）本窗口标签；已开则聚焦，未开则追加并聚焦。 */
   openConversationTab(conversationId: string): void;
@@ -238,6 +240,7 @@ function createInitialState(): Omit<
     turnIdsByConversation: {},
     queueItemsByConversation: {},
     currentAccountId: "",
+    accountGeneration: 0,
     currentAccount: null,
     accounts: [],
     currentProjectId: "",
@@ -556,6 +559,10 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
     status: "ready",
     error: null,
     currentAccountId: snapshot.current_account_id,
+    accountGeneration:
+      state.currentAccountId !== "" && state.currentAccountId !== snapshot.current_account_id
+        ? state.accountGeneration + 1
+        : state.accountGeneration,
     currentAccount: snapshot.current_account ?? null,
     accounts: snapshot.accounts ?? [],
     currentProjectId: snapshot.current_project_id,
@@ -706,6 +713,29 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
   }
 
   return applyBusinessEvent(state, event);
+}
+
+function eventTargetsConversation(event: DesktopEvent, conversationId: string): boolean {
+  const payload = event.payload as Record<string, unknown>;
+  const direct = payload.conversation_id;
+  if (direct === conversationId) return true;
+  for (const key of ["message", "tool_run", "turn", "conversation", "active_task"]) {
+    const nested = payload[key];
+    if (nested && typeof nested === "object") {
+      const nestedConversationId = (nested as Record<string, unknown>).conversation_id;
+      if (nestedConversationId === conversationId) return true;
+    }
+  }
+  const activeTasks = payload.active_tasks;
+  return (
+    Array.isArray(activeTasks) &&
+    activeTasks.some(
+      (task) =>
+        task &&
+        typeof task === "object" &&
+        (task as Record<string, unknown>).conversation_id === conversationId,
+    )
+  );
 }
 
 function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopState {
@@ -1141,11 +1171,51 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
           next.openConversationIds = [];
           next.activeConversationId = null;
           next.activeProjectId = null;
+          next.projectsById = {};
+          next.conversationsById = {};
+          next.messagesById = {};
+          next.messageIdsByConversation = {};
+          next.toolRunsById = {};
+          next.toolIdsByConversation = {};
+          next.turnsById = {};
+          next.turnIdsByConversation = {};
+          next.queueItemsByConversation = {};
+          next.currentProjectId = "";
+          next.currentConversationId = "";
+          next.pair = null;
+          next.pairs = [];
+          next.activeTask = null;
           next.activeTasksByConversation = {};
-          // 账号切换后不能继续展示上一个账号的语音 Key 掩码、音色 ID
-          // 或模型配置；设置页重新打开时会从新账号 config.get 水合。
+          next.busy = false;
+          next.approvals = [];
+          next.approvalResolvingById = {};
+          next.voice = { ...emptyVoice };
+          next.composerDraft = "";
+          next.reviewActive = false;
+          next.reviewText = null;
+          next.mainView = "chat";
+          next.characterLibrary = { cards: [], loading: false, error: null, loaded: false };
+          next.characterCreate = {
+            cardId: null,
+            card: null,
+            readOnly: false,
+            loading: false,
+            error: null,
+          };
+          next.remotePairing = {
+            code: null,
+            ttlSeconds: 300,
+            issuedAtEpochMs: null,
+            devices: [],
+            loading: false,
+            error: null,
+            serveAddress: null,
+          };
+          // 设置页重新打开后从新账号 config.get 和 remote.list_devices 水合。
           next.configSnapshot = null;
-          Object.assign(next, refreshWindowTask(next));
+        }
+        if (payload.account.account_id !== next.currentAccountId) {
+          next.accountGeneration += 1;
         }
         next.currentAccountId = payload.account.account_id;
         next.currentAccount = payload.account;
@@ -1167,8 +1237,13 @@ export const desktopStore = createStore<DesktopState>((set) => ({
       return replayBufferedEvents({ ...hydrated, eventBuffer: state.eventBuffer });
     });
   },
-  hydrateConversationView(result) {
+  hydrateConversationView(result, bufferedEvents = []) {
     set((state) => {
+      const resultStream = result.stream_id == null ? null : String(result.stream_id);
+      if (
+        state.streamId !== null &&
+        (resultStream === null || resultStream !== state.streamId)
+      ) return state;
       const conversation = result.conversation;
       const conversationId = conversation.conversation_id;
       // 会话目录：只读装载不改变全局当前聊天，仅合并该会话与其项目条目。
@@ -1265,7 +1340,30 @@ export const desktopStore = createStore<DesktopState>((set) => ({
         // M4.4：进入 chat 模式时发送对象重置为角色。
         composerTarget: mode === "chat" ? "character" : state.composerTarget,
       };
-      return { ...next, ...refreshWindowTask(next) };
+      const hydrated = {
+        ...next,
+        ...refreshWindowTask(next),
+        // conversation.open 只替换目标会话；窗口全局游标继续保持常驻订阅的进度。
+        lastSequence: state.lastSequence,
+        streamId: resultStream,
+      };
+      const seenSequences = new Set<number>();
+      const targetEvents = bufferedEvents
+        .filter((event) => {
+          if (event.event === "connection.status" || event.event === "state.snapshot") return false;
+          const eventStream = event.stream_id == null ? null : String(event.stream_id);
+          if (resultStream && eventStream !== resultStream) return false;
+          if (event.sequence <= result.sequence || seenSequences.has(event.sequence)) return false;
+          if (!eventTargetsConversation(event, conversationId)) return false;
+          seenSequences.add(event.sequence);
+          return true;
+        })
+        .sort((left, right) => left.sequence - right.sequence);
+      const globalSequence = hydrated.lastSequence;
+      return targetEvents.reduce(
+        (current, event) => ({ ...applyBusinessEvent(current, event), lastSequence: globalSequence }),
+        hydrated,
+      );
     });
   },
   setViewId(viewId) {

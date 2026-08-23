@@ -148,10 +148,16 @@ class WSServerMode:
         app = self._build_app()
         self._app = app
         runner = web.AppRunner(app)
-        await runner.setup()
         self._runner = runner
-        site = web.TCPSite(runner, self._host, self.port)
-        await site.start()
+        try:
+            await runner.setup()
+            site = web.TCPSite(runner, self._host, self.port)
+            await site.start()
+        except BaseException:
+            await runner.cleanup()
+            self._runner = None
+            self._app = None
+            raise
         self._site = site
 
     async def stop(self) -> None:
@@ -162,6 +168,7 @@ class WSServerMode:
             await self._runner.cleanup()
             self._runner = None
         self._site = None
+        self._app = None
 
     def close_connections_for_token(self, token: str, device_name: str = "") -> int:
         """撤销联动：立即断开仍以该 token 鉴权的已建立连接，返回断开数。
@@ -242,12 +249,21 @@ class WSServerMode:
             logger.warning("远程鉴权拒绝 method=%r reason=%r", method, decision.reason)
             return
 
-        # 仅在已鉴权（非未认证白名单）请求处把连接标记为可订阅，
-        # remote.pair 握手阶段不下发业务/系统事件。
-        if not conn.authenticated and method not in UNAUTHENTICATED_METHODS:
+        # 连接首次业务鉴权后固定 token；后续请求不能切换设备身份，
+        # 否则撤销定位与实际请求身份会分叉。
+        if conn.authenticated and method not in UNAUTHENTICATED_METHODS:
+            if token != conn.token:
+                conn.send(
+                    response_error(
+                        _extract_frame_id(payload),
+                        "connection_identity_mismatch",
+                        "已鉴权连接不能切换 token，请重新连接",
+                    )
+                )
+                return
+        elif method not in UNAUTHENTICATED_METHODS:
             conn.authenticated = True
-            if isinstance(token, str):
-                conn.token = token
+            conn.token = token if isinstance(token, str) else None
             conn.subscribe()
             logger.info("远程连接鉴权完成 device=%r", decision.device_name)
 

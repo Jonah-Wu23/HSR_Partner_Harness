@@ -64,6 +64,7 @@ function snapshotResult(sequence: number): DesktopSnapshot {
     tool_runs: [],
     approvals: [],
     sequence,
+    stream_id: "stream-current",
   } as unknown as DesktopSnapshot;
 }
 
@@ -118,6 +119,7 @@ beforeEach(() => {
     approvals: [],
     pair: null,
     activeTask: null,
+    streamId: null,
     lastSequence: 0,
     bootstrapped: false,
   });
@@ -312,6 +314,65 @@ describe("mobileStore 会话操作", () => {
     });
     await openPromise;
     expect(useMobileStore.getState().activeConversationId).toBe("c1");
+  });
+
+  it("openConversation 失败时恢复原会话时间线", async () => {
+    await pairAndBootstrap();
+    const previousMessage = {
+      message_id: "previous-message",
+      conversation_id: "c1",
+      text: "原会话消息",
+    } as Message;
+    useMobileStore.setState({
+      activeConversationId: "c1",
+      messages: [previousMessage],
+    });
+
+    const openPromise = useMobileStore.getState().openConversation("c2");
+    await vi.waitFor(() => expect(lastSentFrame().method).toBe("conversation.open"));
+    const openFrame = lastSentFrame();
+    lastInstance().emit({
+      kind: "response",
+      id: openFrame.id,
+      ok: false,
+      error: { code: "conversation_not_found", message: "聊天不存在" },
+    });
+
+    await expect(openPromise).rejects.toThrow("聊天不存在");
+    expect(useMobileStore.getState()).toMatchObject({
+      activeConversationId: "c1",
+      messages: [previousMessage],
+    });
+  });
+
+  it("openConversation 失败后重放等待期间的事件并标记未完成水合", async () => {
+    await pairAndBootstrap();
+    useMobileStore.setState({ activeConversationId: "c1" });
+    const openPromise = useMobileStore.getState().openConversation("c2");
+    await vi.waitFor(() => expect(lastSentFrame().method).toBe("conversation.open"));
+    const openFrame = lastSentFrame();
+
+    lastInstance().emit({
+      kind: "event",
+      event: "conversation.changed",
+      stream_id: "stream-current",
+      sequence: 11,
+      payload: { conversation: { ...CONVERSATION, title: "等待期更新" } },
+    });
+    lastInstance().emit({
+      kind: "response",
+      id: openFrame.id,
+      ok: false,
+      error: { code: "conversation_not_found", message: "聊天不存在" },
+    });
+
+    await expect(openPromise).rejects.toThrow("聊天不存在");
+    expect(useMobileStore.getState()).toMatchObject({
+      activeConversationId: "c1",
+      lastSequence: 11,
+      bootstrapped: false,
+    });
+    expect(useMobileStore.getState().conversationsById.c1?.title).toBe("等待期更新");
   });
 
   it("V0.3.4 submitMessage 发 target=character 且不带 mode 参数", async () => {
@@ -529,6 +590,287 @@ describe("mobileStore 会话操作", () => {
     expect(useMobileStore.getState().pair).toEqual(pairA);
     // 快照没有本会话任务信息：保留既有 activeTask
     expect(useMobileStore.getState().activeTask).toEqual(taskC1);
+  });
+
+  it("流式消息只归并一次，角色思考不会复制正文", async () => {
+    await pairAndBootstrap();
+    const message: Message = {
+      message_id: "m-stream",
+      conversation_id: "c1",
+      pair_id: "pair-default",
+      engine_turn_id: null,
+      source: "character",
+      kind: "character.speech",
+      text: "正文",
+      payload: {},
+      tts_eligible: true,
+      created_at: "2026-08-22T00:00:00Z",
+    };
+    useMobileStore.setState({ activeConversationId: "c1", messages: [message] });
+
+    lastInstance().emit({
+      kind: "event",
+      event: "message.delta",
+      sequence: 11,
+      payload: {
+        message_id: "m-stream",
+        conversation_id: "c1",
+        source: "character",
+        kind: "character.speech",
+        channel: "reasoning",
+        delta: "思考",
+      },
+    });
+    lastInstance().emit({
+      kind: "event",
+      event: "message.delta",
+      sequence: 11,
+      payload: {
+        message_id: "m-stream",
+        conversation_id: "c1",
+        source: "character",
+        kind: "character.speech",
+        channel: "reasoning",
+        delta: "思考",
+      },
+    });
+
+    const updated = useMobileStore.getState().messages[0]!;
+    expect(updated.text).toBe("正文");
+    expect(updated.payload.reasoning).toBe("思考");
+  });
+
+  it("其他会话的状态事件不会污染当前会话", async () => {
+    await pairAndBootstrap();
+    const current: Message = {
+      message_id: "current",
+      conversation_id: "c1",
+      pair_id: "pair-default",
+      engine_turn_id: null,
+      source: "user",
+      kind: "user.text",
+      text: "当前消息",
+      payload: {},
+      tts_eligible: false,
+      created_at: "2026-08-22T00:00:00Z",
+    };
+    const task = {
+      project_id: "p1",
+      conversation_id: "c1",
+      task_id: "task-c1",
+      engine_turn_id: null,
+    };
+    useMobileStore.setState({
+      activeConversationId: "c1",
+      messages: [current],
+      activeTask: task,
+    });
+
+    lastInstance().emit({
+      kind: "event",
+      event: "message.status_changed",
+      sequence: 11,
+      payload: { message: { ...current, message_id: "other", conversation_id: "c2" } },
+    });
+    lastInstance().emit({
+      kind: "event",
+      event: "task.busy_changed",
+      sequence: 12,
+      payload: { busy: false, conversation_id: "c2" },
+    });
+
+    expect(useMobileStore.getState().messages).toEqual([current]);
+    expect(useMobileStore.getState().activeTask).toEqual(task);
+  });
+
+  it("bootstrap 响应可直接把旧 stream 切换到新 stream", async () => {
+    await pairAndBootstrap();
+    useMobileStore.setState({ streamId: "stream-old", lastSequence: 10 });
+
+    mobileWsClient.disconnect();
+    mobileWsClient.connect();
+    lastInstance().open();
+    await vi.waitFor(() => expect(lastSentFrame().method).toBe("app.bootstrap"));
+    const bootstrapFrame = lastSentFrame();
+    lastInstance().emit({
+      kind: "response",
+      id: bootstrapFrame.id,
+      ok: true,
+      result: { ...snapshotResult(0), stream_id: "stream-next" },
+    });
+
+    await vi.waitFor(() => {
+      expect(useMobileStore.getState()).toMatchObject({
+        streamId: "stream-next",
+        lastSequence: 0,
+        bootstrapped: true,
+      });
+    });
+  });
+
+  it("连接代次变化时立即请求新 stream 的权威快照", async () => {
+    await pairAndBootstrap();
+    const sentBefore = lastInstance().sent.length;
+
+    lastInstance().emit({
+      kind: "event",
+      event: "connection.status",
+      stream_id: "stream-next",
+      sequence: 0,
+      payload: { status: "connected" },
+    });
+
+    await vi.waitFor(() => {
+      expect(lastInstance().sent.length).toBe(sentBefore + 1);
+      expect(lastSentFrame().method).toBe("app.bootstrap");
+    });
+    const bootstrapFrame = lastSentFrame();
+    lastInstance().emit({
+      kind: "response",
+      id: bootstrapFrame.id,
+      ok: true,
+      result: { ...snapshotResult(0), stream_id: "stream-next" },
+    });
+    await vi.waitFor(() => {
+      expect(useMobileStore.getState()).toMatchObject({
+        streamId: "stream-next",
+        bootstrapped: true,
+      });
+    });
+  });
+
+  it("bootstrap 等待期间收到的新事件在旧快照后重放", async () => {
+    await pairAndBootstrap();
+
+    lastInstance().emit({
+      kind: "event",
+      event: "conversation.changed",
+      stream_id: "stream-current",
+      sequence: 12,
+      payload: { conversation: { ...CONVERSATION, title: "触发缺口" } },
+    });
+    await vi.waitFor(() => expect(lastSentFrame().method).toBe("app.bootstrap"));
+    const bootstrapFrame = lastSentFrame();
+
+    lastInstance().emit({
+      kind: "event",
+      event: "conversation.changed",
+      stream_id: "stream-current",
+      sequence: 11,
+      payload: { conversation: { ...CONVERSATION, title: "实时标题" } },
+    });
+    lastInstance().emit({
+      kind: "response",
+      id: bootstrapFrame.id,
+      ok: true,
+      result: snapshotResult(10),
+    });
+
+    await vi.waitFor(() => {
+      expect(useMobileStore.getState().lastSequence).toBe(12);
+      expect(useMobileStore.getState().conversationsById.c1?.title).toBe("触发缺口");
+    });
+  });
+
+  it("打开会话等待期间收到事件时按会话快照游标重放，不覆盖实时内容", async () => {
+    await pairAndBootstrap();
+    const openPromise = useMobileStore.getState().openConversation("c1");
+    await vi.waitFor(() => expect(lastSentFrame().method).toBe("conversation.open"));
+    const openFrame = lastSentFrame();
+
+    lastInstance().emit({
+      kind: "event",
+      event: "message.delta",
+      stream_id: "stream-current",
+      sequence: 11,
+      payload: {
+        message_id: "live",
+        conversation_id: "c1",
+        pair_id: "pair-default",
+        source: "character",
+        kind: "character.speech",
+        channel: "speech",
+        delta: "实时内容",
+      },
+    });
+    lastInstance().emit({
+      kind: "response",
+      id: openFrame.id,
+      ok: true,
+      result: {
+        conversation: CONVERSATION,
+        project: null,
+        pair: null,
+        messages: [],
+        tool_runs: [],
+        turns: [],
+        queue_items: [],
+        active_task: null,
+        sequence: 10,
+        stream_id: "stream-current",
+      },
+    });
+    await openPromise;
+
+    expect(useMobileStore.getState().messages[0]?.text).toBe("实时内容");
+    expect(useMobileStore.getState().lastSequence).toBe(11);
+  });
+
+  it("并发打开会话时忽略迟到的旧响应", async () => {
+    await pairAndBootstrap();
+    const c2 = { ...CONVERSATION, conversation_id: "c2", title: "第二个聊天" };
+    useMobileStore.setState({
+      conversationsById: { c1: CONVERSATION, c2 },
+    });
+
+    const first = useMobileStore.getState().openConversation("c1");
+    await vi.waitFor(() => expect(lastSentFrame().method).toBe("conversation.open"));
+    const firstFrame = lastSentFrame();
+    const second = useMobileStore.getState().openConversation("c2");
+    await vi.waitFor(() => {
+      expect(lastInstance().sent.length).toBeGreaterThan(3);
+    });
+    const secondFrame = lastSentFrame();
+
+    lastInstance().emit({
+      kind: "response",
+      id: secondFrame.id,
+      ok: true,
+      result: {
+        conversation: c2,
+        project: null,
+        pair: null,
+        messages: [{ ...({} as Message), message_id: "m2", conversation_id: "c2" }],
+        tool_runs: [],
+        turns: [],
+        queue_items: [],
+        active_task: null,
+        sequence: 10,
+        stream_id: "stream-current",
+      },
+    });
+    await second;
+    lastInstance().emit({
+      kind: "response",
+      id: firstFrame.id,
+      ok: true,
+      result: {
+        conversation: CONVERSATION,
+        project: null,
+        pair: null,
+        messages: [{ ...({} as Message), message_id: "m1", conversation_id: "c1" }],
+        tool_runs: [],
+        turns: [],
+        queue_items: [],
+        active_task: null,
+        sequence: 10,
+        stream_id: "stream-current",
+      },
+    });
+    await first;
+
+    expect(useMobileStore.getState().activeConversationId).toBe("c2");
+    expect(useMobileStore.getState().messages[0]?.message_id).toBe("m2");
   });
 
   it("V0.3.4 Codex 建议 B：快照权威 active_tasks 为空时清空残留任务", async () => {

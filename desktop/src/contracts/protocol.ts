@@ -259,6 +259,9 @@ export interface ConversationOpenResult {
   turns: Turn[];
   queue_items: QueueItem[];
   active_task: ActiveTask | null;
+  /** 响应生成时最近已发出的同连接事件序号，用于重放等待期间的实时事件。 */
+  sequence: number;
+  stream_id?: string | number;
 }
 
 export type DesktopCommandMethod =
@@ -379,6 +382,10 @@ export interface MessageDeltaPayload {
   delta: string;
   task_id?: string;
   channel?: string;
+  /** 流式段生命周期；后端在 reasoning/speech 开始与结束时明确下发。 */
+  started?: boolean;
+  completed?: boolean;
+  reasoning_streaming?: boolean;
   /** V0.3.2 M1：助手 segment 的段号与工作台序号。 */
   segment_index?: number | null;
   timeline_order?: number | null;

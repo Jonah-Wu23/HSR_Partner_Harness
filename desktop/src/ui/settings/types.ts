@@ -48,6 +48,8 @@ export interface VoiceProvisionResult {
 }
 
 export interface VoicePageView {
+  /** 当前配置所属账号；异步生成结果只能写回同一账号。 */
+  accountId?: string;
   /** 语音功能总开关（账号配置 voice.enabled）。 */
   enabled: boolean;
   /** 古代机械（助手）自动朗读开关，默认关闭。 */

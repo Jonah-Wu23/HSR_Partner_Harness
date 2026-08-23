@@ -18,7 +18,11 @@ export function buildPairingUrl(
   host: string,
   port = 8765,
 ): string {
-  return `http://${host}:${port}/?ws=ws://${host}:${port}/ws&code=${encodeURIComponent(code)}`;
+  const normalizedHost = host.startsWith("[") ? host : host.includes(":") ? `[${host}]` : host;
+  const pageUrl = new URL(`http://${normalizedHost}:${port}/`);
+  pageUrl.searchParams.set("ws", `ws://${normalizedHost}:${port}/ws`);
+  pageUrl.searchParams.set("code", code);
+  return pageUrl.toString();
 }
 
 /**
@@ -50,7 +54,7 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
     return () => clearInterval(timer);
   }, [vm.issuedAtEpochMs, vm.code]);
 
-  const ttlSeconds = vm.ttlSeconds || 300;
+  const ttlSeconds = vm.ttlSeconds ?? 300;
   const elapsedSeconds =
     vm.issuedAtEpochMs !== null ? Math.floor((now - vm.issuedAtEpochMs) / 1000) : 0;
   const remainingSeconds = Math.max(0, ttlSeconds - elapsedSeconds);

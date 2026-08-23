@@ -172,11 +172,9 @@ if (-not $npmForMobile) {
 
 Push-Location $mobileRoot
 try {
-    if (-not (Test-Path -LiteralPath (Join-Path $mobileRoot "node_modules") -PathType Container)) {
-        & $npmForMobile.Source install
-        if ($LASTEXITCODE -ne 0) {
-            throw "npm install (mobile) failed with exit code $LASTEXITCODE."
-        }
+    & $npmForMobile.Source ci
+    if ($LASTEXITCODE -ne 0) {
+        throw "npm ci (mobile) failed with exit code $LASTEXITCODE."
     }
     & $npmForMobile.Source run build
     if ($LASTEXITCODE -ne 0) {
