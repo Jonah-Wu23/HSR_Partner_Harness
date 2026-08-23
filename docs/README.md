@@ -18,7 +18,7 @@
 
 | 目录 | 内容 | 详细索引 |
 | --- | --- | --- |
-| `plans/` | 开发计划。现行路线图 `V0.3.3-V0.4.0-Plan.md`（v0.3.2-patch1 → V0.4.0 五阶段收敛，角色卡与手机远程两条主线），另有已执行完毕的两份并行双AI任务指令书。 | `plans/README.md` |
+| `plans/` | 开发计划。现行路线图 `V0.3.3-V0.4.0-Plan.md`（v0.3.2-patch1 → V0.4.0 五阶段收敛，角色卡与手机远程两条主线）与 V0.3.5 执行级双轨计划，另有已执行完毕的两份并行双AI任务指令书。 | `plans/README.md` |
 | `release-notes/` | 历次版本发布说明：v0.3.2-patch1（当前基线）、v0.3.2、v0.2.0。 | `release-notes/README.md` |
 | `character-card/` | 角色卡数据契约（hsr schema 1.0）、酒馆字段映射、状态枚举与接入清单。`src/pair_harness/character_cards/` 注释引用此处路径，移动文件需同步代码。 | `character-card/README.md` |
 | `design/` | 设计调研与参考：`research/`（mufy、SillyTavern、DeepSeek-Reasonix 外部调研）、`dashscope/`（千问语音 API 参考，`src/` 多处注释引用其路径）、`web-prototype/`（V0.4.0 视觉原型交付包）、`旧版/`（v0.2.0 时代文档）。 | `design/README.md` |
