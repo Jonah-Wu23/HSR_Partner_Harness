@@ -248,3 +248,46 @@ def test_fresh_db_has_card_tables(repo) -> None:
     }
     assert "character_cards" in tables
     assert "character_assets" in tables
+
+
+# ---------------------------------------------------------------- 导入（V0.3.5 §2.2）
+
+
+def test_import_card_default(repo) -> None:
+    repository, _ = repo
+    card = _make_card(name="白厄")
+    card.description = "导入的描述"
+
+    record = repository.import_card(card)
+    assert isinstance(record, CardRecord)
+    assert record.state == "imported"
+    assert record.source == "tavern_import"
+    assert record.card.name == "白厄"
+    assert record.card.description == "导入的描述"
+    # 传入对象未被修改
+    assert card.name == "白厄"
+    # 库内行与返回值一致
+    row = repository.connection.execute(
+        "SELECT state, source, name FROM character_cards WHERE card_id = ?",
+        (record.card_id,),
+    ).fetchone()
+    assert row["state"] == "imported"
+    assert row["source"] == "tavern_import"
+    assert row["name"] == "白厄"
+
+
+def test_import_card_as_duplicate(repo) -> None:
+    repository, _ = repo
+    card = _make_card(name="白厄")
+
+    record = repository.import_card(card, as_duplicate=True)
+    assert record.state == "imported"
+    assert record.source == "tavern_import"
+    assert record.card.name == "白厄（副本）"
+    # 传入对象未被修改
+    assert card.name == "白厄"
+
+    # 同源卡默认导入与副本导入各得新 card_id，名称互不影响
+    first = repository.import_card(card)
+    assert first.card_id != record.card_id
+    assert first.card.name == "白厄"
