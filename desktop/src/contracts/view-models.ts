@@ -104,6 +104,14 @@ export interface ComposerViewModel {
 export interface ApprovalViewModel {
   mode: ApprovalMode;
   pending: Array<PendingApproval & { resolving: boolean }>;
+  /** V0.3.5：已决审批记录（含 resolved_by/decision），供 UI 表达双端仲裁结果。 */
+  resolved: Array<{
+    approval_id: string;
+    conversation_id?: string;
+    decision: string;
+    resolved_by: string;
+    task_id?: string;
+  }>;
   reviewActive: boolean;
   reviewText: string | null;
 }
@@ -125,6 +133,8 @@ export interface SettingsViewModel {
   coding: CodingAssistantPageView;
   model: CharacterModelPageView;
   voice: VoicePageView;
+  /** V0.3.5：语音页「角色音色」区数据（卡列表 + 账号语音配置完备性）。 */
+  characterVoice: CharacterCardVoicePageViewModel;
   modelTest: TestResult;
   voicePreview: TestResult;
 }
@@ -168,6 +178,43 @@ export interface CharacterCreateViewModel {
   readOnly: boolean;
   loading: boolean;
   error: string | null;
+}
+
+/** V0.3.5：语音设置页「角色音色」区单张卡状态。 */
+export interface CharacterCardVoiceView {
+  cardId: string;
+  name: string;
+  state: "draft" | "saved" | "imported" | "invalid";
+  source: "builtin" | "user_created" | "imported_json" | "imported_png";
+  hasAvatar: boolean;
+  voiceState: "voice_unconfigured" | "voice_creating" | "voice_ready" | "voice_failed";
+  active: boolean;
+  readOnly: boolean;
+  /** 是否已绑定参考音频。 */
+  hasReferenceAudio: boolean;
+  /** 参考音频格式摘要（时长/大小/mime）。 */
+  referenceAudio?: {
+    assetId: string;
+    durationSeconds: number;
+    sizeBytes: number;
+    mimeType: string;
+  } | null;
+  /** 就绪音色 id。 */
+  voiceId?: string | null;
+  /** 最近一次创建失败错误。 */
+  lastError?: string | null;
+}
+
+/** V0.3.5：语音设置页「角色音色」区视图模型。 */
+export interface CharacterCardVoicePageViewModel {
+  /** 账号 DashScope 配置是否完整。 */
+  voiceConfigured: boolean;
+  /** 可选角色卡列表（含内置/自定义/导入）。 */
+  cards: CharacterCardVoiceView[];
+  /** 当前选中的卡 id；null 表示未选择。 */
+  selectedCardId: string | null;
+  /** 当前选中卡的参考音频/音色状态。 */
+  selectedCard: CharacterCardVoiceView | null;
 }
 
 export interface RemoteDeviceView {

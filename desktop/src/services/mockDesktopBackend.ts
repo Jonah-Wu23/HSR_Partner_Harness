@@ -1,8 +1,12 @@
 import type {
+  CardAvatarPayload,
+  CardSummaryPayload,
+  CharacterVoiceState,
   ConversationRecord,
   DesktopCommand,
   DesktopEvent,
   DesktopSnapshot,
+  FileFilter,
   Message,
   PendingApproval,
   PairRecord,
@@ -10,6 +14,21 @@ import type {
   QueueItem,
   ToolRun,
   Turn,
+} from "../contracts/protocol";
+import {
+  APPROVAL_ALREADY_RESOLVED,
+  CARD_AVATAR_TOO_LARGE,
+  CARD_AVATAR_UNSUPPORTED,
+  CARD_IMPORT_FAILED,
+  CARD_PUBLISH_INVALID,
+  CARD_READ_ONLY,
+  VOICE_AUDIO_SEQ_GAP,
+  VOICE_CARD_NOT_READY,
+  VOICE_CARD_PROVISION_IN_PROGRESS,
+  VOICE_NOT_CONFIGURED,
+  VOICE_REFERENCE_INVALID,
+  VOICE_REFERENCE_MISSING,
+  VOICE_TRANSCRIPT_EMPTY,
 } from "../contracts/protocol";
 import type { DesktopBackend } from "./backend";
 import { RequestIdFactory } from "./backend";
@@ -28,7 +47,20 @@ import {
   MOCK_USER_CARDS,
   mockCardPayload,
 } from "../mocks/characterCards";
-import type { CardSummaryPayload } from "../contracts/protocol";
+
+/** V0.3.5 mock 后端可配置开关，便于 UI 开发与测试覆盖异常路径。 */
+export interface MockDesktopBackendOptions {
+  /** 账号是否已配置 voice.api_key/voice.base_url；默认 true。 */
+  voiceConfigured?: boolean;
+  /** 是否模拟音色创建失败路径；默认 false。 */
+  voiceProvisionFail?: boolean;
+  /** 手机 PTT 结束是否返回空转写；默认 false。 */
+  mobileTranscriptEmpty?: boolean;
+  /** pickFile 默认返回值；null 表示用户取消。 */
+  pickFileResult?: string | null;
+  /** saveFile 默认返回值；null 表示用户取消。 */
+  saveFileResult?: string | null;
+}
 
 export class MockDesktopBackend implements DesktopBackend {
   private readonly listeners = new Set<(event: DesktopEvent) => void>();
@@ -42,9 +74,36 @@ export class MockDesktopBackend implements DesktopBackend {
   private cards: CardSummaryPayload[] = MOCK_USER_CARDS.map((card) => ({ ...card }));
   private archivedCardIds = new Set<string>(MOCK_ARCHIVED_CARD_IDS);
 
-  constructor(scenarioName: MockScenarioName = "single-project") {
+  /* V0.3.5：mock 可配置开关。 */
+  voiceConfigured: boolean;
+  voiceProvisionFail: boolean;
+  mobileTranscriptEmpty: boolean;
+  pickFileResult: string | null;
+  saveFileResult: string | null;
+
+  /* V0.3.5：角色卡头像/参考音频/音色创建状态。 */
+  private cardAvatars = new Map<string, CardAvatarPayload>();
+  private cardReferenceAudios = new Map<string, { asset_id: string; duration_seconds: number; size_bytes: number; mime_type: string }>();
+  private voiceProvisioningCardIds = new Set<string>();
+  private voiceProfiles = new Map<string, { voice_id: string; state: CharacterVoiceState }>();
+
+  /* V0.3.5：审批仲裁状态。 */
+  private resolvedApprovals = new Map<string, { decision: string; resolved_by: string }>();
+
+  /* V0.3.5：手机语音会话状态。 */
+  private mobileAudioSessions = new Map<string, { conversation_id: string; last_seq: number | null }>();
+
+  constructor(
+    scenarioName: MockScenarioName = "single-project",
+    options: MockDesktopBackendOptions = {},
+  ) {
     this.scenario = createMockScenario(scenarioName);
     this.sequence = this.scenario.snapshot.sequence;
+    this.voiceConfigured = options.voiceConfigured ?? true;
+    this.voiceProvisionFail = options.voiceProvisionFail ?? false;
+    this.mobileTranscriptEmpty = options.mobileTranscriptEmpty ?? false;
+    this.pickFileResult = options.pickFileResult ?? null;
+    this.saveFileResult = options.saveFileResult ?? null;
   }
 
   setScenario(name: MockScenarioName): void {
@@ -54,6 +113,26 @@ export class MockDesktopBackend implements DesktopBackend {
 
   get scenarioName(): MockScenarioName {
     return this.scenario.name;
+  }
+
+  setVoiceConfigured(configured: boolean): void {
+    this.voiceConfigured = configured;
+  }
+
+  setVoiceProvisionFail(fail: boolean): void {
+    this.voiceProvisionFail = fail;
+  }
+
+  setMobileTranscriptEmpty(empty: boolean): void {
+    this.mobileTranscriptEmpty = empty;
+  }
+
+  setPickFileResult(result: string | null): void {
+    this.pickFileResult = result;
+  }
+
+  setSaveFileResult(result: string | null): void {
+    this.saveFileResult = result;
   }
 
   async request<T>(command: DesktopCommand): Promise<T> {
@@ -94,10 +173,7 @@ export class MockDesktopBackend implements DesktopBackend {
       case "task.cancel":
         return this.cancelTask(command.params) as T;
       case "approval.resolve":
-        this.emit("approval.resolved", {
-          approval_id: String(command.params.approval_id ?? ""),
-        });
-        return { accepted: true } as T;
+        return this.resolveApproval(command.params) as T;
       case "voice.vad_set":
         return this.setVoiceState({
           vad_enabled: Boolean(command.params.enabled),
@@ -161,6 +237,37 @@ export class MockDesktopBackend implements DesktopBackend {
         return this.cardDelete(command.params) as T;
       case "card.select_active":
         return this.cardSelectActive(command.params) as T;
+      /* —— V0.3.5 角色卡导入导出/发布/头像 —— */
+      case "card.peek_import_json":
+        return this.cardPeekImportJson(command.params) as T;
+      case "card.import_json":
+        return this.cardImportJson(command.params) as T;
+      case "card.export_json":
+        return this.cardExportJson(command.params) as T;
+      case "card.publish":
+        return this.cardPublish(command.params) as T;
+      case "card.set_avatar":
+        return this.cardSetAvatar(command.params) as T;
+      case "card.remove_avatar":
+        return this.cardRemoveAvatar(command.params) as T;
+      /* —— V0.3.5 角色卡音色 —— */
+      case "voice.card_bind_reference":
+        return this.voiceCardBindReference(command.params) as T;
+      case "voice.card_create":
+        return this.voiceCardCreate(command.params) as T;
+      case "voice.card_unbind":
+        return this.voiceCardUnbind(command.params) as T;
+      case "voice.card_preview":
+        return this.voiceCardPreview(command.params) as T;
+      /* —— V0.3.5 手机远程语音 —— */
+      case "voice.mobile_ptt_start":
+        return this.voiceMobilePttStart(command.params) as T;
+      case "voice.mobile_audio_chunk":
+        return this.voiceMobileAudioChunk(command.params) as T;
+      case "voice.mobile_ptt_stop":
+        return this.voiceMobilePttStop(command.params) as T;
+      case "voice.mobile_tts_stop":
+        return {} as T;
       case "remote.issue_code":
         return { code: "483920", ttl_seconds: 300 } as T;
       case "remote.pair":
@@ -180,6 +287,14 @@ export class MockDesktopBackend implements DesktopBackend {
 
   async pickFolder(): Promise<string | null> {
     return null;
+  }
+
+  async pickFile(_options?: { title?: string; filters?: FileFilter[] }): Promise<string | null> {
+    return this.pickFileResult;
+  }
+
+  async saveFile(_options?: { title?: string; defaultPath?: string; filters?: FileFilter[] }): Promise<string | null> {
+    return this.saveFileResult;
   }
 
   async openChatWindow(_conversationId: string, _projectId: string, _title: string): Promise<string> {
@@ -223,6 +338,7 @@ export class MockDesktopBackend implements DesktopBackend {
         updated_at: "",
         card: mockCardPayload(builtin.name),
         read_only: true,
+        avatar: this.cardAvatars.get(cardId) ?? null,
       };
     }
     const found = this.cards.find((card) => card.card_id === cardId);
@@ -235,6 +351,7 @@ export class MockDesktopBackend implements DesktopBackend {
       updated_at: found.updated_at,
       card: mockCardPayload(found.name),
       read_only: false,
+      avatar: this.cardAvatars.get(cardId) ?? null,
     };
   }
 
@@ -293,6 +410,9 @@ export class MockDesktopBackend implements DesktopBackend {
     if (params.confirm !== true) throw new Error("删除需要确认");
     this.cards = this.cards.filter((card) => card.card_id !== cardId);
     this.archivedCardIds.delete(cardId);
+    this.cardAvatars.delete(cardId);
+    this.cardReferenceAudios.delete(cardId);
+    this.voiceProfiles.delete(cardId);
     return { card_id: cardId, deleted: true };
   }
 
@@ -303,6 +423,311 @@ export class MockDesktopBackend implements DesktopBackend {
     }
     this.activeCardId = cardId;
     return { card_id: cardId };
+  }
+
+  /* —— V0.3.5 角色卡导入导出/发布/头像 mock 实现 —— */
+
+  /** 白厄样例预览数据（来源：tests/fixtures/character_cards/白厄（3.4前）.json）。
+      name=白厄（3.4前），spec_version=3.0，greeting_count=6（first_mes + 5 条 alternate_greetings），
+      world_book_entries=20，avatar_available=false。 */
+  private sampleBaiImportPreview() {
+    return {
+      name: "白厄（3.4前）",
+      spec_version: "3.0",
+      avatar_available: false,
+      greeting_count: 6,
+      world_book_entries: 20,
+      tags: [] as string[],
+      report: {
+        applied: ["data.name", "data.description", "data.character_book"],
+        preserved: ["data.extensions.talkativeness", "data.extensions.fav", "data.extensions.world"],
+        not_executed: ["data.extensions.hsr.command_panels"],
+        normalized_from_root: [],
+        warnings: [],
+        errors: [],
+      },
+    };
+  }
+
+  private cardPeekImportJson(params: Record<string, unknown>) {
+    const path = String(params.path ?? "");
+    if (path.includes("invalid") || path.includes("missing")) {
+      const error = new Error(`模拟导入失败：无法解析 ${path}`);
+      (error as Error & { code?: string }).code = CARD_IMPORT_FAILED;
+      throw error;
+    }
+    return { preview: this.sampleBaiImportPreview() };
+  }
+
+  private cardImportJson(params: Record<string, unknown>) {
+    const path = String(params.path ?? "");
+    if (path.includes("invalid") || path.includes("missing")) {
+      const error = new Error(`模拟导入失败：无法解析 ${path}`);
+      (error as Error & { code?: string }).code = CARD_IMPORT_FAILED;
+      throw error;
+    }
+    const asDuplicate = params.as_duplicate === true;
+    const preview = this.sampleBaiImportPreview();
+    const now = new Date().toISOString();
+    const cardId = `card-imported-${this.cards.length + 1}`;
+    const name = asDuplicate ? `${preview.name}（副本）` : preview.name;
+    this.cards = [
+      {
+        card_id: cardId,
+        name,
+        state: "imported",
+        source: "imported_json",
+        updated_at: now,
+        has_avatar: false,
+        voice_state: "voice_unconfigured",
+        active: false,
+        read_only: false,
+      },
+      ...this.cards,
+    ];
+    return { card_id: cardId, name, state: "imported", report: preview.report };
+  }
+
+  private cardExportJson(params: Record<string, unknown>) {
+    const cardId = String(params.card_id ?? "");
+    if (cardId.startsWith("builtin:")) {
+      const error = new Error("内置角色卡只读，导出前请先复制");
+      (error as Error & { code?: string }).code = CARD_READ_ONLY;
+      throw error;
+    }
+    const path = String(params.path ?? "");
+    const saveAvatar = params.save_avatar === true;
+    return {
+      exported: true,
+      path,
+      avatar_saved: saveAvatar && this.cardAvatars.has(cardId),
+    };
+  }
+
+  private cardPublish(params: Record<string, unknown>) {
+    const cardId = String(params.card_id ?? "");
+    const card = this.cards.find((item) => item.card_id === cardId);
+    if (!card) throw new Error("角色卡不存在");
+    if (card.state !== "draft") {
+      return { card_id: cardId, state: card.state };
+    }
+    const payload = mockCardPayload(card.name);
+    const firstMes = String((payload.data as Record<string, unknown>)?.first_mes ?? "");
+    if (!card.name.trim()) {
+      const error = new Error("card_publish_invalid：缺少 name");
+      (error as Error & { code?: string }).code = CARD_PUBLISH_INVALID;
+      throw error;
+    }
+    if (!firstMes.trim()) {
+      const error = new Error("card_publish_invalid：缺少 first_mes");
+      (error as Error & { code?: string }).code = CARD_PUBLISH_INVALID;
+      throw error;
+    }
+    this.cards = this.cards.map((item) =>
+      item.card_id === cardId ? { ...item, state: "saved" as const } : item,
+    );
+    return { card_id: cardId, state: "saved" };
+  }
+
+  private avatarMimeFromPath(path: string): string | null {
+    const lower = path.toLowerCase();
+    if (lower.endsWith(".png")) return "image/png";
+    if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+    if (lower.endsWith(".webp")) return "image/webp";
+    return null;
+  }
+
+  private cardSetAvatar(params: Record<string, unknown>) {
+    const cardId = String(params.card_id ?? "");
+    const path = String(params.path ?? "");
+    const mimeType = this.avatarMimeFromPath(path);
+    if (!mimeType) {
+      const error = new Error("card_avatar_unsupported：仅支持 png/jpeg/webp");
+      (error as Error & { code?: string }).code = CARD_AVATAR_UNSUPPORTED;
+      throw error;
+    }
+    // mock 不读真实文件，固定返回 1x1 PNG data URI 占位。
+    const dataUri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    const base64 = dataUri.split(",")[1] ?? "";
+    const assetId = `avatar-${cardId}`;
+    this.cardAvatars.set(cardId, { mime_type: mimeType, data_base64: base64 });
+    this.cards = this.cards.map((card) =>
+      card.card_id === cardId ? { ...card, has_avatar: true } : card,
+    );
+    return { card_id: cardId, asset_id: assetId, mime_type: mimeType };
+  }
+
+  private cardRemoveAvatar(params: Record<string, unknown>) {
+    const cardId = String(params.card_id ?? "");
+    this.cardAvatars.delete(cardId);
+    this.cards = this.cards.map((card) =>
+      card.card_id === cardId ? { ...card, has_avatar: false } : card,
+    );
+    return { card_id: cardId, removed: true };
+  }
+
+  /* —— V0.3.5 角色卡音色 mock 实现 —— */
+
+  private referenceMimeFromPath(path: string): string | null {
+    const lower = path.toLowerCase();
+    if (lower.endsWith(".wav")) return "audio/wav";
+    if (lower.endsWith(".mp3")) return "audio/mpeg";
+    if (lower.endsWith(".m4a")) return "audio/mp4";
+    return null;
+  }
+
+  private voiceCardBindReference(params: Record<string, unknown>) {
+    const cardId = String(params.card_id ?? "");
+    const path = String(params.path ?? "");
+    const mimeType = this.referenceMimeFromPath(path);
+    if (!mimeType) {
+      const error = new Error("voice_reference_invalid：仅支持 wav/mp3/m4a");
+      (error as Error & { code?: string }).code = VOICE_REFERENCE_INVALID;
+      throw error;
+    }
+    const assetId = `ref-audio-${cardId}`;
+    const asset = { asset_id: assetId, duration_seconds: 5.2, size_bytes: 102400, mime_type: mimeType };
+    this.cardReferenceAudios.set(cardId, asset);
+    return { card_id: cardId, ...asset };
+  }
+
+  private voiceCardCreate(params: Record<string, unknown>) {
+    const cardId = String(params.card_id ?? "");
+    const mode = String(params.mode ?? "clone") as "clone" | "design";
+    if (!this.voiceConfigured) {
+      const error = new Error("voice_not_configured：账号未配置语音 Key");
+      (error as Error & { code?: string }).code = VOICE_NOT_CONFIGURED;
+      throw error;
+    }
+    if (this.voiceProvisioningCardIds.has(cardId)) {
+      const error = new Error("voice_card_provision_in_progress：同卡创建中");
+      (error as Error & { code?: string }).code = VOICE_CARD_PROVISION_IN_PROGRESS;
+      throw error;
+    }
+    if (mode === "clone" && !this.cardReferenceAudios.has(cardId)) {
+      const error = new Error("voice_reference_missing：clone 模式需要参考音频");
+      (error as Error & { code?: string }).code = VOICE_REFERENCE_MISSING;
+      throw error;
+    }
+    this.voiceProvisioningCardIds.add(cardId);
+    this.emit("voice.card_provision_changed", { card_id: cardId, state: "voice_creating", voice_id: null, error: null });
+    const voiceId = `mock-voice-${Math.random().toString(36).slice(2, 8)}`;
+    setTimeout(() => {
+      if (this.voiceProvisionFail) {
+        this.voiceProfiles.set(cardId, { voice_id: "", state: "voice_failed" });
+        this.voiceProvisioningCardIds.delete(cardId);
+        this.emit("voice.card_provision_changed", {
+          card_id: cardId,
+          state: "voice_failed",
+          voice_id: null,
+          error: "模拟音色创建失败",
+        });
+        return;
+      }
+      this.voiceProfiles.set(cardId, { voice_id: voiceId, state: "voice_ready" });
+      this.voiceProvisioningCardIds.delete(cardId);
+      this.cards = this.cards.map((card) =>
+        card.card_id === cardId ? { ...card, voice_state: "voice_ready" as const } : card,
+      );
+      this.emit("voice.card_provision_changed", {
+        card_id: cardId,
+        state: "voice_ready",
+        voice_id: voiceId,
+        error: null,
+      });
+    }, 50);
+    return { card_id: cardId, state: "voice_ready", voice_id: voiceId };
+  }
+
+  private voiceCardUnbind(params: Record<string, unknown>) {
+    const cardId = String(params.card_id ?? "");
+    this.voiceProfiles.delete(cardId);
+    this.cards = this.cards.map((card) =>
+      card.card_id === cardId ? { ...card, voice_state: "voice_unconfigured" as const } : card,
+    );
+    return { card_id: cardId, state: "voice_unconfigured" };
+  }
+
+  private voiceCardPreview(params: Record<string, unknown>) {
+    const cardId = String(params.card_id ?? "");
+    const profile = this.voiceProfiles.get(cardId);
+    if (!profile || profile.state !== "voice_ready") {
+      const error = new Error("voice_card_not_ready：卡音色未就绪");
+      (error as Error & { code?: string }).code = VOICE_CARD_NOT_READY;
+      throw error;
+    }
+    return { voice: { voice_id: profile.voice_id, state: profile.state } };
+  }
+
+  /* —— V0.3.5 手机远程语音 mock 实现 —— */
+
+  private voiceMobilePttStart(params: Record<string, unknown>) {
+    const conversationId = String(params.conversation_id ?? "");
+    const sessionId = `mobile-ptt-${this.sequence + 1}`;
+    this.mobileAudioSessions.set(sessionId, { conversation_id: conversationId, last_seq: null });
+    return { session_id: sessionId };
+  }
+
+  private voiceMobileAudioChunk(params: Record<string, unknown>) {
+    const sessionId = String(params.session_id ?? "");
+    const seq = Number(params.seq ?? -1);
+    const session = this.mobileAudioSessions.get(sessionId);
+    if (!session) throw new Error("转写会话不存在");
+    if (session.last_seq !== null && seq !== session.last_seq + 1) {
+      const error = new Error("voice_audio_seq_gap：音频分片 seq 不连续");
+      (error as Error & { code?: string }).code = VOICE_AUDIO_SEQ_GAP;
+      throw error;
+    }
+    session.last_seq = seq;
+    return {};
+  }
+
+  private voiceMobilePttStop(params: Record<string, unknown>) {
+    const sessionId = String(params.session_id ?? "");
+    const session = this.mobileAudioSessions.get(sessionId);
+    if (!session) throw new Error("转写会话不存在");
+    const conversationId = session.conversation_id;
+    const transcript = this.mobileTranscriptEmpty ? "" : "模拟手机语音转写文本";
+    if (transcript === "") {
+      const error = new Error("voice_transcript_empty：转写结果为空");
+      (error as Error & { code?: string }).code = VOICE_TRANSCRIPT_EMPTY;
+      throw error;
+    }
+    // 异步下发转写事件与角色回复/TTS 分片。
+    setTimeout(() => {
+      this.emit("voice.mobile_transcript", { conversation_id: conversationId, session_id: sessionId, text: transcript, is_final: false });
+      this.emit("voice.mobile_transcript", { conversation_id: conversationId, session_id: sessionId, text: transcript, is_final: true });
+      this.submitMessage({ conversation_id: conversationId, target: "character", text: transcript });
+      const messageId = `mock-tts-${this.sequence + 1}`;
+      for (let seq = 0; seq < 3; seq += 1) {
+        this.emit("voice.mobile_tts_chunk", {
+          conversation_id: conversationId,
+          message_id: messageId,
+          seq,
+          mime: "audio/pcm;rate=24000",
+          data: "ZmFrZS1wY20tY2h1bms=",
+        });
+      }
+      this.emit("voice.mobile_tts_end", { conversation_id: conversationId, message_id: messageId });
+    }, 50);
+    return { session_id: sessionId, transcript, conversation_id: conversationId };
+  }
+
+  /* —— V0.3.5 审批仲裁 mock 实现 —— */
+
+  private resolveApproval(params: Record<string, unknown>) {
+    const approvalId = String(params.approval_id ?? "");
+    const decision = String(params.decision ?? "approve");
+    const existing = this.resolvedApprovals.get(approvalId);
+    if (existing) {
+      const error = new Error(`已由 ${existing.resolved_by} ${existing.decision === "approve" ? "批准" : "拒绝"}`);
+      (error as Error & { code?: string }).code = APPROVAL_ALREADY_RESOLVED;
+      throw error;
+    }
+    const resolvedBy = "desktop";
+    this.resolvedApprovals.set(approvalId, { decision, resolved_by: resolvedBy });
+    this.emit("approval.resolved", { approval_id: approvalId, decision, resolved_by: resolvedBy });
+    return { accepted: true };
   }
 
   subscribe(listener: (event: DesktopEvent) => void): () => void {
@@ -697,7 +1122,7 @@ export class MockDesktopBackend implements DesktopBackend {
     this.scenario.snapshot.current_account_id = account.account_id;
     this.emit("account.changed", {
       account: next,
-      accounts: this.scenario.snapshot.accounts,
+      accounts: this.clone(this.scenario.snapshot.accounts),
     });
     return { account: next, accounts: this.clone(this.scenario.snapshot.accounts) };
   }

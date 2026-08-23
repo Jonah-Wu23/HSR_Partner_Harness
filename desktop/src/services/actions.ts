@@ -10,8 +10,14 @@ import type {
   CardCreateDraftResult,
   CardDeleteResult,
   CardDuplicateResult,
+  CardExportJsonResult,
   CardGetResult,
+  CardImportJsonResult,
   CardListResult,
+  CardPeekImportResult,
+  CardPublishResult,
+  CardRemoveAvatarResult,
+  CardSetAvatarResult,
   CardUpdateResult,
   ConversationOpenResult,
   DesktopCommand,
@@ -22,6 +28,11 @@ import type {
   RemoteIssueCodeResult,
   RemoteListDevicesResult,
   RemoteRevokeResult,
+  VoiceCardBindReferenceResult,
+  VoiceCardCreateResult,
+  VoiceCardUnbindResult,
+  VoiceMobilePttStartResult,
+  VoiceMobilePttStopResult,
 } from "../contracts/protocol";
 import type {
   CharacterCardSummaryView,
@@ -473,6 +484,95 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async selectActiveCard(cardId) {
       await request("card.select_active", { card_id: cardId });
       await this.listCards();
+    },
+    async cardGet(cardId) {
+      return request<CardGetResult>("card.get", { card_id: cardId });
+    },
+    /* —— V0.3.5 角色卡导入导出/发布/头像 —— */
+    async cardPeekImportJson(path) {
+      return request<CardPeekImportResult>("card.peek_import_json", { path });
+    },
+    async cardImportJson(path, asDuplicate) {
+      const result = await request<CardImportJsonResult>("card.import_json", {
+        path,
+        as_duplicate: asDuplicate ?? false,
+      });
+      await this.listCards();
+      return result;
+    },
+    async cardExportJson(cardId, path, saveAvatar) {
+      return request<CardExportJsonResult>("card.export_json", {
+        card_id: cardId,
+        path,
+        save_avatar: saveAvatar ?? true,
+      });
+    },
+    async cardPublish(cardId) {
+      const result = await request<CardPublishResult>("card.publish", { card_id: cardId });
+      await this.listCards();
+      return result;
+    },
+    async cardSetAvatar(cardId, path) {
+      const result = await request<CardSetAvatarResult>("card.set_avatar", { card_id: cardId, path });
+      // V0.3.5：刷新创作页与角色库中该卡的头像状态。
+      const create = desktopStore.getState().characterCreate;
+      if (create.cardId === cardId) {
+        desktopStore.getState().setCharacterCreate({
+          card: { ...create.card, avatar_asset_id: result.asset_id },
+        });
+      }
+      await this.listCards();
+      return result;
+    },
+    async cardRemoveAvatar(cardId) {
+      const result = await request<CardRemoveAvatarResult>("card.remove_avatar", { card_id: cardId });
+      const create = desktopStore.getState().characterCreate;
+      if (create.cardId === cardId) {
+        desktopStore.getState().setCharacterCreate({
+          card: { ...create.card, avatar_asset_id: null },
+        });
+      }
+      await this.listCards();
+      return result;
+    },
+    /* —— V0.3.5 角色卡音色 —— */
+    async voiceCardBindReference(cardId, path) {
+      return request<VoiceCardBindReferenceResult>("voice.card_bind_reference", {
+        card_id: cardId,
+        path,
+      });
+    },
+    async voiceCardCreate(cardId, mode, opts) {
+      const result = await request<VoiceCardCreateResult>("voice.card_create", {
+        card_id: cardId,
+        mode,
+        ...(opts?.prefix ? { prefix: opts.prefix } : {}),
+        ...(opts?.voicePrompt ? { voice_prompt: opts.voicePrompt } : {}),
+        ...(opts?.previewText ? { preview_text: opts.previewText } : {}),
+      });
+      await this.listCards();
+      return result;
+    },
+    async voiceCardUnbind(cardId) {
+      const result = await request<VoiceCardUnbindResult>("voice.card_unbind", { card_id: cardId });
+      await this.listCards();
+      return result;
+    },
+    async voiceCardPreview(cardId, text) {
+      await request("voice.card_preview", { card_id: cardId, ...(text ? { text } : {}) });
+    },
+    /* —— V0.3.5 手机远程语音 —— */
+    async voiceMobilePttStart(conversationId) {
+      return request<VoiceMobilePttStartResult>("voice.mobile_ptt_start", { conversation_id: conversationId });
+    },
+    async voiceMobileAudioChunk(sessionId, seq, dataBase64) {
+      await request("voice.mobile_audio_chunk", { session_id: sessionId, seq, data: dataBase64 });
+    },
+    async voiceMobilePttStop(sessionId) {
+      return request<VoiceMobilePttStopResult>("voice.mobile_ptt_stop", { session_id: sessionId });
+    },
+    async voiceMobileTtsStop(messageId) {
+      await request("voice.mobile_tts_stop", { message_id: messageId });
     },
     /* —— V0.3.3 手机远程配对（remote.*）—— */
     async issuePairingCode() {

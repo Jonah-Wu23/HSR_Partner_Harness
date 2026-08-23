@@ -9,7 +9,7 @@ import type {
   VoicePageView,
   VoiceSpeakerStatus,
 } from "./types";
-import type { RemotePairingViewModel } from "../../contracts/view-models";
+import type { CharacterCardVoicePageViewModel, RemotePairingViewModel } from "../../contracts/view-models";
 import { RemotePairingPanel } from "./remote/RemotePairingPanel";
 
 export type SettingsPage = "account" | "coding" | "model" | "voice" | "remote";
@@ -23,6 +23,10 @@ interface SettingsCenterProps {
   coding: CodingAssistantPageView;
   model: CharacterModelPageView;
   voice: VoicePageView;
+  /** V0.3.5：语音页「角色音色」区数据（卡列表 + 账号语音配置完备性）。 */
+  characterVoice?: CharacterCardVoicePageViewModel;
+  /** V0.3.5：从角色库直达语音页时预选的角色卡 id；null 表示无预选。 */
+  voiceCardFocus?: string | null;
   /** V0.3.3：远程设备页数据源与回调（remote.* 命令）。 */
   remote: RemotePairingViewModel;
   onIssuePairingCode: () => void;

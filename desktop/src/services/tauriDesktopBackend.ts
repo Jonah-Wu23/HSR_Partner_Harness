@@ -1,13 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 
 import type {
   DesktopCommand,
   DesktopEvent,
   DesktopResponse,
 } from "../contracts/protocol";
-import type { DesktopBackend } from "./backend";
+import type { DesktopBackend, FileFilter } from "./backend";
 import { unwrapResponse } from "./backend";
 
 export class TauriDesktopBackend implements DesktopBackend {
@@ -44,6 +44,25 @@ export class TauriDesktopBackend implements DesktopBackend {
 
   async pickFolder(title = "选择项目文件夹"): Promise<string | null> {
     const selected = await open({ directory: true, multiple: false, title });
+    return typeof selected === "string" ? selected : null;
+  }
+
+  async pickFile(options?: { title?: string; filters?: FileFilter[] }): Promise<string | null> {
+    const selected = await open({
+      directory: false,
+      multiple: false,
+      title: options?.title ?? "选择文件",
+      filters: options?.filters,
+    });
+    return typeof selected === "string" ? selected : null;
+  }
+
+  async saveFile(options?: { title?: string; defaultPath?: string; filters?: FileFilter[] }): Promise<string | null> {
+    const selected = await save({
+      title: options?.title ?? "保存文件",
+      defaultPath: options?.defaultPath,
+      filters: options?.filters,
+    });
     return typeof selected === "string" ? selected : null;
   }
 

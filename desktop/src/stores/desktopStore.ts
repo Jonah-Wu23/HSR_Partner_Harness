@@ -5,6 +5,7 @@ import type {
   AccountListItem,
   AccountRecord,
   ActiveTask,
+  CharacterVoiceState,
   ConversationOpenResult,
   ConversationRecord,
   DesktopEvent,
@@ -68,6 +69,14 @@ export interface DesktopState {
   activeTasksByConversation: Record<string, ActiveTask>;
   busy: boolean;
   approvals: PendingApproval[];
+  /** V0.3.5：已决审批记录（含 resolved_by/decision），供 UI 表达双端仲裁结果。 */
+  resolvedApprovals: Array<{
+    approval_id: string;
+    conversation_id?: string;
+    decision: string;
+    resolved_by: string;
+    task_id?: string;
+  }>;
   approvalResolvingById: Record<string, boolean>;
   reviewActive: boolean;
   reviewText: string | null;
@@ -153,6 +162,7 @@ export type DesktopRenderState = Pick<
   | "activeTasksByConversation"
   | "busy"
   | "approvals"
+  | "resolvedApprovals"
   | "approvalResolvingById"
   | "reviewActive"
   | "reviewText"
@@ -251,6 +261,7 @@ function createInitialState(): Omit<
     activeTasksByConversation: {},
     busy: false,
     approvals: [],
+    resolvedApprovals: [],
     approvalResolvingById: {},
     reviewActive: false,
     reviewText: null,
@@ -893,8 +904,25 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
       break;
     }
     case "approval.resolved": {
-      const approvalId = String(event.payload.approval_id ?? "");
+      const payload = event.payload as {
+        approval_id?: string;
+        conversation_id?: string;
+        decision?: string;
+        resolved_by?: string;
+        task_id?: string;
+      };
+      const approvalId = String(payload.approval_id ?? "");
       next.approvals = next.approvals.filter((item) => item.approval_id !== approvalId);
+      next.resolvedApprovals = [
+        ...next.resolvedApprovals.filter((item) => item.approval_id !== approvalId),
+        {
+          approval_id: approvalId,
+          conversation_id: payload.conversation_id,
+          decision: payload.decision ?? "approve",
+          resolved_by: payload.resolved_by ?? "desktop",
+          task_id: payload.task_id,
+        },
+      ];
       const { [approvalId]: _resolved, ...remaining } = next.approvalResolvingById;
       next.approvalResolvingById = remaining;
       break;
@@ -1077,6 +1105,36 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
     case "voice.state_changed":
       next.voice = { ...next.voice, ...(event.payload.voice as Partial<VoiceState>) };
       break;
+    case "voice.card_provision_changed": {
+      // V0.3.5：卡音色状态变化同步到角色库与创作页（若正在编辑同一张卡）。
+      const payload = event.payload as {
+        card_id?: string;
+        state?: CharacterVoiceState;
+        voice_id?: string | null;
+        error?: string | null;
+      };
+      const cardId = String(payload.card_id ?? "");
+      const voiceState = payload.state ?? next.characterLibrary.cards.find((c) => c.cardId === cardId)?.voiceState ?? "voice_unconfigured";
+      if (cardId) {
+        next.characterLibrary = {
+          ...next.characterLibrary,
+          cards: next.characterLibrary.cards.map((card) =>
+            card.cardId === cardId ? { ...card, voiceState } : card,
+          ),
+        };
+        if (next.characterCreate.cardId === cardId) {
+          next.characterCreate = {
+            ...next.characterCreate,
+            card: {
+              ...next.characterCreate.card,
+              voice_state: voiceState,
+              voice_id: payload.voice_id ?? undefined,
+            },
+          };
+        }
+      }
+      break;
+    }
     case "voice.provision_changed": {
       // V0.3.2 M6：逐项进度直接投影到 configSnapshot.voice.speakers；
       // 设置页无需猜测请求是否成功，命令结束后仍会再取一次 config.get。
@@ -1188,6 +1246,7 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
           next.activeTasksByConversation = {};
           next.busy = false;
           next.approvals = [];
+          next.resolvedApprovals = [];
           next.approvalResolvingById = {};
           next.voice = { ...emptyVoice };
           next.composerDraft = "";
@@ -1520,6 +1579,7 @@ export const selectDesktopRenderState = (state: DesktopState): DesktopRenderStat
   activeTasksByConversation: state.activeTasksByConversation,
   busy: state.busy,
   approvals: state.approvals,
+  resolvedApprovals: state.resolvedApprovals,
   approvalResolvingById: state.approvalResolvingById,
   reviewActive: state.reviewActive,
   reviewText: state.reviewText,

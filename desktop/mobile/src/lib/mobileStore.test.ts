@@ -117,11 +117,19 @@ beforeEach(() => {
     messages: [],
     toolRuns: [],
     approvals: [],
+    resolvedApprovals: [],
     pair: null,
     activeTask: null,
     streamId: null,
     lastSequence: 0,
     bootstrapped: false,
+    voice: {
+      capture: { state: "idle", sessionId: null, error: null },
+      transcript: null,
+      playback: { messageId: null, state: "idle", error: null },
+      availability: { secureContext: false, micPermission: "unknown", supported: false },
+      ttsChunks: {},
+    },
   });
   useMobileStore.getState().start();
   mobileWsClient.connect();
@@ -901,5 +909,143 @@ describe("mobileStore 会话操作", () => {
     } as unknown as DesktopSnapshot;
     lastInstance().emit({ kind: "event", event: "state.snapshot", sequence: 11, payload: snapshot });
     expect(useMobileStore.getState().activeTask).toBeNull();
+  });
+
+  describe("mobileStore V0.3.5 手机语音", () => {
+    it("startVoiceCapture 进入 recording 状态并保存 session_id", async () => {
+      await pairAndBootstrap();
+      useMobileStore.setState({ activeConversationId: "c1" });
+
+      const startPromise = useMobileStore.getState().startVoiceCapture("c1");
+      await vi.waitFor(() => expect(lastSentFrame().method).toBe("voice.mobile_ptt_start"));
+      const frame = lastSentFrame();
+      lastInstance().emit({ kind: "response", id: frame.id, ok: true, result: { session_id: "sess-1" } });
+      await startPromise;
+
+      const voice = useMobileStore.getState().voice;
+      expect(voice.capture.state).toBe("recording");
+      expect(voice.capture.sessionId).toBe("sess-1");
+      expect(voice.capture.error).toBeNull();
+    });
+
+    it("sendAudioChunk 携带递增 seq", async () => {
+      await pairAndBootstrap();
+      useMobileStore.setState({
+        activeConversationId: "c1",
+        voice: {
+          ...useMobileStore.getState().voice,
+          capture: { state: "recording", sessionId: "sess-1", error: null },
+        },
+      });
+
+      const p1 = useMobileStore.getState().sendAudioChunk(0, "ZmFrZS0w");
+      const p2 = useMobileStore.getState().sendAudioChunk(1, "ZmFrZS0x");
+
+      // FakeWebSocket 不会自动回复，需要为每个 voice.mobile_audio_chunk 请求 emit response。
+      const ws = lastInstance();
+      ws.sent
+        .map((raw) => JSON.parse(raw))
+        .filter((frame) => frame.method === "voice.mobile_audio_chunk")
+        .forEach((frame) => ws.emit({ kind: "response", id: frame.id, ok: true, result: {} }));
+
+      await Promise.all([p1, p2]);
+      const frames = ws.sent
+        .map((raw) => JSON.parse(raw))
+        .filter((frame) => frame.method === "voice.mobile_audio_chunk");
+      expect(frames).toHaveLength(2);
+      expect(frames[0].params).toMatchObject({ session_id: "sess-1", seq: 0, data: "ZmFrZS0w" });
+      expect(frames[1].params).toMatchObject({ session_id: "sess-1", seq: 1, data: "ZmFrZS0x" });
+    });
+
+    it("voice.mobile_transcript 更新 transcript slice", async () => {
+      await pairAndBootstrap();
+      useMobileStore.setState({
+        activeConversationId: "c1",
+        voice: {
+          ...useMobileStore.getState().voice,
+          capture: { state: "recording", sessionId: "sess-1", error: null },
+        },
+      });
+
+      lastInstance().emit({
+        kind: "event",
+        event: "voice.mobile_transcript",
+        sequence: 11,
+        payload: { session_id: "sess-1", text: "partial", is_final: false },
+      });
+      expect(useMobileStore.getState().voice.transcript).toMatchObject({
+        sessionId: "sess-1",
+        text: "partial",
+        isFinal: false,
+      });
+
+      lastInstance().emit({
+        kind: "event",
+        event: "voice.mobile_transcript",
+        sequence: 12,
+        payload: { session_id: "sess-1", text: "final text", is_final: true },
+      });
+      const voice = useMobileStore.getState().voice;
+      expect(voice.transcript).toMatchObject({ sessionId: "sess-1", text: "final text", isFinal: true });
+      expect(voice.capture.state).toBe("idle");
+      expect(voice.capture.sessionId).toBeNull();
+    });
+
+    it("voice.mobile_tts_chunk 与 tts_end 缓冲并标记播放状态", async () => {
+      await pairAndBootstrap();
+      useMobileStore.setState({ activeConversationId: "c1" });
+
+      lastInstance().emit({
+        kind: "event",
+        event: "voice.mobile_tts_chunk",
+        sequence: 11,
+        payload: { message_id: "m-tts", seq: 0, mime: "audio/pcm;rate=24000", data: "ZAA=" },
+      });
+      expect(useMobileStore.getState().voice.ttsChunks["m-tts"]).toHaveLength(1);
+      expect(useMobileStore.getState().voice.playback.state).toBe("buffering");
+
+      lastInstance().emit({
+        kind: "event",
+        event: "voice.mobile_tts_end",
+        sequence: 12,
+        payload: { message_id: "m-tts" },
+      });
+      expect(useMobileStore.getState().voice.playback.state).toBe("playing");
+      expect(useMobileStore.getState().voice.playback.messageId).toBe("m-tts");
+    });
+  });
+
+  describe("mobileStore V0.3.5 审批仲裁", () => {
+    it("approval.resolved 事件收敛 approvals 并记录 resolved_by/decision", async () => {
+      await pairAndBootstrap();
+      lastInstance().emit({
+        kind: "event",
+        event: "approval.requested",
+        sequence: 11,
+        payload: {
+          approval_id: "a1",
+          conversation_id: "c1",
+          task_id: "t1",
+          operation: { tool_kind: "shell", command: "npm test", paths: [], patch_file_count: null, summary: "跑测试" },
+          reason: "风险规则",
+        },
+      });
+      expect(useMobileStore.getState().approvals).toHaveLength(1);
+
+      lastInstance().emit({
+        kind: "event",
+        event: "approval.resolved",
+        sequence: 12,
+        payload: { approval_id: "a1", decision: "approve", resolved_by: "desktop" },
+      });
+      const state = useMobileStore.getState();
+      expect(state.approvals).toHaveLength(0);
+      expect(state.resolvedApprovals).toHaveLength(1);
+      expect(state.resolvedApprovals[0]).toMatchObject({
+        approval_id: "a1",
+        decision: "approve",
+        resolved_by: "desktop",
+      });
+    });
   });
 });

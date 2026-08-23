@@ -29,6 +29,8 @@ import "./character-library.css";
 interface CharacterLibraryPageProps {
   vm: CharacterLibraryViewModel;
   actions: HarnessActions;
+  /** V0.3.5：「配置音色」直达设置中心语音页并预选该卡（AppShell 注入）。 */
+  onConfigureCardVoice?: (cardId: string) => void;
 }
 
 export function CharacterLibraryPage({ vm, actions }: CharacterLibraryPageProps) {

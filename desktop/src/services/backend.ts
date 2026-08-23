@@ -4,11 +4,20 @@ import type {
   DesktopResponse,
 } from "../contracts/protocol";
 
+export interface FileFilter {
+  name: string;
+  extensions: string[];
+}
+
 export interface DesktopBackend {
   request<T>(command: DesktopCommand): Promise<T>;
   /** 打开独立聊天窗口；非 Tauri 后端应明确报告不支持，不伪造成功。 */
   openChatWindow(conversationId: string, projectId: string, title: string): Promise<string>;
   pickFolder(title?: string): Promise<string | null>;
+  /** V0.3.5：选择单个本地文件（角色卡 JSON/头像/参考音频等）。 */
+  pickFile(options?: { title?: string; filters?: FileFilter[] }): Promise<string | null>;
+  /** V0.3.5：选择保存路径（角色卡 JSON 导出等）。 */
+  saveFile(options?: { title?: string; defaultPath?: string; filters?: FileFilter[] }): Promise<string | null>;
   subscribe(listener: (event: DesktopEvent) => void): () => void;
   /** 强制重连本地服务；Sidecar 断开时无法走 JSONL 请求，直接触达 Rust 命令。 */
   reconnectSidecar(): Promise<void>;

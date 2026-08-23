@@ -4,6 +4,10 @@ import { ShieldIcon } from "./icons";
 export interface ApprovalCardProps {
   approval: PendingApproval;
   conversationTitle?: string;
+  /** V0.3.5：提交中状态（点击后等待服务器/事件收敛）。 */
+  resolving?: boolean;
+  onApprove?: () => void;
+  onReject?: () => void;
 }
 
 const TOOL_KIND_LABELS: Record<string, string> = {
@@ -14,11 +18,17 @@ const TOOL_KIND_LABELS: Record<string, string> = {
 };
 
 /**
- * V0.3.3 手机端等待审批只读卡片：
- * 审批在手机端只读可见（展示命令、路径、摘要、理由）；
- * 明确标注「请在电脑端处理」——本阶段手机端不应答，UI 中严禁出现批准/拒绝按钮。
+ * V0.3.5 手机端审批操作卡片：
+ * 展示命令、路径、摘要、理由，并提供批准/拒绝按钮。
+ * 审批被另一端处理后由 store 收敛，本组件只负责渲染与回调。
  */
-export function ApprovalCard({ approval, conversationTitle }: ApprovalCardProps) {
+export function ApprovalCard({
+  approval,
+  conversationTitle,
+  resolving = false,
+  onApprove,
+  onReject,
+}: ApprovalCardProps) {
   const { operation, reason } = approval;
   const kindLabel = TOOL_KIND_LABELS[operation.tool_kind] || operation.tool_kind;
 
@@ -26,7 +36,7 @@ export function ApprovalCard({ approval, conversationTitle }: ApprovalCardProps)
     <section
       className="mobile-approval-card"
       data-testid="approval-card"
-      aria-label="等待审批操作（只读）"
+      aria-label="等待审批操作"
     >
       <header className="mobile-approval-head">
         <div className="mobile-approval-title-group">
@@ -37,9 +47,6 @@ export function ApprovalCard({ approval, conversationTitle }: ApprovalCardProps)
             待审批操作 · {kindLabel}
           </span>
         </div>
-        <span className="mobile-approval-readonly-badge">
-          请在电脑端处理
-        </span>
       </header>
 
       <div className="mobile-approval-body">
@@ -88,9 +95,26 @@ export function ApprovalCard({ approval, conversationTitle }: ApprovalCardProps)
       </div>
 
       <footer className="mobile-approval-footer">
-        <span className="mobile-approval-hint">
-          手机端当前仅支持查看审批详情。为确保操作安全，请在电脑端完成批准或否决。
-        </span>
+        <div className="mobile-approval-actions">
+          <button
+            type="button"
+            className="mobile-approval-reject"
+            onClick={onReject}
+            disabled={resolving || !onReject}
+            data-testid="approval-reject"
+          >
+            {resolving ? "提交中…" : "拒绝"}
+          </button>
+          <button
+            type="button"
+            className="mobile-approval-approve"
+            onClick={onApprove}
+            disabled={resolving || !onApprove}
+            data-testid="approval-approve"
+          >
+            {resolving ? "提交中…" : "批准"}
+          </button>
+        </div>
       </footer>
     </section>
   );

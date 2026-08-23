@@ -178,7 +178,7 @@ describe("ChatPage 移动端聊天页集成测试", () => {
     });
   });
 
-  it("展示只读等待审批卡片，断言无批准/拒绝按钮并包含「请在电脑端处理」", async () => {
+  it("V0.3.5：审批卡片展示批准/拒绝按钮；ChatPage 未传 handler 时按钮禁用", async () => {
     useMobileStore.setState({
       approvals: [SAMPLE_APPROVAL],
     });
@@ -187,13 +187,16 @@ describe("ChatPage 移动端聊天页集成测试", () => {
 
     // 验证审批卡片渲染
     expect(screen.getByTestId("approval-card")).toBeInTheDocument();
-    expect(screen.getByText("请在电脑端处理")).toBeInTheDocument();
     expect(screen.getByText("更新项目配置文件")).toBeInTheDocument();
     expect(screen.getByText("src/config.json")).toBeInTheDocument();
 
-    // 严格断言：UI 中无批准/拒绝按钮
-    expect(screen.queryByRole("button", { name: /允许|批准|通过/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /否决|拒绝/i })).toBeNull();
+    // V0.3.5 P1：手机端展示审批按钮；当前 ChatPage 未传入 handler，按钮应禁用。
+    const approveButton = screen.getByTestId("approval-approve");
+    const rejectButton = screen.getByTestId("approval-reject");
+    expect(approveButton).toBeInTheDocument();
+    expect(rejectButton).toBeInTheDocument();
+    expect(approveButton).toBeDisabled();
+    expect(rejectButton).toBeDisabled();
   });
 
   it("「交给助手」委派提交，验证 chat.submit 协议帧", async () => {

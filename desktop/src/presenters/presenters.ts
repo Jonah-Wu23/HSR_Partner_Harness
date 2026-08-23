@@ -1,5 +1,6 @@
 import type {
   AppShellViewModel,
+  CharacterCardVoicePageViewModel,
   ChatTabsViewModel,
   ConversationViewModel,
   ProjectViewModel,
@@ -252,6 +253,9 @@ function presentSettings(state: DesktopRenderState): AppShellViewModel["settings
       reasoningEffort,
     },
     voice,
+    // V0.3.5：语音页「角色音色」区数据（卡列表+账号语音配置完备性）；
+    // 选中态由 VoicePage 内部维护，这里只投影全量列表。
+    characterVoice: presentCharacterCardVoicePage(state, null),
     modelTest: idle,
     voicePreview: idle,
   };
@@ -308,6 +312,35 @@ function presentChatTabs(state: DesktopRenderState): ChatTabsViewModel[] {
       isActive: conversationId === state.activeConversationId,
     };
   });
+}
+
+/** V0.3.5：语音设置页「角色音色」区视图模型。
+    卡列表来自 characterLibrary；参考音频状态由后续真实事件/配置补充。 */
+export function presentCharacterCardVoicePage(
+  state: DesktopRenderState,
+  selectedCardId: string | null,
+): CharacterCardVoicePageViewModel {
+  const cards = state.characterLibrary.cards.map((card): CharacterCardVoicePageViewModel["cards"][number] => ({
+    cardId: card.cardId,
+    name: card.name,
+    state: card.state,
+    source: card.source,
+    hasAvatar: card.hasAvatar,
+    voiceState: card.voiceState,
+    active: card.active,
+    readOnly: card.readOnly,
+    hasReferenceAudio: false,
+    referenceAudio: null,
+    voiceId: null,
+    lastError: null,
+  }));
+  const selectedCard = cards.find((card) => card.cardId === selectedCardId) ?? null;
+  return {
+    voiceConfigured: state.configSnapshot?.voice !== undefined,
+    cards,
+    selectedCardId,
+    selectedCard,
+  };
 }
 
 export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
@@ -421,6 +454,7 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
         ...approval,
         resolving: Boolean(state.approvalResolvingById[approval.approval_id]),
       })),
+      resolved: state.resolvedApprovals,
       reviewActive: state.reviewActive,
       reviewText: state.reviewText,
     },

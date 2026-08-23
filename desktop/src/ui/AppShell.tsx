@@ -82,6 +82,8 @@ export function AppShell({ vm, actions }: AppShellProps) {
   const [techDetailsOpen, setTechDetailsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsPage, setSettingsPage] = useState<SettingsPage>("account");
+  // V0.3.5：角色库「配置音色」直达语音页并预选该卡；null 表示无预选。
+  const [voiceCardFocus, setVoiceCardFocus] = useState<string | null>(null);
   // V0.2 M4：设置中心以 key 重挂载——每次打开拉取 config.get 后重新水合表单
   const [settingsRevision, setSettingsRevision] = useState(0);
   // V0.2 M4：QueueStrip「编辑」拉回输入区的草稿（nonce 驱动 Composer 写入）
@@ -100,6 +102,13 @@ export function AppShell({ vm, actions }: AppShellProps) {
     setVoicePreview({ state: "idle" });
     // V0.2 M4：打开时拉取 config.get；结果到达后重挂载表单水合最新配置
     void actions.getConfig().finally(() => setSettingsRevision((revision) => revision + 1));
+  };
+
+  // V0.3.5：从角色库/创作页直达语音页「角色音色」区并预选卡片。
+  const openSettingsToVoiceCard = (cardId: string | null) => {
+    setVoiceCardFocus(cardId);
+    setSettingsPage("voice");
+    openSettings();
   };
 
   // 登录/注册失败 → 就地显示错误（保持账号门表单不丢失输入）
@@ -204,7 +213,7 @@ export function AppShell({ vm, actions }: AppShellProps) {
               </div>
             ) : null}
             {vm.mainView === "characters" ? (
-              <CharacterLibraryPage vm={vm.characterLibrary} actions={actions} />
+              <CharacterLibraryPage vm={vm.characterLibrary} actions={actions} onConfigureCardVoice={openSettingsToVoiceCard} />
             ) : vm.mainView === "characterCreate" ? (
               <CharacterCreatePage vm={vm.characterCreate} actions={actions} />
             ) : workspace ? (
@@ -279,6 +288,8 @@ export function AppShell({ vm, actions }: AppShellProps) {
         coding={vm.settings.coding}
         model={vm.settings.model}
         voice={vm.settings.voice}
+        characterVoice={vm.settings.characterVoice}
+        voiceCardFocus={voiceCardFocus}
         modelTest={modelTest}
         voicePreview={voicePreview}
         remote={vm.remotePairing}
