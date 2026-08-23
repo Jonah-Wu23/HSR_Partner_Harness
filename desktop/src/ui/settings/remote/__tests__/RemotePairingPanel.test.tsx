@@ -28,7 +28,16 @@ function createMockPanelProps(overrides: Partial<RemotePairingViewModel> = {}) {
 describe("RemotePairingPanel (V0.3.3 远程设备配对面板)", () => {
   it("buildPairingUrl 按 serve 监听地址组装手机接入 URL（PWA 与 /ws 同端口）", () => {
     const url = buildPairingUrl("654321", "192.168.1.50", 8765);
-    expect(url).toBe("http://192.168.1.50:8765/?ws=ws://192.168.1.50:8765/ws&code=654321");
+    expect(url).toBe(
+      "http://192.168.1.50:8765/?ws=ws%3A%2F%2F192.168.1.50%3A8765%2Fws&code=654321",
+    );
+  });
+
+  it("buildPairingUrl 正确编码 IPv6 地址", () => {
+    const url = buildPairingUrl("654321", "fe80::1", 8765);
+    expect(url).toBe(
+      "http://[fe80::1]:8765/?ws=ws%3A%2F%2F%5Bfe80%3A%3A1%5D%3A8765%2Fws&code=654321",
+    );
   });
 
   it("组件挂载时调用 onListRemoteDevices", () => {

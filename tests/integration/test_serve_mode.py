@@ -321,6 +321,38 @@ async def test_serve_started_reports_lan_address(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_lan_ip_probe_failure_does_not_report_fake_address(
+    tmp_path, monkeypatch
+) -> None:
+    """V0.3.4 Codex 建议 C：局域网地址探测失败（返回 None）时如实不下发
+    serve.started，桌面端保持「地址未就绪」占位，不伪造 127.0.0.1 可达地址。"""
+    import argparse
+    import sys
+
+    import pair_harness.desktop_backend.__main__ as backend_main
+
+    port = _free_port()
+    out = io.StringIO()
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(backend_main, "_detect_lan_ip", lambda: None)
+    args = argparse.Namespace(
+        serve=port,
+        demo=True,
+        real=False,
+        pair="phainon_ancient_machine",
+        project=tmp_path,
+        data_dir=tmp_path / "data",
+    )
+    rc = await backend_main._run(args)
+    assert rc == 0
+
+    lines = [json.loads(line) for line in out.getvalue().splitlines()]
+    serve_events = [m for m in lines if m.get("event") == "serve.started"]
+    assert serve_events == []
+
+
+@pytest.mark.asyncio
 async def test_sigint_routes_to_orderly_stop(tmp_path, monkeypatch) -> None:
     """V0.3.4 缺陷 5：Ctrl+C 安装为与 app.shutdown 相同的有序停机路径。
 

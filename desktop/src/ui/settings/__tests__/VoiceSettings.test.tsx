@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SettingsCenter } from "../SettingsCenter";
 import type { VoicePageView } from "../types";
@@ -151,6 +151,36 @@ describe("VoiceSettings (V0.3.3 角色语音与助手无 TTS 改造)", () => {
     expect(screen.getByText("qwen-audio-3.0-tts-flash")).toBeInTheDocument();
     expect(screen.queryByLabelText("ASR 模型")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("TTS 模型")).not.toBeInTheDocument();
+  });
+
+  it("音色生成失败后显示失败状态并允许重试", async () => {
+    const onProvisionVoices = vi.fn().mockRejectedValue(new Error("真实生成失败"));
+    const props = { ...createMockVoiceProps(), onProvisionVoices };
+    render(<SettingsCenter {...props} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "生成 3 个专属音色" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent("真实生成失败");
+    });
+    expect(screen.getAllByText("失败")).toHaveLength(3);
+    expect(screen.getByRole("button", { name: "重试失败项" })).toBeEnabled();
+  });
+
+  it("同一时刻不会重复提交音色生成", async () => {
+    let resolveProvision: ((value: { results: [] }) => void) | undefined;
+    const onProvisionVoices = vi.fn(
+      () => new Promise<{ results: [] }>((resolve) => { resolveProvision = resolve; }),
+    );
+    const props = { ...createMockVoiceProps(), onProvisionVoices };
+    render(<SettingsCenter {...props} />);
+
+    const button = screen.getByRole("button", { name: "生成 3 个专属音色" });
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    expect(onProvisionVoices).toHaveBeenCalledTimes(1);
+    resolveProvision?.({ results: [] });
   });
 
   it("保留 VAD 用户语音输入开关", () => {

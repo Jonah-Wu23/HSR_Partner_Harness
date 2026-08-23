@@ -15,6 +15,7 @@ import type {
   CardUpdateResult,
   ConversationOpenResult,
   DesktopCommand,
+  DesktopEvent,
   DesktopCommandMethod,
   DesktopSnapshot,
   ReasoningEffort,
@@ -45,6 +46,7 @@ export interface ActionController {
 export function createActionController(backend: DesktopBackend): ActionController {
   // V0.3.2 M5：请求 id 携带本窗口 viewId（多窗口全应用唯一），失败如常上抛。
   const ids = new RequestIdFactory(() => desktopStore.getState().viewId);
+  let conversationOpenGeneration = 0;
 
   async function request<T>(method: DesktopCommandMethod, params: Record<string, unknown> = {}): Promise<T> {
     const viewId = desktopStore.getState().viewId;
@@ -72,11 +74,24 @@ export function createActionController(backend: DesktopBackend): ActionControlle
   // V0.3.2 M5：只读装载指定聊天——参数携带本窗口 view_id；结果合并进
   // 各会话索引并打开该聊天的标签，不改变后端全局当前聊天。
   const conversationOpen = async (conversationId: string) => {
-    const result = await request<ConversationOpenResult>("conversation.open", {
-      conversation_id: conversationId,
-      view_id: desktopStore.getState().viewId,
-    });
-    desktopStore.getState().hydrateConversationView(result);
+    const generation = ++conversationOpenGeneration;
+    const requestAccountGeneration = desktopStore.getState().accountGeneration;
+    const bufferedEvents: DesktopEvent[] = [];
+    const unsubscribe = backend.subscribe((event) => bufferedEvents.push(event));
+    let result: ConversationOpenResult;
+    try {
+      result = await request<ConversationOpenResult>("conversation.open", {
+        conversation_id: conversationId,
+        view_id: desktopStore.getState().viewId,
+      });
+    } finally {
+      unsubscribe();
+    }
+    if (
+      generation !== conversationOpenGeneration ||
+      requestAccountGeneration !== desktopStore.getState().accountGeneration
+    ) return;
+    desktopStore.getState().hydrateConversationView(result, bufferedEvents);
   };
 
   /** 后端选择/创建成功后，把本窗口焦点同步到新的当前聊天。 */
@@ -292,13 +307,19 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       await request("account.list");
     },
     async registerAccount(username, displayName, password) {
+      conversationOpenGeneration += 1;
       await request("account.register", { username, display_name: displayName, password });
+      await loadBootstrap();
     },
     async loginAccount(accountId, password) {
+      conversationOpenGeneration += 1;
       await request("account.login", { account_id: accountId, password });
+      await loadBootstrap();
     },
     async logoutAccount() {
+      conversationOpenGeneration += 1;
       await request("account.logout");
+      await loadBootstrap();
     },
     async updateAccountProfile(displayName, avatar) {
       await request("account.update_profile", { display_name: displayName, avatar });
@@ -314,12 +335,21 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     },
     async getConfig() {
       // V0.2 M4：config.get 结果存入 store（SettingsCenter 数据源）
+      const accountGeneration = desktopStore.getState().accountGeneration;
       const result = await request<Record<string, unknown>>("config.get");
-      desktopStore.getState().setConfigSnapshot(result);
+      if (accountGeneration === desktopStore.getState().accountGeneration) {
+        desktopStore.getState().setConfigSnapshot(result);
+      }
     },
     async setConfig(updates) {
+      const accountGeneration = desktopStore.getState().accountGeneration;
       const result = await request<{ config?: Record<string, unknown> }>("config.set", { updates });
-      if (result?.config) desktopStore.getState().setConfigSnapshot(result.config);
+      if (
+        result?.config &&
+        accountGeneration === desktopStore.getState().accountGeneration
+      ) {
+        desktopStore.getState().setConfigSnapshot(result.config);
+      }
     },
     async testConnection() {
       // V0.2 M4：返回人话结果（Onboarding 保存并测试 / 设置中心模型页）
@@ -344,6 +374,7 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       await request("voice.preview", { text, ...(voiceId ? { voice_id: voiceId } : {}) });
     },
     async provisionVoices(speakerIds, replaceExisting) {
+      const accountGeneration = desktopStore.getState().accountGeneration;
       const params: Record<string, unknown> = {};
       if (speakerIds !== undefined) params.speaker_ids = speakerIds;
       if (replaceExisting !== undefined) params.replace_existing = replaceExisting;
@@ -351,7 +382,9 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       // voice.provision 的逐项事件用于实时状态；命令完成后再取一次权威配置，
       // 确保成功项已从 SQLite 水合到设置页，且失败项仍保留真实状态。
       const config = await request<Record<string, unknown>>("config.get");
-      desktopStore.getState().setConfigSnapshot(config);
+      if (accountGeneration === desktopStore.getState().accountGeneration) {
+        desktopStore.getState().setConfigSnapshot(config);
+      }
       return result;
     },
     /* —— V0.3.3 角色卡（card.*）—— */

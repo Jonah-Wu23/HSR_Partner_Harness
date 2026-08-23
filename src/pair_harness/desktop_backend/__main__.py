@@ -226,12 +226,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     faulthandler.enable(file=sys.stderr, all_threads=True)
     logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
-    try:
-        return asyncio.run(_run(args))
-    except KeyboardInterrupt:
-        # SIGINT 已转为有序停机；这里只兜底停机期间的二次硬打断，
-        # 不让 traceback 刷屏，退出码保持 0。
-        return 0
+    return asyncio.run(_run(args))
 
 
 if __name__ == "__main__":

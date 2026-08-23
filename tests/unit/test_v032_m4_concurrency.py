@@ -350,6 +350,8 @@ async def test_conversation_open_loads_without_switching_current(tmp_path) -> No
         assert "messages" in opened and "tool_runs" in opened
         assert "turns" in opened and "queue_items" in opened
         assert "active_task" in opened
+        assert opened["stream_id"] == service.emitter.stream_id
+        assert opened["sequence"] == service.emitter.next_sequence - 1
         # 只读：全局当前聊天不变
         assert service.current_conversation_id == conv_a
     finally:

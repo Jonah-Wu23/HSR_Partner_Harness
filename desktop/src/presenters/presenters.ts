@@ -194,6 +194,7 @@ function presentSettings(state: DesktopRenderState): AppShellViewModel["settings
     : [];
 
   const voice: VoicePageView = {
+    accountId: state.currentAccountId,
     enabled: Boolean(voiceConfig.enabled === true || voiceConfig.enabled === "true"),
     assistantVoiceEnabled: Boolean(
       voiceConfig.assistant_voice_enabled === true || voiceConfig.assistant_voice_enabled === "true",
