@@ -72,7 +72,10 @@ CREATE TABLE IF NOT EXISTS conversations (
     last_mode TEXT NOT NULL DEFAULT 'chat',
     archived INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    -- V0.3.5：对话绑定的角色卡快照（card_id；内置角色为 NULL）。
+    -- 与迁移 v10 的 ALTER 语义一致，新库直建，旧库由迁移补列。
+    character_card_id TEXT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_conversations_project_updated

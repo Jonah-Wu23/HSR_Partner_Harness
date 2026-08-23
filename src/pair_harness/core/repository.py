@@ -36,6 +36,8 @@ class Conversation:
     updated_at: datetime
     # V0.2 M3：会话归属账号；旧库迁移按项目归属回填。
     account_id: str = ""
+    # V0.3.5：对话绑定的角色卡快照（card_id；内置角色为 None，迁移 v10）。
+    character_card_id: str | None = None
 
 
 @dataclass(frozen=True)
