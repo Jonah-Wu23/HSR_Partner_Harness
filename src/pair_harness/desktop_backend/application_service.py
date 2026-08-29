@@ -2227,7 +2227,10 @@ class DesktopApplicationService:
         return {
             "name": card.name,
             "spec_version": card.spec_version or "2.0",
-            "avatar_available": bool(card.root_extras.get("avatar")),
+            # SillyTavern 惯例：根级 avatar 为 "none" 字符串表示无头像文件，
+            # 不能按 truthy 字符串误判为有头像。
+            "avatar_available": str(card.root_extras.get("avatar") or "").strip()
+            .lower() not in ("", "none"),
             "greeting_count": card.greeting_count(),
             "world_book_entries": (
                 len(card.character_book.entries)
