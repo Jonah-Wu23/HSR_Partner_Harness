@@ -39,6 +39,11 @@ export function BasicInfoSection({
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [avatarLoading, setAvatarLoading] = useState(false);
   const [localPreview, setLocalPreview] = useState<string | null>(null);
+  // V0.3.5 CodeQL：服务端 data URI 头像不直接进 img.src（data:image/svg+xml
+  // 可携带脚本，js/xss-through-dom 判定为 HTML 解释 sink）。统一先转
+  // object URL——img.src 只会收到浏览器生成的 blob: URL，不含用户可控字符串。
+  const [cardAvatarUrl, setCardAvatarUrl] = useState<string | null>(null);
+  const cardAvatarUrlRef = useRef<string | null>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   // Tauri 对话框拿到的是绝对路径而非 File；无 cardId 时暂存，保存后自动上传。
   const [pendingPath, setPendingPath] = useState<string | null>(null);
@@ -254,25 +259,56 @@ export function BasicInfoSection({
   // 头像预览 URL 只接受两种受控来源：本地 File 的 blob: object URL 与
   // 服务端下发的 data:image/*;base64（见 avatarDataUri）。来源白名单
   // 截断任意其它文本进入 img src（CodeQL js/xss-through-dom 的污点汇）。
-  const displayedAvatar = (() => {
-    const candidate = localPreview ?? avatarDataUri(avatar);
-    if (
-      candidate?.startsWith("blob:") ||
-      candidate?.startsWith("data:image/")
-    ) {
-      return candidate;
-    }
-    return null;
-  })();
+  // 预览 URL 统一为 blob: object URL：localPreview 直接来自
+  // URL.createObjectURL(file)；卡自带的 data URI 先经 fetch→blob 转
+  // object URL 再使用。img.src 永远只接收浏览器生成的 blob: URL，
+  // 不接收任何用户/服务器可控字符串（CodeQL js/xss-through-dom 修复）。
+  const displayedAvatar = localPreview ?? cardAvatarUrl;
   const avatarChar = formData.name.trim() ? formData.name.trim().charAt(0) : "?";
   const hasAvatar = Boolean(displayedAvatar);
+
+  // 服务端 data URI → object URL 的异步转换；替换/卸载时释放旧 URL。
+  useEffect(() => {
+    const dataUri = avatarDataUri(avatar);
+    if (!dataUri) {
+      setCardAvatarUrl(null);
+      return;
+    }
+    let revoked = false;
+    fetch(dataUri)
+      .then((res) => res.blob())
+      .then((blob) => {
+        if (revoked) return;
+        const objectUrl = URL.createObjectURL(blob);
+        if (cardAvatarUrlRef.current) {
+          URL.revokeObjectURL(cardAvatarUrlRef.current);
+        }
+        cardAvatarUrlRef.current = objectUrl;
+        setCardAvatarUrl(objectUrl);
+      })
+      .catch(() => {
+        if (!revoked) setCardAvatarUrl(null);
+      });
+    return () => {
+      revoked = true;
+    };
+  }, [avatar]);
+
+  // 组件卸载时释放当前卡头像的 object URL。
+  useEffect(() => {
+    return () => {
+      if (cardAvatarUrlRef.current) {
+        URL.revokeObjectURL(cardAvatarUrlRef.current);
+      }
+    };
+  }, []);
 
   // 预览图 src 经原生属性赋值（不经 HTML 解释）；JSX 不携带 src 表达式，
   // CodeQL js/xss-through-dom 的污点流在此结构下真实断开。
   useEffect(() => {
     const img = previewImgRef.current;
     if (img && displayedAvatar) {
-      img.src = displayedAvatar;
+      img.src = displayedAvatar; // 恒为 createObjectURL 产物（blob:），见上方统一转换
     }
   }, [displayedAvatar]);
 
