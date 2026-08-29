@@ -44,13 +44,21 @@ def response_ok(request_id: str, result: Any) -> dict[str, Any]:
 
 
 def response_error(
-    request_id: str | None, code: str, message: str
+    request_id: str | None,
+    code: str,
+    message: str,
+    *,
+    details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if details:
+        # V0.3.5：结构化附加字段（如审批 already_resolved 的真实结果）。
+        error["details"] = details
     return {
         "kind": "response",
         "id": request_id,
         "ok": False,
-        "error": {"code": code, "message": message},
+        "error": error,
     }
 
 

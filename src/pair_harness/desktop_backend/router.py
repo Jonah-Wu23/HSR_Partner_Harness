@@ -146,7 +146,14 @@ class SidecarRouter:
         try:
             result = await self.service.handle_command(command)
         except ServiceError as exc:
-            respond(response_error(command.request_id, exc.code, str(exc)))
+            respond(
+                response_error(
+                    command.request_id,
+                    exc.code,
+                    str(exc),
+                    details=exc.details or None,
+                )
+            )
             return
         except Exception as exc:  # noqa: BLE001 - Sidecar 不能因单个请求崩溃
             logger.exception("desktop command failed: %s", command.method)

@@ -91,11 +91,18 @@ logger = logging.getLogger(__name__)
 
 
 class ServiceError(RuntimeError):
-    """可直接返回给前端的业务错误。"""
+    """可直接返回给前端的业务错误。
 
-    def __init__(self, message: str, *, code: str = "service_error") -> None:
+    ``details``（V0.3.5）可选携带结构化附加字段，随错误响应体的
+    ``error.details`` 下发；不改变 code/message 语义，前端可选读取。
+    """
+
+    def __init__(
+        self, message: str, *, code: str = "service_error", details: dict[str, Any] | None = None
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.details = details or {}
 
 
 class ApprovalBroker:
@@ -156,10 +163,16 @@ class ApprovalBroker:
         if item is None:
             prior = self._resolved.get(approval_id)
             if prior is not None:
+                # 契约 §6：后到者拿到先到者的真实结果（结构化字段），
+                # 双端据此收敛展示，不必解析 message 文案。
                 raise ServiceError(
                     f"审批已由 {prior['resolved_by']} 应答（{prior['decision']}），"
                     "不能重复应答",
                     code="approval_already_resolved",
+                    details={
+                        "decision": prior["decision"],
+                        "resolved_by": prior["resolved_by"],
+                    },
                 )
             raise ServiceError(
                 f"审批请求不存在或已经完成：{approval_id}",

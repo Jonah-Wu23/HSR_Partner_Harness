@@ -883,6 +883,8 @@ async def test_approval_double_resolution_reports_first_outcome(service) -> None
     assert excinfo.value.code == "approval_already_resolved"
     message = str(excinfo.value)
     assert "remote" in message and "deny" in message
+    # 契约 §6：错误响应携带先到者的结构化真实结果（视觉遗留建议 1）。
+    assert excinfo.value.details == {"decision": "deny", "resolved_by": "remote"}
 
 
 async def test_approval_resolve_unknown_id_reports_not_found(service) -> None:
