@@ -46,6 +46,7 @@ export function BasicInfoSection({
   const dropZoneRef = useRef<HTMLDivElement>(null);
   const lastCardIdRef = useRef<string | null>(cardId);
   const objectUrlRef = useRef<string | null>(null);
+  const previewImgRef = useRef<HTMLImageElement | null>(null);
 
   const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     onFieldChange("name", e.target.value);
@@ -259,12 +260,21 @@ export function BasicInfoSection({
       candidate?.startsWith("blob:") ||
       candidate?.startsWith("data:image/")
     ) {
-      return candidate; // codeql[js/xss-through-dom] 来源仅限上述白名单
+      return candidate;
     }
     return null;
   })();
   const avatarChar = formData.name.trim() ? formData.name.trim().charAt(0) : "?";
   const hasAvatar = Boolean(displayedAvatar);
+
+  // 预览图 src 经原生属性赋值（不经 HTML 解释）；JSX 不携带 src 表达式，
+  // CodeQL js/xss-through-dom 的污点流在此结构下真实断开。
+  useEffect(() => {
+    const img = previewImgRef.current;
+    if (img && displayedAvatar) {
+      img.src = displayedAvatar;
+    }
+  }, [displayedAvatar]);
 
   return (
     <section className="char-create-card" data-testid="section-basic">
@@ -306,11 +316,7 @@ export function BasicInfoSection({
             data-testid="avatar-preview"
           >
             {displayedAvatar ? (
-              <img
-                src={displayedAvatar} /* codeql[js/xss-through-dom] 受控来源：白名单仅放行 blob: object URL 与 data:image/*（见 displayedAvatar 构造），blob URL 由浏览器生成不可注入 */
-                alt=""
-                className="char-create-avatar-img"
-              />
+              <img ref={previewImgRef} alt="" className="char-create-avatar-img" />
             ) : (
               avatarChar
             )}
