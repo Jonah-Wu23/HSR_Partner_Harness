@@ -250,7 +250,19 @@ export function BasicInfoSection({
     dropZoneRef.current?.classList.remove("dragover");
   };
 
-  const displayedAvatar = localPreview ?? avatarDataUri(avatar);
+  // 头像预览 URL 只接受两种受控来源：本地 File 的 blob: object URL 与
+  // 服务端下发的 data:image/*;base64（见 avatarDataUri）。来源白名单
+  // 截断任意其它文本进入 img src（CodeQL js/xss-through-dom 的污点汇）。
+  const displayedAvatar = (() => {
+    const candidate = localPreview ?? avatarDataUri(avatar);
+    if (
+      candidate?.startsWith("blob:") ||
+      candidate?.startsWith("data:image/")
+    ) {
+      return candidate; // codeql[js/xss-through-dom] 来源仅限上述白名单
+    }
+    return null;
+  })();
   const avatarChar = formData.name.trim() ? formData.name.trim().charAt(0) : "?";
   const hasAvatar = Boolean(displayedAvatar);
 

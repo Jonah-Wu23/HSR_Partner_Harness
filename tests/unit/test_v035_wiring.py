@@ -1008,6 +1008,12 @@ async def test_remote_disconnect_cancels_voice_sessions(service, monkeypatch):
 
     monkeypatch.setattr(service, "_mobile_asr", FakeManager())
 
+    # 本测试只验证断开事件到 manager 的接线；factory 依赖账号 Key 配置，
+    # CI 无 DashScope 凭据，直接以假 factory 隔离环境（非放宽生产代码）。
+    monkeypatch.setattr(
+        service, "_mobile_asr_factory", lambda: (lambda: object())
+    )
+
     session_id = await asyncio.wait_for(
         service._voice_mobile_ptt_start(
             {"conversation_id": service.current_conversation_id},
