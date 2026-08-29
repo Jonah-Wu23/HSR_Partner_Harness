@@ -25,6 +25,30 @@ import {
  * 序号缺口或连接代次变化时重新 bootstrap，不猜测缺失状态。
  */
 
+export interface MobileVoiceCapture {
+  state: "idle" | "starting" | "recording" | "stopping";
+  sessionId: string | null;
+  error: string | null;
+}
+
+export interface MobileVoiceTranscript {
+  sessionId: string;
+  text: string;
+  isFinal: boolean;
+}
+
+export interface MobileVoicePlayback {
+  messageId: string | null;
+  state: "idle" | "buffering" | "playing" | "stopping";
+  error: string | null;
+}
+
+export interface MobileVoiceAvailability {
+  secureContext: boolean;
+  micPermission: "unknown" | "granted" | "denied" | "prompt";
+  supported: boolean;
+}
+
 export interface MobileState {
   connection: MobileConnectionState;
   deviceName: string | null;
@@ -34,6 +58,17 @@ export interface MobileState {
   messages: Message[];
   toolRuns: ToolRun[];
   approvals: PendingApproval[];
+  /** V0.3.5：已决审批记录（含 resolved_by/decision），供 UI 表达双端仲裁结果。 */
+  resolvedApprovals: Array<{
+    approval_id: string;
+    conversation_id?: string;
+    decision: string;
+    resolved_by: string;
+    task_id?: string;
+    /** 保留原始 operation/reason 以便已决卡仍展示详情。 */
+    operation?: PendingApproval["operation"];
+    reason?: string;
+  }>;
   /** V0.3.4：当前配对（委派卡「来自 <角色名> 的委派」数据源）。 */
   pair: PairRecord | null;
   /** V0.3.4：当前活动任务（委派卡运行状态与 delegation_id 对齐）。 */
@@ -41,6 +76,15 @@ export interface MobileState {
   streamId: string | null;
   lastSequence: number;
   bootstrapped: boolean;
+  /** V0.3.5：手机语音状态。 */
+  voice: {
+    capture: MobileVoiceCapture;
+    transcript: MobileVoiceTranscript | null;
+    playback: MobileVoicePlayback;
+    availability: MobileVoiceAvailability;
+    /** 下行 TTS 分片缓冲：message_id → 有序分片。 */
+    ttsChunks: Record<string, Array<{ seq: number; mime: string; data: string }>>;
+  };
 
   start: () => void;
   /** 手动重连入口（unreachable/auth_failed 后由 UI 重试按钮调用）。 */
@@ -53,6 +97,14 @@ export interface MobileState {
   /** V0.3.4 缺陷 4：会话模式切换（chat/collaboration），委派仅在协作模式可用。 */
   setConversationMode: (conversationId: string, mode: ConversationMode) => Promise<void>;
   resolveApproval: (approvalId: string, decision: string) => Promise<void>;
+  /** V0.3.5：手机语音相关 actions。 */
+  startVoiceCapture: (conversationId: string) => Promise<{ session_id: string }>;
+  sendAudioChunk: (seq: number, base64: string) => Promise<void>;
+  stopVoiceCapture: () => Promise<void>;
+  stopVoicePlayback: (messageId: string) => Promise<void>;
+  /** V0.3.5：本地 TTS 队列自然播放到末尾后复位 playback 状态。 */
+  finishVoicePlayback: (messageId: string) => void;
+  refreshVoiceAvailability: () => Promise<void>;
   disconnect: () => void;
 }
 
@@ -335,9 +387,30 @@ export const useMobileStore = create<MobileState>((set, get) => {
         break;
       }
       case "approval.resolved": {
-        const approvalId = (event.payload as { approval_id?: string }).approval_id;
-        if (approvalId) {
-          set({ approvals: get().approvals.filter((item) => item.approval_id !== approvalId) });
+        const payload = event.payload as {
+          approval_id?: string;
+          conversation_id?: string;
+          decision?: string;
+          resolved_by?: string;
+          task_id?: string;
+        };
+        if (payload.approval_id) {
+          const existing = get().approvals.find((item) => item.approval_id === payload.approval_id);
+          set({
+            approvals: get().approvals.filter((item) => item.approval_id !== payload.approval_id),
+            resolvedApprovals: [
+              ...get().resolvedApprovals.filter((item) => item.approval_id !== payload.approval_id),
+              {
+                approval_id: payload.approval_id,
+                conversation_id: payload.conversation_id ?? get().activeConversationId ?? undefined,
+                decision: payload.decision ?? "approve",
+                resolved_by: payload.resolved_by ?? "remote",
+                task_id: payload.task_id,
+                operation: existing?.operation,
+                reason: existing?.reason,
+              },
+            ],
+          });
         }
         break;
       }
@@ -454,6 +527,76 @@ export const useMobileStore = create<MobileState>((set, get) => {
         set({ toolRuns: [...rest, toolRun] });
         break;
       }
+      case "voice.mobile_transcript": {
+        const payload = event.payload as {
+          session_id?: string;
+          text?: string;
+          is_final?: boolean;
+        };
+        if (payload.session_id && payload.session_id === get().voice.capture.sessionId) {
+          set({
+            voice: {
+              ...get().voice,
+              transcript: {
+                sessionId: payload.session_id,
+                text: String(payload.text ?? ""),
+                isFinal: payload.is_final ?? false,
+              },
+              capture: {
+                state: payload.is_final ? "idle" : get().voice.capture.state,
+                sessionId: payload.is_final ? null : get().voice.capture.sessionId,
+                error: null,
+              },
+            },
+          });
+        }
+        break;
+      }
+      case "voice.mobile_tts_chunk": {
+        const payload = event.payload as {
+          message_id?: string;
+          seq?: number;
+          mime?: string;
+          data?: string;
+        };
+        if (!payload.message_id || typeof payload.seq !== "number") break;
+        const voice = get().voice;
+        const chunks = voice.ttsChunks[payload.message_id] ?? [];
+        const exists = chunks.some((item) => item.seq === payload.seq);
+        const nextChunks = exists
+          ? chunks
+          : [...chunks, { seq: payload.seq, mime: payload.mime ?? "audio/pcm;rate=24000", data: payload.data ?? "" }].sort(
+              (a, b) => a.seq - b.seq,
+            );
+        set({
+          voice: {
+            ...voice,
+            playback: {
+              messageId: payload.message_id,
+              state: voice.playback.state === "idle" ? "buffering" : voice.playback.state,
+              error: null,
+            },
+            ttsChunks: { ...voice.ttsChunks, [payload.message_id]: nextChunks },
+          },
+        });
+        break;
+      }
+      case "voice.mobile_tts_end": {
+        const payload = event.payload as { message_id?: string };
+        if (payload.message_id) {
+          set({
+            voice: {
+              ...get().voice,
+              playback: {
+                messageId: payload.message_id,
+                state: "playing",
+                error: null,
+              },
+            },
+          });
+        }
+        break;
+      }
       case "task.busy_changed": {
         // V0.3.4 Codex 建议 A/B：活动任务是会话级权威状态；任务结束（busy=false）
         // 时清空当前会话的活动任务，委派卡不再误判为运行中。只取当前会话条目，
@@ -490,11 +633,23 @@ export const useMobileStore = create<MobileState>((set, get) => {
     messages: [],
     toolRuns: [],
     approvals: [],
+    resolvedApprovals: [],
     pair: null,
     activeTask: null,
     streamId: null,
     lastSequence: 0,
     bootstrapped: false,
+    voice: {
+      capture: { state: "idle", sessionId: null, error: null },
+      transcript: null,
+      playback: { messageId: null, state: "idle", error: null },
+      availability: {
+        secureContext: typeof window !== "undefined" ? window.isSecureContext : false,
+        micPermission: "unknown",
+        supported: typeof navigator !== "undefined" && Boolean(navigator.mediaDevices?.getUserMedia),
+      },
+      ttsChunks: {},
+    },
 
     start() {
       if (wired) return;
@@ -631,7 +786,45 @@ export const useMobileStore = create<MobileState>((set, get) => {
     },
 
     async resolveApproval(approvalId, decision) {
-      await client.request("approval.resolve", { approval_id: approvalId, decision });
+      try {
+        await client.request("approval.resolve", { approval_id: approvalId, decision });
+      } catch (error) {
+        const code = error instanceof Error && "code" in error ? String((error as Error & { code?: string }).code) : "";
+        if (code === "approval_already_resolved") {
+          // V0.3.5 双端并发仲裁：本端失败必须按先到者的真实结果收敛，严禁用本端入参顶替
+          // （此前直接写入本端 attempted decision，会把对端的真实拒绝伪造成批准，违反 Let It Fail）。
+          // 真实结果首选 approval.resolved 事件已写入的记录（同一 WS 上有序，通常已先处理）；
+          // 事件未到时从服务端错误文案提取——格式「审批已由 <resolved_by> 应答（<decision>）」，
+          // 见 application_service.py ApprovalBroker.resolve；契约 §6 承诺的结构化
+          // {decision, resolved_by} 响应体后端尚未下发，下发后应改取结构化字段。
+          const message = error instanceof Error ? error.message : String(error);
+          const recorded = get().resolvedApprovals.find((item) => item.approval_id === approvalId);
+          const parsedDecision = /应答（([^）]+)）/.exec(message)?.[1];
+          const parsedBy = /已由\s*(\S+)\s*应答/.exec(message)?.[1];
+          const pending = get().approvals.find((item) => item.approval_id === approvalId);
+          set({
+            approvals: get().approvals.filter((item) => item.approval_id !== approvalId),
+            resolvedApprovals: recorded
+              ? get().resolvedApprovals
+              : parsedDecision
+                ? [
+                    ...get().resolvedApprovals.filter((item) => item.approval_id !== approvalId),
+                    {
+                      approval_id: approvalId,
+                      conversation_id: get().activeConversationId ?? undefined,
+                      decision: parsedDecision,
+                      resolved_by: parsedBy ?? "remote",
+                      task_id: pending?.task_id,
+                      operation: pending?.operation,
+                      reason: pending?.reason,
+                    },
+                  ]
+                : // 解析不到真实决策时如实不补已决卡片；错误照常抛出由界面呈现。
+                  get().resolvedApprovals,
+          });
+        }
+        throw error;
+      }
     },
 
     disconnect() {
@@ -651,11 +844,172 @@ export const useMobileStore = create<MobileState>((set, get) => {
         messages: [],
         toolRuns: [],
         approvals: [],
+        resolvedApprovals: [],
         pair: null,
         activeTask: null,
         streamId: null,
         lastSequence: 0,
         bootstrapped: false,
+        voice: {
+          capture: { state: "idle", sessionId: null, error: null },
+          transcript: null,
+          playback: { messageId: null, state: "idle", error: null },
+          availability: {
+            secureContext: typeof window !== "undefined" ? window.isSecureContext : false,
+            micPermission: "unknown",
+            supported: typeof navigator !== "undefined" && Boolean(navigator.mediaDevices?.getUserMedia),
+          },
+          ttsChunks: {},
+        },
+      });
+    },
+
+    async startVoiceCapture(conversationId) {
+      const voice = get().voice;
+      if (voice.capture.state !== "idle") {
+        // 前置条件违反如实抛错：此前静默 return undefined，叠加接口的 `| void`，
+        // 导致 useVoiceCapture 每次启动都必抛「服务端未返回语音会话 ID」。
+        throw new Error("语音采集正在进行中");
+      }
+      set({
+        voice: {
+          ...voice,
+          capture: { state: "starting", sessionId: null, error: null },
+          transcript: null,
+        },
+      });
+      try {
+        const result = await client.request<{ session_id: string }>("voice.mobile_ptt_start", {
+          conversation_id: conversationId,
+        });
+        set({
+          voice: {
+            ...get().voice,
+            capture: { state: "recording", sessionId: result.session_id, error: null },
+          },
+        });
+        return result;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        set({
+          voice: {
+            ...get().voice,
+            capture: { state: "idle", sessionId: null, error: message },
+          },
+        });
+        throw error;
+      }
+    },
+
+    async sendAudioChunk(seq, base64) {
+      const sessionId = get().voice.capture.sessionId;
+      if (!sessionId) throw new Error("未开始语音采集");
+      try {
+        await client.request("voice.mobile_audio_chunk", {
+          session_id: sessionId,
+          seq,
+          data: base64,
+        });
+      } catch (error) {
+        // Let It Fail：上行分片失败（如 voice_audio_seq_gap）必须留在界面上，
+        // 不得被 hook 后续的 stopSession 复位动作静默冲掉。
+        const message = error instanceof Error ? error.message : String(error);
+        set({
+          voice: {
+            ...get().voice,
+            capture: { ...get().voice.capture, error: message },
+          },
+        });
+        throw error;
+      }
+    },
+
+    async stopVoiceCapture() {
+      const sessionId = get().voice.capture.sessionId;
+      if (!sessionId) return;
+      set({
+        voice: {
+          ...get().voice,
+          capture: { state: "stopping", sessionId, error: null },
+        },
+      });
+      try {
+        await client.request<{ session_id: string; transcript: string; conversation_id: string }>(
+          "voice.mobile_ptt_stop",
+          { session_id: sessionId },
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        set({
+          voice: {
+            ...get().voice,
+            capture: { state: "idle", sessionId: null, error: message },
+          },
+        });
+        throw error;
+      }
+    },
+
+    async stopVoicePlayback(messageId) {
+      const voice = get().voice;
+      set({
+        voice: {
+          ...voice,
+          playback: { messageId, state: "stopping", error: null },
+        },
+      });
+      try {
+        await client.request("voice.mobile_tts_stop", { message_id: messageId });
+        set({
+          voice: {
+            ...get().voice,
+            playback: { messageId: null, state: "idle", error: null },
+          },
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        set({
+          voice: {
+            ...get().voice,
+            playback: { messageId, state: "idle", error: message },
+          },
+        });
+        throw error;
+      }
+    },
+
+    finishVoicePlayback(messageId) {
+      const voice = get().voice;
+      if (voice.playback.messageId !== messageId) return;
+      const nextChunks = { ...voice.ttsChunks };
+      delete nextChunks[messageId];
+      set({
+        voice: {
+          ...voice,
+          playback: { messageId: null, state: "idle", error: null },
+          ttsChunks: nextChunks,
+        },
+      });
+    },
+
+    async refreshVoiceAvailability() {
+      const supported =
+        typeof navigator !== "undefined" && Boolean(navigator.mediaDevices?.getUserMedia);
+      const secureContext = typeof window !== "undefined" ? window.isSecureContext : false;
+      let micPermission: MobileVoiceAvailability["micPermission"] = "unknown";
+      try {
+        if (typeof navigator !== "undefined" && navigator.permissions?.query) {
+          const result = await navigator.permissions.query({ name: "microphone" as PermissionName });
+          micPermission = result.state as MobileVoiceAvailability["micPermission"];
+        }
+      } catch {
+        micPermission = "unknown";
+      }
+      set({
+        voice: {
+          ...get().voice,
+          availability: { secureContext, micPermission, supported },
+        },
       });
     },
   };

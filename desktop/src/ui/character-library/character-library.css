@@ -437,6 +437,23 @@
   align-items: center;
   gap: 6px;
   color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: default;
+}
+
+.char-voice-info.char-voice-configurable {
+  cursor: pointer;
+}
+
+.char-voice-info.char-voice-configurable:hover {
+  color: var(--text-primary);
+}
+
+.char-voice-info:disabled {
+  opacity: 1;
 }
 
 /* 错误与重试 */

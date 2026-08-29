@@ -101,6 +101,45 @@ export interface HarnessActions {
   /** 删除角色卡；页面确认后才允许调用（confirm=true 固定由本方法携带）。 */
   deleteCard(cardId: string): Promise<void>;
   selectActiveCard(cardId: string): Promise<void>;
+  /** 只读拉取一张卡的完整 v3 JSON（含 avatar 与 hsr 扩展），不切视图、不写 store。 */
+  cardGet(cardId: string): Promise<import("./protocol").CardGetResult>;
+  /* —— V0.3.5 角色卡导入导出/发布/头像 —— */
+  /** 预览本地 JSON 角色卡，不落库；失败抛错。 */
+  cardPeekImportJson(path: string): Promise<import("./protocol").CardPeekImportResult>;
+  /** 导入本地 JSON 角色卡；asDuplicate=true 时名称追加「（副本）」。 */
+  cardImportJson(path: string, asDuplicate?: boolean): Promise<import("./protocol").CardImportJsonResult>;
+  /** 导出角色卡 v3 JSON 到 path；saveAvatar=true 时配套另存头像。 */
+  cardExportJson(cardId: string, path: string, saveAvatar?: boolean): Promise<import("./protocol").CardExportJsonResult>;
+  /** 发布草稿卡（draft → saved）；非 draft 幂等成功。 */
+  cardPublish(cardId: string): Promise<import("./protocol").CardPublishResult>;
+  /** 为角色卡设置头像；成功后更新 store 中该卡头像。 */
+  cardSetAvatar(cardId: string, path: string): Promise<import("./protocol").CardSetAvatarResult>;
+  /** 移除角色卡头像。 */
+  cardRemoveAvatar(cardId: string): Promise<import("./protocol").CardRemoveAvatarResult>;
+  /* —— V0.3.5 角色卡音色 —— */
+  /** 为角色卡绑定参考音频；不改变音色状态。 */
+  voiceCardBindReference(cardId: string, path: string): Promise<import("./protocol").VoiceCardBindReferenceResult>;
+  /** 为角色卡创建音色（clone/design）；成功后监听 voice.card_provision_changed 事件。
+      design 模式必填 voicePrompt；previewText 为 design 可选试听文本，
+      缺省时服务端使用固定默认文本（契约冻结 §3.2，与 _voice_provision design 路径同源）。 */
+  voiceCardCreate(
+    cardId: string,
+    mode: "clone" | "design",
+    opts?: { prefix?: string; voicePrompt?: string; previewText?: string },
+  ): Promise<import("./protocol").VoiceCardCreateResult>;
+  /** 解绑角色卡音色。 */
+  voiceCardUnbind(cardId: string): Promise<import("./protocol").VoiceCardUnbindResult>;
+  /** 用角色卡绑定音色试听；未就绪时报错。 */
+  voiceCardPreview(cardId: string, text?: string): Promise<void>;
+  /* —— V0.3.5 手机远程语音 —— */
+  /** 手机端开始 Push-to-Talk 转写会话。 */
+  voiceMobilePttStart(conversationId: string): Promise<import("./protocol").VoiceMobilePttStartResult>;
+  /** 手机端上传音频分片；seq 从 0 严格递增。 */
+  voiceMobileAudioChunk(sessionId: string, seq: number, dataBase64: string): Promise<void>;
+  /** 手机端结束 Push-to-Talk 并获取最终转写。 */
+  voiceMobilePttStop(sessionId: string): Promise<import("./protocol").VoiceMobilePttStopResult>;
+  /** 手机端中断当前 TTS 播放。 */
+  voiceMobileTtsStop(messageId: string): Promise<void>;
   /* —— V0.3.3 手机远程配对（remote.* 命令）—— */
   /** 生成一次性短期配对码，写入 store.remotePairing。 */
   issuePairingCode(): Promise<void>;

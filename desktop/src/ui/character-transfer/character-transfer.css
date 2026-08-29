@@ -1,0 +1,428 @@
+/* 角色卡导入/导出流程样式
+   使用 tokens.css 语义变量，与角色库视觉体系保持一致。 */
+
+.xfer-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5, 20px);
+}
+
+.xfer-card {
+  background: var(--bg-card, #1c212b);
+  border: 1px solid var(--separator, #2a303c);
+  border-radius: var(--radius-lg, 12px);
+  padding: var(--space-5, 20px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4, 16px);
+}
+
+.xfer-card-subtle {
+  background: var(--bg-panel, #161a21);
+}
+
+.xfer-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3, 12px);
+  flex-wrap: wrap;
+}
+
+.xfer-title {
+  margin: 0;
+  font-size: var(--text-t2-size, 16px);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.xfer-muted {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.xfer-meta {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-c1-size, 12px);
+  color: var(--text-muted);
+}
+
+/* Dropzone */
+.xfer-dropzone {
+  border: 1.5px dashed var(--separator, #2a303c);
+  border-radius: var(--radius-lg, 12px);
+  background: var(--bg-panel, #161a21);
+  padding: 48px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4, 16px);
+  text-align: center;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.xfer-dropzone.dragover {
+  border-color: var(--accent, #296ce1);
+  background: var(--accent-soft, #1b2a45);
+}
+
+.xfer-dropzone-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-md, 10px);
+  border: 1px solid var(--separator, #2a303c);
+  background: var(--bg-card, #1c212b);
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+}
+
+.xfer-dropzone-icon svg {
+  width: 26px;
+  height: 26px;
+}
+
+/* 状态标记 */
+.xfer-status-mark {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-lg, 12px);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.xfer-status-mark.ok {
+  background: color-mix(in oklch, var(--success, #22c55e) 14%, transparent);
+  color: var(--success, #22c55e);
+}
+
+.xfer-status-mark.danger {
+  background: color-mix(in oklch, var(--danger, #dc2626) 14%, transparent);
+  color: var(--danger, #dc2626);
+}
+
+.xfer-status-mark.warn {
+  background: color-mix(in oklch, var(--warning, #ca8a04) 14%, transparent);
+  color: var(--warning, #ca8a04);
+}
+
+.xfer-status-mark svg {
+  width: 26px;
+  height: 26px;
+}
+
+/* 错误块 */
+.xfer-error-block {
+  margin: 0;
+  padding: var(--space-3, 12px);
+  background: var(--bg-panel, #161a21);
+  border: 1px solid var(--separator, #2a303c);
+  border-left: 3px solid var(--danger, #dc2626);
+  border-radius: var(--radius-sm, 8px);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-c1-size, 12px);
+  color: var(--text-secondary);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 预览网格 */
+.xfer-preview-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: var(--space-5, 20px);
+}
+
+@media (max-width: 720px) {
+  .xfer-preview-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.xfer-preview-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4, 16px);
+}
+
+.xfer-preview-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4, 16px);
+}
+
+.xfer-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.xfer-stat-value {
+  font-family: var(--font-mono, monospace);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.xfer-stat-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* 扩展/报告列表 */
+.xfer-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.xfer-report-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.xfer-report-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--text-secondary);
+  max-height: 120px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.xfer-report-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* 字段 */
+.xfer-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.xfer-field label {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.xfer-input {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--separator, #2a303c);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--bg-input, #12161d);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13.5px;
+  outline: none;
+}
+
+.xfer-input:focus {
+  border-color: var(--accent, #296ce1);
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--accent, #296ce1) 20%, transparent);
+}
+
+.xfer-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.xfer-checkbox-row input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent, #296ce1);
+}
+
+/* 导出检查清单 */
+.xfer-checklist {
+  display: flex;
+  flex-direction: column;
+}
+
+.xfer-check-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--separator, #2a303c);
+  font-size: 13.5px;
+}
+
+.xfer-check-row:last-child {
+  border-bottom: 0;
+}
+
+.xfer-check-row svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.xfer-check-ok {
+  color: var(--success, #22c55e);
+}
+
+.xfer-check-warn {
+  color: var(--warning, #ca8a04);
+}
+
+.xfer-check-name {
+  min-width: 96px;
+  flex: none;
+  color: var(--text-primary);
+}
+
+.xfer-check-text {
+  color: var(--text-muted);
+}
+
+/* 保存路径 */
+.xfer-save-path {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3, 12px);
+  padding: 10px 12px;
+  border: 1px dashed var(--separator, #2a303c);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--bg-panel, #161a21);
+}
+
+.xfer-save-path svg {
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+  flex: none;
+}
+
+/* 结果卡片 */
+.xfer-result {
+  text-align: center;
+  padding: 40px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4, 16px);
+}
+
+.xfer-result-title {
+  margin: 0;
+  font-size: var(--text-t2-size, 16px);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.xfer-result-path {
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+/* 骨架 */
+.xfer-skeleton {
+  background: linear-gradient(90deg, var(--fill-hover, rgba(255,255,255,0.05)) 25%, var(--fill-active, rgba(255,255,255,0.10)) 50%, var(--fill-hover, rgba(255,255,255,0.05)) 75%);
+  background-size: 200% 100%;
+  animation: xfer-shimmer 1.6s linear infinite;
+  border-radius: var(--radius-xxs, 4px);
+  color: transparent;
+}
+
+@keyframes xfer-shimmer {
+  to { background-position: -200% 0; }
+}
+
+.xfer-skeleton-line {
+  height: 12px;
+}
+
+/* 按钮行 */
+.xfer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3, 12px);
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.xfer-actions-center {
+  justify-content: center;
+}
+
+/* 与角色库按钮类名对齐 */
+.xfer-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 6px 14px;
+  border-radius: var(--radius-sm, 8px);
+  border: 1px solid transparent;
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.xfer-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.xfer-btn-primary {
+  background: var(--accent, #296ce1);
+  color: oklch(0.14 0.008 60);
+  border-color: var(--accent, #296ce1);
+  font-weight: 600;
+}
+
+.xfer-btn-primary:hover {
+  background: var(--accent-hover, #3d7ce8);
+}
+
+.xfer-btn-secondary {
+  background: transparent;
+  color: var(--text-primary);
+  border-color: var(--separator, #2a303c);
+}
+
+.xfer-btn-secondary:hover {
+  border-color: var(--text-secondary);
+  background: var(--fill-hover, rgba(255, 255, 255, 0.05));
+}
+
+.xfer-btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border-color: transparent;
+}
+
+.xfer-btn-ghost:hover {
+  color: var(--text-primary);
+  background: var(--fill-hover, rgba(255, 255, 255, 0.05));
+}
+
+.xfer-btn-danger {
+  background: var(--danger, #dc2626);
+  color: oklch(0.98 0.005 70);
+  border-color: var(--danger, #dc2626);
+  font-weight: 600;
+}
+
+.xfer-btn-danger:hover {
+  background: color-mix(in oklch, var(--danger, #dc2626) 85%, black);
+}

@@ -1,17 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { HarnessActions } from "../../contracts/actions";
 import type { CharacterCreateViewModel } from "../../contracts/view-models";
+import type { CharacterCardState, CardGetResult } from "../../contracts/protocol";
+import type { FileFilter } from "../../services/backend";
 import { BasicInfoSection } from "./BasicInfoSection";
 import { PersonalitySection } from "./PersonalitySection";
 import { CharacterLivePreview } from "./CharacterLivePreview";
-import { AdvancedPlaceholderPanel } from "./AdvancedPlaceholderPanel";
+import { AdvancedEditorPanel } from "./AdvancedEditorPanel";
 import { SaveStatusBadge } from "./SaveStatusBadge";
 import { AlertCircleIcon, ArrowLeftIcon, SaveIcon } from "./icons";
 import {
   buildCardPayload,
   extractFormData,
+  isCardPublished,
   type CharacterFormData,
   type CreateMode,
+  type PublishStatus,
   type SaveStatus,
 } from "./types";
 import "./CharacterCreate.css";
@@ -19,6 +23,9 @@ import "./CharacterCreate.css";
 interface CharacterCreatePageProps {
   vm: CharacterCreateViewModel;
   actions: HarnessActions;
+  /** V0.3.5：Tauri 文件选择桥（头像需要真实绝对路径）；浏览器 mock 环境缺省，
+      此时退化为 HTML 文件选择（仅能拿到文件名，见 BasicInfoSection 注释）。 */
+  onPickFile?: (options?: { title?: string; filters?: FileFilter[] }) => Promise<string | null>;
 }
 
 function formatTime(d = new Date()): string {
@@ -26,9 +33,10 @@ function formatTime(d = new Date()): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-export function CharacterCreatePage({ vm, actions }: CharacterCreatePageProps) {
+export function CharacterCreatePage({ vm, actions, onPickFile }: CharacterCreatePageProps) {
   const [formData, setFormData] = useState<CharacterFormData>(() => extractFormData(vm.card));
   const [currentCardId, setCurrentCardId] = useState<string | null>(vm.cardId);
+  const [cardDetails, setCardDetails] = useState<CardGetResult | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>(() => (vm.cardId ? "saved" : "idle"));
   const [lastSavedTime, setLastSavedTime] = useState<string | null>(() =>
     vm.cardId ? formatTime() : null,
@@ -36,6 +44,8 @@ export function CharacterCreatePage({ vm, actions }: CharacterCreatePageProps) {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [nameError, setNameError] = useState<string | null>(null);
   const [mode, setMode] = useState<CreateMode>("quick");
+  const [publishStatus, setPublishStatus] = useState<PublishStatus>("idle");
+  const [publishError, setPublishError] = useState<string | null>(null);
 
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestFormDataRef = useRef(formData);
@@ -44,15 +54,41 @@ export function CharacterCreatePage({ vm, actions }: CharacterCreatePageProps) {
   currentCardIdRef.current = currentCardId;
   const isSavingRef = useRef(false);
 
-  // 当 vm.card 外部变更时水合
+  // 当 vm.card 外部变更时水合；同时拉取服务端 state/avatar 权威状态。
   useEffect(() => {
     if (vm.card) {
       setFormData(extractFormData(vm.card));
       setCurrentCardId(vm.cardId);
       setSaveStatus("saved");
       setLastSavedTime(formatTime());
+      setPublishStatus("idle");
+      setPublishError(null);
     }
   }, [vm.card, vm.cardId]);
+
+  // 拉取服务端权威状态（state/avatar）：vm 进入或本地创建 draft 后都触发。
+  useEffect(() => {
+    if (!currentCardId) {
+      setCardDetails(null);
+      return;
+    }
+    let cancelled = false;
+    actions
+      .cardGet(currentCardId)
+      .then((result: CardGetResult) => {
+        if (cancelled) return;
+        setCardDetails(result);
+      })
+      .catch(() => {
+        // 拉取失败时保持本地假设
+        setCardDetails(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentCardId, actions]);
+
+  const cardState: CharacterCardState = cardDetails?.state ?? (currentCardId ? "saved" : "draft");
 
   // 执行核心保存
   const performSave = useCallback(async (): Promise<boolean> => {
@@ -101,6 +137,31 @@ export function CharacterCreatePage({ vm, actions }: CharacterCreatePageProps) {
     }
   }, [actions, vm.card, vm.readOnly]);
 
+  // 发布流程
+  const performPublish = useCallback(async (): Promise<boolean> => {
+    const saved = await performSave();
+    if (!saved) return false;
+
+    const targetId = currentCardIdRef.current;
+    if (!targetId) return false;
+
+    setPublishStatus("publishing");
+    setPublishError(null);
+    try {
+      await actions.cardPublish(targetId);
+      // 发布成功后刷新服务端权威状态，使「完成创建」按钮立即转为「开始对话」。
+      const refreshed = await actions.cardGet(targetId);
+      setCardDetails(refreshed);
+      setPublishStatus("published");
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setPublishError(msg);
+      setPublishStatus("error");
+      return false;
+    }
+  }, [performSave, actions]);
+
   // 字段变更处理
   const handleFieldChange = useCallback(
     <K extends keyof CharacterFormData>(field: K, value: CharacterFormData[K]) => {
@@ -114,6 +175,8 @@ export function CharacterCreatePage({ vm, actions }: CharacterCreatePageProps) {
 
       setSaveStatus("unsaved");
       setSaveError(null);
+      setPublishStatus("idle");
+      setPublishError(null);
 
       // 清除前一个防抖计时器并重设
       if (autoSaveTimerRef.current) {
@@ -138,7 +201,20 @@ export function CharacterCreatePage({ vm, actions }: CharacterCreatePageProps) {
     };
   }, []);
 
-  // 手动保存/完成创建
+  // 未保存离开提示
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (saveStatus === "unsaved") {
+        e.preventDefault();
+        e.returnValue = "";
+        return "";
+      }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [saveStatus]);
+
+  // 手动保存
   const handleManualSubmit = async (e?: React.FormEvent) => {
     if (e) {
       e.preventDefault();
@@ -149,7 +225,33 @@ export function CharacterCreatePage({ vm, actions }: CharacterCreatePageProps) {
     await performSave();
   };
 
+  // 未保存变更时离开创作页需二次确认
+  const confirmLeave = useCallback(
+    (onConfirm: () => void) => {
+      if (saveStatus === "unsaved") {
+        const ok = window.confirm("有未保存的更改，确定要离开创作页吗？");
+        if (!ok) return;
+      }
+      onConfirm();
+    },
+    [saveStatus],
+  );
+
+  // 使用该角色开始对话：激活卡 → 创建新聊天 → 进入聊天视图。
+  const handleStartChat = useCallback(
+    async (cardId: string | null) => {
+      if (!cardId) return;
+      confirmLeave(async () => {
+        await actions.selectActiveCard(cardId);
+        await actions.createConversation();
+        actions.openChat();
+      });
+    },
+    [actions, confirmLeave],
+  );
+
   const isEditingExisting = Boolean(vm.cardId || currentCardId);
+  const published = isCardPublished(cardState);
 
   return (
     <div className="char-create-root" data-testid="character-create-page">
@@ -159,7 +261,7 @@ export function CharacterCreatePage({ vm, actions }: CharacterCreatePageProps) {
           <button
             type="button"
             className="char-create-crumbs-link"
-            onClick={() => actions.openCharacterLibrary()}
+            onClick={() => confirmLeave(() => actions.openCharacterLibrary())}
             aria-label="返回角色库"
           >
             <ArrowLeftIcon />
@@ -206,7 +308,7 @@ export function CharacterCreatePage({ vm, actions }: CharacterCreatePageProps) {
           <button
             type="button"
             className="char-btn char-btn-outline"
-            onClick={() => actions.openCharacterLibrary()}
+            onClick={() => confirmLeave(() => actions.openCharacterLibrary())}
           >
             返回角色库
           </button>
@@ -272,11 +374,24 @@ export function CharacterCreatePage({ vm, actions }: CharacterCreatePageProps) {
               style={{ display: "flex", flexDirection: "column", gap: "20px" }}
             >
               <BasicInfoSection
+                cardId={currentCardId}
                 formData={formData}
+                avatar={cardDetails?.avatar}
                 nameError={nameError}
                 readOnly={vm.readOnly}
+                actions={actions}
+                onPickFile={onPickFile}
                 onFieldChange={handleFieldChange}
                 onClearNameError={() => setNameError(null)}
+                onAvatarChange={async () => {
+                  if (!currentCardId) return;
+                  try {
+                    const result = await actions.cardGet(currentCardId);
+                    setCardDetails(result);
+                  } catch {
+                    // 失败保留旧头像
+                  }
+                }}
               />
 
               <PersonalitySection
@@ -296,23 +411,50 @@ export function CharacterCreatePage({ vm, actions }: CharacterCreatePageProps) {
                   <SaveIcon />
                   保存草稿
                 </button>
-                <button
-                  type="submit"
-                  className="char-btn char-btn-primary"
-                  disabled={vm.readOnly || saveStatus === "saving"}
-                  data-testid="btn-submit"
-                >
-                  完成创建
-                </button>
+                {published ? (
+                  <button
+                    type="button"
+                    className="char-btn char-btn-primary"
+                    onClick={() => void handleStartChat(currentCardId)}
+                    disabled={!currentCardId}
+                    data-testid="btn-start-chat"
+                  >
+                    使用该角色开始对话
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="char-btn char-btn-primary"
+                    onClick={() => void performPublish()}
+                    disabled={vm.readOnly || saveStatus === "saving" || publishStatus === "publishing"}
+                    data-testid="btn-submit"
+                  >
+                    {publishStatus === "publishing" ? "发布中…" : "完成创建"}
+                  </button>
+                )}
               </div>
             </form>
 
             {/* 右侧实时预览 */}
-            <CharacterLivePreview formData={formData} readOnly={vm.readOnly} />
+            <CharacterLivePreview
+              cardId={currentCardId}
+              formData={formData}
+              avatar={cardDetails?.avatar}
+              readOnly={vm.readOnly}
+              cardState={cardState}
+              publishStatus={publishStatus}
+              publishError={publishError}
+              actions={actions}
+              onPublish={performPublish}
+              onStartChat={() => void handleStartChat(currentCardId)}
+            />
           </div>
         ) : (
-          <AdvancedPlaceholderPanel
+          <AdvancedEditorPanel
             formData={formData}
+            readOnly={vm.readOnly}
+            cardJson={vm.card}
+            onFieldChange={handleFieldChange}
             onReturnToQuick={() => setMode("quick")}
           />
         )}

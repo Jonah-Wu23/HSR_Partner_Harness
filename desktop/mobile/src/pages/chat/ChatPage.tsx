@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { ActiveTask, ConversationMode, Message } from "@shared/contracts/protocol";
+import type { ActiveTask, ConversationMode, Message, PendingApproval } from "@shared/contracts/protocol";
 import { ApprovalCard } from "../../components/cards/ApprovalCard";
-import { ArrowDownIcon, BackIcon } from "../../components/cards/icons";
+import { ArrowDownIcon, BackIcon, MicIcon, StopIcon } from "../../components/cards/icons";
 import { DelegationCard, type DelegationStatus } from "../../components/cards/DelegationCard";
 import { ToolCard } from "../../components/cards/ToolCard";
 import { useMobileStore } from "../../lib/mobileStore";
 import { navigate } from "../../lib/router";
+import { useVoiceCapture } from "../../lib/useVoiceCapture";
+import { useVoicePlayback } from "../../lib/voicePlayback";
 import { ChatComposer, type ChatComposerTarget } from "./ChatComposer";
 import { MessageBubble } from "./MessageBubble";
 import { useChatTimeline, type TimelineItem } from "./useChatTimeline";
@@ -42,13 +44,15 @@ function isDelegationMessage(message: Message): boolean {
 }
 
 /**
- * V0.3.3 手机端聊天页：
+ * V0.3.5 手机端聊天页：
  * - 消息时间线与结构化工具卡片混合流（虚拟滚动优化）
  * - 消息来源清晰可区分，思考段默认折叠可展开
  * - 「发给角色」普通消息与「交给助手」委派输入明确区分（V0.3.4）
  * - 会话模式切换控件：委派仅协作模式可用，前置禁用并说明（V0.3.4）
- * - 等待审批只读卡片（严禁批准/拒绝按钮，标注「请在电脑端处理」）
- * - 全程静音，零 emoji，触控目标 ≥44px
+ * - 审批卡可操作：批准/拒绝 + 双端仲裁收敛（V0.3.5）
+ * - 手机语音输入：按住说话 / 自动检测 + 转写/TTS 状态反馈（V0.3.5）
+ * - 全程仅角色自然语言回复可朗读；助手/工具/思考/系统消息静音
+ * - 零 emoji，触控目标 ≥44px
  */
 export function ChatPage({ conversationId }: ChatPageProps) {
   const conversation = useMobileStore(
@@ -58,10 +62,17 @@ export function ChatPage({ conversationId }: ChatPageProps) {
   const submitDelegation = useMobileStore((state) => state.submitDelegation);
   const submitMessage = useMobileStore((state) => state.submitMessage);
   const setConversationMode = useMobileStore((state) => state.setConversationMode);
+  const resolveApproval = useMobileStore((state) => state.resolveApproval);
+  const stopVoicePlayback = useMobileStore((state) => state.stopVoicePlayback);
   const pair = useMobileStore((state) => state.pair);
   const activeTask = useMobileStore((state) => state.activeTask);
   const allApprovals = useMobileStore((state) => state.approvals);
+  const allResolved = useMobileStore((state) => state.resolvedApprovals);
+
   const approvals = (allApprovals ?? []).filter(
+    (a) => a.conversation_id === conversationId,
+  );
+  const resolvedApprovals = (allResolved ?? []).filter(
     (a) => a.conversation_id === conversationId,
   );
 
@@ -70,7 +81,11 @@ export function ChatPage({ conversationId }: ChatPageProps) {
   const [target, setTarget] = useState<ChatComposerTarget>("character");
   const [modeSwitching, setModeSwitching] = useState(false);
   const [modeError, setModeError] = useState<string | null>(null);
+  const [resolvingApprovalIds, setResolvingApprovalIds] = useState<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const voice = useVoiceCapture(conversationId);
+  const { playingMessageId } = useVoicePlayback(conversationId);
 
   // 装载会话
   useEffect(() => {
@@ -147,6 +162,22 @@ export function ChatPage({ conversationId }: ChatPageProps) {
   const handleSubmit = (text: string) =>
     target === "assistant" ? submitDelegation(text) : submitMessage(text);
 
+  const handleResolve = async (approvalId: string, decision: string) => {
+    setResolvingApprovalIds((prev) => new Set(prev).add(approvalId));
+    try {
+      await resolveApproval(approvalId, decision);
+    } catch {
+      // 错误（含 approval_already_resolved）已由 store 写入 resolvedApprovals，
+      // 本端只需要让按钮退出提交中状态。
+    } finally {
+      setResolvingApprovalIds((prev) => {
+        const next = new Set(prev);
+        next.delete(approvalId);
+        return next;
+      });
+    }
+  };
+
   const characterName = pair?.character?.name || "角色";
 
   const renderTimelineItem = (item: TimelineItem, key?: string) => {
@@ -165,8 +196,21 @@ export function ChatPage({ conversationId }: ChatPageProps) {
         />
       );
     }
-    return <MessageBubble key={key ?? item.id} message={message} />;
+    return (
+      <MessageBubble
+        key={key ?? item.id}
+        message={message}
+        playingMessageId={playingMessageId}
+        onStopPlayback={() => {
+          if (playingMessageId) {
+            void stopVoicePlayback(playingMessageId);
+          }
+        }}
+      />
+    );
   };
+
+  const showVoicePanel = voice.mode !== "off";
 
   return (
     <main className="mobile-chat-container" data-testid="chat-page">
@@ -197,14 +241,39 @@ export function ChatPage({ conversationId }: ChatPageProps) {
         </div>
       ) : null}
 
-      {/* 等待审批只读卡片区 */}
-      {approvals.length > 0 ? (
-        <section className="mobile-chat-approvals" aria-label="待审批操作">
+      {/* 审批卡片区：待审批 + 已决收敛 */}
+      {approvals.length > 0 || resolvedApprovals.length > 0 ? (
+        <section className="mobile-chat-approvals" aria-label="审批操作">
           {approvals.map((approval) => (
             <ApprovalCard
               key={approval.approval_id}
               approval={approval}
               conversationTitle={conversation?.title}
+              resolving={resolvingApprovalIds.has(approval.approval_id)}
+              onApprove={() => void handleResolve(approval.approval_id, "allow")}
+              onReject={() => void handleResolve(approval.approval_id, "deny")}
+            />
+          ))}
+          {resolvedApprovals.map((resolved) => (
+            <ApprovalCard
+              key={resolved.approval_id}
+              approval={{
+                approval_id: resolved.approval_id,
+                conversation_id: resolved.conversation_id ?? conversationId,
+                operation: resolved.operation ?? {
+                  tool_kind: "shell",
+                  command: null,
+                  paths: [],
+                  patch_file_count: null,
+                  summary: "",
+                },
+                reason: resolved.reason ?? "",
+                task_id: resolved.task_id,
+              } as PendingApproval}
+              conversationTitle={conversation?.title}
+              status="resolved"
+              decision={resolved.decision}
+              resolvedBy={resolved.resolved_by}
             />
           ))}
         </section>
@@ -264,7 +333,7 @@ export function ChatPage({ conversationId }: ChatPageProps) {
         </button>
       ) : null}
 
-      {/* 输入区：会话模式切换 + 发送目标切换 + 输入框（V0.3.4 缺陷 3/4） */}
+      {/* 输入区：会话模式切换 + 发送目标切换 + 语音入口 + 输入框 */}
       <footer className="mobile-composer" data-testid="chat-composer-area">
         <div className="mobile-chat-controls">
           <div className="mobile-segmented" role="group" aria-label="会话模式切换">
@@ -315,6 +384,143 @@ export function ChatPage({ conversationId }: ChatPageProps) {
             模式切换失败：{modeError}
           </p>
         ) : null}
+
+        {/* V0.3.5 语音输入区 */}
+        <div className="mobile-voice-bar" data-testid="voice-bar">
+          {!voice.usable ? (
+            <div className="mobile-voice-disabled" role="note" data-testid="voice-disabled-reason">
+              <span className="mobile-voice-disabled-icon" aria-hidden="true">
+                <MicIcon />
+              </span>
+              <span className="mobile-voice-disabled-text">
+                语音不可用：{voice.disabledReason}
+              </span>
+            </div>
+          ) : showVoicePanel ? (
+            <div className="mobile-voice-panel">
+              <div className="mobile-voice-mode-switch" role="group" aria-label="语音输入模式">
+                <button
+                  type="button"
+                  className={`mobile-voice-mode-btn${voice.mode === "hold" ? " active" : ""}`}
+                  aria-pressed={voice.mode === "hold"}
+                  data-testid="voice-mode-hold"
+                  onClick={() => {
+                    if (voice.mode === "auto") {
+                      void voice.stopListening().then(() => voice.activateHold());
+                    } else {
+                      voice.activateHold();
+                    }
+                  }}
+                >
+                  按住说话
+                </button>
+                <button
+                  type="button"
+                  className={`mobile-voice-mode-btn${voice.mode === "auto" ? " active" : ""}`}
+                  aria-pressed={voice.mode === "auto"}
+                  data-testid="voice-mode-auto"
+                  onClick={() => {
+                    if (voice.mode === "hold") {
+                      void voice.stopListening().then(() => voice.toggleAuto());
+                    } else {
+                      voice.toggleAuto();
+                    }
+                  }}
+                >
+                  自动检测
+                </button>
+              </div>
+
+              {voice.mode === "hold" ? (
+                <button
+                  type="button"
+                  className="mobile-voice-hold-btn"
+                  data-testid="voice-hold-btn"
+                  aria-label="按住说话"
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    voice.activateHold();
+                  }}
+                  onPointerUp={(e) => {
+                    e.preventDefault();
+                    voice.deactivateHold();
+                  }}
+                  onPointerLeave={(e) => {
+                    e.preventDefault();
+                    voice.deactivateHold();
+                  }}
+                  onPointerCancel={(e) => {
+                    e.preventDefault();
+                    voice.deactivateHold();
+                  }}
+                >
+                  <MicIcon />
+                  {voice.captureState === "recording" ? "聆听中…" : "按住说话"}
+                </button>
+              ) : (
+                <div className="mobile-voice-auto">
+                  <span className="mobile-voice-listening">
+                    <span className="mobile-voice-listening-dot" aria-hidden="true" />
+                    {voice.captureState === "recording" ? "聆听中，检测到静音自动停止" : "准备中…"}
+                  </span>
+                  <button
+                    type="button"
+                    className="mobile-voice-stop-btn"
+                    data-testid="voice-stop-btn"
+                    onClick={() => voice.stopListening()}
+                    aria-label="停止语音输入"
+                  >
+                    <StopIcon />
+                    停止
+                  </button>
+                </div>
+              )}
+
+              {voice.transcriptText ? (
+                <p className="mobile-voice-transcript" data-testid="voice-transcript">
+                  {voice.transcriptFinal ? "转写完成" : "转写中"}：{voice.transcriptText}
+                </p>
+              ) : null}
+
+              {voice.captureError ? (
+                <div className="mobile-voice-error" role="alert" data-testid="voice-capture-error">
+                  <span>语音失败：{voice.captureError}</span>
+                  <button
+                    type="button"
+                    className="mobile-voice-retry-btn"
+                    data-testid="voice-retry-btn"
+                    onClick={() => (voice.mode === "hold" ? voice.activateHold() : voice.toggleAuto())}
+                  >
+                    重试
+                  </button>
+                </div>
+              ) : null}
+
+              <button
+                type="button"
+                className="mobile-voice-close-btn"
+                data-testid="voice-close-btn"
+                onClick={() => voice.stopListening()}
+              >
+                关闭语音
+              </button>
+            </div>
+          ) : (
+            <div className="mobile-voice-trigger-row">
+              <button
+                type="button"
+                className="mobile-voice-trigger-btn"
+                data-testid="voice-trigger-btn"
+                onClick={() => voice.toggleAuto()}
+                aria-label="语音输入"
+              >
+                <MicIcon />
+                <span>语音</span>
+              </button>
+            </div>
+          )}
+        </div>
+
         <ChatComposer
           target={target}
           disabled={assistantBlocked}
@@ -327,4 +533,3 @@ export function ChatPage({ conversationId }: ChatPageProps) {
     </main>
   );
 }
-

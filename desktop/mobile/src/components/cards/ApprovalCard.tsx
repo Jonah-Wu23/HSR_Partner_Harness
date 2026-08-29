@@ -4,6 +4,14 @@ import { ShieldIcon } from "./icons";
 export interface ApprovalCardProps {
   approval: PendingApproval;
   conversationTitle?: string;
+  /** V0.3.5：提交中状态（点击后等待服务器/事件收敛）。 */
+  resolving?: boolean;
+  onApprove?: () => void;
+  onReject?: () => void;
+  /** V0.3.5：已决状态展示。 */
+  status?: "pending" | "resolved";
+  decision?: string;
+  resolvedBy?: string;
 }
 
 const TOOL_KIND_LABELS: Record<string, string> = {
@@ -13,20 +21,45 @@ const TOOL_KIND_LABELS: Record<string, string> = {
   patch: "代码补丁",
 };
 
+const DECISION_LABELS: Record<string, string> = {
+  // 后端真实决策值（core/contracts.py ApprovalDecision）：allow / allow_for_conversation / deny。
+  allow: "已批准",
+  allow_for_conversation: "已批准（本会话）",
+  deny: "已拒绝",
+  // 兜底：approval.resolved 事件缺 decision 字段时 store 层的默认值。
+  approve: "已批准",
+};
+
+const RESOLVED_BY_LABELS: Record<string, string> = {
+  desktop: "桌面端",
+  mobile: "手机端",
+  remote: "手机端",
+};
+
 /**
- * V0.3.3 手机端等待审批只读卡片：
- * 审批在手机端只读可见（展示命令、路径、摘要、理由）；
- * 明确标注「请在电脑端处理」——本阶段手机端不应答，UI 中严禁出现批准/拒绝按钮。
+ * V0.3.5 手机端审批操作卡片：
+ * 展示命令、路径、摘要、理由，并提供批准/拒绝按钮。
+ * 审批被另一端处理后由 store 收敛，本组件只负责渲染与回调。
  */
-export function ApprovalCard({ approval, conversationTitle }: ApprovalCardProps) {
+export function ApprovalCard({
+  approval,
+  conversationTitle,
+  resolving = false,
+  onApprove,
+  onReject,
+  status = "pending",
+  decision = "approve",
+  resolvedBy = "remote",
+}: ApprovalCardProps) {
   const { operation, reason } = approval;
   const kindLabel = TOOL_KIND_LABELS[operation.tool_kind] || operation.tool_kind;
+  const isResolved = status === "resolved";
 
   return (
     <section
-      className="mobile-approval-card"
+      className={`mobile-approval-card${isResolved ? " mobile-approval-resolved" : ""}`}
       data-testid="approval-card"
-      aria-label="等待审批操作（只读）"
+      aria-label={isResolved ? "已决审批操作" : "等待审批操作"}
     >
       <header className="mobile-approval-head">
         <div className="mobile-approval-title-group">
@@ -34,12 +67,14 @@ export function ApprovalCard({ approval, conversationTitle }: ApprovalCardProps)
             <ShieldIcon />
           </span>
           <span className="mobile-approval-title">
-            待审批操作 · {kindLabel}
+            {isResolved ? "已决操作" : "待审批操作"} · {kindLabel}
           </span>
         </div>
-        <span className="mobile-approval-readonly-badge">
-          请在电脑端处理
-        </span>
+        {isResolved ? (
+          <span className="mobile-approval-status-badge" data-testid="approval-status">
+            {DECISION_LABELS[decision] || decision}
+          </span>
+        ) : null}
       </header>
 
       <div className="mobile-approval-body">
@@ -88,9 +123,32 @@ export function ApprovalCard({ approval, conversationTitle }: ApprovalCardProps)
       </div>
 
       <footer className="mobile-approval-footer">
-        <span className="mobile-approval-hint">
-          手机端当前仅支持查看审批详情。为确保操作安全，请在电脑端完成批准或否决。
-        </span>
+        {isResolved ? (
+          <p className="mobile-approval-resolved-text" data-testid="approval-resolved-by">
+            由 {RESOLVED_BY_LABELS[resolvedBy] || resolvedBy} {DECISION_LABELS[decision] || decision}
+          </p>
+        ) : (
+          <div className="mobile-approval-actions">
+            <button
+              type="button"
+              className="mobile-approval-reject"
+              onClick={onReject}
+              disabled={resolving || !onReject}
+              data-testid="approval-reject"
+            >
+              {resolving ? "提交中…" : "拒绝"}
+            </button>
+            <button
+              type="button"
+              className="mobile-approval-approve"
+              onClick={onApprove}
+              disabled={resolving || !onApprove}
+              data-testid="approval-approve"
+            >
+              {resolving ? "提交中…" : "批准"}
+            </button>
+          </div>
+        )}
       </footer>
     </section>
   );

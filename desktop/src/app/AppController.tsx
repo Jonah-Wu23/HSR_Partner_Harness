@@ -72,5 +72,5 @@ export function AppController({
 
   const viewModel = presentAppShell(storeState);
 
-  return <AppShell vm={viewModel} actions={actions} />;
+  return <AppShell vm={viewModel} actions={actions} backend={backend} />;
 }
