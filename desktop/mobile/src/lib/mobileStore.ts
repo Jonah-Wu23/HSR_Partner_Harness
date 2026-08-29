@@ -41,7 +41,7 @@ export interface MobileVoiceTranscript {
 
 export interface MobileVoicePlayback {
   messageId: string | null;
-  state: "idle" | "buffering" | "playing" | "stopping";
+  state: "idle" | "buffering" | "playing" | "stopping" | "failed";
   error: string | null;
 }
 
