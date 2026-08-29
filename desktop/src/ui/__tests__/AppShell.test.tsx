@@ -565,7 +565,9 @@ describe("AppShell QueueStrip 接线（V0.2 M4）", () => {
     );
     await waitFor(() =>
       expect(screen.getByTestId("character-voice-select")).toHaveValue("card-draft-001"),
-    );
+    );
+    // AppShell 必须把 actions 传入 SettingsCenter，否则音色区会显示「服务未接入」块
+    expect(screen.queryByTestId("environment-unavailable-block")).not.toBeInTheDocument();
 
     // Esc 关闭后从顶栏齿轮重新打开：预选卡不得残留
     fireEvent.keyDown(window, { key: "Escape" });

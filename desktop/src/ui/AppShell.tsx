@@ -301,6 +301,7 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
         voice={vm.settings.voice}
         characterVoice={vm.settings.characterVoice}
         voiceCardFocus={voiceCardFocus}
+        actions={actions}
         onPickFile={backend ? (options) => backend.pickFile(options) : undefined}
         modelTest={modelTest}
         voicePreview={voicePreview}

@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HarnessActions } from "../../../contracts/actions";
 import type { CardImportPreviewPayload } from "../../../contracts/protocol";
@@ -304,5 +305,27 @@ describe("CharacterImportFlow", () => {
       expect(screen.getByText(/错误 1 项/)).toBeInTheDocument();
       expect(screen.getByText(/spec_version 缺失/)).toBeInTheDocument();
     });
+  });
+
+  it("StrictMode 双挂载后异步阶段仍能进入预览（mountedRef 守卫回归）", async () => {
+    const actions = createMockActions();
+    const backend = createMockBackend("C:/Cards/bai.json");
+    render(
+      <StrictMode>
+        <CharacterImportFlow backend={backend} actions={actions} onClose={vi.fn()} />
+      </StrictMode>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
+
+    // StrictMode 开发构建会 mount→cleanup→再 mount；mountedRef 的 effect 体
+    // 若不在重挂载时重新置 true，这里会永远停在「正在解析…」。
+    await waitFor(() => {
+      expect(actions.cardPeekImportJson).toHaveBeenCalledWith("C:/Cards/bai.json");
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/白厄（3.4前）/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/正在解析/)).not.toBeInTheDocument();
   });
 });

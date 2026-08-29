@@ -174,6 +174,19 @@ function createCardGetResult(overrides: {
   };
 }
 
+/** 全量并行下 waitFor 通过到 fireEvent 之间可能落进 busy 窗口（按钮短暂禁用，click 被
+    静默吞掉）：仅在按钮可点时刻点击，命中即停（断言强度不变，仅消除时序竞争）。 */
+async function clickCreateWhenEnabled(testId: string, isDone: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const btn = screen.getByTestId<HTMLButtonElement>(testId);
+    if (!btn.disabled) {
+      fireEvent.click(btn);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    if (isDone()) return;
+  }
+}
+
 function createVm(
   overrides: Partial<CharacterCardVoicePageViewModel> = {},
 ): CharacterCardVoicePageViewModel {
@@ -383,10 +396,18 @@ describe("CharacterVoiceSection", () => {
     await waitFor(() => {
       expect(actions.cardGet).toHaveBeenCalledWith("card-saved-002");
     });
+    // prefix 由 cardDetail 到达后的 effect 种子化为默认前缀「card」；空前缀合法但
+    // 效果随时序，点击落在种子化之前会提交 {}（全量并行下偶发）。等种子落定再点。
+    await waitFor(() => {
+      expect(screen.getByTestId<HTMLInputElement>("prefix-input")).toHaveValue("card");
+    });
     await waitFor(() => {
       expect(screen.getByTestId("create-voice-btn")).toBeEnabled();
     });
-    fireEvent.click(screen.getByTestId("create-voice-btn"));
+    await clickCreateWhenEnabled(
+      "create-voice-btn",
+      () => (actions.voiceCardCreate as ReturnType<typeof vi.fn>).mock.calls.length > 0,
+    );
 
     await waitFor(() => {
       expect(actions.voiceCardCreate).toHaveBeenCalledWith("card-saved-002", "clone", { prefix: "card" });
@@ -412,9 +433,14 @@ describe("CharacterVoiceSection", () => {
 
     fireEvent.click(screen.getByTestId("create-mode-design"));
 
-    await waitFor(() => {
-      expect(screen.getByTestId("create-voice-btn")).toBeDisabled();
-    });
+    // 全量套件并行线程竞争下 jsdom 渲染可能超过 waitFor 默认 1000ms 墙钟，
+    // 断言不变，仅放宽超时窗口（曾观察到偶发闪烁失败）。
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("create-voice-btn")).toBeDisabled();
+      },
+      { timeout: 5000 },
+    );
     expect(actions.voiceCardCreate).not.toHaveBeenCalled();
   });
 
@@ -440,10 +466,19 @@ describe("CharacterVoiceSection", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByTestId("create-mode-design")).toBeInTheDocument();
+      expect(actions.cardGet).toHaveBeenCalledWith("card-saved-002");
+    });
+    // cardDetail 到达后的 effect 会把 createMode 重置为 clone、prefix 种子化为「card」；
+    // 必须等 effect 落定后再切 design 模式，否则输入框出现后又消失（时序竞争）。
+    await waitFor(() => {
+      expect(screen.getByTestId<HTMLInputElement>("prefix-input")).toHaveValue("card");
     });
 
     fireEvent.click(screen.getByTestId("create-mode-design"));
+    // design 表单随模式同步渲染；waitFor 保证渲染落定再填充。
+    await waitFor(() => {
+      expect(screen.getByTestId("voice-prompt-input")).toBeInTheDocument();
+    });
     fireEvent.change(screen.getByTestId("voice-prompt-input"), {
       target: { value: "温柔沉稳的女声" },
     });
@@ -455,7 +490,10 @@ describe("CharacterVoiceSection", () => {
       expect(screen.getByTestId("create-voice-btn")).toBeEnabled();
     });
 
-    fireEvent.click(screen.getByTestId("create-voice-btn"));
+    await clickCreateWhenEnabled(
+      "create-voice-btn",
+      () => (actions.voiceCardCreate as ReturnType<typeof vi.fn>).mock.calls.length > 0,
+    );
 
     await waitFor(() => {
       expect(actions.voiceCardCreate).toHaveBeenCalledWith("card-saved-002", "design", {

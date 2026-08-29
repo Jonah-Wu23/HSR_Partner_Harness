@@ -54,9 +54,12 @@ export function CharacterImportFlow({
   const [phase, setPhase] = useState<ImportPhase>({ kind: "idle" });
   const [asDuplicate, setAsDuplicate] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  // StrictMode 开发模式会 mount→cleanup→再 mount：effect 体必须重新置 true，
+  // 否则 cleanup 后 mountedRef 永久 false，异步阶段的 setPhase 全被守卫吞掉。
   const mountedRef = useRef(true);
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
       mountedRef.current = false;
     };
