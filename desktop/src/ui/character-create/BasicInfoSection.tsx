@@ -303,12 +303,13 @@ export function BasicInfoSection({
     };
   }, []);
 
-  // 预览图 src 经原生属性赋值（不经 HTML 解释）；JSX 不携带 src 表达式，
-  // CodeQL js/xss-through-dom 的污点流在此结构下真实断开。
+  // 预览图 src 经原生属性赋值。写入 img.src（HTML 解释上下文）前断言
+  // 字符串不含 HTML meta 字符（" & < >）：blob: object URL 恒通过；
+  // 若未来有其它受控路径（如 data:text/html）会被此检查拦截。
   useEffect(() => {
     const img = previewImgRef.current;
-    if (img && displayedAvatar) {
-      img.src = displayedAvatar; // 恒为 createObjectURL 产物（blob:），见上方统一转换
+    if (img && displayedAvatar && !/["'&<>]/.test(displayedAvatar)) {
+      img.src = displayedAvatar;
     }
   }, [displayedAvatar]);
 
