@@ -2625,9 +2625,11 @@ class DesktopApplicationService:
                         url=audio_url,
                     )
                 else:
+                    # 真实探针（2026-08-24）：preview_text 少于 15 字符会被
+                    # DashScope 以 InvalidParameter 拒绝，默认文本须 ≥15 字符。
                     preview_text = (
                         str(params.get("preview_text") or "").strip()
-                        or "你好，很高兴认识你。"
+                        or "你好，很高兴在这里遇见你，请多多关照。"
                     )
                     result = await asyncio.to_thread(
                         client.create_designed_voice,
