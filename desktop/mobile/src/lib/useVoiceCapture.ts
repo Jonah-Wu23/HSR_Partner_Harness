@@ -85,11 +85,16 @@ export function useVoiceCapture(conversationId: string): VoiceCaptureStatus {
     engineRef.current = null;
   }, []);
 
-  const stopSession = useCallback(async () => {
+  const stopSession = useCallback(async (explicitSessionId?: string) => {
     if (stoppingRef.current) return;
     stoppingRef.current = true;
     stopEngine();
-    if (capture.sessionId) {
+    // 读取 store 最新 sessionId，而不是本次渲染闭包捕获的旧值——
+    // startVoiceCapture 刚成功但尚未触发重渲染时，闭包值可能是 null，
+    // 会导致服务端会话不被关闭、重试收到 voice_session_exists。
+    const sessionId =
+      explicitSessionId ?? useMobileStore.getState().voice.capture.sessionId;
+    if (sessionId) {
       try {
         await stopVoiceCapture();
       } catch {
@@ -98,57 +103,63 @@ export function useVoiceCapture(conversationId: string): VoiceCaptureStatus {
     }
     setMode("off");
     stoppingRef.current = false;
-  }, [capture.sessionId, stopEngine, stopVoiceCapture]);
+  }, [stopEngine, stopVoiceCapture]);
 
-  const startSession = useCallback(async () => {
-    if (!usable || capture.state !== "idle") return;
-    try {
-      const result = await startVoiceCapture(conversationId);
-      const sessionId = result?.session_id;
-      if (!sessionId) {
-        throw new Error("服务端未返回语音会话 ID");
+  const startSession = useCallback(
+    async (targetMode: VoiceInputMode) => {
+      if (!usable || capture.state !== "idle") return;
+      let sessionId: string | null = null;
+      try {
+        const result = await startVoiceCapture(conversationId);
+        sessionId = result?.session_id ?? null;
+        if (!sessionId) {
+          throw new Error("服务端未返回语音会话 ID");
+        }
+        // 服务端会话建立后再取麦克风，避免无意义采集
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        await refreshVoiceAvailability();
+
+        const engine = createVoiceCaptureEngine({
+          onChunk: async (seq, base64) => {
+            await sendAudioChunk(seq, base64);
+          },
+          onSilence: () => {
+            // 自动检测模式下静音触发停止
+            void stopSession();
+          },
+          onError: (err) => {
+            // eslint-disable-next-line no-console
+            console.error("语音采集引擎错误", err);
+            void stopSession();
+          },
+          // 用本次调用显式传入的目标模式，而不是可能尚未更新的 React state
+          // （Codex P1：setMode 之后紧接 startSession 仍闭包捕获旧 mode）。
+          enableSilenceDetection: targetMode === "auto",
+        });
+        engineRef.current = engine;
+        await engine.start(stream);
+      } catch (err) {
+        await refreshVoiceAvailability();
+        // 服务端会话可能已建立（getUserMedia/引擎失败）：显式携带刚返回的
+        // sessionId 通知服务端关闭，不复位会泄漏直到 watchdog 超时。
+        await stopSession(sessionId ?? undefined);
       }
-      // 服务端会话建立后再取麦克风，避免无意义采集
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      await refreshVoiceAvailability();
-
-      const engine = createVoiceCaptureEngine({
-        onChunk: async (seq, base64) => {
-          await sendAudioChunk(seq, base64);
-        },
-        onSilence: () => {
-          // 自动检测模式下静音触发停止
-          void stopSession();
-        },
-        onError: (err) => {
-          // eslint-disable-next-line no-console
-          console.error("语音采集引擎错误", err);
-          void stopSession();
-        },
-        enableSilenceDetection: mode === "auto",
-      });
-      engineRef.current = engine;
-      await engine.start(stream);
-    } catch (err) {
-      await refreshVoiceAvailability();
-      // startVoiceCapture 已经把错误写进 store；采集引擎错误需要显式 stopSession 复位
-      await stopSession();
-    }
-  }, [
-    usable,
-    capture.state,
-    conversationId,
-    startVoiceCapture,
-    sendAudioChunk,
-    stopSession,
-    refreshVoiceAvailability,
-    mode,
-  ]);
+    },
+    [
+      usable,
+      capture.state,
+      conversationId,
+      startVoiceCapture,
+      sendAudioChunk,
+      stopSession,
+      refreshVoiceAvailability,
+    ],
+  );
 
   const activateHold = useCallback(() => {
     if (!usable) return;
     setMode("hold");
-    void startSession();
+    void startSession("hold");
   }, [usable, startSession]);
 
   const deactivateHold = useCallback(() => {
@@ -163,7 +174,7 @@ export function useVoiceCapture(conversationId: string): VoiceCaptureStatus {
       return;
     }
     setMode("auto");
-    void startSession();
+    void startSession("auto");
   }, [usable, mode, startSession, stopSession]);
 
   const stopListening = useCallback(async () => {

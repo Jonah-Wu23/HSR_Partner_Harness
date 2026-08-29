@@ -116,11 +116,26 @@ async def test_builtin_cards_are_read_only(service) -> None:
         ("card.archive", {"card_id": builtin_id}),
         ("card.delete", {"card_id": builtin_id, "confirm": True}),
         ("card.select_active", {"card_id": builtin_id}),
-        ("card.duplicate", {"card_id": builtin_id}),
     ]:
         with pytest.raises(ServiceError) as excinfo:
             await service.handle_command(command("1", method, **params))
         assert excinfo.value.code == "card_read_only", method
+
+
+async def test_builtin_card_duplicate_creates_editable_copy(service) -> None:
+    """V0.3.5 Codex 复核：导出流程建议「先复制再导出」，内置卡复制必须真实可用。"""
+    result = await service.handle_command(
+        command("1", "card.duplicate", card_id="builtin:phainon")
+    )
+    assert result["card_id"]
+    assert "副本" in result["name"]
+    fetched = await service.handle_command(
+        command("2", "card.get", card_id=result["card_id"])
+    )
+    # 副本是可编辑的 imported 卡，含内置角色人设来源
+    assert fetched["read_only"] is False
+    assert fetched["state"] == "imported"
+    assert "内置角色" in fetched["card"]["data"]["creator_notes"]
 
 
 async def test_card_get_builtin_returns_readonly_card(service) -> None:

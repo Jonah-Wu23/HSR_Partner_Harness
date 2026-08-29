@@ -38,7 +38,10 @@ from pair_harness.character_cards.codec import (
 )
 from pair_harness.character_cards.models import CharacterCard
 from pair_harness.character_cards.repository import CharacterCardRepository
-from pair_harness.character_cards.assets import CharacterAssetService
+from pair_harness.character_cards.assets import (
+    CharacterAssetError,
+    CharacterAssetService,
+)
 from pair_harness.character_cards.states import CharacterVoiceState
 from pair_harness.core.character_prompt_assembler import AssembledPrompt, assemble_character_prompt
 from pair_harness.core.context import ExecutionContext, assert_single_assistant_markdown
@@ -2059,8 +2062,12 @@ class DesktopApplicationService:
             import base64
 
             data, mime = self.asset_service.get_asset(hsr.avatar_asset.asset_id)
-        except Exception:  # noqa: BLE001 - 资产缺失时如实返回 null，不阻断卡读取
-            return None
+        except CharacterAssetError as exc:
+            # 卡 JSON 明确引用了头像但文件/记录损坏：如实失败（Let It Fail），
+            # 不能合成 avatar: null 让界面误以为角色没有头像。
+            raise ServiceError(
+                f"头像资产读取失败：{exc}", code="card_avatar_missing"
+            ) from exc
         return {
             "mime_type": mime,
             "data_base64": base64.b64encode(data).decode("ascii"),
@@ -2164,14 +2171,61 @@ class DesktopApplicationService:
     async def _card_duplicate(self, params: Mapping[str, Any]) -> dict[str, Any]:
         card_id = str(params.get("card_id") or "")
         if card_id.startswith(self._BUILTIN_PREFIX):
-            raise ServiceError(
-                "内置角色为只读，暂不支持复制为副本", code="card_read_only"
+            # V0.3.5 Codex 复核：导出流程建议「先复制再导出」，复制入口必须
+            # 真实可用——内置卡从 pair 定义生成可编辑副本（无资产，无引用）。
+            speaker = card_id[len(self._BUILTIN_PREFIX) :]
+            pair = next(
+                (p for p in self.pair_catalog if p.character.id == speaker), None
             )
+            if pair is None:
+                raise ServiceError("内置角色不存在", code="card_not_found")
+            builtin_card = CharacterCard(
+                name=pair.character.name,
+                creator="HSR Partner Harness",
+                tags=["builtin"],
+                creator_notes=f"内置角色，提示词来源：{pair.character.prompt}",
+            )
+            record = self.card_repository.import_card(builtin_card, as_duplicate=True)
+            return {"card_id": record.card_id, "name": record.card.name}
         try:
             record = self.card_repository.duplicate_card(card_id)
         except KeyError as exc:
             raise ServiceError("角色卡不存在", code="card_not_found") from exc
-        return {"card_id": record.card_id, "name": record.card.name}
+        # duplicate_card 只深拷贝 JSON：副本继续引用原卡资产 ID，删除原卡会
+        # 连带毁掉副本（Codex P1 #5）。此处真实复制资产文件并把副本引用改向
+        # 新资产 ID。
+        mapping = self._copy_card_assets(card_id, record.card_id)
+        card = record.card
+        hsr = card.hsr
+        if hsr is not None:
+            if hsr.avatar_asset is not None and hsr.avatar_asset.asset_id in mapping:
+                hsr.avatar_asset.asset_id = mapping[hsr.avatar_asset.asset_id]
+            if (
+                hsr.voice_profile is not None
+                and hsr.voice_profile.reference_audio_asset in mapping
+            ):
+                hsr.voice_profile.reference_audio_asset = mapping[
+                    hsr.voice_profile.reference_audio_asset
+                ]
+            self.card_repository.update_card(record.card_id, card)
+        return {"card_id": record.card_id, "name": card.name}
+
+    def _copy_card_assets(self, source_card_id: str, target_card_id: str) -> dict[str, str]:
+        """把源卡的全部受管理资产真实复制归属到目标卡；返回旧→新 asset_id 映射。"""
+        mapping: dict[str, str] = {}
+        for record in self.asset_service.list_assets_for_card(source_card_id):
+            data, mime = self.asset_service.get_asset(record.asset_id)
+            new_id = self.asset_service.store_asset(
+                card_id=target_card_id,
+                data=data,
+                kind=record.kind,
+                mime_type=mime,
+                source="duplicate",
+                source_ref=record.asset_id,
+                extension=Path(record.file_path).suffix.lstrip("."),
+            )
+            mapping[record.asset_id] = new_id
+        return mapping
 
     async def _card_archive(self, params: Mapping[str, Any]) -> dict[str, Any]:
         card_id = str(params.get("card_id") or "")
@@ -2824,7 +2878,9 @@ class DesktopApplicationService:
             "kind": "event",
             "event": event,
             "stream_id": self.emitter.stream_id,
-            "sequence": self.emitter.next_sequence,
+            # 必须经 allocate_sequence 消费序号；只读 next_sequence 会让
+            # 全部 remote-only 事件与后续普通事件复用同一序号被客户端丢弃。
+            "sequence": self.emitter.allocate_sequence(),
             "payload": payload,
         }
         # 音频分片只发远程连接，不写桌面 stdout 协议（契约 §5.2）。
@@ -2934,7 +2990,11 @@ class DesktopApplicationService:
         if watchdog is not None:
             watchdog.cancel()
         try:
-            transcript = self._mobile_asr.end_session(session_id)
+            # end_session 同步等待后台识别线程收尾（约 5 秒尾超时），
+            # 必须移到工作线程，避免阻塞 Sidecar 事件循环。
+            transcript = await asyncio.to_thread(
+                self._mobile_asr.end_session, session_id
+            )
         except MobileAudioError as exc:
             raise ServiceError(str(exc) or exc.code, code=exc.code) from exc
         text = transcript.strip()
@@ -3037,17 +3097,26 @@ class DesktopApplicationService:
                     message_id=message.message_id,
                 )
             ):
-                envelope = self._mobile_tts.feed(message.message_id, chunk.pcm)
-                self._publish_remote_only(
-                    "voice.mobile_tts_chunk", envelope["payload"]
-                )
+                # feed/end 的返回值就是事件 payload 本身（契约 §5.2）。
+                payload = self._mobile_tts.feed(message.message_id, chunk.pcm)
+                self._publish_remote_only("voice.mobile_tts_chunk", payload)
             end_payload = self._mobile_tts.end(message.message_id)
         except asyncio.CancelledError:
+            # 手机端主动停止（voice.mobile_tts_stop）走 stop 清理，不是失败。
             raise
-        except MobileAudioError:
-            return
-        except Exception:  # noqa: BLE001 - 下发失败不影响桌面主链路，留日志
+        except Exception as exc:  # noqa: BLE001 - 供应商真实失败必须让手机端退出播放状态
             logger.warning("手机 TTS 下发失败", exc_info=True)
+            self._publish_remote_only(
+                "voice.mobile_tts_failed",
+                {
+                    "conversation_id": message.conversation_id,
+                    "message_id": message.message_id,
+                    # 脱敏后供应商错误（不携带 Key/鉴权头）。
+                    "error": self._redact_voice_error(
+                        str(exc) or type(exc).__name__, ""
+                    ),
+                },
+            )
             return
         finally:
             try:
@@ -3055,7 +3124,7 @@ class DesktopApplicationService:
             except Exception:  # noqa: BLE001
                 pass
         if end_payload is not None:
-            self._publish_remote_only("voice.mobile_tts_end", end_payload["payload"])
+            self._publish_remote_only("voice.mobile_tts_end", end_payload)
 
     # ------------------------------------------------------------------ V0.3.3 手机远程配对
 

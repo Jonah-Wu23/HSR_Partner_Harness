@@ -587,6 +587,33 @@ export const useMobileStore = create<MobileState>((set, get) => {
         });
         break;
       }
+      case "voice.mobile_tts_failed": {
+        // 供应商合成失败（契约 §5.2 增补）：如实退出播放状态并保留诊断，
+        // 不能让手机端停留在 buffering/playing。
+        const failedPayload = event.payload as {
+          message_id?: string;
+          error?: string;
+        };
+        if (failedPayload.message_id) {
+          const failedVoice = get().voice;
+          set({
+            voice: {
+              ...failedVoice,
+              ttsChunks: Object.fromEntries(
+                Object.entries(failedVoice.ttsChunks).filter(
+                  ([id]) => id !== failedPayload.message_id,
+                ),
+              ),
+              playback: {
+                messageId: failedPayload.message_id,
+                state: "failed",
+                error: failedPayload.error ?? "角色语音合成失败",
+              },
+            },
+          });
+        }
+        break;
+      }
       case "voice.mobile_tts_end": {
         const payload = event.payload as { message_id?: string };
         if (payload.message_id) {
