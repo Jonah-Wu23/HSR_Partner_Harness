@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import type { HarnessActions } from "../contracts/actions";
 import type { AppShellViewModel } from "../contracts/view-models";
+import type { DesktopBackend } from "../services/backend";
 import { TopBar } from "./TopBar";
 import { Navigation } from "./navigation/Navigation";
 import { Workspace } from "./workspace/Workspace";
@@ -29,6 +30,9 @@ import "../styles/characters.css";
 interface AppShellProps {
   vm: AppShellViewModel;
   actions: HarnessActions;
+  /** V0.3.5：文件选择/保存对话框桥（pickFile/saveFile），
+      供角色库导入导出、创作页头像、语音页参考音频使用；测试环境可缺省。 */
+  backend?: DesktopBackend;
 }
 
 function StatePage({ title, detail }: { title: string; detail?: string | null }) {
@@ -70,7 +74,7 @@ function toConnectionStatus(status: AppShellViewModel["status"]): ConnectionView
  * 断线不再接管整屏：已有界面保持可用，状态由连接药丸与技术详情抽屉承接；
  * 只有启动期（尚无 navigation 数据）失败才整屏。
  */
-export function AppShell({ vm, actions }: AppShellProps) {
+export function AppShell({ vm, actions, backend }: AppShellProps) {
   const activeConv = vm.navigation?.projects
     .flatMap((p) => p.conversations)
     .find((c) => c.conversation_id === vm.navigation?.currentConversationId);
@@ -213,9 +217,9 @@ export function AppShell({ vm, actions }: AppShellProps) {
               </div>
             ) : null}
             {vm.mainView === "characters" ? (
-              <CharacterLibraryPage vm={vm.characterLibrary} actions={actions} onConfigureCardVoice={openSettingsToVoiceCard} />
+              <CharacterLibraryPage vm={vm.characterLibrary} actions={actions} onConfigureCardVoice={openSettingsToVoiceCard} backend={backend} />
             ) : vm.mainView === "characterCreate" ? (
-              <CharacterCreatePage vm={vm.characterCreate} actions={actions} />
+              <CharacterCreatePage vm={vm.characterCreate} actions={actions} onPickFile={backend ? (options) => backend.pickFile(options) : undefined} />
             ) : workspace ? (
               <Workspace
                 workspace={workspace}
@@ -290,6 +294,7 @@ export function AppShell({ vm, actions }: AppShellProps) {
         voice={vm.settings.voice}
         characterVoice={vm.settings.characterVoice}
         voiceCardFocus={voiceCardFocus}
+        onPickFile={backend ? (options) => backend.pickFile(options) : undefined}
         modelTest={modelTest}
         voicePreview={voicePreview}
         remote={vm.remotePairing}

@@ -5,6 +5,9 @@ import type {
   CharacterCardSummaryView,
   CharacterLibraryViewModel,
 } from "../../contracts/view-models";
+import type { DesktopBackend } from "../../services/backend";
+import { CharacterImportFlow } from "../character-transfer/CharacterImportFlow";
+import { CharacterExportFlow } from "../character-transfer/CharacterExportFlow";
 import { CharacterCardItem } from "./CharacterCardItem";
 import { CharacterDeleteModal } from "./CharacterDeleteModal";
 import {
@@ -31,9 +34,16 @@ interface CharacterLibraryPageProps {
   actions: HarnessActions;
   /** V0.3.5：「配置音色」直达设置中心语音页并预选该卡（AppShell 注入）。 */
   onConfigureCardVoice?: (cardId: string) => void;
+  /** V0.3.5：桌面后端，用于打开文件对话框。当前 AppShell 未注入，故为可选；注入后立即生效。 */
+  backend?: DesktopBackend;
 }
 
-export function CharacterLibraryPage({ vm, actions }: CharacterLibraryPageProps) {
+export function CharacterLibraryPage({
+  vm,
+  actions,
+  onConfigureCardVoice,
+  backend,
+}: CharacterLibraryPageProps) {
   const [filters, setFilters] = useState<CharacterFilterState>({
     search: "",
     source: "all",
@@ -46,6 +56,8 @@ export function CharacterLibraryPage({ vm, actions }: CharacterLibraryPageProps)
     title: "",
     message: "",
   });
+  const [importOpen, setImportOpen] = useState(false);
+  const [exportCard, setExportCard] = useState<CharacterCardSummaryView | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -77,28 +89,22 @@ export function CharacterLibraryPage({ vm, actions }: CharacterLibraryPageProps)
     setFilters({ search: "", source: "all", voice: "all" });
   };
 
-  const showImportNotice = () => {
-    setNotice({
-      open: true,
-      title: "导入角色卡",
-      message: "导入酒馆角色卡（JSON / PNG）功能将于 V0.3.5 开放。",
-    });
-  };
-
-  const showExportNotice = (card: CharacterCardSummaryView) => {
-    setNotice({
-      open: true,
-      title: `导出「${card.name}」`,
-      message: "角色卡导出（酒馆 v3 JSON / PNG）功能将于 V0.3.5 开放。",
-    });
-  };
-
   const showInvalidErrorNotice = (card: CharacterCardSummaryView) => {
     setNotice({
       open: true,
       title: `导入失败详情 · ${card.name}`,
       message: "该角色卡在解析时中断：文件损坏或缺少必要规范字段。可点击删除移除该条目并重新尝试导入。",
     });
+  };
+
+  const handleUseCard = async (cardId: string) => {
+    await actions.selectActiveCard(cardId);
+    await actions.createConversation();
+    actions.openChat();
+  };
+
+  const handleImportSuccess = () => {
+    void actions.listCards();
   };
 
   return (
@@ -176,7 +182,7 @@ export function CharacterLibraryPage({ vm, actions }: CharacterLibraryPageProps)
             <button
               type="button"
               className="char-btn char-btn-secondary"
-              onClick={showImportNotice}
+              onClick={() => setImportOpen(true)}
             >
               <ImportIcon />
               <span>导入角色</span>
@@ -248,7 +254,7 @@ export function CharacterLibraryPage({ vm, actions }: CharacterLibraryPageProps)
             <button
               type="button"
               className="char-btn char-btn-secondary"
-              onClick={showImportNotice}
+              onClick={() => setImportOpen(true)}
             >
               <ImportIcon />
               <span>导入角色卡</span>
@@ -319,13 +325,14 @@ export function CharacterLibraryPage({ vm, actions }: CharacterLibraryPageProps)
                   >
                     <CharacterCardItem
                       card={card}
-                      onSelectActive={(id) => void actions.selectActiveCard(id)}
+                      onUse={(id) => void handleUseCard(id)}
                       onEdit={(id) => actions.openCharacterCreate(id)}
                       onDuplicate={(id) => void actions.duplicateCard(id)}
-                      onExport={(c) => showExportNotice(c)}
+                      onExport={(c) => setExportCard(c)}
                       onArchive={(id) => void actions.archiveCard(id)}
                       onDeleteRequest={(c) => setDeletingCard(c)}
                       onViewError={(c) => showInvalidErrorNotice(c)}
+                      onConfigureVoice={onConfigureCardVoice}
                     />
                   </div>
                 );
@@ -337,13 +344,14 @@ export function CharacterLibraryPage({ vm, actions }: CharacterLibraryPageProps)
                 <CharacterCardItem
                   key={card.cardId}
                   card={card}
-                  onSelectActive={(id) => void actions.selectActiveCard(id)}
+                  onUse={(id) => void handleUseCard(id)}
                   onEdit={(id) => actions.openCharacterCreate(id)}
                   onDuplicate={(id) => void actions.duplicateCard(id)}
-                  onExport={(c) => showExportNotice(c)}
+                  onExport={(c) => setExportCard(c)}
                   onArchive={(id) => void actions.archiveCard(id)}
                   onDeleteRequest={(c) => setDeletingCard(c)}
                   onViewError={(c) => showInvalidErrorNotice(c)}
+                  onConfigureVoice={onConfigureCardVoice}
                 />
               ))}
             </div>
@@ -358,7 +366,55 @@ export function CharacterLibraryPage({ vm, actions }: CharacterLibraryPageProps)
         onClose={() => setDeletingCard(null)}
       />
 
-      {/* 功能占位通知弹窗 */}
+      {/* 导入流程弹窗 */}
+      {importOpen && (
+        <div
+          className="char-modal-mask"
+          role="dialog"
+          aria-modal="true"
+          aria-label="导入角色"
+          data-testid="import-flow-modal"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setImportOpen(false);
+          }}
+        >
+          <div className="char-modal-box" style={{ width: "640px", maxWidth: "calc(100vw - 48px)" }}>
+            <CharacterImportFlow
+              backend={backend}
+              actions={actions}
+              onClose={() => setImportOpen(false)}
+              onSuccess={handleImportSuccess}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* 导出流程弹窗 */}
+      {exportCard && (
+        <div
+          className="char-modal-mask"
+          role="dialog"
+          aria-modal="true"
+          aria-label="导出角色"
+          data-testid="export-flow-modal"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setExportCard(null);
+          }}
+        >
+          <div className="char-modal-box" style={{ width: "560px", maxWidth: "calc(100vw - 48px)" }}>
+            <CharacterExportFlow
+              cardId={exportCard.cardId}
+              cardName={exportCard.name}
+              backend={backend}
+              actions={actions}
+              onClose={() => setExportCard(null)}
+              onSuccess={() => void actions.listCards()}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* 功能占位通知弹窗（保留给导入失败详情等） */}
       <CharacterNoticeModal
         title={notice.title}
         message={notice.message}
