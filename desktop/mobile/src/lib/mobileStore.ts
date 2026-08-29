@@ -98,7 +98,7 @@ export interface MobileState {
   setConversationMode: (conversationId: string, mode: ConversationMode) => Promise<void>;
   resolveApproval: (approvalId: string, decision: string) => Promise<void>;
   /** V0.3.5：手机语音相关 actions。 */
-  startVoiceCapture: (conversationId: string) => Promise<{ session_id: string } | void>;
+  startVoiceCapture: (conversationId: string) => Promise<{ session_id: string }>;
   sendAudioChunk: (seq: number, base64: string) => Promise<void>;
   stopVoiceCapture: () => Promise<void>;
   stopVoicePlayback: (messageId: string) => Promise<void>;
@@ -791,28 +791,36 @@ export const useMobileStore = create<MobileState>((set, get) => {
       } catch (error) {
         const code = error instanceof Error && "code" in error ? String((error as Error & { code?: string }).code) : "";
         if (code === "approval_already_resolved") {
-          // V0.3.5：双端并发仲裁——本端失败时按错误信息中的决策收敛本地状态。
+          // V0.3.5 双端并发仲裁：本端失败必须按先到者的真实结果收敛，严禁用本端入参顶替
+          // （此前直接写入本端 attempted decision，会把对端的真实拒绝伪造成批准，违反 Let It Fail）。
+          // 真实结果首选 approval.resolved 事件已写入的记录（同一 WS 上有序，通常已先处理）；
+          // 事件未到时从服务端错误文案提取——格式「审批已由 <resolved_by> 应答（<decision>）」，
+          // 见 application_service.py ApprovalBroker.resolve；契约 §6 承诺的结构化
+          // {decision, resolved_by} 响应体后端尚未下发，下发后应改取结构化字段。
           const message = error instanceof Error ? error.message : String(error);
-          const resolvedBy = /\bdesktop\b/.test(message)
-            ? "desktop"
-            : /\bmobile\b|\bremote\b/.test(message)
-              ? "remote"
-              : "remote";
-          const existing = get().approvals.find((item) => item.approval_id === approvalId);
+          const recorded = get().resolvedApprovals.find((item) => item.approval_id === approvalId);
+          const parsedDecision = /应答（([^）]+)）/.exec(message)?.[1];
+          const parsedBy = /已由\s*(\S+)\s*应答/.exec(message)?.[1];
+          const pending = get().approvals.find((item) => item.approval_id === approvalId);
           set({
             approvals: get().approvals.filter((item) => item.approval_id !== approvalId),
-            resolvedApprovals: [
-              ...get().resolvedApprovals.filter((item) => item.approval_id !== approvalId),
-              {
-                approval_id: approvalId,
-                conversation_id: get().activeConversationId ?? undefined,
-                decision,
-                resolved_by: resolvedBy,
-                task_id: existing?.task_id,
-                operation: existing?.operation,
-                reason: existing?.reason,
-              },
-            ],
+            resolvedApprovals: recorded
+              ? get().resolvedApprovals
+              : parsedDecision
+                ? [
+                    ...get().resolvedApprovals.filter((item) => item.approval_id !== approvalId),
+                    {
+                      approval_id: approvalId,
+                      conversation_id: get().activeConversationId ?? undefined,
+                      decision: parsedDecision,
+                      resolved_by: parsedBy ?? "remote",
+                      task_id: pending?.task_id,
+                      operation: pending?.operation,
+                      reason: pending?.reason,
+                    },
+                  ]
+                : // 解析不到真实决策时如实不补已决卡片；错误照常抛出由界面呈现。
+                  get().resolvedApprovals,
           });
         }
         throw error;
@@ -858,7 +866,11 @@ export const useMobileStore = create<MobileState>((set, get) => {
 
     async startVoiceCapture(conversationId) {
       const voice = get().voice;
-      if (voice.capture.state !== "idle") return;
+      if (voice.capture.state !== "idle") {
+        // 前置条件违反如实抛错：此前静默 return undefined，叠加接口的 `| void`，
+        // 导致 useVoiceCapture 每次启动都必抛「服务端未返回语音会话 ID」。
+        throw new Error("语音采集正在进行中");
+      }
       set({
         voice: {
           ...voice,
@@ -876,6 +888,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
             capture: { state: "recording", sessionId: result.session_id, error: null },
           },
         });
+        return result;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         set({
@@ -891,11 +904,24 @@ export const useMobileStore = create<MobileState>((set, get) => {
     async sendAudioChunk(seq, base64) {
       const sessionId = get().voice.capture.sessionId;
       if (!sessionId) throw new Error("未开始语音采集");
-      await client.request("voice.mobile_audio_chunk", {
-        session_id: sessionId,
-        seq,
-        data: base64,
-      });
+      try {
+        await client.request("voice.mobile_audio_chunk", {
+          session_id: sessionId,
+          seq,
+          data: base64,
+        });
+      } catch (error) {
+        // Let It Fail：上行分片失败（如 voice_audio_seq_gap）必须留在界面上，
+        // 不得被 hook 后续的 stopSession 复位动作静默冲掉。
+        const message = error instanceof Error ? error.message : String(error);
+        set({
+          voice: {
+            ...get().voice,
+            capture: { ...get().voice.capture, error: message },
+          },
+        });
+        throw error;
+      }
     },
 
     async stopVoiceCapture() {

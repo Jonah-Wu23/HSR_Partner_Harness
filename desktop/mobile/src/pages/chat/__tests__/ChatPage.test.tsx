@@ -207,7 +207,8 @@ describe("ChatPage 移动端聊天页集成测试", () => {
       expect(resolveFrame).toBeDefined();
       expect(resolveFrame.params).toMatchObject({
         approval_id: "app-1",
-        decision: "approve",
+        // 后端 ApprovalDecision 枚举只认 allow / allow_for_conversation / deny
+        decision: "allow",
       });
     });
     const resolveFrame = lastInstance()
@@ -220,7 +221,7 @@ describe("ChatPage 移动端聊天页集成测试", () => {
       kind: "event",
       event: "approval.resolved",
       sequence: 11,
-      payload: { approval_id: "app-1", decision: "approve", resolved_by: "mobile", conversation_id: "c1" },
+      payload: { approval_id: "app-1", decision: "allow", resolved_by: "mobile", conversation_id: "c1" },
     });
 
     await waitFor(() => {

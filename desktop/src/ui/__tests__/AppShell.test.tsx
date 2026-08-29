@@ -548,4 +548,34 @@ describe("AppShell QueueStrip 接线（V0.2 M4）", () => {
     expect(screen.getAllByText("历史遗留未知搭档聊天")).toHaveLength(2);
     expect(screen.getByTitle("unknown_custom_pair")).toBeInTheDocument();
   });
+
+  it("V0.3.5 修复：音色预选卡随设置中心关闭清空，重新打开不残留", async () => {
+    const { controller, rerender, present } = await renderScenario("single-project");
+
+    // 进入角色库，点击第一张可配置用户卡的「配置音色」直达语音页
+    await controller.actions.openCharacterLibrary();
+    rerender(<AppShell vm={present()} actions={controller.actions} />);
+    const configureButtons = await screen.findAllByTitle("配置音色");
+    expect(configureButtons.length).toBeGreaterThan(0);
+    fireEvent.click(configureButtons[0]);
+
+    // 直达后设置中心打开且预选该卡（列表首张可配置卡为 card-draft-001）
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "设置" })).toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("character-voice-select")).toHaveValue("card-draft-001"),
+    );
+
+    // Esc 关闭后从顶栏齿轮重新打开：预选卡不得残留
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "设置" })).not.toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "设置" })).toBeInTheDocument(),
+    );
+    await waitFor(() => expect(screen.getByTestId("character-voice-select")).toHaveValue(""));
+  });
 });

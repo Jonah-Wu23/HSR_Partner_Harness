@@ -250,7 +250,7 @@ export function ChatPage({ conversationId }: ChatPageProps) {
               approval={approval}
               conversationTitle={conversation?.title}
               resolving={resolvingApprovalIds.has(approval.approval_id)}
-              onApprove={() => void handleResolve(approval.approval_id, "approve")}
+              onApprove={() => void handleResolve(approval.approval_id, "allow")}
               onReject={() => void handleResolve(approval.approval_id, "deny")}
             />
           ))}

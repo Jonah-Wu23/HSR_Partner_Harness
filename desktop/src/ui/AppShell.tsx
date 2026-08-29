@@ -104,15 +104,18 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
     // M5.5：每次打开设置都清掉上一轮的测试/试听结果，避免残留状态误导。
     setModelTest({ state: "idle" });
     setVoicePreview({ state: "idle" });
+    // V0.3.5 修复：普通入口打开设置时清掉角色库直达的预选卡，避免跨会话残留串话。
+    setVoiceCardFocus(null);
     // V0.2 M4：打开时拉取 config.get；结果到达后重挂载表单水合最新配置
     void actions.getConfig().finally(() => setSettingsRevision((revision) => revision + 1));
   };
 
   // V0.3.5：从角色库/创作页直达语音页「角色音色」区并预选卡片。
   const openSettingsToVoiceCard = (cardId: string | null) => {
+    // 先走普通打开流程（含清预选），再设置本次预选，顺序不可颠倒。
+    openSettings();
     setVoiceCardFocus(cardId);
     setSettingsPage("voice");
-    openSettings();
   };
 
   // 登录/注册失败 → 就地显示错误（保持账号门表单不丢失输入）
@@ -287,7 +290,11 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
         open={settingsOpen}
         page={settingsPage}
         onPageChange={setSettingsPage}
-        onClose={() => setSettingsOpen(false)}
+        onClose={() => {
+          setSettingsOpen(false);
+          // V0.3.5 修复：关闭设置中心时清掉音色预选卡，下次从齿轮打开不得残留。
+          setVoiceCardFocus(null);
+        }}
         account={vm.settings.account}
         coding={vm.settings.coding}
         model={vm.settings.model}

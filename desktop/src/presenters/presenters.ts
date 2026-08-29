@@ -146,7 +146,10 @@ function presentSettings(state: DesktopRenderState): AppShellViewModel["settings
   const reasoningEffort =
     typeof dialogue.reasoning_effort === "string" ? dialogue.reasoning_effort : "auto";
 
-  const currentConv = state.conversationsById[state.currentConversationId];
+  // V0.3.5 修复：多标签窗口以本窗口激活会话为准；currentConversationId 是
+  // Sidecar 全局指针，标签切换后可能指向其他窗口的会话。
+  const currentConv =
+    state.conversationsById[state.activeConversationId ?? state.currentConversationId];
   const activePairId = currentConv?.pair_id || state.pair?.pair_id;
   const activePair =
     state.pairs.find((p) => p.pair_id === activePairId) ?? state.pair;

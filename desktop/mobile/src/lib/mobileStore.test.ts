@@ -920,7 +920,8 @@ describe("mobileStore 会话操作", () => {
       await vi.waitFor(() => expect(lastSentFrame().method).toBe("voice.mobile_ptt_start"));
       const frame = lastSentFrame();
       lastInstance().emit({ kind: "response", id: frame.id, ok: true, result: { session_id: "sess-1" } });
-      await startPromise;
+      // 契约：必须返回服务端会话（useVoiceCapture 依赖 result.session_id 才能采集）。
+      await expect(startPromise).resolves.toEqual({ session_id: "sess-1" });
 
       const voice = useMobileStore.getState().voice;
       expect(voice.capture.state).toBe("recording");
@@ -1048,7 +1049,7 @@ describe("mobileStore 会话操作", () => {
       });
     });
 
-    it("resolveApproval 遇 approval_already_resolved 时按错误信息收敛状态", async () => {
+    it("resolveApproval 遇 approval_already_resolved 时按先到者真实结果收敛", async () => {
       await pairAndBootstrap();
       useMobileStore.setState({ activeConversationId: "c1" });
       lastInstance().emit({
@@ -1064,27 +1065,119 @@ describe("mobileStore 会话操作", () => {
         },
       });
 
-      const resolvePromise = useMobileStore.getState().resolveApproval("a2", "approve");
+      // 本端尝试 allow，但先到者（桌面端）的真实决策是 deny
+      const resolvePromise = useMobileStore.getState().resolveApproval("a2", "allow");
       const frame = lastSentFrame();
       expect(frame.method).toBe("approval.resolve");
+      // 真实后端文案（application_service.py ApprovalBroker.resolve）：
+      // 「审批已由 <resolved_by> 应答（<decision>），不能重复应答」
       lastInstance().emit({
         kind: "response",
         id: frame.id,
         ok: false,
-        error: { code: "approval_already_resolved", message: "已由 desktop approve" },
+        error: { code: "approval_already_resolved", message: "审批已由 desktop 应答（deny），不能重复应答" },
       });
 
-      await expect(resolvePromise).rejects.toThrow(/已由 desktop approve/);
+      await expect(resolvePromise).rejects.toThrow(/不能重复应答/);
       const state = useMobileStore.getState();
       expect(state.approvals).toHaveLength(0);
       expect(state.resolvedApprovals).toHaveLength(1);
       expect(state.resolvedApprovals[0]).toMatchObject({
         approval_id: "a2",
-        decision: "approve",
+        // 必须记录先到者的真实决策 deny，严禁用本端入参 allow 顶替
+        decision: "deny",
         resolved_by: "desktop",
         operation: { tool_kind: "shell", command: "ls" },
         reason: "需要确认",
       });
+    });
+
+    it("startVoiceCapture 非空闲状态如实拒绝且不发帧", async () => {
+      await pairAndBootstrap();
+      useMobileStore.setState({
+        activeConversationId: "c1",
+        voice: {
+          ...useMobileStore.getState().voice,
+          capture: { state: "recording", sessionId: "sess-1", error: null },
+        },
+      });
+
+      await expect(useMobileStore.getState().startVoiceCapture("c1")).rejects.toThrow(
+        "语音采集正在进行中",
+      );
+      expect(
+        lastInstance()
+          .sent.map((raw) => JSON.parse(raw))
+          .filter((frame) => frame.method === "voice.mobile_ptt_start"),
+      ).toHaveLength(0);
+    });
+
+    it("sendAudioChunk 失败时错误写入 capture.error 并如实抛出", async () => {
+      await pairAndBootstrap();
+      useMobileStore.setState({
+        activeConversationId: "c1",
+        voice: {
+          ...useMobileStore.getState().voice,
+          capture: { state: "recording", sessionId: "sess-1", error: null },
+        },
+      });
+
+      const p = useMobileStore.getState().sendAudioChunk(3, "ZmFrZS0z");
+      const ws = lastInstance();
+      const frame = ws.sent
+        .map((raw) => JSON.parse(raw))
+        .find((f) => f.method === "voice.mobile_audio_chunk");
+      ws.emit({
+        kind: "response",
+        id: frame.id,
+        ok: false,
+        error: { code: "voice_audio_seq_gap", message: "音频分片序号跳号：期望 0，实际 3" },
+      });
+
+      await expect(p).rejects.toThrow(/跳号/);
+      // 错误必须留在界面上，状态保持 recording，不得伪造复位
+      expect(useMobileStore.getState().voice.capture.error).toContain("跳号");
+      expect(useMobileStore.getState().voice.capture.state).toBe("recording");
+    });
+
+    it("approval.resolved 事件先到时，already_resolved 失败不覆盖真实记录", async () => {
+      await pairAndBootstrap();
+      useMobileStore.setState({ activeConversationId: "c1" });
+      lastInstance().emit({
+        kind: "event",
+        event: "approval.requested",
+        sequence: 11,
+        payload: {
+          approval_id: "a4",
+          conversation_id: "c1",
+          task_id: "t4",
+          operation: { tool_kind: "shell", command: "ls", paths: [], patch_file_count: null, summary: "列目录" },
+          reason: "需要确认",
+        },
+      });
+      // 事件先到：真实决策 deny（桌面端）
+      lastInstance().emit({
+        kind: "event",
+        event: "approval.resolved",
+        sequence: 12,
+        payload: { approval_id: "a4", decision: "deny", resolved_by: "desktop", conversation_id: "c1" },
+      });
+
+      const p = useMobileStore.getState().resolveApproval("a4", "allow");
+      const frame = lastSentFrame();
+      lastInstance().emit({
+        kind: "response",
+        id: frame.id,
+        ok: false,
+        error: { code: "approval_already_resolved", message: "审批已由 desktop 应答（deny），不能重复应答" },
+      });
+      await expect(p).rejects.toThrow(/不能重复应答/);
+
+      const state = useMobileStore.getState();
+      expect(state.approvals).toHaveLength(0);
+      const resolved = state.resolvedApprovals.find((item) => item.approval_id === "a4");
+      // 事件写入的真实记录不得被本端失败路径覆盖
+      expect(resolved).toMatchObject({ decision: "deny", resolved_by: "desktop" });
     });
 
     it("approval.resolved 事件缺少 conversation_id 时回退到当前会话", async () => {

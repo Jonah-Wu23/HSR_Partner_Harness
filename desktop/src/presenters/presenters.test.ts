@@ -451,6 +451,19 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
     expect(phainonVm.settings.voice.assistantVoiceName).toBe("神秘的古代机械");
   });
 
+  it("V0.3.5 修复：全局指针与本窗口激活标签分叉时，设置页音色跟随激活标签", () => {
+    // 全局指针停在流萤（Sidecar 权威/其他窗口），本窗口激活标签切到白厄
+    desktopStore.getState().hydrate({
+      ...createMockScenario("multi-pair").snapshot,
+      current_conversation_id: "conv-firefly",
+    });
+    desktopStore.getState().openConversationTab("conv-phainon");
+
+    const vm = presentAppShell(desktopStore.getState());
+    expect(vm.settings.voice.characterVoiceName).toBe("白厄");
+    expect(vm.settings.voice.assistantVoiceName).toBe("神秘的古代机械");
+  });
+
   it("V0.3.2 M1：工作台 items 按 timeline_order 混排 assistant segment 与工具卡", () => {
     const state = desktopStore.getState();
     state.hydrate(createMockScenario("single-project").snapshot);

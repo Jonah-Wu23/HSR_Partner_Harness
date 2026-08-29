@@ -22,8 +22,12 @@ const TOOL_KIND_LABELS: Record<string, string> = {
 };
 
 const DECISION_LABELS: Record<string, string> = {
-  approve: "已批准",
+  // 后端真实决策值（core/contracts.py ApprovalDecision）：allow / allow_for_conversation / deny。
+  allow: "已批准",
+  allow_for_conversation: "已批准（本会话）",
   deny: "已拒绝",
+  // 兜底：approval.resolved 事件缺 decision 字段时 store 层的默认值。
+  approve: "已批准",
 };
 
 const RESOLVED_BY_LABELS: Record<string, string> = {
