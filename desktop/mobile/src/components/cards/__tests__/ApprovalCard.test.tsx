@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PendingApproval } from "@shared/contracts/protocol";
 import { ApprovalCard } from "../ApprovalCard";
@@ -78,12 +78,43 @@ describe("ApprovalCard", () => {
   });
 
   it("mobile / remote 处理端统一显示为手机端", () => {
-    render(<ApprovalCard approval={approval} status="resolved" decision="approve" resolvedBy="remote" />);
+    render(<ApprovalCard approval={approval} status="resolved" decision="allow" resolvedBy="remote" />);
     expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent(/手机端/);
 
     cleanup();
 
-    render(<ApprovalCard approval={approval} status="resolved" decision="approve" resolvedBy="mobile" />);
+    render(<ApprovalCard approval={approval} status="resolved" decision="allow" resolvedBy="mobile" />);
     expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent(/手机端/);
+  });
+
+  it("V0.3.5：提供「本会话批准」（allow_for_conversation）真实回调", () => {
+    const onApprove = vi.fn();
+    const onAllowForConversation = vi.fn();
+    const onReject = vi.fn();
+    render(
+      <ApprovalCard
+        approval={approval}
+        onApprove={onApprove}
+        onAllowForConversation={onAllowForConversation}
+        onReject={onReject}
+      />,
+    );
+    expect(screen.getByTestId("approval-approve")).toBeTruthy();
+    expect(screen.getByTestId("approval-allow-conversation")).toBeTruthy();
+    expect(screen.getByTestId("approval-reject")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("approval-allow-conversation"));
+    expect(onAllowForConversation).toHaveBeenCalledTimes(1);
+    expect(onApprove).not.toHaveBeenCalled();
+    expect(onReject).not.toHaveBeenCalled();
+  });
+
+  it("V0.3.5：未传 onAllowForConversation 时不渲染该按钮（向后兼容）", () => {
+    render(<ApprovalCard approval={approval} onApprove={vi.fn()} onReject={vi.fn()} />);
+    expect(screen.queryByTestId("approval-allow-conversation")).toBeNull();
+  });
+
+  it("V0.3.5：未知 decision 值显示中性文案，不伪造批准方向", () => {
+    render(<ApprovalCard approval={approval} status="resolved" decision="" resolvedBy="desktop" />);
+    expect(screen.getByTestId("approval-status")).toHaveTextContent(/已处理/);
   });
 });

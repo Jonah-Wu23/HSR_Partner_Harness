@@ -1225,7 +1225,7 @@ describe("desktopStore event projection", () => {
         payload: {
           approval_id: "app-v35",
           conversation_id: "conv-1",
-          decision: "approve",
+          decision: "allow",
           resolved_by: "mobile",
           task_id: "task-v35",
         },
@@ -1237,7 +1237,7 @@ describe("desktopStore event projection", () => {
     expect(state.resolvedApprovals).toContainEqual({
       approval_id: "app-v35",
       conversation_id: "conv-1",
-      decision: "approve",
+      decision: "allow",
       resolved_by: "mobile",
       task_id: "task-v35",
     });

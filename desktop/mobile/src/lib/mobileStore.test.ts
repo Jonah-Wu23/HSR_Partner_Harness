@@ -1037,14 +1037,14 @@ describe("mobileStore 会话操作", () => {
         kind: "event",
         event: "approval.resolved",
         sequence: 12,
-        payload: { approval_id: "a1", decision: "approve", resolved_by: "desktop" },
+        payload: { approval_id: "a1", decision: "allow", resolved_by: "desktop" },
       });
       const state = useMobileStore.getState();
       expect(state.approvals).toHaveLength(0);
       expect(state.resolvedApprovals).toHaveLength(1);
       expect(state.resolvedApprovals[0]).toMatchObject({
         approval_id: "a1",
-        decision: "approve",
+        decision: "allow",
         resolved_by: "desktop",
       });
     });
@@ -1090,6 +1090,69 @@ describe("mobileStore 会话操作", () => {
         operation: { tool_kind: "shell", command: "ls" },
         reason: "需要确认",
       });
+    });
+
+    it("V0.3.5 already_resolved 时优先消费结构化 details，文案正则仅作后备", async () => {
+      await pairAndBootstrap();
+      useMobileStore.setState({ activeConversationId: "c1" });
+      lastInstance().emit({
+        kind: "event",
+        event: "approval.requested",
+        sequence: 21,
+        payload: {
+          approval_id: "a3",
+          conversation_id: "c1",
+          task_id: "t3",
+          operation: { tool_kind: "shell", command: "ls", paths: [], patch_file_count: null, summary: "列目录" },
+          reason: "需要确认",
+        },
+      });
+      const resolvePromise = useMobileStore.getState().resolveApproval("a3", "allow");
+      const frame = lastSentFrame();
+      // 契约 §6：error.details={decision, resolved_by}（application_service.py 49c5a39）
+      lastInstance().emit({
+        kind: "response",
+        id: frame.id,
+        ok: false,
+        error: {
+          code: "approval_already_resolved",
+          message: "审批已由 desktop 应答（deny），不能重复应答",
+          details: { decision: "allow_for_conversation", resolved_by: "desktop" },
+        },
+      });
+      await expect(resolvePromise).rejects.toThrow(/不能重复应答/);
+      const state = useMobileStore.getState();
+      expect(state.resolvedApprovals[0]).toMatchObject({
+        approval_id: "a3",
+        // details 结构化字段优先于 message 文案（文案里的 deny 不是真实决策）
+        decision: "allow_for_conversation",
+        resolved_by: "desktop",
+      });
+    });
+
+    it("V0.3.5 setApprovalMode 发 project.update_settings 并以真实快照更新本地", async () => {
+      await pairAndBootstrap();
+      const project = useMobileStore.getState().projects[0];
+      expect(project).toBeTruthy();
+      const modePromise = useMobileStore
+        .getState()
+        .setApprovalMode(project.project_id, "full_auto");
+      const frame = lastSentFrame();
+      expect(frame).toMatchObject({
+        method: "project.update_settings",
+        params: { project_id: project.project_id, approval_mode: "full_auto" },
+      });
+      lastInstance().emit({
+        kind: "response",
+        id: frame.id,
+        ok: true,
+        result: { project: { project_id: project.project_id, approval_mode: "full_auto" } },
+      });
+      await modePromise;
+      expect(
+        useMobileStore.getState().projects.find((item) => item.project_id === project.project_id)
+          ?.approval_mode,
+      ).toBe("full_auto");
     });
 
     it("startVoiceCapture 非空闲状态如实拒绝且不发帧", async () => {

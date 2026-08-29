@@ -918,7 +918,8 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
         {
           approval_id: approvalId,
           conversation_id: payload.conversation_id,
-          decision: payload.decision ?? "approve",
+          // 真实协议 approval.resolved 总带合法 decision；缺失不伪造方向。
+          decision: payload.decision ?? "",
           resolved_by: payload.resolved_by ?? "desktop",
           task_id: payload.task_id,
         },

@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { ActiveTask, ConversationMode, Message, PendingApproval } from "@shared/contracts/protocol";
+import type {
+  ActiveTask,
+  ApprovalMode,
+  ConversationMode,
+  Message,
+  PendingApproval,
+} from "@shared/contracts/protocol";
 import { ApprovalCard } from "../../components/cards/ApprovalCard";
 import { ArrowDownIcon, BackIcon, MicIcon, StopIcon } from "../../components/cards/icons";
 import { DelegationCard, type DelegationStatus } from "../../components/cards/DelegationCard";
@@ -68,6 +74,8 @@ export function ChatPage({ conversationId }: ChatPageProps) {
   const activeTask = useMobileStore((state) => state.activeTask);
   const allApprovals = useMobileStore((state) => state.approvals);
   const allResolved = useMobileStore((state) => state.resolvedApprovals);
+  const projects = useMobileStore((state) => state.projects);
+  const setApprovalMode = useMobileStore((state) => state.setApprovalMode);
 
   const approvals = (allApprovals ?? []).filter(
     (a) => a.conversation_id === conversationId,
@@ -241,6 +249,43 @@ export function ChatPage({ conversationId }: ChatPageProps) {
         </div>
       ) : null}
 
+      {/* V0.3.5：项目审批模式切换——真实调用 project.update_settings。
+          三档与桌面一致：请求批准（request_approval）/帮我审核（review）/完全允许运行（full_auto）。 */}
+      {(() => {
+        const project = projects.find(
+          (item) => item.project_id === conversation?.project_id,
+        );
+        if (!project) return null;
+        const approvalModes: Array<{ value: ApprovalMode; label: string }> = [
+          { value: "request_approval", label: "请求批准" },
+          { value: "review", label: "帮我审核" },
+          { value: "full_auto", label: "完全允许运行" },
+        ];
+        return (
+          <section className="mobile-approval-mode" aria-label="审批模式切换">
+            <span className="mobile-approval-mode-label">审批模式</span>
+            <div className="mobile-approval-mode-options" role="group">
+              {approvalModes.map((item) => (
+                <button
+                  key={item.value}
+                  type="button"
+                  className={`mobile-approval-mode-option${
+                    project.approval_mode === item.value ? " is-active" : ""
+                  }`}
+                  data-testid={`approval-mode-${item.value}`}
+                  disabled={project.approval_mode === item.value}
+                  onClick={() =>
+                    void setApprovalMode(project.project_id, item.value)
+                  }
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </section>
+        );
+      })()}
+
       {/* 审批卡片区：待审批 + 已决收敛 */}
       {approvals.length > 0 || resolvedApprovals.length > 0 ? (
         <section className="mobile-chat-approvals" aria-label="审批操作">
@@ -251,6 +296,9 @@ export function ChatPage({ conversationId }: ChatPageProps) {
               conversationTitle={conversation?.title}
               resolving={resolvingApprovalIds.has(approval.approval_id)}
               onApprove={() => void handleResolve(approval.approval_id, "allow")}
+              onAllowForConversation={() =>
+                void handleResolve(approval.approval_id, "allow_for_conversation")
+              }
               onReject={() => void handleResolve(approval.approval_id, "deny")}
             />
           ))}

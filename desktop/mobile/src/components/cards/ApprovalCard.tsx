@@ -7,6 +7,8 @@ export interface ApprovalCardProps {
   /** V0.3.5：提交中状态（点击后等待服务器/事件收敛）。 */
   resolving?: boolean;
   onApprove?: () => void;
+  /** V0.3.5：仅本会话内生效的批准（ApprovalDecision.allow_for_conversation）。 */
+  onAllowForConversation?: () => void;
   onReject?: () => void;
   /** V0.3.5：已决状态展示。 */
   status?: "pending" | "resolved";
@@ -26,9 +28,9 @@ const DECISION_LABELS: Record<string, string> = {
   allow: "已批准",
   allow_for_conversation: "已批准（本会话）",
   deny: "已拒绝",
-  // 兜底：approval.resolved 事件缺 decision 字段时 store 层的默认值。
-  approve: "已批准",
 };
+
+const NEUTRAL_DECISION_LABEL = "已处理";
 
 const RESOLVED_BY_LABELS: Record<string, string> = {
   desktop: "桌面端",
@@ -46,9 +48,10 @@ export function ApprovalCard({
   conversationTitle,
   resolving = false,
   onApprove,
+  onAllowForConversation,
   onReject,
   status = "pending",
-  decision = "approve",
+  decision = "",
   resolvedBy = "remote",
 }: ApprovalCardProps) {
   const { operation, reason } = approval;
@@ -72,7 +75,7 @@ export function ApprovalCard({
         </div>
         {isResolved ? (
           <span className="mobile-approval-status-badge" data-testid="approval-status">
-            {DECISION_LABELS[decision] || decision}
+            {DECISION_LABELS[decision] || decision || NEUTRAL_DECISION_LABEL}
           </span>
         ) : null}
       </header>
@@ -125,7 +128,8 @@ export function ApprovalCard({
       <footer className="mobile-approval-footer">
         {isResolved ? (
           <p className="mobile-approval-resolved-text" data-testid="approval-resolved-by">
-            由 {RESOLVED_BY_LABELS[resolvedBy] || resolvedBy} {DECISION_LABELS[decision] || decision}
+            由 {RESOLVED_BY_LABELS[resolvedBy] || resolvedBy}{" "}
+            {DECISION_LABELS[decision] || decision || NEUTRAL_DECISION_LABEL}
           </p>
         ) : (
           <div className="mobile-approval-actions">
@@ -138,6 +142,17 @@ export function ApprovalCard({
             >
               {resolving ? "提交中…" : "拒绝"}
             </button>
+            {onAllowForConversation ? (
+              <button
+                type="button"
+                className="mobile-approval-allow-conversation"
+                onClick={onAllowForConversation}
+                disabled={resolving}
+                data-testid="approval-allow-conversation"
+              >
+                {resolving ? "提交中…" : "本会话批准"}
+              </button>
+            ) : null}
             <button
               type="button"
               className="mobile-approval-approve"

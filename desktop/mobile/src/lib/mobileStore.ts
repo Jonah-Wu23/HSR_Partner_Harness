@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type {
   ActiveTask,
   ConversationMode,
+  ApprovalMode,
   ConversationOpenResult,
   ConversationRecord,
   DesktopSnapshot,
@@ -17,6 +18,7 @@ import {
   getStoredDeviceName,
   getStoredToken,
   MobileWsClient,
+  RemoteCommandError,
   saveCredentials,
 } from "./wsClient";
 
@@ -97,6 +99,8 @@ export interface MobileState {
   /** V0.3.4 缺陷 4：会话模式切换（chat/collaboration），委派仅在协作模式可用。 */
   setConversationMode: (conversationId: string, mode: ConversationMode) => Promise<void>;
   resolveApproval: (approvalId: string, decision: string) => Promise<void>;
+  /** V0.3.5：切换项目审批模式（request_approval 请求批准 / review 帮我审核 / full_auto 完全允许运行）。 */
+  setApprovalMode: (projectId: string, mode: ApprovalMode) => Promise<void>;
   /** V0.3.5：手机语音相关 actions。 */
   startVoiceCapture: (conversationId: string) => Promise<{ session_id: string }>;
   sendAudioChunk: (seq: number, base64: string) => Promise<void>;
@@ -403,7 +407,9 @@ export const useMobileStore = create<MobileState>((set, get) => {
               {
                 approval_id: payload.approval_id,
                 conversation_id: payload.conversation_id ?? get().activeConversationId ?? undefined,
-                decision: payload.decision ?? "approve",
+                // 真实协议 approval.resolved 总带合法 decision（allow/allow_for_conversation/deny）；
+                // 缺失时不伪造方向，置空串由展示层给中性文案。
+                decision: payload.decision ?? "",
                 resolved_by: payload.resolved_by ?? "remote",
                 task_id: payload.task_id,
                 operation: existing?.operation,
@@ -785,6 +791,25 @@ export const useMobileStore = create<MobileState>((set, get) => {
       });
     },
 
+    async setApprovalMode(projectId, mode) {
+      // 项目级审批模式切换（请求批准/帮我审核/完全允许运行）。以服务端
+      // 返回的真实 project 快照更新本地状态；失败如实抛出由界面呈现。
+      const result = (await client.request("project.update_settings", {
+        project_id: projectId,
+        approval_mode: mode,
+      })) as { project?: { project_id: string; approval_mode: ApprovalMode } };
+      if (result?.project?.project_id) {
+        const updated = result.project;
+        set({
+          projects: get().projects.map((item) =>
+            item.project_id === updated.project_id
+              ? { ...item, approval_mode: updated.approval_mode }
+              : item,
+          ),
+        });
+      }
+    },
+
     async resolveApproval(approvalId, decision) {
       try {
         await client.request("approval.resolve", { approval_id: approvalId, decision });
@@ -794,13 +819,20 @@ export const useMobileStore = create<MobileState>((set, get) => {
           // V0.3.5 双端并发仲裁：本端失败必须按先到者的真实结果收敛，严禁用本端入参顶替
           // （此前直接写入本端 attempted decision，会把对端的真实拒绝伪造成批准，违反 Let It Fail）。
           // 真实结果首选 approval.resolved 事件已写入的记录（同一 WS 上有序，通常已先处理）；
-          // 事件未到时从服务端错误文案提取——格式「审批已由 <resolved_by> 应答（<decision>）」，
-          // 见 application_service.py ApprovalBroker.resolve；契约 §6 承诺的结构化
-          // {decision, resolved_by} 响应体后端尚未下发，下发后应改取结构化字段。
+          // 事件未到时优先取服务端结构化 details（契约 §6：error.details={decision,resolved_by}，
+          // 见 application_service.py ApprovalBroker.resolve），仅在 details 缺失时从错误文案提取。
           const message = error instanceof Error ? error.message : String(error);
+          const structured =
+            error instanceof RemoteCommandError ? error.details : undefined;
           const recorded = get().resolvedApprovals.find((item) => item.approval_id === approvalId);
-          const parsedDecision = /应答（([^）]+)）/.exec(message)?.[1];
-          const parsedBy = /已由\s*(\S+)\s*应答/.exec(message)?.[1];
+          const parsedDecision =
+            typeof structured?.decision === "string" && structured.decision
+              ? structured.decision
+              : (/应答（([^）]+)）/.exec(message)?.[1] ?? "");
+          const parsedBy =
+            typeof structured?.resolved_by === "string" && structured.resolved_by
+              ? structured.resolved_by
+              : (/已由\s*(\S+)\s*应答/.exec(message)?.[1] ?? "remote");
           const pending = get().approvals.find((item) => item.approval_id === approvalId);
           set({
             approvals: get().approvals.filter((item) => item.approval_id !== approvalId),
@@ -813,7 +845,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
                       approval_id: approvalId,
                       conversation_id: get().activeConversationId ?? undefined,
                       decision: parsedDecision,
-                      resolved_by: parsedBy ?? "remote",
+                      resolved_by: parsedBy,
                       task_id: pending?.task_id,
                       operation: pending?.operation,
                       reason: pending?.reason,
