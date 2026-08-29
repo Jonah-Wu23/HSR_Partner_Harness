@@ -11,7 +11,7 @@
 
 ## 独立记录
 
-- `千问参考音频能力验证记录.md` — 2026-08-16 对 DashScope 音色复刻端点的 6 个真实探针：本地音频转 Base64 data URI 放 `input.url` 可直接创建音色；GitHub raw 实测不可用，jsDelivr CDN 可用。被契约 §7 与接入清单 §5 引用，服务端策略变化时以新实测为准。
+- `千问参考音频能力验证记录.md` — 2026-08-16 对 DashScope 音色复刻端点的 6 个真实探针：本地音频转 Base64 data URI 放 `input.url` 可直接创建音色；GitHub raw 实测不可用，jsDelivr CDN 可用。2026-08-24 V0.3.5 增补：MP3/M4A data URI 实测成功、10MB 边界（`Audio.FileSizeExceed`）、61 秒 WAV 服务端接受、声音设计可用但 `preview_text` 须 ≥15 字符。被契约 §7 与接入清单 §5 引用，服务端策略变化时以新实测为准。
 
 ## samples/
 

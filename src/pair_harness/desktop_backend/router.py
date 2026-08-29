@@ -81,6 +81,7 @@ class SidecarRouter:
         reply_sink: Callable[[dict[str, Any]], None] | None = None,
         *,
         origin: str = "desktop",
+        connection_key: str | None = None,
     ) -> None:
         """提交一条请求，不等待它完成，以便后续请求可以继续进入。
 
@@ -90,7 +91,11 @@ class SidecarRouter:
         ``origin``（V0.3.5）标记命令来源（desktop/remote），由传输层注入
         并写进 DesktopCommand，前端参数不可伪造。
         """
-        task = asyncio.create_task(self.handle_line(line, reply_sink, origin=origin))
+        task = asyncio.create_task(
+            self.handle_line(
+                line, reply_sink, origin=origin, connection_key=connection_key
+            )
+        )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
     async def wait_stopped(self) -> None:
@@ -111,6 +116,7 @@ class SidecarRouter:
         reply_sink: Callable[[dict[str, Any]], None] | None = None,
         *,
         origin: str = "desktop",
+        connection_key: str | None = None,
     ) -> None:
         def respond(message: dict[str, Any]) -> None:
             """response 写 stdout（权威）；远程发起方同时收到同一份。"""
@@ -133,9 +139,9 @@ class SidecarRouter:
             respond(protocol_error(code, str(exc), request_id=request_id))
             return
 
-        if origin != "desktop":
-            # V0.3.5：传输层注入来源；payload 里的同名字段一律忽略。
-            command = replace(command, origin=origin)
+        if origin != "desktop" or connection_key is not None:
+            # V0.3.5：传输层注入来源与连接 key；payload 里的同名字段一律忽略。
+            command = replace(command, origin=origin, connection_key=connection_key)
 
         try:
             result = await self.service.handle_command(command)

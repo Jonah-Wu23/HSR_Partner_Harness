@@ -973,3 +973,59 @@ async def test_mobile_audio_chunk_maps_manager_errors_verbatim(service) -> None:
     )
     assert accepted == {"accepted": True}
     assert accepting.fed == [("sess-2", 0, "AAE=")]
+
+
+@pytest.mark.asyncio
+async def test_remote_disconnect_cancels_voice_sessions(service, monkeypatch):
+    """契约 §5.3：handle_remote_disconnect 取消该连接全部未完成会话。
+
+    service 层职责是把断开事件接到 manager 的 cancel_all_for_connection；
+    manager 内部线程行为由 test_mobile_audio.py 覆盖，此处用记录型假
+    manager 验证接线与后续 feed 的 session_not_found 路径。
+    """
+    from pair_harness.desktop_backend.mobile_audio import (
+        MobileAudioError,
+        RecognizerPort,
+    )
+
+    started_keys: list[str] = []
+    cancelled_keys: list[str] = []
+
+    class FakeManager:
+        def start_session(self, conversation_id, connection_key, factory):
+            started_keys.append(connection_key)
+            return "sess-1"
+
+        def feed_chunk(self, session_id, seq, data_base64):
+            raise MobileAudioError(
+                "voice_session_not_found", f"未知会话: {session_id}"
+            )
+
+        def cancel_all_for_connection(self, connection_key):
+            cancelled_keys.append(connection_key)
+
+    monkeypatch.setattr(service, "_mobile_asr", FakeManager())
+
+    session_id = await asyncio.wait_for(
+        service._voice_mobile_ptt_start(
+            {"conversation_id": service.current_conversation_id},
+            connection_key="conn-key-1",
+        ),
+        timeout=5,
+    )
+    sid = session_id["session_id"]
+    assert sid == "sess-1"
+    assert started_keys == ["conn-key-1"]
+
+    service.handle_remote_disconnect("conn-key-1")
+    assert cancelled_keys == ["conn-key-1"]
+
+    # 取消后的会话不可再喂分片（manager 抛 session_not_found，service 原样映射）。
+    with pytest.raises(ServiceError) as exc_info:
+        await asyncio.wait_for(
+            service._voice_mobile_audio_chunk(
+                {"session_id": sid, "seq": 0, "data": "AAAA"}
+            ),
+            timeout=5,
+        )
+    assert exc_info.value.code == "voice_session_not_found"

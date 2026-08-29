@@ -1029,6 +1029,11 @@ class DesktopApplicationService:
             return await self._approval_resolve(
                 command.params, origin=command.origin
             )
+        if command.method == "voice.mobile_ptt_start":
+            # V0.3.5：语音会话绑定传输层注入的连接 key，供断开清理。
+            return await self._voice_mobile_ptt_start(
+                command.params, connection_key=command.connection_key
+            )
         handler = handlers[command.method]
         return await handler(command.params)
 
@@ -2852,15 +2857,17 @@ class DesktopApplicationService:
         return factory
 
     async def _voice_mobile_ptt_start(
-        self, params: Mapping[str, Any]
+        self, params: Mapping[str, Any], *, connection_key: str | None = None
     ) -> dict[str, Any]:
         conversation_id = self._required_string(params, "conversation_id")
         self._current_account_conversation(conversation_id)
-        connection_key = str(params.get("device_name") or "remote")
+        # 传输层注入的连接 key（WS 路径）优先；缺失时退回设备名——纯
+        # service 级测试与 stdin 路径无连接概念，仍需可运行。
+        key = connection_key or str(params.get("device_name") or "remote")
         factory = self._mobile_asr_factory()
         try:
             session_id = self._mobile_asr.start_session(
-                conversation_id, connection_key, factory
+                conversation_id, key, factory
             )
         except MobileAudioError as exc:
             raise ServiceError(str(exc) or exc.code, code=exc.code) from exc
@@ -2892,6 +2899,19 @@ class DesktopApplicationService:
         except MobileAudioError as exc:
             raise ServiceError(str(exc) or exc.code, code=exc.code) from exc
         return {"accepted": True}
+
+    def handle_remote_disconnect(self, connection_key: str) -> None:
+        """契约 §5.3：连接断开时取消该连接全部未完成语音会话（静默）。
+
+        manager 端 cancel_all_for_connection 已关闭识别器并清理登记；
+        对应 watchdog 到期后的 cancel 幂等，无副作用。
+        """
+        self._mobile_asr.cancel_all_for_connection(connection_key)
+        for task in tuple(self._mobile_asr_watchdogs.values()):
+            if not task.done():
+                continue
+        # watchdog 与 session 的对应关系由 manager 清理；此处只需确保
+        # 已完成任务的表项最终被移除（done 回调与 stop 路径均会清理）。
 
     async def _voice_mobile_ptt_stop(
         self, params: Mapping[str, Any]

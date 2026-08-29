@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +50,8 @@ class _RemoteConnection:
     def __init__(self, fanout: EventFanout, ws: Any) -> None:
         self._fanout = fanout
         self._ws = ws
+        # V0.3.5：连接唯一 key；手机语音会话绑定它，断开时按 key 清理。
+        self.key = uuid.uuid4().hex
         self._queue: asyncio.Queue[dict] = asyncio.Queue()
         self._subscription: Any = None
         self._closed = False
@@ -124,12 +127,15 @@ class WSServerMode:
         fanout: EventFanout,
         static_root: Path | None,
         port: int,
+        on_disconnect: Callable[[str], None] | None = None,
     ) -> None:
         self.dispatch = dispatch
         self.authenticator = authenticator
         self.fanout = fanout
         self.static_root = static_root
         self.port = port
+        # V0.3.5：连接断开回调（清理该连接未完成的手机语音转写会话）。
+        self.on_disconnect = on_disconnect
         # 手机经局域网/自组网接入，绑定全部接口；鉴权门保证未鉴权无法触发命令执行。
         self._host = "0.0.0.0"
         self._app: web.Application | None = None
@@ -210,6 +216,12 @@ class WSServerMode:
         finally:
             self._connections.discard(conn)
             await conn.close()
+            # 契约 §5.3：连接断开时自动取消该连接未完成的语音会话。
+            if self.on_disconnect is not None:
+                try:
+                    self.on_disconnect(conn.key)
+                except Exception:  # noqa: BLE001 - 清理失败不影响连接关闭
+                    logger.exception("远程断开清理回调失败 key=%s", conn.key)
         return ws
 
     def _handle_frame(self, conn: _RemoteConnection, text: str) -> None:
@@ -267,5 +279,6 @@ class WSServerMode:
             conn.subscribe()
             logger.info("远程连接鉴权完成 device=%r", decision.device_name)
 
-        # V0.3.5：远程命令标记 origin=remote，供审批仲裁区分双端应答。
-        self.dispatch(text, conn.send, origin="remote")
+        # V0.3.5：远程命令标记 origin=remote 并携带连接 key，供审批
+        # 仲裁与手机语音会话归属使用。
+        self.dispatch(text, conn.send, origin="remote", connection_key=conn.key)

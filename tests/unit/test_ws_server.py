@@ -45,10 +45,16 @@ class FakeDispatch:
         self.invoked: list[dict[str, Any]] = []
 
     def __call__(
-        self, line: str, reply_sink: Any, *, origin: str = "desktop"
+        self,
+        line: str,
+        reply_sink: Any,
+        *,
+        origin: str = "desktop",
+        connection_key: str | None = None,
     ) -> None:
         payload = json.loads(line)
         payload["_origin"] = origin
+        payload["_connection_key"] = connection_key
         self.invoked.append(payload)
         if self.auto_reply and reply_sink is not None and payload.get("id"):
             self._reply(reply_sink, payload["id"], {"echo": payload["method"]})
@@ -81,7 +87,10 @@ def _free_port() -> int:
 
 
 async def _start(
-    static_root: Any, *, authenticator: StubAuthenticator | None = None
+    static_root: Any,
+    *,
+    authenticator: StubAuthenticator | None = None,
+    on_disconnect: Any = None,
 ) -> Harness:
     stdout = io.StringIO()
     fanout = EventFanout(JsonlWriter(stdout))
@@ -94,6 +103,7 @@ async def _start(
         fanout=fanout,
         static_root=static_root,
         port=port,
+        on_disconnect=on_disconnect,
     )
     await server.start()
     return Harness(server, f"http://127.0.0.1:{port}", fanout, fake, auth)
@@ -343,3 +353,30 @@ async def test_no_static_root_returns_404() -> None:
                 assert r.status == 404
     finally:
         await h.server.stop()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_invokes_on_disconnect_with_connection_key() -> None:
+    """契约 §5.3：连接断开时以连接 key 调用清理回调（手机语音会话取消）。"""
+    import aiohttp
+
+    disconnected: list[str] = []
+    harness = await _start(None, on_disconnect=disconnected.append)
+    session = aiohttp.ClientSession()
+    try:
+        ws = await session.ws_connect(harness.base + "/ws")
+        await ws.send_str(json.dumps(_req("card.list", "dc-1", token="phone-token")))
+        await _recv_text(ws, "dc-1")
+        # 已鉴权连接的命令携带服务端注入的连接 key（非 None）。
+        assert harness.fake.invoked[-1]["_connection_key"] is not None
+        key_at_dispatch = harness.fake.invoked[-1]["_connection_key"]
+        await ws.close()
+        # 服务端 handler 收尾后触发断开回调。
+        for _ in range(50):
+            if disconnected:
+                break
+            await asyncio.sleep(0.1)
+        assert disconnected == [key_at_dispatch]
+    finally:
+        await session.close()
+        await harness.server.stop()

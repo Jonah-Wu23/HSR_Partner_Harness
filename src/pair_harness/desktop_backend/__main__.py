@@ -176,6 +176,8 @@ async def _run(args: argparse.Namespace) -> int:
                 fanout=fanout,
                 static_root=static_root,
                 port=args.serve,
+                # V0.3.5 契约 §5.3：连接断开自动取消其未完成语音会话。
+                on_disconnect=service.handle_remote_disconnect,
             )
             try:
                 await ws_server.start()
