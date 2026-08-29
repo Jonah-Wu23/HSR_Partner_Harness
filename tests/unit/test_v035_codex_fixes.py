@@ -118,6 +118,13 @@ async def test_mobile_tts_failure_publishes_failed_event(service, monkeypatch) -
 
     # relay 任务内部对 QwenSpeechSynthesizer 是局部导入，patch 模块属性即命中
     monkeypatch.setattr(qwen_tts_module, "QwenSpeechSynthesizer", ExplodingSynthesizer)
+    # CI 无 DashScope 凭据：账号配置直接提供 Key，避免 relay 在音色解析后
+    # 因 api_key 为空静默返回（本测试关注失败事件路径，非真实供应商请求）
+    monkeypatch.setattr(
+        service,
+        "_load_account_config",
+        lambda *args, **kwargs: {"voice.api_key": "test-key", "voice.base_url": "https://example.test"},
+    )
     # 无 Key 的 demo 环境音色解析为空会提前返回；本测试关注失败事件路径
     monkeypatch.setattr(
         service,
