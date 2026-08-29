@@ -1,12 +1,12 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { HarnessActions } from "../../contracts/actions";
+import type { HarnessActions } from "../../../contracts/actions";
 import type {
   CharacterCardSummaryView,
   CharacterLibraryViewModel,
-} from "../../contracts/view-models";
-import type { DesktopBackend } from "../../services/backend";
+} from "../../../contracts/view-models";
+import type { DesktopBackend } from "../../../services/backend";
 import { CharacterLibraryPage } from "../CharacterLibraryPage";
 
 function createMockActions(overrides: Partial<HarnessActions> = {}): HarnessActions {

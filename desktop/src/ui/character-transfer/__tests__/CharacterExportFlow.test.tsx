@@ -1,8 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { HarnessActions } from "../../contracts/actions";
-import type { CardGetResult } from "../../contracts/protocol";
-import type { DesktopBackend } from "../../services/backend";
+import type { HarnessActions } from "../../../contracts/actions";
+import type { CardGetResult } from "../../../contracts/protocol";
+import type { DesktopBackend } from "../../../services/backend";
 import { CharacterExportFlow } from "../CharacterExportFlow";
 
 function createMockActions(overrides: Partial<HarnessActions> = {}): HarnessActions {

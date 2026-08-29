@@ -6,7 +6,6 @@ import type {
   DesktopCommand,
   DesktopEvent,
   DesktopSnapshot,
-  FileFilter,
   Message,
   PendingApproval,
   PairRecord,
@@ -15,6 +14,7 @@ import type {
   ToolRun,
   Turn,
 } from "../contracts/protocol";
+import type { FileFilter } from "./backend";
 import {
   APPROVAL_ALREADY_RESOLVED,
   CARD_AVATAR_TOO_LARGE,

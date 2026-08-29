@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { DesktopCommand } from "../contracts/protocol";
+import type { DesktopCommand, DesktopCommandMethod } from "../contracts/protocol";
 import {
   APPROVAL_ALREADY_RESOLVED,
   CARD_AVATAR_UNSUPPORTED,
@@ -12,7 +12,7 @@ import { createActionController } from "./actions";
 import { MockDesktopBackend } from "./mockDesktopBackend";
 import { desktopStore } from "../stores/desktopStore";
 
-function cmd(method: string, params: Record<string, unknown> = {}): DesktopCommand {
+function cmd(method: DesktopCommandMethod, params: Record<string, unknown> = {}): DesktopCommand {
   return { kind: "request", id: `test-${method}`, method, params };
 }
 

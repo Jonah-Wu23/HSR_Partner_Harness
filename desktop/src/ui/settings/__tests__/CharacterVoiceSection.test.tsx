@@ -97,6 +97,14 @@ function createMockActions(overrides: Partial<HarnessActions> = {}): HarnessActi
       state: "voice_unconfigured" as CharacterVoiceState,
     }),
     voiceCardPreview: vi.fn().mockResolvedValue(undefined),
+    voiceMobilePttStart: vi.fn().mockResolvedValue({ session_id: "mock-session" }),
+    voiceMobileAudioChunk: vi.fn().mockResolvedValue(undefined),
+    voiceMobilePttStop: vi.fn().mockResolvedValue({
+      session_id: "mock-session",
+      transcript: "",
+      conversation_id: "",
+    }),
+    voiceMobileTtsStop: vi.fn().mockResolvedValue(undefined),
     issuePairingCode: vi.fn().mockResolvedValue(undefined),
     listRemoteDevices: vi.fn().mockResolvedValue(undefined),
     revokeRemoteDevice: vi.fn().mockResolvedValue(undefined),
@@ -463,7 +471,7 @@ describe("CharacterVoiceSection", () => {
       cardGet: vi.fn().mockResolvedValue(createCardGetResult({ voiceState: "voice_creating" })),
       voiceCardCreate: vi.fn(
         () =>
-          new Promise((resolve) => {
+          new Promise<{ card_id: string; state: "voice_ready"; voice_id: string }>((resolve) => {
             setTimeout(() => resolve({ card_id: "card-saved-002", state: "voice_ready", voice_id: "x" }), 100);
           }),
       ),
@@ -859,7 +867,7 @@ describe("CharacterVoiceSection", () => {
   it("音色详情载入中展示加载提示", async () => {
     const actions = createMockActions({
       cardGet: vi.fn(
-        () => new Promise((resolve) => setTimeout(() => resolve(createCardGetResult()), 200)),
+        () => new Promise<CardGetResult>((resolve) => setTimeout(() => resolve(createCardGetResult()), 200)),
       ),
     });
 

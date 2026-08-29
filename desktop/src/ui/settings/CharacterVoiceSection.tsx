@@ -64,6 +64,12 @@ type ConfirmAction = "recreate" | "unbind" | null;
 const FIXED_ASR_MODEL = "qwen-audio-3.0-asr-flash-streaming";
 const FIXED_TTS_MODEL = "qwen-audio-3.0-tts-flash";
 
+function extractCardName(card: CardGetResult): string {
+  const root = (card.card ?? {}) as Record<string, unknown>;
+  const data = (root.data ?? {}) as Record<string, unknown>;
+  return typeof data.name === "string" ? data.name : "";
+}
+
 function extractVoiceProfile(card: CardGetResult): VoiceProfileDetail {
   const root = (card.card ?? {}) as Record<string, unknown>;
   const data = (root.data ?? {}) as Record<string, unknown>;
@@ -201,7 +207,7 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
         if (cancelled) return;
         setCardDetail({
           cardId: result.card_id,
-          name: String((result.card as Record<string, unknown>)?.data?.name ?? ""),
+          name: extractCardName(result),
           source: result.source,
           state: result.state,
           readOnly: result.read_only,
@@ -233,7 +239,7 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
         .then((result) => {
           setCardDetail({
             cardId: result.card_id,
-            name: String((result.card as Record<string, unknown>)?.data?.name ?? ""),
+            name: extractCardName(result),
             source: result.source,
             state: result.state,
             readOnly: result.read_only,
@@ -270,7 +276,7 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
       const result = await actions.cardGet(selectedCardId);
       setCardDetail({
         cardId: result.card_id,
-        name: String((result.card as Record<string, unknown>)?.data?.name ?? ""),
+        name: extractCardName(result),
         source: result.source,
         state: result.state,
         readOnly: result.read_only,
@@ -306,7 +312,7 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
       const result = await actions.cardGet(selectedCardId);
       setCardDetail({
         cardId: result.card_id,
-        name: String((result.card as Record<string, unknown>)?.data?.name ?? ""),
+        name: extractCardName(result),
         source: result.source,
         state: result.state,
         readOnly: result.read_only,
@@ -328,7 +334,7 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
       const result = await actions.cardGet(selectedCardId);
       setCardDetail({
         cardId: result.card_id,
-        name: String((result.card as Record<string, unknown>)?.data?.name ?? ""),
+        name: extractCardName(result),
         source: result.source,
         state: result.state,
         readOnly: result.read_only,
