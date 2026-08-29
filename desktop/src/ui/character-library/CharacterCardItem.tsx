@@ -7,6 +7,7 @@ import {
   EditIcon,
   ExportIcon,
   EyeIcon,
+  MicrophoneIcon,
   RestoreIcon,
   UserCheckIcon,
 } from "./CharacterIcons";
@@ -14,24 +15,26 @@ import { formatUpdatedAt } from "./types";
 
 interface CharacterCardItemProps {
   card: CharacterCardSummaryView;
-  onSelectActive: (cardId: string) => void;
+  onUse: (cardId: string) => void;
   onEdit: (cardId: string) => void;
   onDuplicate: (cardId: string) => void;
   onExport: (card: CharacterCardSummaryView) => void;
   onArchive: (cardId: string) => void;
   onDeleteRequest: (card: CharacterCardSummaryView) => void;
   onViewError: (card: CharacterCardSummaryView) => void;
+  onConfigureVoice?: (cardId: string) => void;
 }
 
 export function CharacterCardItem({
   card,
-  onSelectActive,
+  onUse,
   onEdit,
   onDuplicate,
   onExport,
   onArchive,
   onDeleteRequest,
   onViewError,
+  onConfigureVoice,
 }: CharacterCardItemProps) {
   const isInvalid = card.state === "invalid";
   const isDraft = card.state === "draft";
@@ -65,6 +68,8 @@ export function CharacterCardItem({
     voiceDotClass = "char-dot-danger";
     voiceText = "音色创建失败";
   }
+
+  const voiceConfigurable = !isReadOnly && !isInvalid && onConfigureVoice !== undefined;
 
   return (
     <article
@@ -110,11 +115,22 @@ export function CharacterCardItem({
               <button
                 type="button"
                 className="char-icon-btn"
-                title="设为使用中"
+                title="使用该角色开始对话"
                 aria-label={`使用${card.name}`}
-                onClick={() => onSelectActive(card.cardId)}
+                onClick={() => onUse(card.cardId)}
               >
                 <UserCheckIcon />
+              </button>
+            ) : null}
+            {voiceConfigurable ? (
+              <button
+                type="button"
+                className="char-icon-btn"
+                title="配置音色"
+                aria-label={`配置${card.name}的音色`}
+                onClick={() => onConfigureVoice?.(card.cardId)}
+              >
+                <MicrophoneIcon />
               </button>
             ) : null}
             <button
@@ -215,10 +231,17 @@ export function CharacterCardItem({
 
       {/* 底部信息 */}
       <div className="char-card-foot">
-        <span className="char-voice-info">
+        <button
+          type="button"
+          className={`char-voice-info ${voiceConfigurable ? "char-voice-configurable" : ""}`}
+          onClick={() => voiceConfigurable && onConfigureVoice?.(card.cardId)}
+          disabled={!voiceConfigurable}
+          title={voiceConfigurable ? "点击配置音色" : voiceText}
+          aria-label={voiceConfigurable ? `配置${card.name}的音色` : undefined}
+        >
           <span className={`char-dot ${voiceDotClass}`} />
           <span>{voiceText}</span>
-        </span>
+        </button>
         <span className="char-lib-meta">{formatUpdatedAt(card.updatedAt)}</span>
       </div>
     </article>

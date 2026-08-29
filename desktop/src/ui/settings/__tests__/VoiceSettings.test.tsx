@@ -199,4 +199,35 @@ describe("VoiceSettings (V0.3.3 角色语音与助手无 TTS 改造)", () => {
       }),
     );
   });
+
+  it("传入 characterVoice 时渲染「为角色创建音色」区", () => {
+    const props = {
+      ...createMockVoiceProps(),
+      characterVoice: {
+        voiceConfigured: true,
+        cards: [
+          {
+            cardId: "card-saved-002",
+            name: "卡芙卡",
+            state: "saved" as const,
+            source: "user_created" as const,
+            hasAvatar: true,
+            voiceState: "voice_unconfigured" as const,
+            active: true,
+            readOnly: false,
+            hasReferenceAudio: false,
+            referenceAudio: null,
+            voiceId: null,
+            lastError: null,
+          },
+        ],
+        selectedCardId: null,
+        selectedCard: null,
+      },
+    };
+    render(<SettingsCenter {...props} />);
+
+    expect(screen.getByTestId("character-voice-section")).toBeInTheDocument();
+    expect(screen.getByText("为角色创建音色")).toBeInTheDocument();
+  });
 });

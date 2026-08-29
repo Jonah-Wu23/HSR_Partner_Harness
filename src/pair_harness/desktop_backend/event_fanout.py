@@ -52,9 +52,17 @@ class EventFanout:
         except ValueError:
             pass
 
-    def publish(self, envelope: dict) -> None:
-        # 先写 stdout（唯一权威）；BrokenPipe 语义由 JsonlWriter 自身承担。
-        self.stdout.write(envelope)
+    def publish(self, envelope: dict, *, remote_only: bool = False) -> None:
+        """扇出一条事件。
+
+        默认先写 stdout（唯一权威）再写全部远程订阅者；BrokenPipe 语义由
+        JsonlWriter 自身承担。``remote_only=True``（V0.3.5 手机语音音频分片）
+        只写远程订阅者，不写 stdout——大流量音频不进桌面 JSONL 协议。
+        """
+        if not remote_only:
+            self.stdout.write(envelope)
+        if not self._subscriptions:
+            return
         for sub in list(self._subscriptions):
             if not sub._active:
                 continue
@@ -63,3 +71,7 @@ class EventFanout:
             except Exception:  # noqa: BLE001 - 单个订阅者失败隔离在扇出层
                 logger.warning("远程订阅者写入事件失败，已退订", exc_info=True)
                 self._remove(sub)
+
+    def has_remote_subscribers(self) -> bool:
+        """是否存在已订阅的远程连接（手机 TTS 只在有在线端时合成）。"""
+        return any(sub._active for sub in self._subscriptions)

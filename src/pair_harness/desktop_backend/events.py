@@ -43,6 +43,17 @@ class EventEmitter:
     def next_sequence(self) -> int:
         return self._sequence
 
+    def allocate_sequence(self) -> int:
+        """消费并返回下一个序号（V0.3.5）。
+
+        供不经 ``emit`` 的事件通道（手机语音 remote-only 音频分片）使用，
+        保证全站事件序号单调不重不漏：所有下行事件都必须经由本方法或
+        :meth:`emit` 消费序号，禁止直接读取 ``next_sequence``。
+        """
+        sequence = self._sequence
+        self._sequence += 1
+        return sequence
+
     @property
     def stream_id(self) -> str:
         return self._stream_id

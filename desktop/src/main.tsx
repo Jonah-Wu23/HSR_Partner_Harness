@@ -77,6 +77,12 @@ function readInitialConversationId(): string | null {
 const backend: DesktopBackend = isTauriRuntime()
   ? new TauriDesktopBackend()
   : new MockDesktopBackend("single-project");
+// 仅浏览器 Mock 模式把实例挂到 window，供视觉验收在无头浏览器里驱动 mock 状态
+// （如 setVoiceConfigured / setScenario）；生产 Tauri 运行时不会执行这一分支。
+if (!isTauriRuntime()) {
+  (window as unknown as { __mockBackend?: MockDesktopBackend }).__mockBackend =
+    backend as MockDesktopBackend;
+}
 const controller = createActionController(backend);
 const initialConversationId = readInitialConversationId();
 

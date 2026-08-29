@@ -5,6 +5,7 @@ import json
 import logging
 import sys
 import threading
+from dataclasses import replace
 from typing import Any, Callable, TextIO
 
 from .application_service import DesktopApplicationService, ServiceError
@@ -74,14 +75,27 @@ class SidecarRouter:
         self._stop_event = asyncio.Event()
         self._tasks: set[asyncio.Task[None]] = set()
 
-    def dispatch(self, line: str, reply_sink: Callable[[dict[str, Any]], None] | None = None) -> None:
+    def dispatch(
+        self,
+        line: str,
+        reply_sink: Callable[[dict[str, Any]], None] | None = None,
+        *,
+        origin: str = "desktop",
+        connection_key: str | None = None,
+    ) -> None:
         """提交一条请求，不等待它完成，以便后续请求可以继续进入。
 
         ``reply_sink``（V0.3.3 WS 服务器模式）把 response 额外写回发起
         该请求的远程连接；stdout 仍始终收到同一份 response（唯一权威）。
         stdin 路径不传 reply_sink，行为与之前完全一致。
+        ``origin``（V0.3.5）标记命令来源（desktop/remote），由传输层注入
+        并写进 DesktopCommand，前端参数不可伪造。
         """
-        task = asyncio.create_task(self.handle_line(line, reply_sink))
+        task = asyncio.create_task(
+            self.handle_line(
+                line, reply_sink, origin=origin, connection_key=connection_key
+            )
+        )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
     async def wait_stopped(self) -> None:
@@ -97,7 +111,12 @@ class SidecarRouter:
             await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
 
     async def handle_line(
-        self, line: str, reply_sink: Callable[[dict[str, Any]], None] | None = None
+        self,
+        line: str,
+        reply_sink: Callable[[dict[str, Any]], None] | None = None,
+        *,
+        origin: str = "desktop",
+        connection_key: str | None = None,
     ) -> None:
         def respond(message: dict[str, Any]) -> None:
             """response 写 stdout（权威）；远程发起方同时收到同一份。"""
@@ -120,10 +139,21 @@ class SidecarRouter:
             respond(protocol_error(code, str(exc), request_id=request_id))
             return
 
+        if origin != "desktop" or connection_key is not None:
+            # V0.3.5：传输层注入来源与连接 key；payload 里的同名字段一律忽略。
+            command = replace(command, origin=origin, connection_key=connection_key)
+
         try:
             result = await self.service.handle_command(command)
         except ServiceError as exc:
-            respond(response_error(command.request_id, exc.code, str(exc)))
+            respond(
+                response_error(
+                    command.request_id,
+                    exc.code,
+                    str(exc),
+                    details=exc.details or None,
+                )
+            )
             return
         except Exception as exc:  # noqa: BLE001 - Sidecar 不能因单个请求崩溃
             logger.exception("desktop command failed: %s", command.method)

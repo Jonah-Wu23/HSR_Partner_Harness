@@ -42,7 +42,7 @@ export function CharacterDeleteModal({
           删除「{card.name}」？
         </h3>
         <p className="char-modal-desc">
-          角色的全部字段、世界书条目与头像将被移除，且无法恢复。已绑定的音色会一并解除绑定。
+          该角色的全部字段、世界书条目与资产（头像、参考音频）将被同步清理，且无法恢复。已绑定的音色也会解除绑定。
         </p>
         <div className="char-modal-actions">
           <button

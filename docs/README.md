@@ -13,12 +13,18 @@
 - `v0.3.3-visual-ai-acceptance.md` — 强视觉轨道验收记录（桌面角色库/创作页/设置中心、手机端 PWA）与真机验收发现。
 - `v0.3.3-wrap-up.md` — V0.3.3 收尾：真机验收结论、缺陷清单（全部归 V0.3.4）与合并说明。V0.3.4 修复工作的输入清单。
 - `release-notes/v0.3.4-acceptance.md` — V0.3.4 验收结论、复审修复、V0.3.5 最小准备与验证门禁。
+- `手机远程语音说明.md` — V0.3.5 手机语音用户指引：HTTPS（Tailscale）配置、麦克风权限、语音静音边界与故障排查。
+
+## 顶层文件（V0.3.5 阶段文档）
+
+- `v0.3.5-visual-ai-acceptance.md` — 强视觉轨道验收记录：V1-V14 实现、复查结果与反伪造修复、视觉验收截图清单、真机/真实联调未执行的如实记录。
+- `plans/V0.3.5-双轨实施计划.md` 与 `plans/V0.3.5-契约冻结.md` — 双轨执行级计划与冻结契约，详见 `plans/README.md`。
 
 ## 子目录
 
 | 目录 | 内容 | 详细索引 |
 | --- | --- | --- |
-| `plans/` | 开发计划。现行路线图 `V0.3.3-V0.4.0-Plan.md`（v0.3.2-patch1 → V0.4.0 五阶段收敛，角色卡与手机远程两条主线），另有已执行完毕的两份并行双AI任务指令书。 | `plans/README.md` |
+| `plans/` | 开发计划。现行路线图 `V0.3.3-V0.4.0-Plan.md`（v0.3.2-patch1 → V0.4.0 五阶段收敛，角色卡与手机远程两条主线）与 V0.3.5 执行级双轨计划，另有已执行完毕的两份并行双AI任务指令书。 | `plans/README.md` |
 | `release-notes/` | 历次版本发布说明：v0.3.2-patch1（当前基线）、v0.3.2、v0.2.0。 | `release-notes/README.md` |
 | `character-card/` | 角色卡数据契约（hsr schema 1.0）、酒馆字段映射、状态枚举与接入清单。`src/pair_harness/character_cards/` 注释引用此处路径，移动文件需同步代码。 | `character-card/README.md` |
 | `design/` | 设计调研与参考：`research/`（mufy、SillyTavern、DeepSeek-Reasonix 外部调研）、`dashscope/`（千问语音 API 参考，`src/` 多处注释引用其路径）、`web-prototype/`（V0.4.0 视觉原型交付包）、`旧版/`（v0.2.0 时代文档）。 | `design/README.md` |

@@ -79,6 +79,58 @@
 
 /* ========== 审批卡展示区 ========== */
 
+.mobile-approval-mode {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 12px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-radius: 10px;
+}
+
+.mobile-approval-mode-label {
+  font-size: 12px;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.mobile-approval-mode-options {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.mobile-approval-mode-option {
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.16));
+  background: transparent;
+  color: inherit;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mobile-approval-mode-option.is-active {
+  border-color: currentColor;
+  font-weight: 600;
+}
+
+.mobile-approval-mode-option:disabled {
+  cursor: default;
+  opacity: 0.9;
+}
+
+.mobile-approval-allow-conversation {
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.16));
+  background: transparent;
+  color: inherit;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
 .mobile-chat-approvals {
   padding: 8px 12px 0;
   flex: none;
@@ -387,6 +439,237 @@
 
 .mobile-composer-submit-label {
   display: inline;
+}
+
+/* ========== 语音输入区（V0.3.5） ========== */
+
+.mobile-voice-bar {
+  margin: 8px 0;
+}
+
+.mobile-voice-disabled {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.mobile-voice-disabled-icon {
+  display: inline-flex;
+  color: var(--muted);
+  flex: none;
+}
+
+.mobile-voice-trigger-row {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.mobile-voice-trigger-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mobile-voice-trigger-btn:hover {
+  border-color: var(--accent);
+  background: color-mix(in oklch, var(--accent) 10%, var(--surface-2));
+}
+
+.mobile-voice-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.mobile-voice-mode-switch {
+  display: flex;
+  gap: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 3px;
+}
+
+.mobile-voice-mode-btn {
+  flex: 1;
+  min-height: 36px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mobile-voice-mode-btn.active {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.mobile-voice-hold-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 48px;
+  padding: 0 16px;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  color: var(--accent-fg);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  touch-action: manipulation;
+}
+
+.mobile-voice-hold-btn:active {
+  filter: brightness(1.05);
+}
+
+.mobile-voice-auto {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.mobile-voice-listening {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--fg);
+}
+
+.mobile-voice-listening-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: mobile-pulse 1.2s ease-in-out infinite;
+}
+
+.mobile-voice-stop-btn,
+.mobile-voice-close-btn,
+.mobile-voice-retry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mobile-voice-stop-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg);
+}
+
+.mobile-voice-close-btn {
+  align-self: flex-end;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.mobile-voice-retry-btn {
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+
+.mobile-voice-transcript {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--fg);
+  line-height: 1.4;
+}
+
+.mobile-voice-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  background: oklch(0.2 0.05 25);
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--fg);
+}
+
+/* ========== 消息朗读标记（V0.3.5） ========== */
+
+.mobile-msg-tts-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: default;
+}
+
+.mobile-msg-tts-badge-playing {
+  background: color-mix(in oklch, var(--accent) 12%, transparent);
+  border-color: var(--accent);
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.mobile-msg-tts-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.mobile-msg-tts-dot-playing {
+  background: var(--accent);
+  animation: mobile-pulse 1s ease-in-out infinite;
 }
 
 /* 窄屏 (≤ 360px) 优化 */

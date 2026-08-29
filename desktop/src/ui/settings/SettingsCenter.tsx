@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { CloseIcon } from "../../assets/icons/icons";
+import type { HarnessActions } from "../../contracts/actions";
 import type {
   AccountPageView,
   CharacterModelPageView,
@@ -9,7 +10,9 @@ import type {
   VoicePageView,
   VoiceSpeakerStatus,
 } from "./types";
-import type { RemotePairingViewModel } from "../../contracts/view-models";
+import type { CharacterCardVoicePageViewModel, RemotePairingViewModel } from "../../contracts/view-models";
+import type { FileFilter } from "../../services/backend";
+import { CharacterVoiceSection } from "./CharacterVoiceSection";
 import { RemotePairingPanel } from "./remote/RemotePairingPanel";
 
 export type SettingsPage = "account" | "coding" | "model" | "voice" | "remote";
@@ -23,6 +26,14 @@ interface SettingsCenterProps {
   coding: CodingAssistantPageView;
   model: CharacterModelPageView;
   voice: VoicePageView;
+  /** V0.3.5：语音页「角色音色」区数据（卡列表 + 账号语音配置完备性）。 */
+  characterVoice?: CharacterCardVoicePageViewModel;
+  /** V0.3.5：从角色库直达语音页时预选的角色卡 id；null 表示无预选。 */
+  voiceCardFocus?: string | null;
+  /** V0.3.5：可选 actions，用于角色音色流程。AppShell 需要传入。 */
+  actions?: HarnessActions;
+  /** V0.3.5：选择本地文件（参考音频等）。AppShell 需要传入 backend.pickFile 的包装。 */
+  onPickFile?: (options?: { title?: string; filters?: FileFilter[] }) => Promise<string | null>;
   /** V0.3.3：远程设备页数据源与回调（remote.* 命令）。 */
   remote: RemotePairingViewModel;
   onIssuePairingCode: () => void;
@@ -452,6 +463,9 @@ function CharacterModelPage(props: SettingsCenterProps) {
 function VoicePage(props: SettingsCenterProps) {
   const { voice } = props;
 
+  // V0.3.5：角色音色区「账号未配置」时跳转回 DashScope 账号配置区。
+  const accountConfigRef = useRef<HTMLDivElement>(null);
+
   const [baseUrl, setBaseUrl] = useState(voice.baseUrl ?? "");
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
@@ -631,7 +645,7 @@ function VoicePage(props: SettingsCenterProps) {
         语音直接使用你自己的 DashScope 账号。Key 只写入当前本地账号的密钥引用，不会显示明文；保存配置不会自动创建音色。
       </p>
 
-      <h3 className="settings-subhead">DashScope 账号配置</h3>
+      <h3 ref={accountConfigRef} className="settings-subhead">DashScope 账号配置</h3>
       <label className="field">
         <span className="field-label">
           API Key
@@ -793,7 +807,17 @@ function VoicePage(props: SettingsCenterProps) {
         })}
       </div>
 
-      <p className="settings-hint">为自定义角色上传参考音频并生成音色将于 V0.3.5 开放。</p>
+      {props.characterVoice ? (
+        <CharacterVoiceSection
+          characterVoice={props.characterVoice}
+          voiceCardFocus={props.voiceCardFocus}
+          actions={props.actions}
+          onPickFile={props.onPickFile}
+          onScrollToAccountConfig={() =>
+            accountConfigRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+          }
+        />
+      ) : null}
 
       <label className="settings-switch">
         <input

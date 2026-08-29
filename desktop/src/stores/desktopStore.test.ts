@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import type { DesktopEvent, DesktopSnapshot, ToolRun } from "../contracts/protocol";
+import type { DesktopEvent, DesktopSnapshot, PendingApproval, ToolRun } from "../contracts/protocol";
 import { createMockScenario } from "../mocks/scenarios";
 import { presentAppShell } from "../presenters/presenters";
 import { desktopStore } from "./desktopStore";
@@ -1198,6 +1198,100 @@ describe("desktopStore event projection", () => {
           voice_id: "voice-phainon",
         },
       ],
+    });
+  });
+
+  it("V0.3.5：approval.resolved 从 pending 移入 resolvedApprovals 并保留 resolved_by", () => {
+    const approval: PendingApproval = {
+      approval_id: "app-v35",
+      conversation_id: "conv-1",
+      operation: {
+        tool_kind: "file_write",
+        command: null,
+        paths: ["src/config.ts"],
+        patch_file_count: 1,
+        summary: "写入配置",
+      },
+      reason: "需要确认",
+      task_id: "task-v35",
+    };
+    desktopStore.setState({ approvals: [approval] });
+
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "approval.resolved",
+        sequence: 1,
+        payload: {
+          approval_id: "app-v35",
+          conversation_id: "conv-1",
+          decision: "allow",
+          resolved_by: "mobile",
+          task_id: "task-v35",
+        },
+      },
+    ]);
+
+    const state = desktopStore.getState();
+    expect(state.approvals).toHaveLength(0);
+    expect(state.resolvedApprovals).toContainEqual({
+      approval_id: "app-v35",
+      conversation_id: "conv-1",
+      decision: "allow",
+      resolved_by: "mobile",
+      task_id: "task-v35",
+    });
+  });
+
+  it("V0.3.5：voice.card_provision_changed 同步角色库与创作页音色状态", () => {
+    desktopStore.setState({
+      characterLibrary: {
+        cards: [
+          {
+            cardId: "card-voice-001",
+            name: "测试角色",
+            state: "saved",
+            source: "user_created",
+            updatedAt: "",
+            hasAvatar: false,
+            voiceState: "voice_unconfigured",
+            active: false,
+            readOnly: false,
+            archived: false,
+          },
+        ],
+        loading: false,
+        error: null,
+        loaded: true,
+      },
+      characterCreate: {
+        cardId: "card-voice-001",
+        card: { spec: "chara_card_v3", voice_state: "voice_unconfigured" },
+        readOnly: false,
+        loading: false,
+        error: null,
+      },
+    });
+
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "voice.card_provision_changed",
+        sequence: 1,
+        payload: {
+          card_id: "card-voice-001",
+          state: "voice_ready",
+          voice_id: "voice-abc",
+          error: null,
+        },
+      },
+    ]);
+
+    const state = desktopStore.getState();
+    expect(state.characterLibrary.cards[0]?.voiceState).toBe("voice_ready");
+    expect(state.characterCreate.card).toMatchObject({
+      voice_state: "voice_ready",
+      voice_id: "voice-abc",
     });
   });
 });

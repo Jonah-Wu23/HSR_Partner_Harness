@@ -30,7 +30,12 @@ export interface WireResponse<T = unknown> {
   id: string;
   ok: boolean;
   result?: T;
-  error?: { code: string; message: string };
+  error?: {
+    code: string;
+    message: string;
+    /** V0.3.5 契约 §6：结构化附加字段（如 approval_already_resolved 的真实结果）。 */
+    details?: Record<string, unknown>;
+  };
 }
 
 export interface WireEvent<T = Record<string, unknown>> {
@@ -44,11 +49,18 @@ export interface WireEvent<T = Record<string, unknown>> {
 /** Sidecar 远程命令失败：保留 code，调用方可据 code 分支（如 unauthorized）。 */
 export class RemoteCommandError extends Error {
   readonly code: string;
+  /** V0.3.5 契约 §6：服务端结构化附加字段（原样透传，无则为空对象）。 */
+  readonly details: Record<string, unknown>;
 
-  constructor(code: string, message: string) {
+  constructor(
+    code: string,
+    message: string,
+    details?: Record<string, unknown>,
+  ) {
     super(message);
     this.name = "RemoteCommandError";
     this.code = code;
+    this.details = details ?? {};
   }
 }
 
@@ -244,7 +256,9 @@ export class MobileWsClient {
       // 如实暴露鉴权失败：UI 引导重新配对，不在网络层静默换状态。
       this.setState("auth_failed");
     }
-    entry.reject(new RemoteCommandError(code, message));
+    entry.reject(
+      new RemoteCommandError(code, message, frame.error?.details),
+    );
   }
 
   private scheduleReconnect(): void {

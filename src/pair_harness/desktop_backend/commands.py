@@ -60,6 +60,20 @@ DESKTOP_COMMANDS = frozenset(
         "card.archive",
         "card.delete",
         "card.select_active",
+        "card.peek_import_json",
+        "card.import_json",
+        "card.export_json",
+        "card.publish",
+        "card.set_avatar",
+        "card.remove_avatar",
+        "voice.card_bind_reference",
+        "voice.card_create",
+        "voice.card_unbind",
+        "voice.card_preview",
+        "voice.mobile_ptt_start",
+        "voice.mobile_audio_chunk",
+        "voice.mobile_ptt_stop",
+        "voice.mobile_tts_stop",
         "remote.issue_code",
         "remote.pair",
         "remote.list_devices",
@@ -81,6 +95,12 @@ class DesktopCommand:
     request_id: str
     method: str
     params: Mapping[str, Any]
+    # V0.3.5：命令来源由传输层注入（stdin=desktop、WS=remote），不信任
+    # 前端参数；审批仲裁用 resolved_by 如实区分双端应答。默认 desktop。
+    origin: str = "desktop"
+    # V0.3.5：WS 连接唯一 key（服务端注入，stdin 路径为 None）。手机语音
+    # 会话绑定它；连接断开时按 key 自动取消未完成转写（契约 §5.3）。
+    connection_key: str | None = None
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> "DesktopCommand":

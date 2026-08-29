@@ -148,6 +148,8 @@ export interface ConversationRecord {
   archived: boolean;
   created_at: string;
   updated_at: string;
+  /** V0.3.5 迁移 v10：本聊天绑定的角色卡 id；null 表示使用内置角色。 */
+  character_card_id?: string | null;
 }
 
 export interface PairSpeaker {
@@ -178,6 +180,25 @@ export interface PairRecord {
 export type PairSummary = PairRecord;
 
 export const PAIR_NOT_FOUND = "PAIR_NOT_FOUND";
+
+/** V0.3.5 角色卡导入导出错误码。 */
+export const CARD_IMPORT_FAILED = "card_import_failed";
+export const CARD_READ_ONLY = "card_read_only";
+export const CARD_PUBLISH_INVALID = "card_publish_invalid";
+export const CARD_AVATAR_UNSUPPORTED = "card_avatar_unsupported";
+export const CARD_AVATAR_TOO_LARGE = "card_avatar_too_large";
+
+/** V0.3.5 角色卡音色错误码。 */
+export const VOICE_NOT_CONFIGURED = "voice_not_configured";
+export const VOICE_REFERENCE_MISSING = "voice_reference_missing";
+export const VOICE_REFERENCE_INVALID = "voice_reference_invalid";
+export const VOICE_CARD_PROVISION_IN_PROGRESS = "voice_card_provision_in_progress";
+export const VOICE_CARD_NOT_READY = "voice_card_not_ready";
+
+/** V0.3.5 手机语音与审批仲裁错误码。 */
+export const VOICE_AUDIO_SEQ_GAP = "voice_audio_seq_gap";
+export const VOICE_TRANSCRIPT_EMPTY = "voice_transcript_empty";
+export const APPROVAL_ALREADY_RESOLVED = "approval_already_resolved";
 
 export interface ActiveTask {
   project_id: string;
@@ -315,6 +336,20 @@ export type DesktopCommandMethod =
   | "card.archive"
   | "card.delete"
   | "card.select_active"
+  | "card.peek_import_json"
+  | "card.import_json"
+  | "card.export_json"
+  | "card.publish"
+  | "card.set_avatar"
+  | "card.remove_avatar"
+  | "voice.card_bind_reference"
+  | "voice.card_create"
+  | "voice.card_unbind"
+  | "voice.card_preview"
+  | "voice.mobile_ptt_start"
+  | "voice.mobile_audio_chunk"
+  | "voice.mobile_ptt_stop"
+  | "voice.mobile_tts_stop"
   | "remote.issue_code"
   | "remote.pair"
   | "remote.list_devices"
@@ -360,6 +395,10 @@ export type DesktopEventName =
   | "voice.asr_partial"
   | "voice.state_changed"
   | "voice.provision_changed"
+  | "voice.card_provision_changed"
+  | "voice.mobile_transcript"
+  | "voice.mobile_tts_chunk"
+  | "voice.mobile_tts_end"
   | "connection.status"
   | "error.reported"
   | "serve.started";
@@ -403,6 +442,135 @@ export interface VoiceProvisionEventPayload {
 }
 
 /* ------------------------------------------------------------------ *
+ * V0.3.5 角色卡导入/导出/头像/音色与手机语音：线缆类型严格按契约冻结文档。
+ * 字段保持 snake_case（与线缆一致）；camelCase 视图模型在 view-models.ts。
+ * ------------------------------------------------------------------ */
+
+/** 角色卡导入兼容报告（对应 character_cards/codec.py 的 CompatReport）。 */
+export interface CompatReportPayload {
+  applied: string[];
+  preserved: string[];
+  not_executed: string[];
+  normalized_from_root: string[];
+  warnings: string[];
+  errors: string[];
+}
+
+/** card.peek_import_json 的预览载荷。 */
+export interface CardImportPreviewPayload {
+  name: string;
+  spec_version: string;
+  avatar_available: boolean;
+  greeting_count: number;
+  world_book_entries: number;
+  tags: string[];
+  report: CompatReportPayload;
+}
+
+export interface CardPeekImportResult {
+  preview: CardImportPreviewPayload;
+}
+
+export interface CardImportJsonResult {
+  card_id: string;
+  name: string;
+  state: CharacterCardState;
+  report: CompatReportPayload;
+}
+
+export interface CardExportJsonResult {
+  exported: boolean;
+  path: string;
+  avatar_saved: boolean;
+}
+
+export interface CardPublishResult {
+  card_id: string;
+  state: CharacterCardState;
+}
+
+export interface CardAvatarPayload {
+  mime_type: string;
+  data_base64: string;
+}
+
+export interface CardSetAvatarResult {
+  card_id: string;
+  asset_id: string;
+  mime_type: string;
+}
+
+export interface CardRemoveAvatarResult {
+  card_id: string;
+  removed: boolean;
+}
+
+export interface VoiceCardBindReferenceResult {
+  card_id: string;
+  asset_id: string;
+  duration_seconds: number;
+  size_bytes: number;
+  mime_type: string;
+}
+
+export interface VoiceCardCreateResult {
+  card_id: string;
+  state: CharacterVoiceState;
+  voice_id: string;
+}
+
+export interface VoiceCardUnbindResult {
+  card_id: string;
+  state: CharacterVoiceState;
+}
+
+export interface VoiceCardProvisionChangedPayload {
+  card_id: string;
+  state: CharacterVoiceState;
+  voice_id: string | null;
+  error: string | null;
+}
+
+export interface VoiceMobilePttStartResult {
+  session_id: string;
+}
+
+export interface VoiceMobilePttStopResult {
+  session_id: string;
+  transcript: string;
+  conversation_id: string;
+}
+
+export interface VoiceMobileTranscriptPayload {
+  conversation_id: string;
+  session_id: string;
+  text: string;
+  is_final: boolean;
+}
+
+export interface VoiceMobileTtsChunkPayload {
+  conversation_id: string;
+  message_id: string;
+  seq: number;
+  mime: string;
+  data: string;
+}
+
+export interface VoiceMobileTtsEndPayload {
+  conversation_id: string;
+  message_id: string;
+}
+
+/** V0.3.5 审批仲裁：approval.resolved 携带决策与来源，双端据此收敛。 */
+export interface ApprovalResolvedPayload {
+  approval_id: string;
+  conversation_id?: string;
+  decision: "approve" | "deny" | string;
+  resolved_by: "desktop" | "remote" | string;
+  task_id?: string;
+}
+
+/* ------------------------------------------------------------------ *
  * V0.3.3 角色卡与手机远程：与 Sidecar card.* / remote.* 命令对齐的线缆类型。
  * 字段保持 snake_case（与线缆一致）；camelCase 视图模型在 view-models.ts。
  * ------------------------------------------------------------------ */
@@ -439,7 +607,8 @@ export interface CardListResult {
   cards: CardSummaryPayload[];
 }
 
-/** card.get：card 为酒馆 v3 JSON 对象（未知扩展原样保留在 data.extensions）。 */
+/** card.get：card 为酒馆 v3 JSON 对象（未知扩展原样保留在 data.extensions）；
+    V0.3.5 新增 avatar 字段，有头像时返回 base64 数据，否则 null。 */
 export interface CardGetResult {
   card_id: string;
   state: CharacterCardState;
@@ -448,6 +617,7 @@ export interface CardGetResult {
   updated_at: string;
   card: Record<string, unknown>;
   read_only: boolean;
+  avatar: CardAvatarPayload | null;
 }
 
 export interface CardCreateDraftResult {

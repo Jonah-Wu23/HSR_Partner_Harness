@@ -552,3 +552,87 @@ def test_migration_v8_repairs_message_pair_id_from_conversation(tmp_path: Path) 
         messages = migrated.load_conversation(conversation.conversation_id)["messages"]
         assert messages[0].pair_id == "march7_fourth_mirror"
         assert migrated.connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+
+
+def test_conversation_character_card_id_roundtrip(tmp_path: Path) -> None:
+    """V0.3.5：新建对话绑定角色卡快照——显式传入则写入，未传为 None。"""
+    with SQLiteStore(tmp_path / "db.sqlite") as store:
+        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert SCHEMA_VERSION == 10
+        # 新库由 schema.sql 直建该列
+        assert "character_card_id" in _table_columns(store.connection, "conversations")
+
+        project = store.create_project(name="Repo", root_path=str(tmp_path), project_id="p")
+        bound = store.create_conversation(
+            project_id=project.project_id,
+            pair_id="phainon_ancient_machine",
+            title="绑定卡",
+            conversation_id="c-bound",
+            character_card_id="card-01",
+        )
+        unbound = store.create_conversation(
+            project_id=project.project_id,
+            pair_id="phainon_ancient_machine",
+            title="内置角色",
+            conversation_id="c-unbound",
+        )
+
+        # get 返回一致
+        assert store.get_conversation("c-bound").character_card_id == "card-01"
+        assert store.get_conversation("c-unbound").character_card_id is None
+        # list 返回一致
+        listed = {
+            item.conversation_id: item
+            for item in store.list_conversations(project.project_id)
+        }
+        assert listed["c-bound"].character_card_id == "card-01"
+        assert listed["c-unbound"].character_card_id is None
+        assert bound.character_card_id == "card-01"
+
+
+def test_migration_v10_adds_character_card_id_without_data_loss(tmp_path: Path) -> None:
+    """V0.3.5：迁移 10——v9 库打开后补列，既有数据不丢、新列可写。"""
+    database = tmp_path / "v9.sqlite"
+    # 先建 v10 全新库（schema.sql 直建同构表），再删列降级为 v9 旧库
+    with SQLiteStore(database):
+        pass
+    connection = sqlite3.connect(database)
+    connection.execute("ALTER TABLE conversations DROP COLUMN character_card_id")
+    connection.execute("PRAGMA user_version = 9")
+    now = "2026-01-01T00:00:00+00:00"
+    connection.execute(
+        """INSERT INTO projects(
+            project_id, account_id, name, root_path, approval_mode, reasoning_effort,
+            archived, created_at, last_opened_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)""",
+        ("p", "default-local", "Repo", str(tmp_path), "request_approval", "low", now, now),
+    )
+    connection.execute(
+        """INSERT INTO conversations(
+            conversation_id, account_id, project_id, pair_id, title, last_mode,
+            archived, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)""",
+        ("c", "default-local", "p", "phainon_ancient_machine", "旧聊天", "chat", now, now),
+    )
+    connection.commit()
+    connection.close()
+
+    with SQLiteStore(database) as store:
+        version = store.connection.execute("PRAGMA user_version").fetchone()[0]
+        assert version == SCHEMA_VERSION
+        assert SCHEMA_VERSION == 10
+        assert "character_card_id" in _table_columns(store.connection, "conversations")
+        # 既有数据不丢，迁移后新列值为 NULL
+        conversation = store.get_conversation("c")
+        assert conversation.title == "旧聊天"
+        assert conversation.pair_id == "phainon_ancient_machine"
+        assert conversation.character_card_id is None
+        # 旧库升级后新列可写
+        store.create_conversation(
+            project_id="p",
+            pair_id="phainon_ancient_machine",
+            title="新绑定",
+            conversation_id="c2",
+            character_card_id="card-9",
+        )
+        assert store.get_conversation("c2").character_card_id == "card-9"

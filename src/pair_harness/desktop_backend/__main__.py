@@ -168,12 +168,16 @@ async def _run(args: argparse.Namespace) -> int:
                     static_root,
                 )
                 static_root = None
+            # V0.3.5：手机语音事件经 fanout 的 remote-only 通道下发。
+            service.attach_event_fanout(fanout)
             ws_server = WSServerMode(
                 dispatch=router.dispatch,
                 authenticator=service.pairing_service,
                 fanout=fanout,
                 static_root=static_root,
                 port=args.serve,
+                # V0.3.5 契约 §5.3：连接断开自动取消其未完成语音会话。
+                on_disconnect=service.handle_remote_disconnect,
             )
             try:
                 await ws_server.start()

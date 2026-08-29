@@ -122,6 +122,28 @@ class CharacterCardRepository:
         self.connection.commit()
         return self.get_card(card_id)
 
+    def import_card(self, card: CharacterCard, *, as_duplicate: bool = False) -> CardRecord:
+        """导入一张解析后的卡：state=imported, source=tavern_import，新 card_id。
+
+        ``as_duplicate=True`` 时名称追加「（副本）」——deepcopy 后修改，
+        不改变传入对象。语义与 create_draft/update_card 一致：真实失败直接抛。
+        """
+        if as_duplicate:
+            card_to_store = copy.deepcopy(card)
+            card_to_store.name = f"{card_to_store.name}（副本）"
+        else:
+            card_to_store = card
+        card_id = uuid4().hex
+        now = _now()
+        self.connection.execute(
+            "INSERT INTO character_cards("
+            "card_id, state, name, source, card_json, created_at, updated_at"
+            ") VALUES (?, 'imported', ?, 'tavern_import', ?, ?, ?)",
+            (card_id, card_to_store.name, dump_card_v3(card_to_store), now, now),
+        )
+        self.connection.commit()
+        return self.get_card(card_id)
+
     def duplicate_card(self, card_id: str) -> CardRecord:
         """复制一张卡：新 card_id、名称加后缀（副本），state/source 与源卡一致。"""
         source = self.get_card(card_id)
@@ -178,6 +200,23 @@ class CharacterCardRepository:
             (ACTIVE_KEY, card_id),
         )
         self.connection.commit()
+
+    def publish_card(self, card_id: str) -> CardRecord:
+        """V0.3.5：draft → saved（完成创建）。非 draft 幂等返回当前记录。"""
+        record = self.get_card(card_id)
+        if record.state != "draft":
+            return record
+        self.connection.execute(
+            "UPDATE character_cards SET state = 'saved', updated_at = ? "
+            "WHERE card_id = ?",
+            (_now(), card_id),
+        )
+        self.connection.commit()
+        return self.get_card(card_id)
+
+    def is_archived(self, card_id: str) -> bool:
+        """V0.3.5：卡是否在归档集合（active 快照判断用）。"""
+        return card_id in self._archived_ids()
 
     def get_active_card_id(self) -> str | None:
         row = self.connection.execute(

@@ -28,7 +28,7 @@ def _dt(value: str) -> datetime:
 # O4.3：数据库结构版本。新库由 schema.sql 一次建全，直接标记为该版本；
 # 旧库（user_version=0）按 MIGRATIONS 逐级升级。每次结构变更 +1，
 # 并在 MIGRATIONS 里补对应迁移步骤。
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # 索引 i 对应“从版本 i 升到 i+1”的迁移步骤（每级一条或多条 SQL）。
 MIGRATIONS: tuple[tuple[str, ...], ...] = (
@@ -152,6 +152,12 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         "created_at TEXT NOT NULL)",
         "CREATE INDEX IF NOT EXISTS idx_character_assets_card "
         "ON character_assets(card_id)",
+    ),
+    # 版本 10：V0.3.5 对话绑定自定义角色卡快照。
+    # conversations 补 character_card_id 列（NULL = 内置角色）；只加列
+    # 不改动既有数据，新库由 schema.sql 直建同结构。
+    (
+        "ALTER TABLE conversations ADD COLUMN character_card_id TEXT NULL",
     ),
 )
 
@@ -343,18 +349,30 @@ class SQLiteStore(StateStore):
         last_mode: str = "chat",
         conversation_id: str | None = None,
         account_id: str = "",
+        character_card_id: str | None = None,
     ) -> Conversation:
         conversation_id = conversation_id or str(uuid4())
         now = _now()
         self.connection.execute(
             """
             INSERT INTO conversations(
-                conversation_id, account_id, project_id, pair_id, title, last_mode, archived, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+                conversation_id, account_id, project_id, pair_id, title, last_mode,
+                archived, created_at, updated_at, character_card_id
+            ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
             ON CONFLICT(conversation_id) DO UPDATE SET
                 updated_at=excluded.updated_at
             """,
-            (conversation_id, account_id, project_id, pair_id, title, last_mode, now, now),
+            (
+                conversation_id,
+                account_id,
+                project_id,
+                pair_id,
+                title,
+                last_mode,
+                now,
+                now,
+                character_card_id,
+            ),
         )
         self.connection.commit()
         return self.get_conversation(conversation_id)
@@ -375,6 +393,7 @@ class SQLiteStore(StateStore):
             archived=bool(row["archived"]),
             created_at=_dt(row["created_at"]),
             updated_at=_dt(row["updated_at"]),
+            character_card_id=row["character_card_id"],
         )
 
     def list_conversations(
