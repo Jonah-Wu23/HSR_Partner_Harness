@@ -146,6 +146,21 @@ class CharacterAssetService:
             for row in rows
         ]
 
+    def delete_asset(self, asset_id: str) -> bool:
+        """V0.3.5：删除单个资产（文件+表记录）；未知 asset_id 返回 False。"""
+        row = self.connection.execute(
+            "SELECT file_path FROM character_assets WHERE asset_id = ?",
+            (asset_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        Path(row["file_path"]).unlink(missing_ok=True)
+        self.connection.execute(
+            "DELETE FROM character_assets WHERE asset_id = ?", (asset_id,)
+        )
+        self.connection.commit()
+        return True
+
     def delete_assets_for_card(self, card_id: str) -> int:
         """删除该卡全部资产：先删文件、再删表记录，返回删除的记录数。
 
