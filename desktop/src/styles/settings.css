@@ -425,3 +425,279 @@
   color: var(--warning);
   font-style: italic;
 }
+
+/* ========== V0.3.5：角色音色区（设置页语音 Tab） ========== */
+
+.character-voice-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.character-voice-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.character-voice-head .settings-subhead {
+  margin-top: 0;
+}
+
+.character-voice-select {
+  width: 100%;
+}
+
+.character-voice-flow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+}
+
+.character-voice-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.character-voice-status-label {
+  font-size: var(--text-c1-size);
+  color: var(--text-secondary);
+}
+
+.voice-state-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-c1-size);
+  font-weight: 600;
+  background: var(--fill-hover);
+  color: var(--text-muted);
+}
+
+.voice-state-pill::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: currentColor;
+}
+
+.voice-state-voice_creating {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.voice-state-voice_ready {
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--success);
+}
+
+.voice-state-voice_failed {
+  background: rgba(220, 38, 38, 0.12);
+  color: var(--danger);
+}
+
+.character-voice-section-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-b2-size);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.character-voice-reference,
+.character-voice-create {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.character-voice-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-5) var(--space-4);
+  border: 1.5px dashed var(--separator);
+  border-radius: var(--radius-lg);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  text-align: center;
+  transition: border-color var(--dur-fast) ease, background-color var(--dur-fast) ease;
+}
+
+.character-voice-dropzone:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.character-voice-dropzone:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.character-voice-dropzone-title {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.character-voice-dropzone-hint {
+  font-size: var(--text-c1-size);
+}
+
+.character-voice-ref-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+}
+
+.character-voice-ref-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.character-voice-ref-mime {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.character-voice-ref-meta {
+  font-size: var(--text-c1-size);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.character-voice-mode-segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-md);
+  width: fit-content;
+}
+
+.character-voice-mode-segmented button {
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-c1-size);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+
+.character-voice-mode-segmented button:hover {
+  background: var(--fill-hover);
+  color: var(--text-primary);
+}
+
+.character-voice-mode-segmented button.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.character-voice-state-hero {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--separator);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  flex: none;
+}
+
+.character-voice-state-hero.ok {
+  color: var(--success);
+  border-color: var(--success);
+  border-style: solid;
+}
+
+.character-voice-state-hero.warn {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.character-voice-state-hero.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+  border-style: solid;
+}
+
+.character-voice-state-hero.accent {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.character-voice-ready-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.character-voice-id {
+  display: inline-block;
+  margin-top: 2px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-size: var(--text-c1-size);
+  word-break: break-all;
+}
+
+.character-voice-confirm-mask {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal-backdrop);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--mask);
+}
+
+.character-voice-confirm {
+  width: 380px;
+  max-width: calc(100vw - 48px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-xl);
+  background: var(--bg-panel);
+}
+
+.character-voice-confirm-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.character-voice-confirm-head h3 {
+  font-size: var(--text-t2-size);
+  font-weight: 600;
+}
