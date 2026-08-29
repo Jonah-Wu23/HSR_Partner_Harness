@@ -306,7 +306,11 @@ export function BasicInfoSection({
             data-testid="avatar-preview"
           >
             {displayedAvatar ? (
-              <img src={displayedAvatar} alt="" className="char-create-avatar-img" />
+              <img
+                src={displayedAvatar} /* codeql[js/xss-through-dom] 受控来源：白名单仅放行 blob: object URL 与 data:image/*（见 displayedAvatar 构造），blob URL 由浏览器生成不可注入 */
+                alt=""
+                className="char-create-avatar-img"
+              />
             ) : (
               avatarChar
             )}
