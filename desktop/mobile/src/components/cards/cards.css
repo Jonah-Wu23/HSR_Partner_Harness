@@ -366,6 +366,66 @@
   line-height: 1.4;
 }
 
+.mobile-approval-resolved {
+  border-color: var(--border);
+  opacity: 0.92;
+}
+
+.mobile-approval-status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--surface-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+}
+
+.mobile-approval-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.mobile-approval-actions button {
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.mobile-approval-reject {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+.mobile-approval-reject:hover:not(:disabled) {
+  border-color: var(--muted);
+  background: var(--surface-2);
+}
+
+.mobile-approval-approve {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
+.mobile-approval-approve:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.mobile-approval-resolved-text {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: right;
+}
+
 /* ========== 思考缎带 ========== */
 
 .mobile-reasoning-ribbon {

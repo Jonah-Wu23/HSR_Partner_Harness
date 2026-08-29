@@ -57,4 +57,33 @@ describe("ApprovalCard", () => {
     expect(reject).toBeDisabled();
     expect(approve.textContent).toBe("提交中…");
   });
+
+  it("已决状态展示决策与处理端", () => {
+    render(
+      <ApprovalCard
+        approval={approval}
+        status="resolved"
+        decision="deny"
+        resolvedBy="desktop"
+        conversationTitle="测试会话"
+      />,
+    );
+
+    expect(screen.getByText(/已决操作 · 命令执行/)).toBeInTheDocument();
+    expect(screen.getByTestId("approval-status")).toHaveTextContent("已拒绝");
+    expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent(/桌面端/);
+    expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent(/已拒绝/);
+    expect(screen.queryByTestId("approval-approve")).toBeNull();
+    expect(screen.queryByTestId("approval-reject")).toBeNull();
+  });
+
+  it("mobile / remote 处理端统一显示为手机端", () => {
+    render(<ApprovalCard approval={approval} status="resolved" decision="approve" resolvedBy="remote" />);
+    expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent(/手机端/);
+
+    cleanup();
+
+    render(<ApprovalCard approval={approval} status="resolved" decision="approve" resolvedBy="mobile" />);
+    expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent(/手机端/);
+  });
 });

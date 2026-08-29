@@ -65,6 +65,9 @@ export interface MobileState {
     decision: string;
     resolved_by: string;
     task_id?: string;
+    /** 保留原始 operation/reason 以便已决卡仍展示详情。 */
+    operation?: PendingApproval["operation"];
+    reason?: string;
   }>;
   /** V0.3.4：当前配对（委派卡「来自 <角色名> 的委派」数据源）。 */
   pair: PairRecord | null;
@@ -95,10 +98,12 @@ export interface MobileState {
   setConversationMode: (conversationId: string, mode: ConversationMode) => Promise<void>;
   resolveApproval: (approvalId: string, decision: string) => Promise<void>;
   /** V0.3.5：手机语音相关 actions。 */
-  startVoiceCapture: (conversationId: string) => Promise<void>;
+  startVoiceCapture: (conversationId: string) => Promise<{ session_id: string } | void>;
   sendAudioChunk: (seq: number, base64: string) => Promise<void>;
   stopVoiceCapture: () => Promise<void>;
   stopVoicePlayback: (messageId: string) => Promise<void>;
+  /** V0.3.5：本地 TTS 队列自然播放到末尾后复位 playback 状态。 */
+  finishVoicePlayback: (messageId: string) => void;
   refreshVoiceAvailability: () => Promise<void>;
   disconnect: () => void;
 }
@@ -390,16 +395,19 @@ export const useMobileStore = create<MobileState>((set, get) => {
           task_id?: string;
         };
         if (payload.approval_id) {
+          const existing = get().approvals.find((item) => item.approval_id === payload.approval_id);
           set({
             approvals: get().approvals.filter((item) => item.approval_id !== payload.approval_id),
             resolvedApprovals: [
               ...get().resolvedApprovals.filter((item) => item.approval_id !== payload.approval_id),
               {
                 approval_id: payload.approval_id,
-                conversation_id: payload.conversation_id,
+                conversation_id: payload.conversation_id ?? get().activeConversationId ?? undefined,
                 decision: payload.decision ?? "approve",
                 resolved_by: payload.resolved_by ?? "remote",
                 task_id: payload.task_id,
+                operation: existing?.operation,
+                reason: existing?.reason,
               },
             ],
           });
@@ -785,7 +793,12 @@ export const useMobileStore = create<MobileState>((set, get) => {
         if (code === "approval_already_resolved") {
           // V0.3.5：双端并发仲裁——本端失败时按错误信息中的决策收敛本地状态。
           const message = error instanceof Error ? error.message : String(error);
-          const resolvedBy = message.includes("desktop") ? "desktop" : "remote";
+          const resolvedBy = /\bdesktop\b/.test(message)
+            ? "desktop"
+            : /\bmobile\b|\bremote\b/.test(message)
+              ? "remote"
+              : "remote";
+          const existing = get().approvals.find((item) => item.approval_id === approvalId);
           set({
             approvals: get().approvals.filter((item) => item.approval_id !== approvalId),
             resolvedApprovals: [
@@ -795,6 +808,9 @@ export const useMobileStore = create<MobileState>((set, get) => {
                 conversation_id: get().activeConversationId ?? undefined,
                 decision,
                 resolved_by: resolvedBy,
+                task_id: existing?.task_id,
+                operation: existing?.operation,
+                reason: existing?.reason,
               },
             ],
           });
@@ -934,6 +950,20 @@ export const useMobileStore = create<MobileState>((set, get) => {
         });
         throw error;
       }
+    },
+
+    finishVoicePlayback(messageId) {
+      const voice = get().voice;
+      if (voice.playback.messageId !== messageId) return;
+      const nextChunks = { ...voice.ttsChunks };
+      delete nextChunks[messageId];
+      set({
+        voice: {
+          ...voice,
+          playback: { messageId: null, state: "idle", error: null },
+          ttsChunks: nextChunks,
+        },
+      });
     },
 
     async refreshVoiceAvailability() {

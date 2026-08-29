@@ -1047,5 +1047,70 @@ describe("mobileStore 会话操作", () => {
         resolved_by: "desktop",
       });
     });
+
+    it("resolveApproval 遇 approval_already_resolved 时按错误信息收敛状态", async () => {
+      await pairAndBootstrap();
+      useMobileStore.setState({ activeConversationId: "c1" });
+      lastInstance().emit({
+        kind: "event",
+        event: "approval.requested",
+        sequence: 11,
+        payload: {
+          approval_id: "a2",
+          conversation_id: "c1",
+          task_id: "t2",
+          operation: { tool_kind: "shell", command: "ls", paths: [], patch_file_count: null, summary: "列目录" },
+          reason: "需要确认",
+        },
+      });
+
+      const resolvePromise = useMobileStore.getState().resolveApproval("a2", "approve");
+      const frame = lastSentFrame();
+      expect(frame.method).toBe("approval.resolve");
+      lastInstance().emit({
+        kind: "response",
+        id: frame.id,
+        ok: false,
+        error: { code: "approval_already_resolved", message: "已由 desktop approve" },
+      });
+
+      await expect(resolvePromise).rejects.toThrow(/已由 desktop approve/);
+      const state = useMobileStore.getState();
+      expect(state.approvals).toHaveLength(0);
+      expect(state.resolvedApprovals).toHaveLength(1);
+      expect(state.resolvedApprovals[0]).toMatchObject({
+        approval_id: "a2",
+        decision: "approve",
+        resolved_by: "desktop",
+        operation: { tool_kind: "shell", command: "ls" },
+        reason: "需要确认",
+      });
+    });
+
+    it("approval.resolved 事件缺少 conversation_id 时回退到当前会话", async () => {
+      await pairAndBootstrap();
+      useMobileStore.setState({ activeConversationId: "c1" });
+      lastInstance().emit({
+        kind: "event",
+        event: "approval.requested",
+        sequence: 11,
+        payload: {
+          approval_id: "a3",
+          conversation_id: "c1",
+          task_id: "t3",
+          operation: { tool_kind: "file_delete", command: null, paths: ["a.txt"], patch_file_count: null, summary: "删文件" },
+          reason: "高风险",
+        },
+      });
+
+      lastInstance().emit({
+        kind: "event",
+        event: "approval.resolved",
+        sequence: 12,
+        payload: { approval_id: "a3", decision: "deny", resolved_by: "mobile" },
+      });
+
+      expect(useMobileStore.getState().resolvedApprovals[0]?.conversation_id).toBe("c1");
+    });
   });
 });

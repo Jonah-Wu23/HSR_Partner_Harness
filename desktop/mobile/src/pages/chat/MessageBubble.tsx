@@ -8,6 +8,10 @@ export interface MessageBubbleProps {
     character?: string;
     assistant?: string;
   };
+  /** V0.3.5：当前正在播放 TTS 的消息 ID。 */
+  playingMessageId?: string | null;
+  /** V0.3.5：停止当前朗读。 */
+  onStopPlayback?: () => void;
 }
 
 function sourceBadge(source: MessageSource, pairNames?: { character?: string; assistant?: string }): string | null {
@@ -20,12 +24,20 @@ function sourceBadge(source: MessageSource, pairNames?: { character?: string; as
 }
 
 /**
- * V0.3.3 手机端单条消息气泡：
+ * V0.3.5 手机端单条消息气泡：
  * 消息来源标记（角色/助手/用户/工具/思考/系统事件）清晰可区分；
- * 思考段默认折叠，点击展开；流式更新展示光标；手机端永久静音。
+ * 思考段默认折叠，点击展开；流式更新展示光标；
+ * 角色自然语言回复支持朗读，其余来源保持静音。
  */
-export function MessageBubble({ message, pairNames }: MessageBubbleProps) {
+export function MessageBubble({
+  message,
+  pairNames,
+  playingMessageId,
+  onStopPlayback,
+}: MessageBubbleProps) {
   const badge = sourceBadge(message.source, pairNames);
+  const isTtsEligible = message.source === "character" && message.tts_eligible === true;
+  const isPlaying = isTtsEligible && message.message_id === playingMessageId;
   const reasoning =
     typeof message.payload?.reasoning === "string"
       ? message.payload.reasoning
@@ -103,6 +115,24 @@ export function MessageBubble({ message, pairNames }: MessageBubbleProps) {
               <span className="mobile-streaming-caret" aria-hidden="true" />
             ) : null}
           </div>
+        ) : null}
+
+        {/* V0.3.5：角色自然语言回复的朗读入口 / 朗读中标记 */}
+        {isTtsEligible ? (
+          <button
+            type="button"
+            className={`mobile-msg-tts-badge${isPlaying ? " mobile-msg-tts-badge-playing" : ""}`}
+            data-testid="msg-tts-badge"
+            disabled={!isPlaying}
+            onClick={isPlaying ? onStopPlayback : undefined}
+            aria-label={isPlaying ? "停止朗读" : "可朗读"}
+          >
+            <span
+              className={`mobile-msg-tts-dot${isPlaying ? " mobile-msg-tts-dot-playing" : ""}`}
+              aria-hidden="true"
+            />
+            {isPlaying ? "朗读中" : "可朗读"}
+          </button>
         ) : null}
       </div>
     </div>

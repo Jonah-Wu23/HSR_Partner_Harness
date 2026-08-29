@@ -178,7 +178,7 @@ describe("ChatPage 移动端聊天页集成测试", () => {
     });
   });
 
-  it("V0.3.5：审批卡片展示批准/拒绝按钮；ChatPage 未传 handler 时按钮禁用", async () => {
+  it("V0.3.5：审批卡片可操作；点击批准发送 approval.resolve", async () => {
     useMobileStore.setState({
       approvals: [SAMPLE_APPROVAL],
     });
@@ -190,13 +190,43 @@ describe("ChatPage 移动端聊天页集成测试", () => {
     expect(screen.getByText("更新项目配置文件")).toBeInTheDocument();
     expect(screen.getByText("src/config.json")).toBeInTheDocument();
 
-    // V0.3.5 P1：手机端展示审批按钮；当前 ChatPage 未传入 handler，按钮应禁用。
+    // V0.3.5 P1：手机端展示审批按钮且可用。
     const approveButton = screen.getByTestId("approval-approve");
     const rejectButton = screen.getByTestId("approval-reject");
     expect(approveButton).toBeInTheDocument();
     expect(rejectButton).toBeInTheDocument();
-    expect(approveButton).toBeDisabled();
-    expect(rejectButton).toBeDisabled();
+    expect(approveButton).not.toBeDisabled();
+    expect(rejectButton).not.toBeDisabled();
+
+    // 点击批准后发出 approval.resolve 帧
+    fireEvent.click(approveButton);
+    await vi.waitFor(() => {
+      const resolveFrame = lastInstance()
+        .sent.map((raw) => JSON.parse(raw))
+        .find((frame) => frame.method === "approval.resolve");
+      expect(resolveFrame).toBeDefined();
+      expect(resolveFrame.params).toMatchObject({
+        approval_id: "app-1",
+        decision: "approve",
+      });
+    });
+    const resolveFrame = lastInstance()
+      .sent.map((raw) => JSON.parse(raw))
+      .find((frame) => frame.method === "approval.resolve");
+    lastInstance().emit({ kind: "response", id: resolveFrame.id, ok: true, result: {} });
+
+    // 服务端返回 resolved 事件后，卡片进入已决状态
+    lastInstance().emit({
+      kind: "event",
+      event: "approval.resolved",
+      sequence: 11,
+      payload: { approval_id: "app-1", decision: "approve", resolved_by: "mobile", conversation_id: "c1" },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("approval-status")).toHaveTextContent("已批准");
+      expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent(/手机端/);
+    });
   });
 
   it("「交给助手」委派提交，验证 chat.submit 协议帧", async () => {

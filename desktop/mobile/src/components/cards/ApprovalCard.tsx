@@ -8,6 +8,10 @@ export interface ApprovalCardProps {
   resolving?: boolean;
   onApprove?: () => void;
   onReject?: () => void;
+  /** V0.3.5：已决状态展示。 */
+  status?: "pending" | "resolved";
+  decision?: string;
+  resolvedBy?: string;
 }
 
 const TOOL_KIND_LABELS: Record<string, string> = {
@@ -15,6 +19,17 @@ const TOOL_KIND_LABELS: Record<string, string> = {
   file_delete: "文件删除",
   shell: "命令执行",
   patch: "代码补丁",
+};
+
+const DECISION_LABELS: Record<string, string> = {
+  approve: "已批准",
+  deny: "已拒绝",
+};
+
+const RESOLVED_BY_LABELS: Record<string, string> = {
+  desktop: "桌面端",
+  mobile: "手机端",
+  remote: "手机端",
 };
 
 /**
@@ -28,15 +43,19 @@ export function ApprovalCard({
   resolving = false,
   onApprove,
   onReject,
+  status = "pending",
+  decision = "approve",
+  resolvedBy = "remote",
 }: ApprovalCardProps) {
   const { operation, reason } = approval;
   const kindLabel = TOOL_KIND_LABELS[operation.tool_kind] || operation.tool_kind;
+  const isResolved = status === "resolved";
 
   return (
     <section
-      className="mobile-approval-card"
+      className={`mobile-approval-card${isResolved ? " mobile-approval-resolved" : ""}`}
       data-testid="approval-card"
-      aria-label="等待审批操作"
+      aria-label={isResolved ? "已决审批操作" : "等待审批操作"}
     >
       <header className="mobile-approval-head">
         <div className="mobile-approval-title-group">
@@ -44,9 +63,14 @@ export function ApprovalCard({
             <ShieldIcon />
           </span>
           <span className="mobile-approval-title">
-            待审批操作 · {kindLabel}
+            {isResolved ? "已决操作" : "待审批操作"} · {kindLabel}
           </span>
         </div>
+        {isResolved ? (
+          <span className="mobile-approval-status-badge" data-testid="approval-status">
+            {DECISION_LABELS[decision] || decision}
+          </span>
+        ) : null}
       </header>
 
       <div className="mobile-approval-body">
@@ -95,26 +119,32 @@ export function ApprovalCard({
       </div>
 
       <footer className="mobile-approval-footer">
-        <div className="mobile-approval-actions">
-          <button
-            type="button"
-            className="mobile-approval-reject"
-            onClick={onReject}
-            disabled={resolving || !onReject}
-            data-testid="approval-reject"
-          >
-            {resolving ? "提交中…" : "拒绝"}
-          </button>
-          <button
-            type="button"
-            className="mobile-approval-approve"
-            onClick={onApprove}
-            disabled={resolving || !onApprove}
-            data-testid="approval-approve"
-          >
-            {resolving ? "提交中…" : "批准"}
-          </button>
-        </div>
+        {isResolved ? (
+          <p className="mobile-approval-resolved-text" data-testid="approval-resolved-by">
+            由 {RESOLVED_BY_LABELS[resolvedBy] || resolvedBy} {DECISION_LABELS[decision] || decision}
+          </p>
+        ) : (
+          <div className="mobile-approval-actions">
+            <button
+              type="button"
+              className="mobile-approval-reject"
+              onClick={onReject}
+              disabled={resolving || !onReject}
+              data-testid="approval-reject"
+            >
+              {resolving ? "提交中…" : "拒绝"}
+            </button>
+            <button
+              type="button"
+              className="mobile-approval-approve"
+              onClick={onApprove}
+              disabled={resolving || !onApprove}
+              data-testid="approval-approve"
+            >
+              {resolving ? "提交中…" : "批准"}
+            </button>
+          </div>
+        )}
       </footer>
     </section>
   );
