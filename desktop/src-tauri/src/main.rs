@@ -992,8 +992,19 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
-            let state = spawn_backend(app.handle(), debug_console)?;
-            app.manage(state);
+            // V0.3.7 契约 §9.1：Android 壳不运行 Python Sidecar（移动端无法承载）。
+            // 壳内前端加载 desktop/mobile 同一产物，经 wsClient 直连桌面端 --serve 的
+            // WS 通道，配对/鉴权与事件协议完全复用；desktop_request 等桌面命令在
+            // 移动目标下无 Sidecar 可用（state 未注册，try_state 返回 None）。
+            #[cfg(mobile)]
+            {
+                let _ = &debug_console; // 移动端不启动 Sidecar，调试开关仅作用于桌面目标
+            }
+            #[cfg(desktop)]
+            {
+                let state = spawn_backend(app.handle(), debug_console)?;
+                app.manage(state);
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
