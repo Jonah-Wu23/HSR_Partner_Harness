@@ -117,6 +117,22 @@ ToolRunStatus = Literal["running", "succeeded", "failed", "denied"]
 ReceiptStatus = Literal["completed", "failed", "cancelled"]
 
 
+def _conversation_turn_index(history: list[Message]) -> int:
+    """V0.3.7：计算本轮序号（用户发起消息累计数，1 起算）。
+
+    入参为不含当前消息的历史（当前条已在提交时落库，不在 history 内）。
+    仅统计 source==USER 且 origin==USER 的用户真实发言；角色/助手/工具/
+    系统消息不计入，开场白（CHARACTER/SYSTEM 来源）也不计入。
+    返回值 = 1 + 上述用户消息条数（当前回合占 +1）。
+    """
+    user_messages = sum(
+        1
+        for m in history
+        if m.source == MessageSource.USER and m.origin == MessageOrigin.USER
+    )
+    return 1 + user_messages
+
+
 class ConversationOrchestrator:
     def __init__(
         self,
@@ -724,7 +740,18 @@ class ConversationOrchestrator:
                 pair_id=exec_context.pair_id,
                 conversation_id=conversation_id,
                 user_message=user_message,
-                recent_messages=recent_roleplay_context(self._history[conversation_id][:-1]),
+                # V0.3.7：扫描缓冲上限从默认 12 提到 50，供世界书
+                # scan_depth > 12 的书使用；激活引擎内部再按书级 scan_depth
+                # 裁剪。当前用户消息在 history[-1]，故取 [:-1]。
+                recent_messages=recent_roleplay_context(
+                    self._history[conversation_id][:-1], limit=50
+                ),
+                # V0.3.7：本轮序号 = 该会话用户发起消息累计数（含当前回合，
+                # 因此 +1；当前条在 history[-1] 不计入）。开场白是
+                # CHARACTER/SYSTEM 来源，不计入。
+                turn_index=_conversation_turn_index(
+                    self._history[conversation_id][:-1]
+                ),
                 progress_summary=progress_summary,
                 runtime_context=self._build_runtime_context(
                     conversation_id, exec_context

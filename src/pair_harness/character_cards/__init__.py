@@ -11,6 +11,16 @@
 不做语义猜测，不执行导入内容，不掩盖失败。
 """
 
+from pair_harness.character_cards.activation import (
+    ActivatedEntry,
+    ActivationDiagnostics,
+    ActivationResult,
+    DepthEntryGroup,
+    activate_world_book,
+    collect_turn_triggers,
+    iter_runtime_trigger_declarations,
+    token_estimate,
+)
 from pair_harness.character_cards.codec import (
     CardImportError,
     CompatReport,
@@ -18,6 +28,11 @@ from pair_harness.character_cards.codec import (
     dump_card_v3,
     load_card_json,
     load_card_payload,
+)
+from pair_harness.character_cards.macros import (
+    MacroExpansionResult,
+    expand_data_macros,
+    find_macros,
 )
 from pair_harness.character_cards.models import (
     FIXED_ASR_MODEL,
@@ -40,6 +55,9 @@ from pair_harness.character_cards.states import (
 __all__ = [
     "CARD_STATES",
     "VOICE_STATES",
+    "ActivatedEntry",
+    "ActivationDiagnostics",
+    "ActivationResult",
     "AvatarAsset",
     "CardImportError",
     "CharacterBook",
@@ -47,16 +65,24 @@ __all__ = [
     "CharacterCardState",
     "CharacterVoiceState",
     "CompatReport",
+    "DepthEntryGroup",
     "FIXED_ASR_MODEL",
     "FIXED_TTS_MODEL",
     "HsrExtension",
     "ImportResult",
+    "MacroExpansionResult",
     "PngCardError",
     "VoiceProfile",
     "WorldBookEntry",
+    "activate_world_book",
+    "collect_turn_triggers",
     "dump_card_v3",
+    "expand_data_macros",
+    "find_macros",
+    "iter_runtime_trigger_declarations",
     "load_card_json",
     "load_card_payload",
     "read_png_card",
+    "token_estimate",
     "write_png_card",
 ]

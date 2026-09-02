@@ -148,3 +148,32 @@ def _chunk_bytes(ctype: bytes, cdata: bytes) -> bytes:
 
 def _make_text_chunk(keyword: bytes, text: bytes) -> bytes:
     return _chunk_bytes(b"tEXt", keyword + b"\x00" + text)
+
+
+def png_image_dimensions(data: bytes) -> tuple[int, int] | None:
+    """探测 PNG 头像尺寸（IHDR 宽高），不做完整校验。
+
+    本函数只做尺寸探测：校验 PNG 签名后读取首块 IHDR 数据区的宽高
+    （大端 uint32，偏移 0 与 4）。宽高为 0 或超过 ``2**31 - 1`` 视为
+    非法，返回 None。任何畸形输入（签名不符、首块非 IHDR、IHDR 长度
+    或数据截断、数据区不足 8 字节）一律返回 None，不抛异常。
+
+    完整校验（块结构、CRC、IEND、元数据解码）是
+    :func:`read_png_card` 的职责；本函数供 ``card.peek_import`` 的
+    PNG 分支快速取头像尺寸，解析失败如实返回 None 并入 warnings。
+    """
+    if not data.startswith(PNG_SIGNATURE):
+        return None
+    # 首块头紧跟 8 字节签名：4 字节长度 + 4 字节块类型。
+    if len(data) < len(PNG_SIGNATURE) + 12:
+        return None
+    (length,) = struct.unpack(">I", data[8:12])
+    if data[12:16] != b"IHDR" or length < 8:
+        return None
+    if len(data) < 16 + 8:
+        return None
+    width, height = struct.unpack(">II", data[16:24])
+    max_dim = 2**31 - 1
+    if width <= 0 or height <= 0 or width > max_dim or height > max_dim:
+        return None
+    return width, height

@@ -18,8 +18,11 @@ from pair_harness.character_cards import (
     read_png_card,
     write_png_card,
 )
+from pair_harness.character_cards.png import png_image_dimensions
 
-FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "character_cards" / "白厄（3.4前）.json"
+FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "character_cards"
+FIXTURE = FIXTURE_DIR / "白厄（3.4前）.json"
+PNG_FIXTURE = FIXTURE_DIR / "白厄（3.4前）.png"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
@@ -200,3 +203,67 @@ def test_png_metadata_is_v3_json_with_avatar_card_data() -> None:
         offset += 12 + length
     else:
         pytest.fail("导出 PNG 中没有 ccv3 元数据块")
+
+
+# ---- V0.3.7 新增：PNG fixture 与 png_image_dimensions ----
+
+
+def test_png_fixture_exists_and_parses() -> None:
+    """契约 §12：白厄 PNG fixture 存在，且 read_png_card 能解析其内容。"""
+    assert PNG_FIXTURE.exists()
+    result = read_png_card(PNG_FIXTURE.read_bytes())
+    assert result.card.name == "白厄（3.4前）"
+    assert len(result.card.character_book.entries) == 20
+    assert len(result.card.alternate_greetings) == 5
+    assert result.card.spec == "chara_card_v3"
+
+
+def test_png_image_dimensions_of_fixture() -> None:
+    """契约 §1.1：png_image_dimensions 对白厄 fixture 返回 (64, 64)。"""
+    assert png_image_dimensions(PNG_FIXTURE.read_bytes()) == (64, 64)
+
+
+def test_png_image_dimensions_kept_after_write_png_card() -> None:
+    """契约 §1.3：write_png_card 只复制原头像图像块，尺寸保持不变。"""
+    card = load_card_json(FIXTURE.read_text(encoding="utf-8")).card
+    avatar = make_avatar_png(18, 27)
+    card_png = write_png_card(card, avatar)
+    assert png_image_dimensions(avatar) == (18, 27)
+    assert png_image_dimensions(card_png) == (18, 27)
+    # 图像块原始字节复制（尺寸保持的另一层证据）。
+    assert _png_image_bytes(card_png) == _png_image_bytes(avatar)
+
+
+def _png_with_ihdr(width: int, height: int) -> bytes:
+    """只构造 IHDR 声明给定宽高的最小 PNG（不生成真实扫描线）。
+
+    用于非法尺寸用例：png_image_dimensions 只读 IHDR，IDAT 内容无关紧要，
+    避免 make_avatar_png 为超大宽高分配像素缓冲。
+    """
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (
+        PNG_SIGNATURE
+        + _chunk(b"IHDR", ihdr)
+        + _chunk(b"IDAT", zlib.compress(b""))
+        + _chunk(b"IEND", b"")
+    )
+
+
+@pytest.mark.parametrize(
+    "label,malformed",
+    [
+        ("空字节", b""),
+        ("仅签名", PNG_SIGNATURE),
+        ("签名错", b"not a png"),
+        ("块头截断", PNG_SIGNATURE + b"\x00\x00"),
+        ("IHDR 数据截断（不足宽高 8 字节）", PNG_SIGNATURE + struct.pack(">I", 13) + b"IHDR" + b"\x00\x00"),
+        ("首块非 IHDR", PNG_SIGNATURE + struct.pack(">I", 0) + b"IDAT" + struct.pack(">I", 0)),
+        ("宽为 0", _png_with_ihdr(0, 10)),
+        ("高为 0", _png_with_ihdr(10, 0)),
+        ("宽超 2^31-1", _png_with_ihdr(2**31, 10)),
+        ("高超 2^31-1", _png_with_ihdr(10, 2**31)),
+    ],
+)
+def test_png_image_dimensions_malformed_returns_none(label: str, malformed: bytes) -> None:
+    """契约 §1.1：畸形输入一律返回 None，不抛异常。"""
+    assert png_image_dimensions(malformed) is None
