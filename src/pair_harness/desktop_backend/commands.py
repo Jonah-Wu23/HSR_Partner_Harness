@@ -60,12 +60,18 @@ DESKTOP_COMMANDS = frozenset(
         "card.archive",
         "card.delete",
         "card.select_active",
+        # V0.3.7：card.peek_import 为规范名；card.peek_import_json 保留为
+        # deprecated 别名（同一 handler、同一行为，既有前端不破坏）。
+        "card.peek_import",
         "card.peek_import_json",
         "card.import_json",
         "card.export_json",
+        "card.import_png",
+        "card.export_png",
         "card.publish",
         "card.set_avatar",
         "card.remove_avatar",
+        "power.get_status",
         "voice.card_bind_reference",
         "voice.card_create",
         "voice.card_unbind",

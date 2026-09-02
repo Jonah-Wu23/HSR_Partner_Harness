@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any, Mapping, cast
 from urllib.parse import urlsplit
@@ -36,14 +38,25 @@ from pair_harness.character_cards.codec import (
     load_card_json,
     load_card_payload,
 )
-from pair_harness.character_cards.models import CharacterCard
+from pair_harness.character_cards.models import AvatarAsset, CharacterCard
+from pair_harness.character_cards.png import (
+    PNG_SIGNATURE,
+    PngCardError,
+    png_image_dimensions,
+    read_png_card,
+    write_png_card,
+)
 from pair_harness.character_cards.repository import CharacterCardRepository
 from pair_harness.character_cards.assets import (
     CharacterAssetError,
     CharacterAssetService,
 )
 from pair_harness.character_cards.states import CharacterVoiceState
-from pair_harness.core.character_prompt_assembler import AssembledPrompt, assemble_character_prompt
+from pair_harness.core.character_prompt_assembler import (
+    AssembledPrompt,
+    assemble_character_prompt,
+    assemble_turn_prompt,
+)
 from pair_harness.core.context import ExecutionContext, assert_single_assistant_markdown
 from pair_harness.core.contracts import (
     ApprovalDecision,
@@ -67,6 +80,7 @@ from pair_harness.core.voice_runtime import VoiceRuntime
 from pair_harness.settings import Settings
 from pair_harness.storage.sqlite_store import SQLiteStore
 from .pairing import PairingError, PairingService
+from .power import PowerStatus, PowerStatusError, read_power_status
 from pair_harness.voice_models import VOICE_ASR_MODEL, VOICE_TTS_MODEL
 
 from .commands import DesktopCommand
@@ -391,6 +405,15 @@ class DesktopApplicationService:
         self._mobile_tts_tasks: dict[str, asyncio.Task[None]] = {}
         # 装配结果缓存（card_id → (updated_at, AssembledPrompt)）。
         self._assembled_cache: dict[str, tuple[str, AssembledPrompt]] = {}
+        # V0.3.7 电源契约：--serve 模式开启远程服务（power.get_status 的
+        # remote_serve_enabled 数据源；默认 False，__main__ 在 serve 模式置 True）。
+        self.remote_serve_enabled: bool = False
+        # V0.3.7 电源监视守护线程状态（契约 §2.1）：启动即读一次并 emit，
+        # 此后每 interval 轮询，仅当关键元组变化才 emit power.status_changed。
+        self._power_monitor_thread: threading.Thread | None = None
+        self._power_monitor_stop = threading.Event()
+        self._power_monitor_interval = 60.0
+        self._power_monitor_last: tuple | None = None
         # 转写回调线程需要主循环引用做 call_soon_threadsafe；同步上下文
         # （部分测试 fixture）没有运行中的循环时置 None——该场景下无
         # remote 连接，转写事件本就无处可发，回调按无循环如实跳过。
@@ -1021,12 +1044,18 @@ class DesktopApplicationService:
             "card.archive": self._card_archive,
             "card.delete": self._card_delete,
             "card.select_active": self._card_select_active,
-            "card.peek_import_json": self._card_peek_import_json,
+            # V0.3.7：card.peek_import 为规范名；card.peek_import_json 保留
+            # 为同一 handler 的 deprecated 别名（同一行为，既有前端不破坏）。
+            "card.peek_import": self._card_peek_import,
+            "card.peek_import_json": self._card_peek_import,
             "card.import_json": self._card_import_json,
             "card.export_json": self._card_export_json,
+            "card.import_png": self._card_import_png,
+            "card.export_png": self._card_export_png,
             "card.publish": self._card_publish,
             "card.set_avatar": self._card_set_avatar,
             "card.remove_avatar": self._card_remove_avatar,
+            "power.get_status": self._power_get_status,
             "voice.card_bind_reference": self._voice_card_bind_reference,
             "voice.card_create": self._voice_card_create,
             "voice.card_unbind": self._voice_card_unbind,
@@ -2294,15 +2323,30 @@ class DesktopApplicationService:
             ) from exc
 
     def _import_preview_payload(
-        self, card: CharacterCard, report: Any
+        self,
+        card: CharacterCard,
+        report: Any,
+        *,
+        format: str = "json",
+        avatar_available: bool | None = None,
+        avatar_width: int | None = None,
+        avatar_height: int | None = None,
     ) -> dict[str, Any]:
+        if avatar_available is None:
+            # SillyTavern 惯例：根级 avatar 为 "none" 字符串表示无头像文件，
+            # 不能按 truthy 字符串误判为有头像。
+            avatar_available = (
+                str(card.root_extras.get("avatar") or "").strip().lower()
+                not in ("", "none")
+            )
         return {
             "name": card.name,
             "spec_version": card.spec_version or "2.0",
-            # SillyTavern 惯例：根级 avatar 为 "none" 字符串表示无头像文件，
-            # 不能按 truthy 字符串误判为有头像。
-            "avatar_available": str(card.root_extras.get("avatar") or "").strip()
-            .lower() not in ("", "none"),
+            # V0.3.7 契约 §1.1：两分支统一 preview 形状，format 区分来源。
+            "format": format,
+            "avatar_available": avatar_available,
+            "avatar_width": avatar_width,
+            "avatar_height": avatar_height,
             "greeting_count": card.greeting_count(),
             "world_book_entries": (
                 len(card.character_book.entries)
@@ -2313,11 +2357,76 @@ class DesktopApplicationService:
             "report": self._compat_report_payload(report),
         }
 
-    async def _card_peek_import_json(
-        self, params: Mapping[str, Any]
-    ) -> dict[str, Any]:
-        result = self._peek_card_from_path(params)
-        return {"preview": self._import_preview_payload(result.card, result.report)}
+    async def _card_peek_import(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """card.peek_import（card.peek_import_json 的规范名，同一 handler）。
+
+        契约 §1.1：先读文件前 8 字节与 PNG 签名比对（文件签名优先，不信任
+        扩展名）；PNG 签名命中 → PNG 分支，否则按 UTF-8 文本走 JSON 分支。
+        失败一律包装为 ``card_import_failed``，message 携带原始错误文本。
+        """
+        path_text = self._required_string(params, "path")
+        path = Path(path_text).expanduser()
+        try:
+            with open(path, "rb") as handle:
+                data = handle.read()
+        except OSError as exc:
+            raise ServiceError(
+                f"读取角色卡文件失败：{exc}", code="card_import_failed"
+            ) from exc
+        if data.startswith(PNG_SIGNATURE):
+            return self._peek_import_png(data)
+        # JSON 分支：行为与现状一致（UTF-8 文本 → load_card_json）。
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ServiceError(
+                f"角色卡解析失败：{exc}", code="card_import_failed"
+            ) from exc
+        try:
+            result = load_card_json(text)
+        except CardImportError as exc:
+            raise ServiceError(
+                f"角色卡解析失败：{exc}", code="card_import_failed"
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 - 非预期解析错误同样如实暴露
+            raise ServiceError(
+                f"角色卡解析失败：{exc}", code="card_import_failed"
+            ) from exc
+        return {
+            "preview": self._import_preview_payload(
+                result.card, result.report, format="json"
+            )
+        }
+
+    def _peek_import_png(self, data: bytes) -> dict[str, Any]:
+        """PNG 分支：字节 → read_png_card；头像尺寸经 png_image_dimensions。
+
+        头像尺寸解析失败（None）如实返回 None 并追加 warnings「头像尺寸
+        未能解析」；PngCardError/CardImportError 均包装为 card_import_failed。
+        """
+        try:
+            result = read_png_card(data)
+        except PngCardError as exc:
+            raise ServiceError(
+                f"角色卡解析失败：{exc}", code="card_import_failed"
+            ) from exc
+        except CardImportError as exc:
+            raise ServiceError(
+                f"角色卡解析失败：{exc}", code="card_import_failed"
+            ) from exc
+        dimensions = png_image_dimensions(data)
+        if dimensions is None:
+            result.report.warnings.append("头像尺寸未能解析")
+        return {
+            "preview": self._import_preview_payload(
+                result.card,
+                result.report,
+                format="png",
+                avatar_available=True,
+                avatar_width=dimensions[0] if dimensions is not None else None,
+                avatar_height=dimensions[1] if dimensions is not None else None,
+            )
+        }
 
     async def _card_import_json(self, params: Mapping[str, Any]) -> dict[str, Any]:
         result = self._peek_card_from_path(params)
@@ -2379,6 +2488,127 @@ class DesktopApplicationService:
                             f"另存头像失败：{exc}", code="card_export_failed"
                         ) from exc
         return {"exported": True, "path": str(path), "avatar_saved": avatar_saved}
+
+    async def _card_import_png(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """card.import_png：PNG 字节入库并登记头像资产（契约 §1.2）。
+
+        定稿四步：字节 → read_png_card → import_card（as_duplicate 改名）→
+        store_asset（PNG 原始字节即头像）→ 回写 card.hsr.avatar_asset。
+        解析失败 → card_import_failed；资产写入失败 → card_import_failed
+        携带 CharacterAssetError 原文（导入已落库时如实报告，不回滚不伪造）。
+        """
+        path_text = self._required_string(params, "path")
+        path = Path(path_text).expanduser()
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise ServiceError(
+                f"读取角色卡文件失败：{exc}", code="card_import_failed"
+            ) from exc
+        try:
+            result = read_png_card(data)
+        except PngCardError as exc:
+            raise ServiceError(
+                f"角色卡解析失败：{exc}", code="card_import_failed"
+            ) from exc
+        except CardImportError as exc:
+            raise ServiceError(
+                f"角色卡解析失败：{exc}", code="card_import_failed"
+            ) from exc
+        as_duplicate = params.get("as_duplicate") is True
+        record = self.card_repository.import_card(
+            result.card, as_duplicate=as_duplicate
+        )
+        try:
+            asset_id = self.asset_service.store_asset(
+                card_id=record.card_id,
+                data=data,
+                kind="avatar",
+                mime_type="image/png",
+                source="png_import",
+                source_ref=path.name,
+            )
+        except CharacterAssetError as exc:
+            raise ServiceError(
+                f"写入角色卡头像资产失败：{exc}", code="card_import_failed"
+            ) from exc
+        # 回写卡 JSON 的 hsr.avatar_asset（经 update_card，保持 updated_at 语义）。
+        card = record.card
+        if card.hsr is None:
+            from pair_harness.character_cards.models import HsrExtension
+
+            card.hsr = HsrExtension()
+        card.hsr.avatar_asset = AvatarAsset(
+            asset_id=asset_id,
+            source="png_import",
+            source_ref=path.name,
+            mime_type="image/png",
+            exported_in_png=True,
+        )
+        self.card_repository.update_card(record.card_id, card)
+        return {
+            "card_id": record.card_id,
+            "name": record.card.name,
+            "state": record.state,
+            "report": self._compat_report_payload(result.report),
+        }
+
+    async def _card_export_png(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """card.export_png：把卡头像 + ccv3 元数据导出为单文件 PNG（契约 §1.3）。
+
+        前置：卡存在且可写；卡当前头像必须可取回。无头像或 get_asset 失败
+        → ``card_export_failed``（message 追加原始错误）；PNG 合成/写文件
+        失败同样如实携带原文。不合成默认图。
+        """
+        card_id = self._required_string(params, "card_id")
+        self._require_writable_card(card_id)
+        path_text = self._required_string(params, "path")
+        path = Path(path_text).expanduser()
+        try:
+            record = self.card_repository.get_card(card_id)
+        except KeyError as exc:
+            raise ServiceError("角色卡不存在", code="card_not_found") from exc
+        hsr = record.card.hsr
+        avatar_asset = hsr.avatar_asset if hsr is not None else None
+        if avatar_asset is None or not avatar_asset.asset_id:
+            raise ServiceError(
+                "卡未设置头像，请先设置头像后再导出 PNG", code="card_export_failed"
+            )
+        try:
+            avatar_bytes, _mime = self.asset_service.get_asset(avatar_asset.asset_id)
+        except (CharacterAssetError, KeyError) as exc:
+            raise ServiceError(
+                f"卡未设置头像，请先设置头像后再导出 PNG（原始错误：{exc}）",
+                code="card_export_failed",
+            ) from exc
+        try:
+            png_bytes = write_png_card(record.card, avatar_bytes)
+        except PngCardError as exc:
+            raise ServiceError(
+                f"合成 PNG 角色卡失败：{exc}", code="card_export_failed"
+            ) from exc
+        try:
+            path.write_bytes(png_bytes)
+        except OSError as exc:
+            raise ServiceError(
+                f"写出角色卡文件失败：{exc}", code="card_export_failed"
+            ) from exc
+        extensions = sorted(record.card.extensions.keys())
+        if record.card.hsr is not None:
+            extensions = sorted(set(extensions) | {"hsr"})
+        return {
+            "exported": True,
+            "path": str(path),
+            "name": record.card.name,
+            "spec_version": record.card.spec_version or "2.0",
+            "greeting_count": record.card.greeting_count(),
+            "world_book_entries": (
+                len(record.card.character_book.entries)
+                if record.card.character_book is not None
+                else 0
+            ),
+            "extensions": extensions,
+        }
 
     async def _card_publish(self, params: Mapping[str, Any]) -> dict[str, Any]:
         card_id = self._required_string(params, "card_id")
@@ -2805,6 +3035,103 @@ class DesktopApplicationService:
         self.voice_runtime.enqueue_text(text, voice_id=profile.voice_id)
         return {"voice": self._voice_snapshot()}
 
+    # ------------------------------------------------------------------ V0.3.7 电源（契约 §1.5 / §2.1 / §8）
+
+    async def _power_get_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """power.get_status：读取电源状态（只读，永不修改电源设置）。
+
+        成功返回 ``PowerStatus`` 的 asdict（契约 §1.5 形状）；真实失败抛
+        ``PowerStatusError`` 时转 ``power_status_unavailable`` 携带原文，
+        不猜数值、不降级伪造。
+        """
+        del params
+        try:
+            status = read_power_status(
+                remote_serve_enabled=self.remote_serve_enabled
+            )
+        except PowerStatusError as exc:
+            raise ServiceError(
+                f"读取电源状态失败：{exc}", code="power_status_unavailable"
+            ) from exc
+        return dataclasses.asdict(status)
+
+    def start_power_monitor(
+        self,
+        *,
+        runner: Callable[[list[str], Any], Any] | None = None,
+        interval_seconds: float = 60.0,
+    ) -> None:
+        """启动电源监视守护线程（契约 §2.1；幂等，已在跑则跳过）。
+
+        - 启动即读取并 emit 一次 ``power.status_changed``（payload 与
+          ``power.get_status`` result 完全同形）；
+        - 此后每 ``interval_seconds`` 秒轮询，仅当关键元组
+          ``(supported, plan_name, ac, dc, remote_serve_enabled)`` 变化才
+          emit（无变化不发事件，避免噪声）；
+        - ``PowerStatusError`` 读取失败不合成事件：如实写入 stderr 日志并
+          保留上次状态，下轮重试（Let It Fail，不伪造状态）。
+        """
+        if (
+            self._power_monitor_thread is not None
+            and self._power_monitor_thread.is_alive()
+        ):
+            return
+        self._power_monitor_interval = interval_seconds
+        self._power_monitor_stop = threading.Event()
+        self._power_monitor_last = None
+        thread = threading.Thread(
+            target=self._power_monitor_loop,
+            kwargs={
+                "runner": runner,
+                "interval_seconds": interval_seconds,
+            },
+            name="power-status-monitor",
+            daemon=True,
+        )
+        self._power_monitor_thread = thread
+        thread.start()
+
+    def stop_power_monitor(self) -> None:
+        """停止电源监视：置停止 Event 并 join（带超时）；未启动时 no-op。"""
+        thread = self._power_monitor_thread
+        if thread is None:
+            return
+        self._power_monitor_stop.set()
+        thread.join(timeout=5.0)
+        self._power_monitor_thread = None
+
+    def _power_monitor_loop(
+        self,
+        *,
+        runner: Callable[[list[str], Any], Any] | None,
+        interval_seconds: float,
+    ) -> None:
+        while not self._power_monitor_stop.is_set():
+            try:
+                status = read_power_status(
+                    remote_serve_enabled=self.remote_serve_enabled, runner=runner
+                )
+            except PowerStatusError as exc:
+                # 读取失败不合成事件：如实记录原始错误，保留上次状态，下轮重试。
+                logging.getLogger(__name__).error(
+                    "电源状态读取失败（保留上次状态，下轮重试）：%s", exc
+                )
+            else:
+                key = (
+                    status.supported,
+                    status.plan_name,
+                    status.ac_sleep_timeout_seconds,
+                    status.dc_sleep_timeout_seconds,
+                    status.remote_serve_enabled,
+                )
+                if self._power_monitor_last is None or key != self._power_monitor_last:
+                    self._power_monitor_last = key
+                    self.emitter.emit(
+                        "power.status_changed", dataclasses.asdict(status)
+                    )
+            if self._power_monitor_stop.wait(interval_seconds):
+                break
+
     # ------------------------------------------------------------------ V0.3.5 对话绑定角色卡（装配）
 
     def _effective_active_card_id(self) -> str | None:
@@ -2823,9 +3150,19 @@ class DesktopApplicationService:
         return card_id
 
     def _resolve_character_prompt(
-        self, conversation_id: str
+        self,
+        conversation_id: str,
+        recent_messages: tuple = (),
+        turn_index: int = 0,
     ) -> "AssembledPrompt | None":
-        """按对话绑定的角色卡装配提示词；未绑定或卡已删除返回 None。"""
+        """按对话绑定的角色卡装配提示词；未绑定或卡已删除返回 None。
+
+        V0.3.7 契约 §4.5：resolver 三参 ``(conversation_id, recent_messages,
+        turn_index)``。基座按 ``(card_id, updated_at)`` 缓存（世界书与
+        depth_prompt 不进基座）；回合上下文（扫描文本与回合号）现算，
+        叠加世界书激活、深度注入与确定性触发。``recent_messages`` /
+        ``turn_index`` 带缺省值，兼容既有单参调用（等价空扫描的基座结果）。
+        """
         try:
             conversation = self.store.get_conversation(conversation_id)
         except KeyError:
@@ -2840,10 +3177,16 @@ class DesktopApplicationService:
             return None
         cached = self._assembled_cache.get(card_id)
         if cached is not None and cached[0] == record.updated_at:
-            return cached[1]
-        assembled = assemble_character_prompt(record.card)
-        self._assembled_cache[card_id] = (record.updated_at, assembled)
-        return assembled
+            base = cached[1]
+        else:
+            base = assemble_character_prompt(record.card)
+            self._assembled_cache[card_id] = (record.updated_at, base)
+        return assemble_turn_prompt(
+            record.card,
+            scan_texts=[m.text for m in recent_messages],
+            turn_index=turn_index,
+            base=base,
+        )
 
     def _insert_character_greeting(
         self, conversation: Any, card: CharacterCard
