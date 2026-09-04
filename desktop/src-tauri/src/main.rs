@@ -991,6 +991,9 @@ pub fn run() {
     configure_console(debug_console);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // V0.3.7 契约 §9.2：Android 壳本地通知（任务完成/委派结果/审批请求
+        // 三类事件的壳内本地通知走此插件；桌面端注册但无 JS 调用方）。
+        .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
             // V0.3.7 契约 §9.1：Android 壳不运行 Python Sidecar（移动端无法承载）。
             // 壳内前端加载 desktop/mobile 同一产物，经 wsClient 直连桌面端 --serve 的
