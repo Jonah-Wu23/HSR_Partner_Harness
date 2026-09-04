@@ -23,8 +23,9 @@ if ([string]::IsNullOrWhiteSpace($env:JAVA_HOME)) {
     if (-not (Test-Path -LiteralPath $javaExe -PathType Leaf)) {
         $failures.Add("§9.3.1 JAVA_HOME 未指向有效的 JDK（当前='$($env:JAVA_HOME)'）；请安装 JDK 17 并设置 JAVA_HOME")
     } else {
-        $javaVersionOutput = & $javaExe -version 2>&1 | Out-String
-        if ($javaVersionOutput -match 'version "(\d+)') {
+        $javaVersionOutput = & $javaExe --version 2>&1 | Out-String
+        $firstLine = ($javaVersionOutput -split "`r?`n")[0]
+        if ($LASTEXITCODE -eq 0 -and $firstLine -match '\b(\d+)\.') {
             $javaMajor = [int]$Matches[1]
             if ($javaMajor -lt 17) {
                 $failures.Add("§9.3.1 JAVA_HOME 指向的是 JDK $javaMajor（路径='$($env:JAVA_HOME)'）；Android Gradle Plugin 需要 JDK 17+")
@@ -55,7 +56,9 @@ if ([string]::IsNullOrWhiteSpace($env:ANDROID_HOME)) {
 } else {
     $adb = Join-Path $env:ANDROID_HOME "platform-tools\adb.exe"
     if (Test-Path -LiteralPath $adb -PathType Leaf) {
-        $devices = & $adb devices 2>$null | Where-Object { $_ -match "`tdevice$|`tunauthorized$" }
+        # adb 的启动提示走 stderr；PS5.1 在 EAP=Stop 下会把重定向的原生
+        # stderr 变成终止错误——经 cmd /c 2>nul 吸收。
+        $devices = & cmd.exe /c "`"$adb`" devices 2>nul" | Where-Object { $_ -match "`tdevice$|`tunauthorized$" }
         if ($devices) {
             Write-Host "已连接真机：$devices"
         } else {
