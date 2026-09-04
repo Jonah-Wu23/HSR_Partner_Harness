@@ -242,6 +242,11 @@ export class MobileWsClient {
     }
   }
 
+  /** 测试后门：直接向已注册监听器分发一条 wire 事件（等同收到 WS 帧）。 */
+  emitTestEvent(event: WireEvent): void {
+    this.eventListeners.forEach((listener) => listener(event));
+  }
+
   private handleResponse(frame: WireResponse): void {
     const entry = this.pending.get(frame.id);
     if (!entry) return;

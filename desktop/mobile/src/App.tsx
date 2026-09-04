@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { getStoredToken } from "./lib/wsClient";
 import { navigate, useRoute } from "./lib/router";
 import { useMobileStore } from "./lib/mobileStore";
+import { startNotificationEngine } from "./lib/notificationEngine";
 import { ConnectionBanner } from "./components/ConnectionBanner";
 import { PairPage } from "./pages/pair/PairPage";
 import { ChatListPage } from "./pages/chats/ChatListPage";
@@ -19,6 +20,9 @@ export function App() {
   useEffect(() => {
     start();
   }, [start]);
+
+  // L13 本地通知引擎：Android 壳内启动（内部幂等，非壳环境直接空操作）。
+  useEffect(() => startNotificationEngine(), []);
 
   // 路由守卫：未配对一律落到配对页；已配对访问配对页则回列表。
   useEffect(() => {

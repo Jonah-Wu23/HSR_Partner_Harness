@@ -1,6 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 扫码填入（WebView VIDEO_CAPTURE）与语音采集（AUDIO_CAPTURE）经
+         generated/RustWebChromeClient.onPermissionRequest 运行时申请；
+         声明缺失时系统直接拒绝，wry 无法弹授权。 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- L12 前台服务：锁屏期间保持 WS 长连接（targetSdk 34+ 需类型化前台服务）。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- POST_NOTIFICATIONS（Android 13+ 运行时授权）由 tauri-plugin-notification 的
+         library manifest 经 gradle merger 合并，不在 app manifest 重复声明。 -->
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
@@ -23,6 +35,13 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- L12 WS 前台保活：锁屏期间维持 WebView 与长连接存活（§9.2 方案 b）。 -->
+        <service
+            android:name=".WsForegroundService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="dataSync" />
 
         <provider
           android:name="androidx.core.content.FileProvider"

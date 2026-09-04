@@ -1,4 +1,9 @@
 <resources>
     <string name="app_name">"HSR Partner Harness"</string>
     <string name="main_activity_title">"HSR Partner Harness"</string>
+    <string name="ws_service_channel_name">"保持连接"</string>
+    <string name="ws_service_channel_description">"后台维持与桌面端的远程长连接"</string>
+    <string name="ws_service_notification_title">"保持连接中"</string>
+    <string name="ws_service_notification_text">"后台维持与桌面端的连接；锁屏期间可收到审批与任务通知。"</string>
+    <string name="ws_service_stop_action">"停止保活"</string>
 </resources>

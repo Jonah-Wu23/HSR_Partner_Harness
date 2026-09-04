@@ -13,10 +13,17 @@
  * - Android 判定用 navigator.userAgent（壳 WebView 的 UA 含 "Android"）。这是平台能力
  *   判定，不是对用户文字/意图的猜测（Let It Go 边界不受影响）。
  *
- * 通知能力（冻结 §9.2 定案 tauri-plugin-notification）：JS 包由接线阶段随壳依赖引入，
- * 本模块以运行时动态 import 探测其真实可用性——未安装/未注册时如实返回不可用并保留
- * 原始错误日志，PWA 下探测直接返回 not_shell，全程不抛错、不伪造可用。
+ * 通知能力（冻结 §9.2 定案 tauri-plugin-notification）：JS 包已在接线阶段随壳依赖引入
+ * （@tauri-apps/plugin-notification + @tauri-apps/api，静态 import 保证打进壳产物）；
+ * 本模块以运行时探测真实可用性——插件未注册（如 PWA、桌面壳未注册移动插件）或调用失败
+ * 时如实返回不可用并保留原始错误日志，全程不抛错、不伪造可用。
  */
+
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
 
 declare global {
   interface Window {
@@ -38,10 +45,18 @@ export function isAndroidShell(): boolean {
   return detectShellEnvironment() === "android_shell";
 }
 
-/** 通知插件 JS API 的最小形状（@tauri-apps/plugin-notification v2 的两个核心函数）。 */
+/** 通知插件 JS API 的最小形状（@tauri-apps/plugin-notification v2 的三个核心函数）。 */
 export interface NotificationModuleLike {
   isPermissionGranted: () => Promise<boolean>;
   requestPermission: () => Promise<boolean>;
+  sendNotification: (options: NotificationSendOptions) => void;
+}
+
+/** 发送本地通知的最小参数（@tauri-apps/plugin-notification v2 Options 子集）。 */
+export interface NotificationSendOptions {
+  title: string;
+  body: string;
+  channelId?: string;
 }
 
 export type NotificationCapability =
@@ -49,25 +64,32 @@ export type NotificationCapability =
   | { kind: "unavailable"; reason: "plugin_unavailable" }
   | { kind: "ready"; permission_granted: boolean };
 
-const NOTIFICATION_MODULE_ID = "@tauri-apps/plugin-notification";
+type NotificationModuleLoader = () => Promise<unknown> | unknown;
 
-type NotificationModuleLoader = () => Promise<unknown>;
-
-async function loadNotificationModule(): Promise<unknown> {
-  // 变量形式动态 import：包未安装时不阻塞构建与运行，失败由探测方如实记录。
-  return import(/* @vite-ignore */ NOTIFICATION_MODULE_ID);
+function loadNotificationModule(): unknown {
+  // 静态导入的插件模块：打包期已解析（不再走运行时裸说明符 import），
+  // jsdom/无插件环境由调用方按探测结果如实降级。
+  return {
+    isPermissionGranted,
+    requestPermission,
+    sendNotification,
+  };
 }
 
 let notificationModuleLoader: NotificationModuleLoader = loadNotificationModule;
 
+/** 已就绪的模块缓存（loader 可能是异步的，首次加载后缓存 resolve 值）。 */
+let notificationModuleReady: Promise<unknown> | null = null;
+
 /**
- * 测试注入点：替换通知插件加载器，传 null 恢复默认动态加载。
+ * 测试注入点：替换通知插件加载器，传 null 恢复默认静态加载。
  * 生产代码不得调用；真实能力始终以运行时探测结果为准。
  */
 export function setNotificationModuleLoader(
   loader: NotificationModuleLoader | null,
 ): void {
   notificationModuleLoader = loader ?? loadNotificationModule;
+  notificationModuleReady = null;
 }
 
 function isNotificationModule(value: unknown): value is NotificationModuleLike {
@@ -75,8 +97,16 @@ function isNotificationModule(value: unknown): value is NotificationModuleLike {
   const candidate = value as Record<string, unknown>;
   return (
     typeof candidate.isPermissionGranted === "function" &&
-    typeof candidate.requestPermission === "function"
+    typeof candidate.requestPermission === "function" &&
+    typeof candidate.sendNotification === "function"
   );
+}
+
+function loadNotificationModuleOnce(): Promise<unknown> {
+  if (notificationModuleReady === null) {
+    notificationModuleReady = Promise.resolve(notificationModuleLoader());
+  }
+  return notificationModuleReady;
 }
 
 /**
@@ -92,7 +122,7 @@ export async function probeNotificationCapability(): Promise<NotificationCapabil
   }
   let moduleValue: unknown;
   try {
-    moduleValue = await notificationModuleLoader();
+    moduleValue = await loadNotificationModuleOnce();
   } catch (error) {
     console.warn("[shellCapabilities] 通知插件加载失败，按不可用处理：", error);
     return { kind: "unavailable", reason: "plugin_unavailable" };
@@ -101,7 +131,7 @@ export async function probeNotificationCapability(): Promise<NotificationCapabil
     // null/undefined 表示插件包本身不存在；对象存在但缺 API 才值得保留诊断日志。
     if (moduleValue !== null && moduleValue !== undefined) {
       console.warn(
-        "[shellCapabilities] 通知插件已加载但缺少约定 API（isPermissionGranted/requestPermission），按不可用处理。",
+        "[shellCapabilities] 通知插件已加载但缺少约定 API（isPermissionGranted/requestPermission/sendNotification），按不可用处理。",
       );
     }
     return { kind: "unavailable", reason: "plugin_unavailable" };
@@ -121,9 +151,27 @@ export async function probeNotificationCapability(): Promise<NotificationCapabil
  * 申请返回 false 表示用户拒绝或系统策略未放行——如实返回 false，不重试不伪装成功。
  */
 export async function requestNotificationPermission(): Promise<boolean> {
-  const moduleValue: unknown = await notificationModuleLoader();
+  const moduleValue: unknown = await loadNotificationModuleOnce();
   if (!isNotificationModule(moduleValue)) {
     throw new Error("当前环境未加载通知能力，无法申请系统通知权限");
   }
   return (await moduleValue.requestPermission()) === true;
+}
+
+/**
+ * 发送一条本地通知。插件模块加载是异步的就绪等待（loader 可能异步），插件缺失或
+ * 调用失败如实进 console 并跳过该条——不抛出到调用方（引擎高频调用点不应被单条
+ * 失败打断），也绝不改写为成功；错误原文完整保留在日志里（Let It Fail）。
+ */
+export function sendLocalNotification(options: NotificationSendOptions): void {
+  void loadNotificationModuleOnce()
+    .then((moduleValue) => {
+      if (!isNotificationModule(moduleValue)) {
+        throw new Error("当前环境未加载通知能力，无法发送本地通知");
+      }
+      moduleValue.sendNotification(options);
+    })
+    .catch((error: unknown) => {
+      console.warn("[shellCapabilities] 本地通知发送失败，跳过该条：", error);
+    });
 }

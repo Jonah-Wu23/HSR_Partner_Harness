@@ -35,6 +35,7 @@ function moduleStub(overrides: {
     isPermissionGranted:
       overrides.isPermissionGranted ?? (async () => true),
     requestPermission: overrides.requestPermission ?? (async () => true),
+    sendNotification: vi.fn(),
   });
 }
 
