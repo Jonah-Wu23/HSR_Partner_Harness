@@ -29,10 +29,12 @@ from typing import Any, Callable
 import pytest
 
 import pair_harness.adapters.audio.qwen_voice_customization as qwen_voice_customization
+from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDialogueModel
 from pair_harness.character_cards.models import HsrExtension, VoiceProfile
 from pair_harness.core.contracts import ApprovalDecision, PendingOperation
 from pair_harness.desktop_backend.application_service import (
     ServiceError,
+    _build_service,
     build_demo_service,
 )
 from pair_harness.desktop_backend.commands import DesktopCommand
@@ -975,3 +977,35 @@ async def test_mobile_audio_chunk_maps_manager_errors_verbatim(service) -> None:
     )
     assert accepted == {"accepted": True}
     assert accepting.fed == [("sess-2", 0, "AAE=")]
+
+
+# ---------------------------------------------------------------- V0.3.7 回归
+
+async def test_runtime_rebuild_keeps_character_resolver(tmp_path: Path, monkeypatch) -> None:
+    """V0.3.7 回归：启动接管账号配置重建运行时后，resolver 必须挂在新实例上。
+
+    根因背景：resolver 原本只在 service __init__ 挂到初始对话模型实例；
+    真实模式启动时 `_build_service` 会用账号配置经 `_install_runtime_candidate`
+    重建并换入新实例，resolver 静默丢失，角色卡装配永远回退内置角色。
+    """
+    monkeypatch.setenv("PAIR_HARNESS_DIALOGUE_BASE_URL", "http://mock.local/v1")
+    monkeypatch.setenv("PAIR_HARNESS_DIALOGUE_API_KEY", "mock")
+    monkeypatch.setenv("PAIR_HARNESS_DIALOGUE_MODEL", "mock-model")
+    log = EventLog()
+    svc = _build_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+        pair_id="phainon_ancient_machine",
+        event_sink=log,
+        demo=False,
+    )
+    try:
+        assert isinstance(svc.dialogue_model, OpenAICompatibleDialogueModel)
+        # 启动接管已重建运行时；resolver 必须挂在这个（重建后的）实例上，
+        # 且指向本服务的装配方法（而非任意可调用对象）。
+        resolver = svc.dialogue_model.character_prompt_resolver
+        assert resolver is not None
+        assert resolver.__self__ is svc
+        assert resolver.__name__ == "_resolve_character_prompt"
+    finally:
+        await svc.shutdown()

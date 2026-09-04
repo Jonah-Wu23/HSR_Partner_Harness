@@ -4012,6 +4012,14 @@ class DesktopApplicationService:
                 reasoning_effort=reasoning_effort,
                 temperature=1.0,
             )
+            # V0.3.7 契约 §4.5：运行时候选重建（启动接管账号配置、运行期
+            # config/account 切换共用本方法）产生的是新对话模型实例，
+            # __init__ 里挂到初始实例的 resolver 不会自动跟随——必须在此
+            # 重新挂载，否则角色卡装配静默回退内置角色。
+            if isinstance(dialogue_model, OpenAICompatibleDialogueModel):
+                dialogue_model.character_prompt_resolver = (
+                    self._resolve_character_prompt
+                )
         else:
             raise ServiceError(
                 "缺少对话服务配置（Base URL / 模型）",
