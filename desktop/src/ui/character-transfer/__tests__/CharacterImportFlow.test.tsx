@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HarnessActions } from "../../../contracts/actions";
 import type { CardImportPreviewPayload } from "../../../contracts/protocol";
 import type { DesktopBackend } from "../../../services/backend";
-import { CharacterImportFlow } from "../CharacterImportFlow";
+import { CharacterImportFlow, resolveDroppedCardPath } from "../CharacterImportFlow";
 
 function createMockActions(overrides: Partial<HarnessActions> = {}): HarnessActions {
   return {
@@ -66,13 +66,21 @@ function createMockActions(overrides: Partial<HarnessActions> = {}): HarnessActi
     selectActiveCard: vi.fn().mockResolvedValue(undefined),
     cardGet: vi.fn().mockResolvedValue({}),
     cardPeekImportJson: vi.fn().mockResolvedValue({ preview: samplePreview() }),
+    cardPeekImport: vi.fn().mockResolvedValue({ preview: samplePreview() }),
     cardImportJson: vi.fn().mockResolvedValue({
       card_id: "imported-1",
       name: "白厄（3.4前）",
       state: "imported",
       report: samplePreview().report,
     }),
+    cardImportPng: vi.fn().mockResolvedValue({
+      card_id: "imported-png-1",
+      name: "白厄（3.4前）",
+      state: "imported",
+      report: samplePreview().report,
+    }),
     cardExportJson: vi.fn().mockResolvedValue({}),
+    cardExportPng: vi.fn().mockResolvedValue({}),
     cardPublish: vi.fn().mockResolvedValue({}),
     cardSetAvatar: vi.fn().mockResolvedValue({}),
     cardRemoveAvatar: vi.fn().mockResolvedValue({}),
@@ -130,6 +138,16 @@ const samplePreviewWithError = (): CardImportPreviewPayload => ({
   },
 });
 
+function samplePngPreview(): CardImportPreviewPayload {
+  return {
+    ...samplePreview(),
+    format: "png",
+    avatar_available: true,
+    avatar_width: 512,
+    avatar_height: 512,
+  };
+}
+
 describe("CharacterImportFlow", () => {
   afterEach(() => {
     cleanup();
@@ -157,7 +175,7 @@ describe("CharacterImportFlow", () => {
     fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
 
     await waitFor(() => {
-      expect(actions.cardPeekImportJson).toHaveBeenCalledWith("C:/Cards/bai.json");
+      expect(actions.cardPeekImport).toHaveBeenCalledWith("C:/Cards/bai.json");
     });
 
     // 预览面板
@@ -219,11 +237,27 @@ describe("CharacterImportFlow", () => {
     expect(screen.getByText("导入角色")).toBeInTheDocument();
   });
 
+  it("文件对话框打开失败如实进入错误态并保留原始错误", async () => {
+    const dialogError = new Error("dialog plugin unavailable");
+    const actions = createMockActions();
+    const backend = createMockBackend(null);
+    backend.pickFile = vi.fn().mockRejectedValue(dialogError);
+    render(<CharacterImportFlow backend={backend} actions={actions} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("打开文件对话框失败")).toBeInTheDocument();
+      expect(screen.getByText(/dialog plugin unavailable/)).toBeInTheDocument();
+    });
+    expect(actions.cardPeekImport).not.toHaveBeenCalled();
+  });
+
   it("解析失败呈现原始错误摘要", async () => {
     const peekError = new Error("模拟导入失败：无法解析 C:/invalid.json");
     (peekError as Error & { code?: string }).code = "card_import_failed";
     const actions = createMockActions({
-      cardPeekImportJson: vi.fn().mockRejectedValue(peekError),
+      cardPeekImport: vi.fn().mockRejectedValue(peekError),
     });
     const backend = createMockBackend("C:/invalid.json");
     render(<CharacterImportFlow backend={backend} actions={actions} onClose={vi.fn()} />);
@@ -260,7 +294,7 @@ describe("CharacterImportFlow", () => {
   it("错误态可重试", async () => {
     const peekError = new Error("fail");
     const actions = createMockActions({
-      cardPeekImportJson: vi.fn().mockRejectedValueOnce(peekError).mockResolvedValueOnce({ preview: samplePreview() }),
+      cardPeekImport: vi.fn().mockRejectedValueOnce(peekError).mockResolvedValueOnce({ preview: samplePreview() }),
     });
     const backend = createMockBackend("C:/retry.json");
     render(<CharacterImportFlow backend={backend} actions={actions} onClose={vi.fn()} />);
@@ -292,7 +326,7 @@ describe("CharacterImportFlow", () => {
 
   it("显示部分成功：兼容报告含 warnings/errors 时展示摘要", async () => {
     const actions = createMockActions({
-      cardPeekImportJson: vi.fn().mockResolvedValue({ preview: samplePreviewWithError() }),
+      cardPeekImport: vi.fn().mockResolvedValue({ preview: samplePreviewWithError() }),
     });
     const backend = createMockBackend("C:/Cards/warn.json");
     render(<CharacterImportFlow backend={backend} actions={actions} onClose={vi.fn()} />);
@@ -321,11 +355,133 @@ describe("CharacterImportFlow", () => {
     // StrictMode 开发构建会 mount→cleanup→再 mount；mountedRef 的 effect 体
     // 若不在重挂载时重新置 true，这里会永远停在「正在解析…」。
     await waitFor(() => {
-      expect(actions.cardPeekImportJson).toHaveBeenCalledWith("C:/Cards/bai.json");
+      expect(actions.cardPeekImport).toHaveBeenCalledWith("C:/Cards/bai.json");
     });
     await waitFor(() => {
       expect(screen.getByText(/白厄（3.4前）/)).toBeInTheDocument();
     });
     expect(screen.queryByText(/正在解析/)).not.toBeInTheDocument();
+  });
+
+  it("PNG 预览显示头像尺寸与「PNG 字节即头像」语义；确认导入分派到 cardImportPng", async () => {
+    const actions = createMockActions({
+      cardPeekImport: vi.fn().mockResolvedValue({ preview: samplePngPreview() }),
+    });
+    const backend = createMockBackend("C:/Cards/白厄.png");
+    render(<CharacterImportFlow backend={backend} actions={actions} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("PNG 卡")).toBeInTheDocument();
+      expect(screen.getByText("512 × 512")).toBeInTheDocument();
+      expect(screen.getByText(/PNG 字节即头像/)).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "确认导入" }));
+
+    await waitFor(() => {
+      expect(actions.cardImportPng).toHaveBeenCalledWith("C:/Cards/白厄.png", false);
+      expect(actions.cardImportJson).not.toHaveBeenCalled();
+      expect(screen.getByText("导入完成")).toBeInTheDocument();
+    });
+  });
+
+  it("PNG 副本导入把 as_duplicate=true 传给 cardImportPng", async () => {
+    const actions = createMockActions({
+      cardPeekImport: vi.fn().mockResolvedValue({ preview: samplePngPreview() }),
+    });
+    const backend = createMockBackend("C:/Cards/白厄.png");
+    render(<CharacterImportFlow backend={backend} actions={actions} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
+    await waitFor(() => expect(screen.getByText("PNG 卡")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "作为副本导入" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认导入" }));
+
+    await waitFor(() => {
+      expect(actions.cardImportPng).toHaveBeenCalledWith("C:/Cards/白厄.png", true);
+    });
+  });
+
+  it("PNG 预览中头像尺寸未解析时如实显示，不伪造数值", async () => {
+    const actions = createMockActions({
+      cardPeekImport: vi.fn().mockResolvedValue({
+        preview: { ...samplePngPreview(), avatar_width: null, avatar_height: null },
+      }),
+    });
+    const backend = createMockBackend("C:/Cards/broken-header.png");
+    render(<CharacterImportFlow backend={backend} actions={actions} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("未能解析")).toBeInTheDocument();
+      expect(screen.queryByText(/×/)).not.toBeInTheDocument();
+    });
+  });
+
+  it("导入分派跟随 peek 返回的 format，不信任扩展名（.png 文件但 format=json → cardImportJson）", async () => {
+    const actions = createMockActions({
+      cardPeekImport: vi.fn().mockResolvedValue({ preview: { ...samplePreview(), format: "json" } }),
+    });
+    const backend = createMockBackend("C:/Cards/伪装.png");
+    render(<CharacterImportFlow backend={backend} actions={actions} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
+    await waitFor(() => expect(screen.getByText("JSON 卡")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "确认导入" }));
+
+    await waitFor(() => {
+      expect(actions.cardImportJson).toHaveBeenCalledWith("C:/Cards/伪装.png", false);
+      expect(actions.cardImportPng).not.toHaveBeenCalled();
+    });
+  });
+
+  it("PNG 解析失败呈现原始错误摘要（card_import_failed）", async () => {
+    const peekError = new Error("PNG 解析失败：IEND 块缺失");
+    (peekError as Error & { code?: string }).code = "card_import_failed";
+    const actions = createMockActions({
+      cardPeekImport: vi.fn().mockRejectedValue(peekError),
+    });
+    const backend = createMockBackend("C:/Cards/damaged.png");
+    render(<CharacterImportFlow backend={backend} actions={actions} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("解析失败")).toBeInTheDocument();
+      expect(screen.getByText(/card_import_failed/)).toBeInTheDocument();
+      expect(screen.getByText(/IEND 块缺失/)).toBeInTheDocument();
+    });
+  });
+
+  it("浏览器 DOM 拖放（无绝对路径）如实报错，不进入解析", async () => {
+    const actions = createMockActions();
+    const backend = createMockBackend("C:/Cards/bai.json");
+    render(<CharacterImportFlow backend={backend} actions={actions} onClose={vi.fn()} />);
+
+    const dropzone = screen.getByRole("button", { name: "选择角色卡文件" });
+    fireEvent.drop(dropzone, {
+      dataTransfer: { files: [new File(["x"], "bai.png", { type: "image/png" })] },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/不支持此操作/)).toBeInTheDocument();
+      expect(screen.getByText(/浏览器环境无法从拖放文件获取绝对路径/)).toBeInTheDocument();
+    });
+    expect(actions.cardPeekImport).not.toHaveBeenCalled();
+  });
+
+  it("resolveDroppedCardPath：单文件通过，多文件与空拖放如实拒绝", () => {
+    expect(resolveDroppedCardPath(["C:/Cards/bai.png"])).toEqual({ ok: true, path: "C:/Cards/bai.png" });
+    const multi = resolveDroppedCardPath(["C:/a.png", "C:/b.png"]);
+    expect(multi.ok).toBe(false);
+    if (!multi.ok) expect(multi.reason).toMatch(/一次只能导入一个角色卡文件/);
+    const empty = resolveDroppedCardPath([]);
+    expect(empty.ok).toBe(false);
+    if (!empty.ok) expect(empty.reason).toMatch(/未携带文件路径/);
   });
 });

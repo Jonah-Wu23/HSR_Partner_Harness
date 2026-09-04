@@ -73,11 +73,26 @@ function createMockActions(overrides: Partial<HarnessActions> = {}): HarnessActi
       avatar: null,
     }),
     cardPeekImportJson: vi.fn().mockResolvedValue({ preview: {} as never }),
+    cardPeekImport: vi.fn().mockResolvedValue({ preview: {} as never }),
     cardImportJson: vi.fn().mockResolvedValue({ card_id: "", name: "", state: "imported", report: {} as never }),
+    cardImportPng: vi.fn().mockResolvedValue({ card_id: "", name: "", state: "imported", report: {} as never }),
     cardExportJson: vi.fn().mockResolvedValue({ exported: true, path: "", avatar_saved: false }),
+    cardExportPng: vi.fn().mockResolvedValue({ exported: true, path: "", name: "", spec_version: "3.0", greeting_count: 0, world_book_entries: 0, extensions: [] }),
     cardPublish: vi.fn().mockResolvedValue({ card_id: "draft-123", state: "saved" }),
     cardSetAvatar: vi.fn().mockResolvedValue({ card_id: "draft-123", asset_id: "avatar-1", mime_type: "image/png" }),
     cardRemoveAvatar: vi.fn().mockResolvedValue({ card_id: "draft-123", removed: true }),
+    powerGetStatus: vi.fn().mockResolvedValue({
+      supported: false,
+      platform: "windows",
+      plan_name: "",
+      ac_sleep_timeout_seconds: null,
+      dc_sleep_timeout_seconds: null,
+      remote_serve_enabled: false,
+      threshold_seconds: 900,
+      at_risk: false,
+      reason: "",
+      checked_at: "",
+    }),
     voiceCardBindReference: vi.fn().mockResolvedValue({ card_id: "", asset_id: "", duration_seconds: 0, size_bytes: 0, mime_type: "" }),
     voiceCardCreate: vi.fn().mockResolvedValue({ card_id: "", state: "voice_ready", voice_id: "" }),
     voiceCardUnbind: vi.fn().mockResolvedValue({ card_id: "", state: "voice_unconfigured" }),
@@ -616,15 +631,198 @@ describe("CharacterCreatePage", () => {
       expect(screen.getByTestId("f-system-prompt")).toHaveValue("系统提示保留");
     });
 
-    it("V0.3.7 分区保持占位语义", () => {
-      const actions = createMockActions();
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
+    describe("V0.3.7 世界书与 mufy 接线 (V1/V2/V3 wiring)", () => {
+      const wiredCardVm: CharacterCreateViewModel = {
+        cardId: "card-001",
+        card: {
+          spec: "chara_card_v3",
+          spec_version: "3.0",
+          data: {
+            name: "临海角色",
+            description: "",
+            personality: "",
+            scenario: "",
+            first_mes: "",
+            mes_example: "",
+            character_book: {
+              name: "临海世界书",
+              entries: [
+                {
+                  keys: ["临海"],
+                  content: "临海是一座永远下雨的港口城市。",
+                  comment: "世界观总纲",
+                  enabled: true,
+                  insertion_order: 100,
+                  constant: false,
+                  selective: false,
+                  position: "before_char",
+                },
+              ],
+            },
+            extensions: {
+              hsr: {
+                world_architecture: {
+                  world_foundation: { one_line_pitch: "一座永远下雨的港口城市。" },
+                },
+                legacy_note: "旧版字段",
+              },
+            },
+          },
+        },
+        readOnly: false,
+        loading: false,
+        error: null,
+      };
 
-      fireEvent.click(screen.getByTestId("mode-btn-advanced"));
-      fireEvent.click(screen.getByTestId("tree-item-worldbook"));
+      beforeEach(() => {
+        vi.useFakeTimers();
+      });
 
-      expect(screen.getByText(/完整字段编辑随 V0.3.7 交付/)).toBeInTheDocument();
-      expect(screen.queryByTestId("worldbook-editor")).not.toBeInTheDocument();
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it("世界书分区接 WorldBookEditor：条目编辑合并回整卡 JSON 并随防抖保存经 card.update 提交", async () => {
+        const actions = createMockActions();
+        render(<CharacterCreatePage vm={wiredCardVm} actions={actions} />);
+
+        fireEvent.click(screen.getByTestId("mode-btn-advanced"));
+        fireEvent.click(screen.getByTestId("tree-item-worldbook"));
+
+        expect(screen.getByTestId("wb-editor")).toBeInTheDocument();
+        expect(screen.getByTestId("wb-entry-row-0")).toHaveTextContent("世界观总纲");
+        expect(screen.queryByText(/完整字段编辑随/)).not.toBeInTheDocument();
+
+        fireEvent.click(screen.getByTestId("wb-entry-toggle-0"));
+        fireEvent.change(screen.getByTestId("wb-entry-0-content"), {
+          target: { value: "临海永远下雨。" },
+        });
+
+        expect(screen.getByTestId("save-status-unsaved")).toBeInTheDocument();
+        expect(actions.updateCard).not.toHaveBeenCalled();
+
+        await act(async () => {
+          vi.advanceTimersByTime(1000);
+        });
+
+        expect(actions.updateCard).toHaveBeenCalledWith(
+          "card-001",
+          expect.objectContaining({
+            data: expect.objectContaining({
+              name: "临海角色",
+              character_book: expect.objectContaining({
+                name: "临海世界书",
+                entries: [
+                  expect.objectContaining({
+                    keys: ["临海"],
+                    content: "临海永远下雨。",
+                    comment: "世界观总纲",
+                    insertion_order: 100,
+                    position: "before_char",
+                  }),
+                ],
+              }),
+            }),
+          }),
+        );
+      });
+
+      it("mufy 分区接 MufyAdvancedEditor：hsr 编辑合并回 extensions.hsr，未识别键原样保留", async () => {
+        const actions = createMockActions();
+        render(<CharacterCreatePage vm={wiredCardVm} actions={actions} />);
+
+        fireEvent.click(screen.getByTestId("mode-btn-advanced"));
+        fireEvent.click(screen.getByTestId("tree-item-mufy"));
+
+        expect(screen.getByTestId("mufy-advanced-editor")).toBeInTheDocument();
+        expect(screen.getByTestId("mufy-block-world_architecture")).toBeInTheDocument();
+        expect(screen.queryByText(/完整字段编辑随/)).not.toBeInTheDocument();
+
+        fireEvent.change(
+          screen.getByTestId("mufy-value-world_architecture.world_foundation.one_line_pitch"),
+          { target: { value: "永不晴天。" } },
+        );
+
+        await act(async () => {
+          vi.advanceTimersByTime(1000);
+        });
+
+        expect(actions.updateCard).toHaveBeenCalledWith(
+          "card-001",
+          expect.objectContaining({
+            data: expect.objectContaining({
+              extensions: expect.objectContaining({
+                hsr: expect.objectContaining({
+                  world_architecture: { world_foundation: { one_line_pitch: "永不晴天。" } },
+                  legacy_note: "旧版字段",
+                }),
+              }),
+            }),
+          }),
+        );
+      });
+
+      it("新建卡在 mufy 分区添加内容后，自动保存生成带 extensions.hsr 的整卡 JSON", async () => {
+        const actions = createMockActions();
+        render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
+
+        fireEvent.change(screen.getByLabelText(/名称/), { target: { value: "新角色" } });
+
+        fireEvent.click(screen.getByTestId("mode-btn-advanced"));
+        fireEvent.click(screen.getByTestId("tree-item-mufy"));
+        fireEvent.click(screen.getByTestId("mufy-add-world_architecture.world_foundation"));
+
+        await act(async () => {
+          vi.advanceTimersByTime(1000);
+        });
+
+        expect(actions.createCardDraft).toHaveBeenCalledWith("新角色");
+        expect(actions.updateCard).toHaveBeenCalledWith(
+          "draft-123",
+          expect.objectContaining({
+            data: expect.objectContaining({
+              extensions: expect.objectContaining({
+                hsr: { world_architecture: { world_foundation: {} } },
+              }),
+            }),
+          }),
+        );
+      });
+
+      it("原始数据分区保持只读 JSON 核对视图，实时反映最新编辑", () => {
+        const actions = createMockActions();
+        render(<CharacterCreatePage vm={wiredCardVm} actions={actions} />);
+
+        fireEvent.click(screen.getByTestId("mode-btn-advanced"));
+        fireEvent.click(screen.getByTestId("tree-item-raw"));
+
+        const rawView = screen.getByTestId("raw-json-view");
+        expect(rawView.tagName).toBe("PRE");
+        expect(rawView).toHaveTextContent("character_book");
+        expect(rawView).toHaveTextContent("one_line_pitch");
+        expect(within(rawView).queryByRole("textbox")).not.toBeInTheDocument();
+      });
+
+      it("内置只读卡：readOnly 透传给世界书与 mufy 编辑器，不提供编辑入口", () => {
+        const actions = createMockActions();
+        render(<CharacterCreatePage vm={{ ...wiredCardVm, cardId: "builtin:baihe", readOnly: true }} actions={actions} />);
+
+        fireEvent.click(screen.getByTestId("mode-btn-advanced"));
+        fireEvent.click(screen.getByTestId("tree-item-worldbook"));
+
+        expect(screen.getByTestId("wb-editor")).toBeInTheDocument();
+        expect(screen.getByTestId("wb-entry-row-0")).toBeInTheDocument();
+        expect(screen.queryByTestId("wb-add-entry")).not.toBeInTheDocument();
+        expect(screen.queryByTestId("wb-entry-remove-0")).not.toBeInTheDocument();
+
+        fireEvent.click(screen.getByTestId("tree-item-mufy"));
+        expect(screen.getByTestId("mufy-advanced-editor")).toBeInTheDocument();
+        expect(
+          screen.getByTestId("mufy-value-world_architecture.world_foundation.one_line_pitch"),
+        ).toBeDisabled();
+        expect(screen.queryByTestId("mufy-block-raw-world_architecture")).not.toBeInTheDocument();
+        expect(screen.queryByTestId("mufy-addkey-input-world_architecture")).not.toBeInTheDocument();
+      });
     });
   });
 

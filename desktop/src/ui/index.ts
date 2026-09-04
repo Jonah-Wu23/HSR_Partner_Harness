@@ -9,3 +9,5 @@ export { AccountGate } from "./gate/AccountGate";
 export { Onboarding } from "./gate/Onboarding";
 export { SettingsCenter } from "./settings/SettingsCenter";
 export type { SettingsPage } from "./settings/SettingsCenter";
+export { PowerPrompt } from "./power/PowerPrompt";
+export { PowerStatusSection } from "./power/PowerStatusSection";

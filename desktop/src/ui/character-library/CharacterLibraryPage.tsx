@@ -9,6 +9,7 @@ import type { DesktopBackend } from "../../services/backend";
 import { CharacterImportFlow } from "../character-transfer/CharacterImportFlow";
 import { CharacterExportFlow } from "../character-transfer/CharacterExportFlow";
 import { CharacterCardItem } from "./CharacterCardItem";
+import { CharacterCompatModal } from "./CharacterCompatModal";
 import { CharacterDeleteModal } from "./CharacterDeleteModal";
 import {
   EmptyFilterIcon,
@@ -58,6 +59,7 @@ export function CharacterLibraryPage({
   });
   const [importOpen, setImportOpen] = useState(false);
   const [exportCard, setExportCard] = useState<CharacterCardSummaryView | null>(null);
+  const [compatCard, setCompatCard] = useState<CharacterCardSummaryView | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -332,6 +334,7 @@ export function CharacterLibraryPage({
                       onArchive={(id) => void actions.archiveCard(id)}
                       onDeleteRequest={(c) => setDeletingCard(c)}
                       onViewError={(c) => showInvalidErrorNotice(c)}
+                      onViewCompat={setCompatCard}
                       onConfigureVoice={onConfigureCardVoice}
                     />
                   </div>
@@ -351,6 +354,7 @@ export function CharacterLibraryPage({
                   onArchive={(id) => void actions.archiveCard(id)}
                   onDeleteRequest={(c) => setDeletingCard(c)}
                   onViewError={(c) => showInvalidErrorNotice(c)}
+                  onViewCompat={setCompatCard}
                   onConfigureVoice={onConfigureCardVoice}
                 />
               ))}
@@ -412,6 +416,16 @@ export function CharacterLibraryPage({
             />
           </div>
         </div>
+      )}
+
+      {/* 兼容性详情弹窗（V6：导入报告的随时回看入口） */}
+      {compatCard && (
+        <CharacterCompatModal
+          cardId={compatCard.cardId}
+          cardName={compatCard.name}
+          actions={actions}
+          onClose={() => setCompatCard(null)}
+        />
       )}
 
       {/* 功能占位通知弹窗（保留给导入失败详情等） */}

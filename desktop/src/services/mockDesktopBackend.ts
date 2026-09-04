@@ -10,6 +10,7 @@ import type {
   PendingApproval,
   PairRecord,
   ProjectRecord,
+  PowerStatusPayload,
   QueueItem,
   ToolRun,
   Turn,
@@ -19,6 +20,7 @@ import {
   APPROVAL_ALREADY_RESOLVED,
   CARD_AVATAR_TOO_LARGE,
   CARD_AVATAR_UNSUPPORTED,
+  CARD_EXPORT_FAILED,
   CARD_IMPORT_FAILED,
   CARD_PUBLISH_INVALID,
   CARD_READ_ONLY,
@@ -92,6 +94,9 @@ export class MockDesktopBackend implements DesktopBackend {
 
   /* V0.3.5：手机语音会话状态。 */
   private mobileAudioSessions = new Map<string, { conversation_id: string; last_seq: number | null }>();
+
+  /* V0.3.7：最近一次 power.status_changed 载荷（线缆快照无电源字段，mock 留存供开发/测试检查）。 */
+  lastPowerStatus: PowerStatusPayload | null = null;
 
   constructor(
     scenarioName: MockScenarioName = "single-project",
@@ -238,12 +243,18 @@ export class MockDesktopBackend implements DesktopBackend {
       case "card.select_active":
         return this.cardSelectActive(command.params) as T;
       /* —— V0.3.5 角色卡导入导出/发布/头像 —— */
+      /* V0.3.7：card.peek_import 为规范名，card.peek_import_json 是同一 handler 的别名（deprecated）。 */
+      case "card.peek_import":
       case "card.peek_import_json":
-        return this.cardPeekImportJson(command.params) as T;
+        return this.cardPeekImport(command.params) as T;
       case "card.import_json":
         return this.cardImportJson(command.params) as T;
+      case "card.import_png":
+        return this.cardImportPng(command.params) as T;
       case "card.export_json":
         return this.cardExportJson(command.params) as T;
+      case "card.export_png":
+        return this.cardExportPng(command.params) as T;
       case "card.publish":
         return this.cardPublish(command.params) as T;
       case "card.set_avatar":
@@ -279,6 +290,9 @@ export class MockDesktopBackend implements DesktopBackend {
           device_name: String(command.params.device_name ?? ""),
           revoked_tokens: 1,
         } as T;
+      /* —— V0.3.7 电源状态 —— */
+      case "power.get_status":
+        return this.powerGetStatus() as T;
       default:
         // 尚未实现的 V0.2 命令在 mock 中返回空对象（不阻断前端流程）
         return {} as T;
@@ -449,14 +463,34 @@ export class MockDesktopBackend implements DesktopBackend {
     };
   }
 
-  private cardPeekImportJson(params: Record<string, unknown>) {
+  private cardPeekImport(params: Record<string, unknown>) {
     const path = String(params.path ?? "");
     if (path.includes("invalid") || path.includes("missing")) {
       const error = new Error(`模拟导入失败：无法解析 ${path}`);
       (error as Error & { code?: string }).code = CARD_IMPORT_FAILED;
       throw error;
     }
-    return { preview: this.sampleBaiImportPreview() };
+    if (path.toLowerCase().endsWith(".png")) {
+      // V0.3.7：真实后端按 PNG 签名分派（不信任扩展名）；mock 无文件可读，按扩展名模拟 PNG 分支。
+      return {
+        preview: {
+          ...this.sampleBaiImportPreview(),
+          format: "png" as const,
+          avatar_available: true,
+          avatar_width: 512,
+          avatar_height: 512,
+        },
+      };
+    }
+    return {
+      preview: {
+        ...this.sampleBaiImportPreview(),
+        format: "json" as const,
+        avatar_available: false,
+        avatar_width: null,
+        avatar_height: null,
+      },
+    };
   }
 
   private cardImportJson(params: Record<string, unknown>) {
@@ -488,6 +522,37 @@ export class MockDesktopBackend implements DesktopBackend {
     return { card_id: cardId, name, state: "imported", report: preview.report };
   }
 
+  private cardImportPng(params: Record<string, unknown>) {
+    const path = String(params.path ?? "");
+    if (path.includes("invalid") || path.includes("missing")) {
+      const error = new Error(`模拟导入失败：无法解析 ${path}`);
+      (error as Error & { code?: string }).code = CARD_IMPORT_FAILED;
+      throw error;
+    }
+    const asDuplicate = params.as_duplicate === true;
+    const preview = this.sampleBaiImportPreview();
+    const now = new Date().toISOString();
+    const cardId = `card-imported-png-${this.cards.length + 1}`;
+    const name = asDuplicate ? `${preview.name}（副本）` : preview.name;
+    this.cards = [
+      {
+        card_id: cardId,
+        name,
+        state: "imported",
+        source: "imported_png",
+        updated_at: now,
+        has_avatar: true,
+        voice_state: "voice_unconfigured",
+        active: false,
+        read_only: false,
+      },
+      ...this.cards,
+    ];
+    // V0.3.7：PNG 字节即头像——mock 复用 card.set_avatar 的占位 PNG（真实后端入受管理资产目录）。
+    this.cardSetAvatar({ card_id: cardId, path: "mock-import.png" });
+    return { card_id: cardId, name, state: "imported", report: preview.report };
+  }
+
   private cardExportJson(params: Record<string, unknown>) {
     const cardId = String(params.card_id ?? "");
     if (cardId.startsWith("builtin:")) {
@@ -501,6 +566,32 @@ export class MockDesktopBackend implements DesktopBackend {
       exported: true,
       path,
       avatar_saved: saveAvatar && this.cardAvatars.has(cardId),
+    };
+  }
+
+  private cardExportPng(params: Record<string, unknown>) {
+    const cardId = String(params.card_id ?? "");
+    if (cardId.startsWith("builtin:")) {
+      const error = new Error("内置角色卡只读，导出前请先复制");
+      (error as Error & { code?: string }).code = CARD_READ_ONLY;
+      throw error;
+    }
+    const card = this.cards.find((item) => item.card_id === cardId);
+    if (!card) throw new Error("角色卡不存在");
+    if (!card.has_avatar) {
+      // 契约冻结 §1.3：无头像卡导出 PNG 真实拒绝，不合成默认图。
+      const error = new Error("卡未设置头像，请先设置头像后再导出 PNG");
+      (error as Error & { code?: string }).code = CARD_EXPORT_FAILED;
+      throw error;
+    }
+    return {
+      exported: true,
+      path: String(params.path ?? ""),
+      name: card.name,
+      spec_version: "3.0",
+      greeting_count: 6,
+      world_book_entries: 20,
+      extensions: ["hsr"],
     };
   }
 
@@ -564,6 +655,29 @@ export class MockDesktopBackend implements DesktopBackend {
       card.card_id === cardId ? { ...card, has_avatar: false } : card,
     );
     return { card_id: cardId, removed: true };
+  }
+
+  /* —— V0.3.7 电源状态 mock 实现 —— */
+
+  private powerGetStatus(): PowerStatusPayload {
+    // 契约冻结 §1.5 的 Windows 成功形状（mock 恒定返回；at_risk 场景由事件模拟）。
+    return {
+      supported: true,
+      platform: "windows",
+      plan_name: "平衡",
+      ac_sleep_timeout_seconds: 1800,
+      dc_sleep_timeout_seconds: 1200,
+      remote_serve_enabled: false,
+      threshold_seconds: 900,
+      at_risk: false,
+      reason: "AC/DC 睡眠超时均不低于阈值",
+      checked_at: new Date().toISOString(),
+    };
+  }
+
+  /** 模拟 --serve 电源监视线程的 power.status_changed（§2.1：payload 与 power.get_status 同形）。 */
+  emitPowerStatusChanged(payload: PowerStatusPayload): void {
+    this.emit("power.status_changed", payload as unknown as Record<string, unknown>);
   }
 
   /* —— V0.3.5 角色卡音色 mock 实现 —— */
@@ -1379,6 +1493,10 @@ export class MockDesktopBackend implements DesktopBackend {
       snapshot.voice = { ...snapshot.voice, ...(event.payload.voice as Partial<DesktopSnapshot["voice"]>) };
     } else if (event.event === "voice.asr_partial") {
       snapshot.voice = { ...snapshot.voice, asr_partial: String(event.payload.text ?? "") };
+    } else if (event.event === "power.status_changed") {
+      // V0.3.7：DesktopSnapshot 无电源字段，mock 记录最新状态供开发与测试检查；
+      // 前端 store 订阅消费由接线阶段的电源切片处理。
+      this.lastPowerStatus = event.payload as unknown as PowerStatusPayload;
     }
   }
 

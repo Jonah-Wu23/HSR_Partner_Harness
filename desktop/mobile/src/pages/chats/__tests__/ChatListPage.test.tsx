@@ -1,9 +1,10 @@
+import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
 import { ChatListPage } from "../ChatListPage";
 import { useMobileStore } from "../../../lib/mobileStore";
 import * as router from "../../../lib/router";
-import type { ProjectRecord } from "@shared/contracts/protocol";
+import type { PowerStatusPayload, ProjectRecord } from "@shared/contracts/protocol";
 
 const initialStoreState = useMobileStore.getState();
 
@@ -21,6 +22,7 @@ describe("ChatListPage 组件", () => {
       approvals: [],
       lastSequence: 0,
       bootstrapped: false,
+      powerStatus: null,
     });
   });
 
@@ -163,5 +165,91 @@ describe("ChatListPage 组件", () => {
     const convItem = screen.getByTestId("conversation-item-c1");
     fireEvent.click(convItem);
     expect(navigateSpy).toHaveBeenCalledWith({ name: "chat", conversationId: "c1" });
+  });
+});
+
+describe("ChatListPage V0.3.7 接线（电源状态与通知偏好）", () => {
+  const atRiskStatus: PowerStatusPayload = {
+    supported: true,
+    platform: "windows",
+    plan_name: "平衡",
+    ac_sleep_timeout_seconds: 600,
+    dc_sleep_timeout_seconds: 1800,
+    remote_serve_enabled: true,
+    threshold_seconds: 900,
+    at_risk: true,
+    reason: "AC 睡眠超时 600 秒低于阈值 900 秒",
+    checked_at: "2026-09-02T10:00:00",
+  };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    window.localStorage.clear();
+    useMobileStore.setState({
+      connection: "connected",
+      deviceName: "测试手机",
+      projects: [],
+      conversationsById: {},
+      activeConversationId: null,
+      messages: [],
+      toolRuns: [],
+      approvals: [],
+      lastSequence: 0,
+      bootstrapped: true,
+      powerStatus: null,
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    window.localStorage.clear();
+    useMobileStore.setState(initialStoreState);
+  });
+
+  it("at_risk 时在列表页顶部展示「电脑可能休眠」警示条，reason 原文呈现", () => {
+    useMobileStore.setState({ powerStatus: atRiskStatus });
+    render(<ChatListPage />);
+    expect(screen.getByTestId("power-status-banner")).toHaveClass("is-at-risk");
+    expect(screen.getByTestId("power-status-title")).toHaveTextContent("电脑可能休眠");
+    expect(screen.getByTestId("power-status-reason")).toHaveTextContent(
+      "AC 睡眠超时 600 秒低于阈值 900 秒",
+    );
+  });
+
+  it("点击「知道了」收敛警示条；电脑状态再次变化（新 checked_at）时重新出现", () => {
+    useMobileStore.setState({ powerStatus: atRiskStatus });
+    render(<ChatListPage />);
+    fireEvent.click(screen.getByTestId("btn-power-dismiss"));
+    expect(screen.queryByTestId("power-status-banner")).toBeNull();
+
+    act(() => {
+      useMobileStore.setState({
+        powerStatus: { ...atRiskStatus, checked_at: "2026-09-02T10:05:00" },
+      });
+    });
+    expect(screen.getByTestId("power-status-banner")).toBeInTheDocument();
+  });
+
+  it("远程服务未开启时弱化展示 reason 原文，不冒充休眠风险", () => {
+    useMobileStore.setState({
+      powerStatus: { ...atRiskStatus, at_risk: false, remote_serve_enabled: false, reason: "远程服务未开启" },
+    });
+    render(<ChatListPage />);
+    expect(screen.getByTestId("power-status-banner")).toHaveClass("is-muted");
+    expect(screen.getByTestId("power-status-reason")).toHaveTextContent("远程服务未开启");
+    expect(screen.queryByTestId("power-status-title")).toBeNull();
+  });
+
+  it("无电源数据时不渲染警示条", () => {
+    render(<ChatListPage />);
+    expect(screen.queryByTestId("power-status-banner")).toBeNull();
+  });
+
+  it("PWA 下通知偏好区如实说明仅 Android 壳内可用，不渲染任何开关", async () => {
+    const { container } = render(<ChatListPage />);
+    const note = await screen.findByTestId("notif-unavailable-pwa");
+    expect(note).toHaveTextContent("本地通知仅在 Android 壳内可用");
+    expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
   });
 });

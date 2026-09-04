@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import type { DesktopEvent, DesktopSnapshot, PendingApproval, ToolRun } from "../contracts/protocol";
+import type { DesktopEvent, DesktopSnapshot, PendingApproval, PowerStatusPayload, ToolRun } from "../contracts/protocol";
 import { createMockScenario } from "../mocks/scenarios";
 import { presentAppShell } from "../presenters/presenters";
 import { desktopStore } from "./desktopStore";
@@ -1293,5 +1293,106 @@ describe("desktopStore event projection", () => {
       voice_state: "voice_ready",
       voice_id: "voice-abc",
     });
+  });
+});
+
+describe("desktopStore power slice（V0.3.7 U5）", () => {
+  beforeEach(() => {
+    desktopStore.setState({
+      powerStatus: null,
+      powerError: null,
+      powerQueryInFlight: false,
+      powerPromptDismissed: false,
+      lastSequence: -1,
+      needsBootstrap: false,
+      eventBuffer: [],
+      streamId: null,
+    });
+  });
+
+  function powerPayload(overrides: Partial<PowerStatusPayload> = {}): PowerStatusPayload {
+    return {
+      supported: true,
+      platform: "windows",
+      plan_name: "平衡",
+      ac_sleep_timeout_seconds: 600,
+      dc_sleep_timeout_seconds: 0,
+      remote_serve_enabled: true,
+      threshold_seconds: 900,
+      at_risk: true,
+      reason: "AC 睡眠超时 600 秒低于阈值 900 秒",
+      checked_at: "2026-09-02T10:00:00+08:00",
+      ...overrides,
+    };
+  }
+
+  function powerEvent(sequence: number, payload: PowerStatusPayload): DesktopEvent {
+    return {
+      kind: "event",
+      event: "power.status_changed",
+      sequence,
+      // 线缆载荷为无类型 JSON；运行时形状由 powerPayload 按契约 §1.5 保证。
+      payload: payload as unknown as Record<string, unknown>,
+    };
+  }
+
+  it("power.status_changed 事件写入 powerStatus 并清除旧查询错误", () => {
+    desktopStore.getState().setPowerError("power_status_unavailable: powercfg 退出码 1");
+    desktopStore.getState().applyEvents([powerEvent(1, powerPayload())]);
+
+    const state = desktopStore.getState();
+    expect(state.powerStatus).toEqual(powerPayload());
+    expect(state.powerError).toBeNull();
+  });
+
+  it("at_risk 消失（false 事件）复位关闭标记，再次出现时允许重新提示", () => {
+    desktopStore.getState().applyEvents([powerEvent(1, powerPayload())]);
+    desktopStore.getState().dismissPowerPrompt();
+    expect(desktopStore.getState().powerPromptDismissed).toBe(true);
+
+    // 状态消失：复位关闭标记
+    desktopStore
+      .getState()
+      .applyEvents([powerEvent(2, powerPayload({ at_risk: false, reason: "AC/DC 睡眠超时均不低于阈值" }))]);
+    expect(desktopStore.getState().powerPromptDismissed).toBe(false);
+
+    // 状态再次出现：用户尚未关闭，允许提示
+    desktopStore.getState().applyEvents([powerEvent(3, powerPayload())]);
+    expect(desktopStore.getState().powerPromptDismissed).toBe(false);
+  });
+
+  it("setPowerStatus 在 at_risk 持续期间保留用户关闭标记", () => {
+    desktopStore.getState().setPowerStatus(powerPayload());
+    desktopStore.getState().dismissPowerPrompt();
+
+    // 同一次 at_risk 持续期内的新读取（60 秒轮询事件）不重置关闭标记
+    desktopStore.getState().setPowerStatus(powerPayload({ checked_at: "2026-09-02T10:01:00+08:00" }));
+    expect(desktopStore.getState().powerPromptDismissed).toBe(true);
+  });
+
+  it("主动查询成功清除旧错误；查询失败如实记录原文", () => {
+    desktopStore.getState().setPowerError("power_status_unavailable: 输出不可解析");
+    desktopStore.getState().setPowerStatus(powerPayload());
+    expect(desktopStore.getState().powerError).toBeNull();
+
+    desktopStore.getState().setPowerError("power_status_unavailable: powercfg 超时");
+    expect(desktopStore.getState().powerError).toBe("power_status_unavailable: powercfg 超时");
+    // 查询失败不伪造状态：powerStatus 保持最近一次成功读取
+    expect(desktopStore.getState().powerStatus).toEqual(powerPayload());
+  });
+
+  it("非 Windows unsupported 载荷如实落库，不抛错不伪造数值", () => {
+    const unsupported = powerPayload({
+      supported: false,
+      platform: "linux",
+      plan_name: "",
+      ac_sleep_timeout_seconds: null,
+      dc_sleep_timeout_seconds: null,
+      at_risk: false,
+      reason: "unsupported platform",
+    });
+    desktopStore.getState().applyEvents([powerEvent(1, unsupported)]);
+
+    expect(desktopStore.getState().powerStatus).toEqual(unsupported);
   });
 });

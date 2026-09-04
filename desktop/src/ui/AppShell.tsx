@@ -15,6 +15,7 @@ import { ToastStack } from "./status/ToastStack";
 import { AccountGate } from "./gate/AccountGate";
 import { Onboarding } from "./gate/Onboarding";
 import { SettingsCenter, type SettingsPage } from "./settings/SettingsCenter";
+import { PowerPrompt } from "./power/PowerPrompt";
 import { CharacterLibraryPage } from "./character-library/CharacterLibraryPage";
 import { CharacterCreatePage } from "./character-create/CharacterCreatePage";
 import type { TestResult } from "./settings/types";
@@ -284,6 +285,9 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
         onDismiss={(id) => actions.dismissToast(id)}
         onOpenDetails={() => setTechDetailsOpen(true)}
       />
+      {/* V0.3.7 V10：电源非打扰提示（右下角）；无风险/已关闭/不支持时不渲染，
+          挂载时主动 powerGetStatus，后续由 power.status_changed 事件更新。 */}
+      <PowerPrompt actions={actions} />
       {/* V0.2 M4：设置中心（打开时拉取 config.get；key 保证每次打开表单水合） */}
       <SettingsCenter
         key={settingsRevision}

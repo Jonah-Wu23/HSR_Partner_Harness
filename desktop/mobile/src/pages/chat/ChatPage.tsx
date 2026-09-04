@@ -12,7 +12,7 @@ import { ArrowDownIcon, BackIcon, MicIcon, StopIcon } from "../../components/car
 import { DelegationCard, type DelegationStatus } from "../../components/cards/DelegationCard";
 import { ToolCard } from "../../components/cards/ToolCard";
 import { useMobileStore } from "../../lib/mobileStore";
-import { navigate } from "../../lib/router";
+import { navigateBack } from "../../lib/router";
 import { useVoiceCapture } from "../../lib/useVoiceCapture";
 import { useVoicePlayback } from "../../lib/voicePlayback";
 import { ChatComposer, type ChatComposerTarget } from "./ChatComposer";
@@ -227,7 +227,7 @@ export function ChatPage({ conversationId }: ChatPageProps) {
         <button
           type="button"
           className="mobile-chat-back-btn"
-          onClick={() => navigate({ name: "list" })}
+          onClick={() => navigateBack({ name: "list" })}
           aria-label="返回聊天列表"
         >
           <BackIcon />
