@@ -403,21 +403,21 @@ def activate_world_book(
         if over and not entry.constant:
             overflow.append(_entry_ref(entry))
             continue
-        step_cost = (
-            token_estimate(budget_used_text + "\n" + entry.content)
-            if budget_used_text
-            else token_estimate(entry.content)
+        # 预算以「候选拼接文本」的总估算为准（Codex Review P1 修复）：先前
+        # 实现先算总估算再叠加旧 budget_used，导致重复累计、虚高排除仍
+        # 在预算内的条目（如旧 1 + 候选总 3 ≥ 预算 4 即被误排除）。
+        candidate_text = (
+            budget_used_text + "\n" + entry.content if budget_used_text else entry.content
         )
-        if not entry.constant and budget_used + step_cost >= budget_total:
+        candidate_cost = token_estimate(candidate_text)
+        if not entry.constant and candidate_cost >= budget_total:
             # 溢出条目整体排除（契约 §3.8，对齐 ST :4942-4953），
             # 其后所有非 constant 条目一并排除。
             over = True
             overflow.append(_entry_ref(entry))
             continue
-        budget_used += step_cost
-        budget_used_text = (
-            budget_used_text + "\n" + entry.content if budget_used_text else entry.content
-        )
+        budget_used = candidate_cost
+        budget_used_text = candidate_text
         activated = ActivatedEntry(
             entry=entry,
             position=position[0],

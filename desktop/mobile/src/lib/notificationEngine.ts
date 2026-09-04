@@ -23,9 +23,11 @@
 import { mobileWsClient, useMobileStore } from "./mobileStore";
 import type { WireEvent } from "./wsClient";
 import {
+  ensureNotificationChannels,
+  onShellEnvironmentChange,
   probeNotificationCapability,
   sendLocalNotification,
-  isAndroidShell,
+  detectShellEnvironment,
 } from "./shellCapabilities";
 import {
   loadNotificationPreferences,
@@ -33,6 +35,13 @@ import {
   type NotificationTypeKey,
 } from "../components/NotificationPreferences";
 import { navigate, parseHash } from "./router";
+
+/** 渠道 importance 数值与插件枚举一致：Default=3 / High=4。 */
+const NOTIFICATION_CHANNEL_IMPORTANCE: Record<NotificationTypeKey, number> = {
+  taskCompleted: 3,
+  delegationResult: 3,
+  approvalRequested: 4,
+};
 
 const NOTIFICATION_CHANNEL_IDS: Record<NotificationTypeKey, string> = {
   taskCompleted: "phm_task_completed",
@@ -70,11 +79,17 @@ interface PendingNotification {
 }
 
 let started = false;
+let unsubscribeShell: (() => void) | null = null;
 let unsubscribeEvents: (() => void) | null = null;
-let visibilityListener: (() => void) | null = null;
 let permissionGranted = false;
 let engineReady = false;
 let lastNotifiedConversationId: string | null = null;
+let channelsEnsured = false;
+
+/** 激活点壳判定：订阅回调到达时环境已确定，直接读当前值。 */
+function isAndroidShellAtActivate(): boolean {
+  return detectShellEnvironment() === "android_shell";
+}
 
 function conversationTitleFallback(conversationId: string | null): string {
   if (!conversationId) return "新聊天";
@@ -160,8 +175,38 @@ function handleEngineEvent(event: WireEvent): void {
   if (pending) dispatchNotification(pending);
 }
 
+function refreshPermissionCache(): void {
+  void probeNotificationCapability().then((capability) => {
+    if (capability.kind !== "ready") return;
+    permissionGranted = capability.permission_granted;
+    // 权限就绪后补建渠道（用户可能在设置页授权后首次回前台）。
+    ensureChannels();
+  });
+}
+
+function ensureChannels(): void {
+  if (channelsEnsured) return;
+  channelsEnsured = true;
+  ensureNotificationChannels(
+    (Object.keys(NOTIFICATION_CHANNEL_IDS) as NotificationTypeKey[]).map((key) => ({
+      id: NOTIFICATION_CHANNEL_IDS[key],
+      name:
+        key === "approvalRequested"
+          ? "审批请求"
+          : key === "delegationResult"
+            ? "委派结果"
+            : "任务完成",
+      description: "角色/助手事件提醒（V0.3.7 本地通知）",
+      importance: NOTIFICATION_CHANNEL_IMPORTANCE[key],
+    })),
+  );
+}
+
 function handleVisibilityChange(): void {
   if (document.visibilityState !== "visible") return;
+  // 回前台即刷新权限缓存：用户可能去系统设置授权后返回（P2-5），
+  // 否则同一会话内引擎将一直按旧缓存跳过通知。
+  refreshPermissionCache();
   // 回前台：近似「点击通知进入对应会话」。仅在列表页时跳转——
   // 用户正停在别的会话时不打断；路由守卫会在未配对时接管。
   if (!lastNotifiedConversationId) return;
@@ -172,45 +217,51 @@ function handleVisibilityChange(): void {
 }
 
 /**
- * 幂等启动通知引擎。非 Android 壳（PWA / 桌面壳）不启动——探测先行，
- * 不伪造可用。返回 dispose 供测试与卸载清理。
+ * 幂等启动通知引擎。非 Android 壳（PWA / 桌面壳）不启动，但会**等待壳就绪**：
+ * 首帧时 `__TAURI_INTERNALS__` 注入可能晚于本调用（真机实证竞态），一次性
+ * isAndroidShell() 判定会把引擎永久关在门外——改为订阅壳环境变化，环境变为
+ * android_shell 后再激活。返回 dispose 供测试与卸载清理。
  */
 export function startNotificationEngine(): () => void {
   if (started) return () => undefined;
-  if (!isAndroidShell()) return () => undefined;
   started = true;
 
-  // 会话标题来自 store 快照（与列表页同源兜底）；事件 payload 不带标题，不合成。
-  // 测试可先 setNotificationTitleResolver 注入替身——注入优先，不覆盖。
-  if (titleResolver === null) {
-    titleResolver = (conversationId: string): string => {
-      const record = useMobileStore.getState().conversationsById[conversationId];
-      return record?.title && record.title.length > 0 ? record.title : "新聊天";
-    };
-  }
-
-  void probeNotificationCapability().then((capability) => {
-    if (capability.kind !== "ready") {
-      // not_shell / plugin_unavailable：探测函数已保留原始错误日志，这里如实停用。
-      return;
-    }
-    permissionGranted = capability.permission_granted;
+  const activate = (): void => {
+    if (engineReady || !isAndroidShellAtActivate()) return;
     engineReady = true;
-  });
 
-  unsubscribeEvents = mobileWsClient.onEvent(handleEngineEvent);
+    // 会话标题来自 store 快照（与列表页同源兜底）；事件 payload 不带标题，不合成。
+    // 测试可先 setNotificationTitleResolver 注入替身——注入优先，不覆盖。
+    if (titleResolver === null) {
+      titleResolver = (conversationId: string): string => {
+        const record = useMobileStore.getState().conversationsById[conversationId];
+        return record?.title && record.title.length > 0 ? record.title : "新聊天";
+      };
+    }
+
+    refreshPermissionCache();
+    unsubscribeEvents = mobileWsClient.onEvent(handleEngineEvent);
+  };
+
+  unsubscribeShell = onShellEnvironmentChange((environment) => {
+    if (environment === "android_shell") activate();
+  });
+  // 若启动时已是壳（注入先于本调用），立即激活。
+  activate();
+
   document.addEventListener("visibilitychange", handleVisibilityChange);
-  visibilityListener = () => document.removeEventListener("visibilitychange", handleVisibilityChange);
 
   return () => {
     started = false;
     engineReady = false;
     permissionGranted = false;
+    channelsEnsured = false;
     lastNotifiedConversationId = null;
+    unsubscribeShell?.();
+    unsubscribeShell = null;
     unsubscribeEvents?.();
     unsubscribeEvents = null;
-    visibilityListener?.();
-    visibilityListener = null;
+    document.removeEventListener("visibilitychange", handleVisibilityChange);
     titleResolver = null;
   };
 }

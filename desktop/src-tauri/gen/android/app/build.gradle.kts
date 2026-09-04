@@ -37,6 +37,11 @@ android {
             }
         }
         getByName("release") {
+            // Codex Review P1：release 同样允许局域网明文 WS——应用定位是
+            // 局域网配对工具（配对/对话走桌面端 ws://<lan-ip>:8765/ws，无
+            // 公网与 WSS 服务端入口，契约 §9.1）；与 debug 行为一致，避免
+            // 「调试包可配对、发布包不可连接」的陷阱。无明文公网传输面。
+            manifestPlaceholders["usesCleartextTraffic"] = "true"
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }

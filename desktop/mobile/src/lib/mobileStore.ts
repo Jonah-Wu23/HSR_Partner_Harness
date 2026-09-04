@@ -279,6 +279,24 @@ export const useMobileStore = create<MobileState>((set, get) => {
         });
       }
       applySnapshot(set, snapshot, get);
+      // V0.3.7 电源（Codex Review P2）：serve 启动时的 status_changed 只在
+      // 已鉴权订阅之前 emit 一次，晚连手机收不到（无回放缓冲）——bootstrap
+      // 完成后主动拉一次当前快照（power.get_status 幂等无副作用），晚连
+      // 手机即可获得休眠风险提示；失败如实保留日志不阻塞 bootstrap。
+      void client
+        .request<PowerStatusPayload>("power.get_status")
+        .then((status) => {
+          if (
+            generation === bootstrapGeneration &&
+            typeof status.supported === "boolean" &&
+            typeof status.at_risk === "boolean"
+          ) {
+            set({ powerStatus: status });
+          }
+        })
+        .catch((error) => {
+          console.warn("电源状态拉取失败（如实保留）", error);
+        });
       if (activeConversationId && get().activeConversationId === activeConversationId) {
         let conversation: ConversationOpenResult;
         try {

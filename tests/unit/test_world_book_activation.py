@@ -455,3 +455,17 @@ def test_collect_turn_triggers_once_semantics() -> None:
     assert names(collect_turn_triggers(event_system, 3)) == {"a", "b"}
     # 第 4 回合：仅 b（>=3）命中。
     assert names(collect_turn_triggers(event_system, 4)) == {"b"}
+
+
+def test_budget_uses_candidate_total_not_duplicated_accumulation() -> None:
+    # Codex Review P1 回归：预算判断必须以「候选拼接文本」的总估算为比较
+    # 值（此处候选 "甲\n乙" 估 3 < 预算 4），不得再叠加旧 budget_used——
+    # 旧实现 1 + 候选总 3 ≥ 4 会把仍在预算内的第二条误排除。
+    book = _book([
+        _entry(entry_id=1, keys=["x"], content="甲", insertion_order=200),
+        _entry(entry_id=2, keys=["x"], content="乙", insertion_order=100),
+    ], token_budget=4)
+    result = activate_world_book(book, _texts("x"))
+    # 桶内拼接序为 insertion_order 升序：小序 2 在前。
+    assert [e.entry.entry_id for e in result.before_char] == [2, 1]
+    assert result.diagnostics.overflow_entries == []

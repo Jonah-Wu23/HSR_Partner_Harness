@@ -35,7 +35,7 @@ function moduleStub(overrides: {
     isPermissionGranted:
       overrides.isPermissionGranted ?? (async () => true),
     requestPermission: overrides.requestPermission ?? (async () => true),
-    sendNotification: vi.fn(),
+    sendNotification: vi.fn(), createChannel: vi.fn(),
   });
 }
 
@@ -53,7 +53,7 @@ function statefulPermissionModuleStub(initialGranted = false) {
       granted = true;
       return true;
     },
-    sendNotification: vi.fn(),
+    sendNotification: vi.fn(), createChannel: vi.fn(),
   });
 }
 
@@ -244,7 +244,7 @@ describe("NotificationPreferences 组件", () => {
         granted = true; // 系统弹窗授予已发生，但回调未回到 JS
         return new Promise<boolean>(() => {});
       },
-      sendNotification: vi.fn(),
+      sendNotification: vi.fn(), createChannel: vi.fn(),
     }));
 
     render(<NotificationPreferences />);
@@ -266,7 +266,7 @@ describe("NotificationPreferences 组件", () => {
     setNotificationModuleLoader(async () => ({
       isPermissionGranted: async () => granted,
       requestPermission: async () => true,
-      sendNotification: vi.fn(),
+      sendNotification: vi.fn(), createChannel: vi.fn(),
     }));
 
     render(<NotificationPreferences />);

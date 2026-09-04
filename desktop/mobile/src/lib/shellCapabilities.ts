@@ -21,6 +21,7 @@
 
 import { useSyncExternalStore } from "react";
 import {
+  createChannel,
   isPermissionGranted,
   requestPermission,
   sendNotification,
@@ -115,11 +116,21 @@ export function onShellEnvironmentChange(
   };
 }
 
-/** 通知插件 JS API 的最小形状（@tauri-apps/plugin-notification v2 的三个核心函数）。 */
+/**
+ * 测试后门：复位壳环境轮询状态（PWA→壳转变场景需从干净轮询出发重演，
+ * 与 setNotificationModuleLoader 同级的测试注入点）。生产代码不得调用。
+ */
+export function resetShellEnvironmentWatch(): void {
+  shellPollActive = false;
+}
+
+/** 通知插件 JS API 的最小形状（@tauri-apps/plugin-notification v2 核心函数）。 */
 export interface NotificationModuleLike {
   isPermissionGranted: () => Promise<boolean>;
   requestPermission: () => Promise<boolean>;
   sendNotification: (options: NotificationSendOptions) => void;
+  /** Android 8+ 通知必须先建渠道：channelId 指向不存在的渠道时通知不投递。 */
+  createChannel: (channel: NotificationChannelLike) => Promise<void> | void;
 }
 
 /** 发送本地通知的最小参数（@tauri-apps/plugin-notification v2 Options 子集）。 */
@@ -127,6 +138,16 @@ export interface NotificationSendOptions {
   title: string;
   body: string;
   channelId?: string;
+}
+
+/** 通知渠道的最小形状（Importance 数值与插件枚举一致：0-4）。 */
+export interface NotificationChannelLike {
+  id: string;
+  name: string;
+  description?: string;
+  importance: number;
+  vibration?: boolean;
+  lights?: boolean;
 }
 
 export type NotificationCapability =
@@ -143,6 +164,7 @@ function loadNotificationModule(): unknown {
     isPermissionGranted,
     requestPermission,
     sendNotification,
+    createChannel,
   };
 }
 
@@ -168,7 +190,8 @@ function isNotificationModule(value: unknown): value is NotificationModuleLike {
   return (
     typeof candidate.isPermissionGranted === "function" &&
     typeof candidate.requestPermission === "function" &&
-    typeof candidate.sendNotification === "function"
+    typeof candidate.sendNotification === "function" &&
+    typeof candidate.createChannel === "function"
   );
 }
 
@@ -243,5 +266,31 @@ export function sendLocalNotification(options: NotificationSendOptions): void {
     })
     .catch((error: unknown) => {
       console.warn("[shellCapabilities] 本地通知发送失败，跳过该条：", error);
+    });
+}
+
+/**
+ * 幂等创建通知渠道（Android 8+ 前置：channelId 指向不存在的渠道时通知不投递）。
+ * 失败如实进 console（单条渠道失败不阻断其余），不抛出到调用方。
+ */
+export function ensureNotificationChannels(channels: NotificationChannelLike[]): void {
+  void loadNotificationModuleOnce()
+    .then(async (moduleValue) => {
+      if (!isNotificationModule(moduleValue)) {
+        throw new Error("当前环境未加载通知能力，无法创建通知渠道");
+      }
+      for (const channel of channels) {
+        try {
+          await moduleValue.createChannel(channel);
+        } catch (error) {
+          console.warn(
+            `[shellCapabilities] 通知渠道创建失败 ${channel.id}：`,
+            error,
+          );
+        }
+      }
+    })
+    .catch((error: unknown) => {
+      console.warn("[shellCapabilities] 通知渠道初始化失败：", error);
     });
 }

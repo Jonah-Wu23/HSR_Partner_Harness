@@ -116,7 +116,7 @@ describe("probeNotificationCapability 通知能力探测", () => {
       async (): Promise<NotificationModuleLike> => ({
         isPermissionGranted: async () => true,
         requestPermission: async () => true,
-        sendNotification: vi.fn(),
+        sendNotification: vi.fn(), createChannel: vi.fn(),
       }),
     );
 
@@ -132,7 +132,7 @@ describe("probeNotificationCapability 通知能力探测", () => {
       async (): Promise<NotificationModuleLike> => ({
         isPermissionGranted: async () => false,
         requestPermission: async () => false,
-        sendNotification: vi.fn(),
+        sendNotification: vi.fn(), createChannel: vi.fn(),
       }),
     );
 
@@ -151,7 +151,7 @@ describe("probeNotificationCapability 通知能力探测", () => {
           throw new Error("plugin:notification|is_permission_granted failed");
         },
         requestPermission: async () => true,
-        sendNotification: vi.fn(),
+        sendNotification: vi.fn(), createChannel: vi.fn(),
       }),
     );
 
@@ -169,7 +169,7 @@ describe("requestNotificationPermission 权限申请", () => {
       async (): Promise<NotificationModuleLike> => ({
         isPermissionGranted: async () => false,
         requestPermission: async () => false,
-        sendNotification: vi.fn(),
+        sendNotification: vi.fn(), createChannel: vi.fn(),
       }),
     );
     await expect(requestNotificationPermission()).resolves.toBe(false);
@@ -189,7 +189,7 @@ describe("requestNotificationPermission 权限申请", () => {
         requestPermission: async () => {
           throw new Error("plugin:notification|request_permission failed");
         },
-        sendNotification: vi.fn(),
+        sendNotification: vi.fn(), createChannel: vi.fn(),
       }),
     );
     await expect(requestNotificationPermission()).rejects.toThrow(
@@ -205,6 +205,7 @@ describe("sendLocalNotification 本地通知发送", () => {
       isPermissionGranted: async () => true,
       requestPermission: async () => true,
       sendNotification,
+      createChannel: vi.fn(),
     }));
 
     sendLocalNotification({ title: "审批请求", body: "写入文件", channelId: "phm_approval" });

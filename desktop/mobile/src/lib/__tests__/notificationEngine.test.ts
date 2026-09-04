@@ -3,7 +3,10 @@ import {
   setNotificationTitleResolver,
   startNotificationEngine,
 } from "../notificationEngine";
-import { setNotificationModuleLoader } from "../shellCapabilities";
+import {
+  resetShellEnvironmentWatch,
+  setNotificationModuleLoader,
+} from "../shellCapabilities";
 import { mobileWsClient } from "../mobileStore";
 import type { WireEvent } from "../wsClient";
 import {
@@ -62,6 +65,7 @@ async function startEngineAndWaitReady(): Promise<void> {
 }
 
 beforeEach(() => {
+  resetShellEnvironmentWatch();
   delete window.__TAURI_INTERNALS__;
   delete window.__TAURI__;
   window.localStorage.clear();
@@ -71,6 +75,7 @@ beforeEach(() => {
     isPermissionGranted: async () => true,
     requestPermission: async () => true,
     sendNotification,
+    createChannel: vi.fn(),
   }));
   setNotificationTitleResolver(null);
 });
@@ -202,4 +207,33 @@ describe("notificationEngine 环境与生命周期", () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(sendNotification).not.toHaveBeenCalled();
   });
+
+  it("壳环境晚于引擎启动就绪（internals 注入竞态）时，订阅到 android_shell 后仍激活并发送", async () => {
+    // 启动时 PWA（模拟首帧 internals 未注入）；随后注入 android_shell——
+    // 引擎必须经 onShellEnvironmentChange 订阅激活，而不是一次性判定死退。
+    disposeEngine = startNotificationEngine();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(sendNotification).not.toHaveBeenCalled();
+
+    stubAndroidShell();
+    await new Promise((resolve) => setTimeout(resolve, 400)); // 轮询探测周期
+    mobileWsClient.emitTestEvent(turnEvent("character", "completed"));
+    await vi.waitFor(() => expect(sendNotification).toHaveBeenCalledTimes(1));
+  });
+
+  it("激活并授权后创建三类通知渠道（Android 8+ 前置）", async () => {
+    const createChannel = vi.fn();
+    setNotificationModuleLoader(async () => ({
+      isPermissionGranted: async () => true,
+      requestPermission: async () => true,
+      sendNotification,
+      createChannel,
+    }));
+    stubAndroidShell();
+    disposeEngine = startNotificationEngine();
+    await vi.waitFor(() => expect(createChannel).toHaveBeenCalled());
+    const ids = createChannel.mock.calls.map((c) => c[0].id).sort();
+    expect(ids).toEqual(["phm_approval_requested", "phm_delegation_result", "phm_task_completed"]);
+  });
 });
+
