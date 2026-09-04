@@ -16,6 +16,16 @@ open class BuildTask : DefaultTask() {
 
     @TaskAction
     fun assemble() {
+        // V0.3.7 spike：Windows 未开启开发者模式时 tauri CLI 的 jniLibs
+        // 符号链接会被系统拒绝。构建脚本已在 cargo 产物就绪后把 .so 以
+        // 普通文件复制进 jniLibs、并把前端资产同步进 assets——预置 .so
+        // 存在即跳过 tauri CLI 回调，由 gradle 直接打包。
+        val prebuilt = project.projectDir
+            .resolve("src/main/jniLibs/arm64-v8a/libhsr_partner_harness_lib.so")
+        if (prebuilt.exists()) {
+            project.logger.lifecycle("V0.3.7 spike: 预置 .so 已就位，跳过 tauri CLI 回调")
+            return
+        }
         val executable = """node""";
         try {
             runTauriCli(executable)
