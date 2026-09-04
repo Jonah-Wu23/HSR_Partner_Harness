@@ -1,9 +1,14 @@
 [package]
 name = "hsr-partner-harness"
-version = "0.3.5"
+version = "0.3.7"
 description = "HSR Partner Harness desktop shell"
 authors = ["Jonah Wu"]
 edition = "2021"
+
+# V0.3.7 契约 §9.1：移动端壳以 cdylib 加载应用主体；桌面二进制入口在 src/main.rs。
+[lib]
+name = "hsr_partner_harness_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.4.1", features = [] }
@@ -13,4 +18,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2.8.0", features = [] }
 tauri-plugin-dialog = "2"
+# V0.3.7 契约 §9.2：Android 壳本地通知（官方插件；桌面端注册不启用任何
+# 通知行为，供 Android 壳 spike 与真机验收使用）。
+tauri-plugin-notification = "2"
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }

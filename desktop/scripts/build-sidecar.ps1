@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 
 $desktopRoot = Split-Path -Parent $PSScriptRoot
 $repoRoot = Split-Path -Parent $desktopRoot
@@ -165,23 +165,17 @@ Write-Host "Bundled Reasonix prepared from $reasonixSource`: $script:bundledReas
 # 构建 mobile PWA 并复制进 Tauri resources（V0.3.4 打包链路）：
 # sidecar --serve 静态伺服 resources/mobile-dist，手机端扫码即达 8765 同端口页面。
 $mobileRoot = Join-Path $desktopRoot "mobile"
-$npmForMobile = Get-Command npm.cmd -ErrorAction SilentlyContinue
-if (-not $npmForMobile) {
-    throw "npm.cmd not found; mobile PWA build requires Node.js/npm."
+if ([string]::IsNullOrWhiteSpace($mobileRoot) -or -not (Test-Path -LiteralPath $mobileRoot -PathType Container)) {
+    throw "mobile root 无效：desktopRoot='$desktopRoot' mobileRoot='$mobileRoot'"
 }
 
-Push-Location $mobileRoot
-try {
-    & $npmForMobile.Source ci
-    if ($LASTEXITCODE -ne 0) {
-        throw "npm ci (mobile) failed with exit code $LASTEXITCODE."
-    }
-    & $npmForMobile.Source run build
-    if ($LASTEXITCODE -ne 0) {
-        throw "mobile PWA build failed with exit code $LASTEXITCODE."
-    }
-} finally {
-    Pop-Location
+# Push-Location 不会同步子进程继承的工作目录（PowerShell 的 Location 与
+# [Environment]::CurrentDirectory 是两回事），此前 npm 实际跑在 desktop 根
+# 目录、mobile-dist 从未被重建。改用 cmd /c cd /d 显式固定 npm 的工作目录，
+# 失败时以非零退出码如实暴露，不做任何成功回执。
+& cmd.exe /d /s /c "cd /d `"$mobileRoot`" && npm ci && npm run build"
+if ($LASTEXITCODE -ne 0) {
+    throw "mobile PWA build failed with exit code $LASTEXITCODE (cwd=$mobileRoot)."
 }
 
 $mobileDist = Join-Path $mobileRoot "dist"

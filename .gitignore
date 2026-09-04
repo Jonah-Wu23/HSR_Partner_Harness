@@ -10,7 +10,7 @@ dist/
 desktop/node_modules/
 desktop/mobile/node_modules/
 desktop/src-tauri/target/
-desktop/src-tauri/gen/
+desktop/src-tauri/gen/schemas/
 desktop/src-tauri/resources/
 desktop/.pyinstaller-work/
 desktop/.pyinstaller-spec/
