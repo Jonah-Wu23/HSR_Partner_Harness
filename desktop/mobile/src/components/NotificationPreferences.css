@@ -1,0 +1,155 @@
+/* V0.3.7 通知偏好设置：触控目标 ≥44px，行间留白适配单手浏览。 */
+
+.notif-prefs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.notif-prefs-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.notif-unavailable {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+}
+
+.notif-unavailable-main {
+  margin: 0 0 4px;
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.notif-type-brief {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.notif-permission-ok {
+  margin: 0;
+  color: var(--ok);
+  font-size: 13px;
+}
+
+.notif-permission-missing {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+.notif-permission-missing p {
+  margin: 0;
+}
+
+.notif-permission-error {
+  margin: 0;
+  color: var(--danger);
+  word-break: break-word;
+}
+
+.notif-btn {
+  min-height: 44px;
+  align-self: flex-start;
+}
+
+.notif-type-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.notif-type-row {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  min-height: 56px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.notif-type-row:last-child {
+  border-bottom: none;
+}
+
+.notif-type-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.notif-type-title {
+  font-weight: 500;
+}
+
+.notif-type-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.notif-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  min-width: 44px;
+  cursor: pointer;
+}
+
+.notif-switch input {
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.notif-importance {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+}
+
+.notif-importance select {
+  min-height: 44px;
+  padding: 6px 10px;
+  background: var(--surface-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font: inherit;
+}
+
+.notif-foreground-note {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+
+.notif-note-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.notif-foreground-note p {
+  margin: 0;
+}

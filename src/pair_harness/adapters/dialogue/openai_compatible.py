@@ -84,7 +84,13 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
         temperature: float | None = None,
-        character_prompt_resolver: Callable[[str], Any] | None = None,
+        # V0.3.7：resolver 改为三参契约
+        #   (conversation_id, recent_messages: tuple[Message, ...], turn_index: int)
+        #   -> AssembledPrompt | None
+        # 返回的自定义装配结果可带 depth_injections（世界书 atDepth / depth_prompt），
+        # 本项目以鸭子类型读取，不 import 尚未实现的装配器新字段。
+        character_prompt_resolver: Callable[[str, tuple[Message, ...], int], Any]
+        | None = None,
     ) -> None:
         self.base_url = base_url or os.getenv("PAIR_HARNESS_DIALOGUE_BASE_URL", "")
         self.api_key = api_key or os.getenv("PAIR_HARNESS_DIALOGUE_API_KEY", "")
@@ -130,11 +136,20 @@ class OpenAICompatibleDialogueModel(DialogueModel):
 
     # ---- 提示词装配（O3.2；V0.3.5 角色卡覆盖）----
 
-    def _system_prompt(self, pair_id: str, conversation_id: str | None = None) -> str:
+    def _system_prompt(self, pair_id: str, request: DialogueRequest) -> str:
         config = load_pair_config(pair_id, root=self._config_root)
         character_card = load_prompt(config.character.prompt, root=self._config_root)
-        if conversation_id is not None and self.character_prompt_resolver is not None:
-            assembled = self.character_prompt_resolver(conversation_id)
+        if (
+            request.conversation_id is not None
+            and self.character_prompt_resolver is not None
+        ):
+            # V0.3.7：resolver 三参契约——conversation_id、recent_messages、
+            # turn_index 均取自 request。
+            assembled = self.character_prompt_resolver(
+                request.conversation_id,
+                request.recent_messages,
+                request.turn_index,
+            )
             if assembled is not None:
                 # 自定义角色卡对话：角色侧文本来自装配器（不改写原文），
                 # 助手 brief 与输出协议指令保持内置来源，两段永不互换。
@@ -158,9 +173,7 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         messages: list[dict[str, Any]] = [
             {
                 "role": "system",
-                "content": self._system_prompt(
-                    request.pair_id, request.conversation_id
-                ),
+                "content": self._system_prompt(request.pair_id, request),
             }
         ]
         for message in request.recent_messages:
@@ -171,6 +184,10 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             if role is None:
                 continue
             messages.append({"role": role, "content": message.text})
+        # V0.3.7：先完成对话消息映射，再应用 depth 注入（世界书 atDepth /
+        # depth_prompt）。splice 针对「距末尾第 N 条之前」的对话消息列表，
+        # progress/result/runtime 摘要块在注入之后追加，不参与 depth 计数。
+        self._apply_depth_injections(messages, request)
         if request.progress_summary is not None:
             messages.append(
                 {
@@ -216,6 +233,48 @@ class OpenAICompatibleDialogueModel(DialogueModel):
                 }
             )
         return messages
+
+    def _apply_depth_injections(
+        self, messages: list[dict[str, Any]], request: DialogueRequest
+    ) -> None:
+        """V0.3.7：把装配结果的 depth_injections splice 进对话消息列表。
+
+        对齐 ``docs/plans/V0.3.7-契约冻结.md`` §4.4（ST doChatInject）：
+        - 同 ``(depth, role)`` 文本以 ``"\\n"`` 合并为一条消息；
+        - 按 ``depth`` 降序逐组插入，插入位置 ``len(messages) - depth``
+          clamp 到 [0, len(messages)]；depth=0 → 追加到对话消息末尾，
+          depth ≥ 消息数 → 最前；多条注入在已增长列表上「运行 offset」。
+        - resolver 返回 None 或 ``depth_injections`` 为空 → 原地不动作，
+          与未接入世界书时的行为完全一致。
+        - 鸭子类型读取：不 import 尚未实现的装配器 DepthInjection，逐条
+          按 ``.depth`` / ``.role`` / ``.text`` 属性读取。
+        """
+        if self.character_prompt_resolver is None:
+            return
+        assembled = self.character_prompt_resolver(
+            request.conversation_id,
+            request.recent_messages,
+            request.turn_index,
+        )
+        if assembled is None:
+            return
+        injections = getattr(assembled, "depth_injections", None) or []
+        if not injections:
+            return
+        # 同 (depth, role) 聚合，text 以 "\n" 合并。
+        groups: dict[tuple[int, str], list[str]] = {}
+        for injection in injections:
+            key = (injection.depth, injection.role)
+            groups.setdefault(key, []).append(injection.text)
+        merged = [
+            {"depth": depth, "role": role, "text": "\n".join(texts)}
+            for (depth, role), texts in groups.items()
+        ]
+        # 按 depth 降序插入；messages 就地增长，后续插入自动计入运行 offset。
+        for item in sorted(merged, key=lambda obj: obj["depth"], reverse=True):
+            pos = len(messages) - item["depth"]
+            pos = 0 if pos < 0 else (len(messages) if pos > len(messages) else pos)
+            messages.insert(pos, {"role": item["role"], "content": item["text"]})
 
     def _needs_delegation_retry(
         self, request: DialogueRequest, turn: CharacterTurn

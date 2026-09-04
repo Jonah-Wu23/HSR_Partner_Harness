@@ -213,6 +213,12 @@ async def _run(args: argparse.Namespace) -> int:
                 service.pairing_service.add_revoke_listener(
                     ws_server.close_connections_for_token
                 )
+                # V0.3.7 电源契约 §1.5/§2.1：仅 --serve 成功开启时置远程服务
+                # 位（power.get_status 的 remote_serve_enabled 数据源）并启动
+                # 电源监视（启动即 emit 一次 power.status_changed；WS 启动失败
+                # 时如实保持 False，不伪造远程可用）。
+                service.remote_serve_enabled = True
+                service.start_power_monitor()
         if router is None:
             router = SidecarRouter(service, writer)
         restore_sigint = _install_sigint_stop(router)
@@ -222,6 +228,8 @@ async def _run(args: argparse.Namespace) -> int:
         if ws_server is not None:
             await ws_server.stop()
         if service is not None and not service._shutdown:
+            # V0.3.7 电源契约 §2.1：退出路径停止电源监视线程（未启动时 no-op）。
+            service.stop_power_monitor()
             await service.shutdown()
     return 0
 
@@ -229,7 +237,12 @@ async def _run(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     faulthandler.enable(file=sys.stderr, all_threads=True)
-    logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
+    # 日志级别可经 PAIR_HARNESS_LOG_LEVEL 调高（INFO/DEBUG）：serve 验收
+    # 需要观察 mobile-tts 等下发链路时不必改代码。默认 WARNING 保持安静。
+    logging.basicConfig(
+        stream=sys.stderr,
+        level=getattr(logging, os.getenv("PAIR_HARNESS_LOG_LEVEL", "WARNING").upper(), logging.WARNING),
+    )
     return asyncio.run(_run(args))
 
 

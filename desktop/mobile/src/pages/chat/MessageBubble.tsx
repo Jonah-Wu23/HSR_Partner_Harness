@@ -37,7 +37,11 @@ export function MessageBubble({
 }: MessageBubbleProps) {
   const badge = sourceBadge(message.source, pairNames);
   const isTtsEligible = message.source === "character" && message.tts_eligible === true;
-  const isPlaying = isTtsEligible && message.message_id === playingMessageId;
+  // V0.3.7：朗读入口以服务端 tts_ready 为唯一权威——账号专属音色未生成
+  // 或凭据缺失时服务端无法真实合成，不展示「可朗读」假入口（点了没声音
+  // 是缺陷）。旧消息/快照无 tts_ready 字段按不可朗读保守处理。
+  const isTtsReadable = isTtsEligible && message.tts_ready === true;
+  const isPlaying = isTtsReadable && message.message_id === playingMessageId;
   const reasoning =
     typeof message.payload?.reasoning === "string"
       ? message.payload.reasoning
@@ -117,8 +121,9 @@ export function MessageBubble({
           </div>
         ) : null}
 
-        {/* V0.3.5：角色自然语言回复的朗读入口 / 朗读中标记 */}
-        {isTtsEligible ? (
+        {/* V0.3.5：角色自然语言回复的朗读入口 / 朗读中标记。
+            V0.3.7：仅服务端确认可合成（tts_ready=true）才渲染入口。 */}
+        {isTtsReadable ? (
           <button
             type="button"
             className={`mobile-msg-tts-badge${isPlaying ? " mobile-msg-tts-badge-playing" : ""}`}

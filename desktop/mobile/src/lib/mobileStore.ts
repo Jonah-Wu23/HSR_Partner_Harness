@@ -9,6 +9,7 @@ import type {
   Message,
   PairRecord,
   PendingApproval,
+  PowerStatusPayload,
   ProjectRecord,
   ToolRun,
 } from "@shared/contracts/protocol";
@@ -78,6 +79,8 @@ export interface MobileState {
   streamId: string | null;
   lastSequence: number;
   bootstrapped: boolean;
+  /** V0.3.7：桌面端电源状态（power.status_changed 事件驱动；无数据时为 null，不本地推导）。 */
+  powerStatus: PowerStatusPayload | null;
   /** V0.3.5：手机语音状态。 */
   voice: {
     capture: MobileVoiceCapture;
@@ -270,9 +273,30 @@ export const useMobileStore = create<MobileState>((set, get) => {
           approvals: [],
           pair: null,
           activeTask: null,
+          // 新 stream 属于桌面端新一轮会话：旧电源状态随之作废，
+          // serve 启动时按冻结 §2.1 会重新 emit，之前不展示旧值。
+          powerStatus: null,
         });
       }
       applySnapshot(set, snapshot, get);
+      // V0.3.7 电源（Codex Review P2）：serve 启动时的 status_changed 只在
+      // 已鉴权订阅之前 emit 一次，晚连手机收不到（无回放缓冲）——bootstrap
+      // 完成后主动拉一次当前快照（power.get_status 幂等无副作用），晚连
+      // 手机即可获得休眠风险提示；失败如实保留日志不阻塞 bootstrap。
+      void client
+        .request<PowerStatusPayload>("power.get_status")
+        .then((status) => {
+          if (
+            generation === bootstrapGeneration &&
+            typeof status.supported === "boolean" &&
+            typeof status.at_risk === "boolean"
+          ) {
+            set({ powerStatus: status });
+          }
+        })
+        .catch((error) => {
+          console.warn("电源状态拉取失败（如实保留）", error);
+        });
       if (activeConversationId && get().activeConversationId === activeConversationId) {
         let conversation: ConversationOpenResult;
         try {
@@ -337,6 +361,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
         approvals: [],
         pair: null,
         activeTask: null,
+        powerStatus: null,
       });
       void bootstrap().catch(reportBootstrapFailure);
     } else if (eventStream && !state.streamId) {
@@ -424,7 +449,23 @@ export const useMobileStore = create<MobileState>((set, get) => {
       case "message.status_changed": {
         // V0.3.4 Codex 建议 A：委派执行的完成/失败/取消由 message.status_changed
         // 推进消息状态；按 message_id upsert，委派卡据此退出「运行中」。
-        const message = (event.payload as { message?: Message }).message;
+        const createdPayload = event.payload as {
+          message?: Message;
+          /** V0.3.7：服务端预判的移动端朗读可用性随 created 下发。 */
+          tts_ready?: boolean;
+        };
+        let message = createdPayload.message;
+        if (
+          event.event === "message.created" &&
+          message &&
+          typeof message.message_id === "string" &&
+          createdPayload.tts_ready !== undefined &&
+          message.tts_ready === undefined
+        ) {
+          // created 附带的朗读可用性是产生时刻的服务端判定；快照/旧消息
+          // 无此字段时保持原样（手机端按不可朗读保守处理，不猜测）。
+          message = { ...message, tts_ready: createdPayload.tts_ready };
+        }
         if (
           message &&
           typeof message.message_id === "string" &&
@@ -630,6 +671,22 @@ export const useMobileStore = create<MobileState>((set, get) => {
         }
         break;
       }
+      case "power.status_changed": {
+        // V0.3.7 电源状态（冻结 §2.1）：payload 与 power.get_status result 完全同形，
+        // 由 Sidecar 确定性推导，手机端原样存储展示，不本地重算 at_risk。
+        const powerPayload = event.payload as Partial<PowerStatusPayload> | null;
+        if (
+          powerPayload &&
+          typeof powerPayload.supported === "boolean" &&
+          typeof powerPayload.at_risk === "boolean"
+        ) {
+          set({ powerStatus: event.payload as unknown as PowerStatusPayload });
+        } else {
+          // 形状不符属协议违规：不入状态（残缺数据会伪造横幅），保留原始载荷日志。
+          console.warn("mobileStore 收到形状不符的 power.status_changed 事件，已忽略：", event.payload);
+        }
+        break;
+      }
       case "task.busy_changed": {
         // V0.3.4 Codex 建议 A/B：活动任务是会话级权威状态；任务结束（busy=false）
         // 时清空当前会话的活动任务，委派卡不再误判为运行中。只取当前会话条目，
@@ -672,6 +729,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
     streamId: null,
     lastSequence: 0,
     bootstrapped: false,
+    powerStatus: null,
     voice: {
       capture: { state: "idle", sessionId: null, error: null },
       transcript: null,
@@ -909,6 +967,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
         streamId: null,
         lastSequence: 0,
         bootstrapped: false,
+        powerStatus: null,
         voice: {
           capture: { state: "idle", sessionId: null, error: null },
           transcript: null,

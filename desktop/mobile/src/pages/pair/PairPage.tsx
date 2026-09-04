@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { RemoteCommandError, getStoredDeviceName } from "../../lib/wsClient";
 import { useMobileStore } from "../../lib/mobileStore";
+import { useShellEnvironment } from "../../lib/shellCapabilities";
+import { WsAddressInput, validateWsAddress } from "../../components/WsAddressInput";
 import "./PairPage.css";
 
 interface BarcodeDetectorInstance {
@@ -69,6 +71,28 @@ export function PairPage() {
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorInfo, setErrorInfo] = useState<{ code?: string; message: string } | null>(null);
+
+  // V0.3.7 Android 壳内的桌面端服务地址输入（冻结 §9.1）：壳没有浏览器地址栏，
+  // 二维码 ?ws= 无法随链接带入。输入建立在既有 phm.wsUrl localStorage 机制之上
+  // （resolveWsUrl 与扫码 extractPairCode 写入同一键），PWA 下不渲染本区、体验不变。
+  // 判定必须订阅式：壳 internals 注入与首帧 render 存在竞态（真机实证），一次性
+  // 求值会在注入未就位时把壳误判为 PWA 且不再恢复。
+  const inAndroidShell = useShellEnvironment() === "android_shell";
+  const [wsAddress, setWsAddress] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return window.localStorage.getItem("phm.wsUrl") ?? "";
+  });
+  const [wsAddressSaved, setWsAddressSaved] = useState(false);
+  const wsAddressValid = validateWsAddress(wsAddress).valid;
+
+  const handleSaveAddress = () => {
+    const trimmed = wsAddress.trim();
+    if (!validateWsAddress(trimmed).valid) return;
+    window.localStorage.setItem("phm.wsUrl", trimmed);
+    setWsAddressSaved(true);
+    // 立即用新地址重连：连不上会由顶部 ConnectionBanner 如实显示，不伪造成功。
+    useMobileStore.getState().reconnect();
+  };
 
   // 扫码相关状态
   const isBarcodeSupported = typeof window !== "undefined" && typeof window.BarcodeDetector !== "undefined";
@@ -226,6 +250,38 @@ export function PairPage() {
             </p>
           )}
         </section>
+
+        {/* V0.3.7 壳内桌面端地址输入：仅 Android 壳渲染；PWA 保持既有扫码/手动配对流程 */}
+        {inAndroidShell ? (
+          <section className="card ws-address-card" data-testid="ws-address-section">
+            <h2 className="scan-title">桌面端连接地址</h2>
+            <p className="hint">
+              扫码填入会自动带上服务地址；若扫码不可用或地址未带入，请在此输入电脑端
+              「设置 → 远程设备」显示的服务地址（形如 ws://192.168.1.50:8765/ws）。
+            </p>
+            <WsAddressInput
+              value={wsAddress}
+              onChange={(value) => {
+                setWsAddress(value);
+                setWsAddressSaved(false);
+              }}
+            />
+            <button
+              type="button"
+              className="primary ws-address-save-btn"
+              onClick={handleSaveAddress}
+              disabled={!wsAddressValid}
+              data-testid="btn-save-ws-address"
+            >
+              保存并重连
+            </button>
+            {wsAddressSaved ? (
+              <p className="hint" data-testid="ws-address-saved">
+                地址已保存，正在用新地址连接桌面端；若连接失败，顶部横幅会如实提示。
+              </p>
+            ) : null}
+          </section>
+        ) : null}
 
         {/* 手动输入表单 */}
         <form className="pair-form" onSubmit={handleSubmit} data-testid="pair-form">

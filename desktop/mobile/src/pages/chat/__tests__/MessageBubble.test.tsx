@@ -99,4 +99,46 @@ describe("MessageBubble", () => {
     expect(screen.getByTestId("msg-source-badge")).toHaveTextContent("系统");
     expect(screen.getByText("会话已就绪，当前模式：协作模式")).toBeInTheDocument();
   });
+
+  it("角色消息 tts_ready=true 时展示朗读入口", () => {
+    const charMsg: Message = {
+      ...baseMessage,
+      message_id: "msg-tts-1",
+      source: "character",
+      kind: "character.speech",
+      text: "这条可以朗读。",
+      tts_eligible: true,
+      tts_ready: true,
+    };
+    render(<MessageBubble message={charMsg} />);
+    expect(screen.getByTestId("msg-tts-badge")).toBeInTheDocument();
+  });
+
+  it("角色消息 tts_ready=false（账号音色未生成）时不展示朗读入口", () => {
+    const charMsg: Message = {
+      ...baseMessage,
+      message_id: "msg-tts-2",
+      source: "character",
+      kind: "character.speech",
+      text: "这条点了也不会有声音。",
+      tts_eligible: true,
+      tts_ready: false,
+    };
+    render(<MessageBubble message={charMsg} />);
+    expect(screen.queryByTestId("msg-tts-badge")).toBeNull();
+    expect(screen.getByText("这条点了也不会有声音。")).toBeInTheDocument();
+  });
+
+  it("旧消息/快照无 tts_ready 字段时按不可朗读保守处理，不展示假入口", () => {
+    const legacyMsg: Message = {
+      ...baseMessage,
+      message_id: "msg-tts-3",
+      source: "character",
+      kind: "character.speech",
+      text: "历史消息。",
+      tts_eligible: true,
+    };
+    render(<MessageBubble message={legacyMsg} />);
+    expect(screen.queryByTestId("msg-tts-badge")).toBeNull();
+  });
 });

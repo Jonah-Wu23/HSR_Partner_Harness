@@ -75,11 +75,26 @@ function createMockActions(overrides: Partial<HarnessActions> = {}): HarnessActi
     selectActiveCard: vi.fn().mockResolvedValue(undefined),
     cardGet: vi.fn().mockResolvedValue(createCardGetResult()),
     cardPeekImportJson: vi.fn().mockResolvedValue({ preview: {} as never }),
+    cardPeekImport: vi.fn().mockResolvedValue({ preview: {} as never }),
     cardImportJson: vi.fn().mockResolvedValue({} as never),
+    cardImportPng: vi.fn().mockResolvedValue({} as never),
     cardExportJson: vi.fn().mockResolvedValue({} as never),
+    cardExportPng: vi.fn().mockResolvedValue({} as never),
     cardPublish: vi.fn().mockResolvedValue({} as never),
     cardSetAvatar: vi.fn().mockResolvedValue({} as never),
     cardRemoveAvatar: vi.fn().mockResolvedValue({} as never),
+    powerGetStatus: vi.fn().mockResolvedValue({
+      supported: false,
+      platform: "windows",
+      plan_name: "",
+      ac_sleep_timeout_seconds: null,
+      dc_sleep_timeout_seconds: null,
+      remote_serve_enabled: false,
+      threshold_seconds: 900,
+      at_risk: false,
+      reason: "",
+      checked_at: "",
+    }),
     voiceCardBindReference: vi.fn().mockResolvedValue({
       card_id: "card-saved-002",
       asset_id: "ref-audio-001",
@@ -433,13 +448,14 @@ describe("CharacterVoiceSection", () => {
 
     fireEvent.click(screen.getByTestId("create-mode-design"));
 
-    // 全量套件并行线程竞争下 jsdom 渲染可能超过 waitFor 默认 1000ms 墙钟，
-    // 断言不变，仅放宽超时窗口（曾观察到偶发闪烁失败）。
+    // 全量套件并行线程竞争下 jsdom 渲染可能远超默认 waitFor 窗口（曾放宽
+    // 1000→5000ms 后 CI 慢 runner 仍偶发超时）；断言本身同步派生、不依赖
+    // 真实时钟，放宽至 15s 只为吞掉 CI 渲染排队抖动，不改变断言语义。
     await waitFor(
       () => {
         expect(screen.getByTestId("create-voice-btn")).toBeDisabled();
       },
-      { timeout: 5000 },
+      { timeout: 15000 },
     );
     expect(actions.voiceCardCreate).not.toHaveBeenCalled();
   });

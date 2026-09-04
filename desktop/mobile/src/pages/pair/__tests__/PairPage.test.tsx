@@ -6,11 +6,31 @@ import { RemoteCommandError } from "../../../lib/wsClient";
 
 const initialStoreState = useMobileStore.getState();
 
+const BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+const ANDROID_SHELL_UA =
+  "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
+
+function stubUserAgent(ua: string): void {
+  Object.defineProperty(window.navigator, "userAgent", {
+    value: ua,
+    configurable: true,
+  });
+}
+
+function stubAndroidShell(): void {
+  window.__TAURI_INTERNALS__ = {};
+  stubUserAgent(ANDROID_SHELL_UA);
+}
+
 describe("PairPage 组件", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     window.localStorage.clear();
     window.history.pushState({}, "", "/");
+    delete window.__TAURI_INTERNALS__;
+    delete window.__TAURI__;
+    stubUserAgent(BROWSER_UA);
     useMobileStore.setState({
       connection: "disconnected",
       deviceName: null,
@@ -31,6 +51,8 @@ describe("PairPage 组件", () => {
     window.localStorage.clear();
     useMobileStore.setState(initialStoreState);
     delete window.BarcodeDetector;
+    delete window.__TAURI_INTERNALS__;
+    delete window.__TAURI__;
   });
 
   it("当 URL 查询参数包含 ?code= 时，自动预填配对码", () => {
@@ -159,5 +181,93 @@ describe("PairPage 组件", () => {
       const errorBox = screen.getByTestId("pair-error");
       expect(errorBox).toHaveTextContent("WebSocket 未连接");
     });
+  });
+});
+
+describe("PairPage V0.3.7 壳内桌面端地址输入", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    window.localStorage.clear();
+    window.history.pushState({}, "", "/");
+    delete window.__TAURI_INTERNALS__;
+    delete window.__TAURI__;
+    stubUserAgent(BROWSER_UA);
+    useMobileStore.setState({
+      connection: "disconnected",
+      deviceName: null,
+      projects: [],
+      conversationsById: {},
+      activeConversationId: null,
+      messages: [],
+      toolRuns: [],
+      approvals: [],
+      lastSequence: 0,
+      bootstrapped: false,
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    window.localStorage.clear();
+    useMobileStore.setState(initialStoreState);
+    delete window.__TAURI_INTERNALS__;
+    delete window.__TAURI__;
+  });
+
+  it("PWA 下不渲染地址输入区，配对体验不变", () => {
+    render(<PairPage />);
+    expect(screen.queryByTestId("ws-address-section")).toBeNull();
+    expect(screen.queryByTestId("ws-address-input")).toBeNull();
+  });
+
+  it("Android 壳内渲染地址输入区并预填已保存的地址", () => {
+    stubAndroidShell();
+    window.localStorage.setItem("phm.wsUrl", "ws://192.168.1.50:8765/ws");
+
+    render(<PairPage />);
+    const input = screen.getByTestId("ws-address-input") as HTMLInputElement;
+    expect(input.value).toBe("ws://192.168.1.50:8765/ws");
+    expect(screen.getByTestId("btn-save-ws-address")).toBeEnabled();
+  });
+
+  it("壳内保存合法地址写入 phm.wsUrl 并立即触发重连", () => {
+    stubAndroidShell();
+    const reconnectSpy = vi.fn();
+    useMobileStore.setState({ reconnect: reconnectSpy });
+
+    render(<PairPage />);
+    const input = screen.getByTestId("ws-address-input");
+    fireEvent.change(input, { target: { value: "  ws://10.0.0.5:8765/ws  " } });
+    fireEvent.click(screen.getByTestId("btn-save-ws-address"));
+
+    expect(window.localStorage.getItem("phm.wsUrl")).toBe("ws://10.0.0.5:8765/ws");
+    expect(reconnectSpy).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("ws-address-saved")).toHaveTextContent("地址已保存");
+  });
+
+  it("壳内非法地址时保存按钮禁用，不写入 localStorage", () => {
+    stubAndroidShell();
+
+    render(<PairPage />);
+    const input = screen.getByTestId("ws-address-input");
+    fireEvent.change(input, { target: { value: "http://192.168.1.50:8765/ws" } });
+
+    expect(screen.getByTestId("btn-save-ws-address")).toBeDisabled();
+    expect(window.localStorage.getItem("phm.wsUrl")).toBeNull();
+  });
+
+  it("壳内再次编辑地址时「已保存」提示消失，等下次保存", () => {
+    stubAndroidShell();
+    useMobileStore.setState({ reconnect: vi.fn() });
+
+    render(<PairPage />);
+    const input = screen.getByTestId("ws-address-input");
+    fireEvent.change(input, { target: { value: "ws://10.0.0.5:8765/ws" } });
+    fireEvent.click(screen.getByTestId("btn-save-ws-address"));
+    expect(screen.getByTestId("ws-address-saved")).toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: "ws://10.0.0.9:8765/ws" } });
+    expect(screen.queryByTestId("ws-address-saved")).toBeNull();
   });
 });

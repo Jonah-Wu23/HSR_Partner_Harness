@@ -69,11 +69,26 @@ function createMockActions(overrides: Partial<HarnessActions> = {}): HarnessActi
     selectActiveCard: vi.fn().mockResolvedValue(undefined),
     cardGet: vi.fn().mockResolvedValue({}),
     cardPeekImportJson: vi.fn().mockResolvedValue({}),
+    cardPeekImport: vi.fn().mockResolvedValue({}),
     cardImportJson: vi.fn().mockResolvedValue({}),
+    cardImportPng: vi.fn().mockResolvedValue({}),
     cardExportJson: vi.fn().mockResolvedValue({}),
+    cardExportPng: vi.fn().mockResolvedValue({}),
     cardPublish: vi.fn().mockResolvedValue({}),
     cardSetAvatar: vi.fn().mockResolvedValue({}),
     cardRemoveAvatar: vi.fn().mockResolvedValue({}),
+    powerGetStatus: vi.fn().mockResolvedValue({
+      supported: false,
+      platform: "windows",
+      plan_name: "",
+      ac_sleep_timeout_seconds: null,
+      dc_sleep_timeout_seconds: null,
+      remote_serve_enabled: false,
+      threshold_seconds: 900,
+      at_risk: false,
+      reason: "",
+      checked_at: "",
+    }),
     voiceCardBindReference: vi.fn().mockResolvedValue({}),
     voiceCardCreate: vi.fn().mockResolvedValue({}),
     voiceCardUnbind: vi.fn().mockResolvedValue({}),
@@ -297,15 +312,57 @@ describe("CharacterLibraryPage", () => {
       // 来源标注内置 · 只读
       expect(screen.getAllByText("内置 · 只读")).toHaveLength(3);
 
-      // 内置卡只提供查看操作，不提供删除/归档/复制
-      const viewButtons = screen.getAllByRole("button", { name: /^查看/ });
-      expect(viewButtons).toHaveLength(3);
+      // 内置卡只提供查看操作，不提供删除/归档/复制；兼容性为只读回看，内置卡同样提供
+      const viewButtonNames = ["查看白厄", "查看流萤", "查看三月七"];
+      for (const name of viewButtonNames) {
+        expect(screen.getByRole("button", { name })).toBeInTheDocument();
+      }
+      const viewButtons = viewButtonNames.map((name) => screen.getByRole("button", { name }));
 
       fireEvent.click(viewButtons[0]);
       expect(actions.openCharacterCreate).toHaveBeenCalledWith("builtin:phainon");
 
       expect(screen.queryByRole("button", { name: "删除白厄" })).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "归档白厄" })).not.toBeInTheDocument();
+    });
+
+    it("点击「兼容性」打开回看弹窗并按当前卡内容派生报告", async () => {
+      const vm: CharacterLibraryViewModel = {
+        cards: SAMPLE_CARDS.filter((c) => c.cardId === "card-saved-002"),
+        loading: false,
+        error: null,
+        loaded: true,
+      };
+      const actions = createMockActions({
+        cardGet: vi.fn().mockResolvedValue({
+          card_id: "card-saved-002",
+          state: "saved",
+          source: "user_created",
+          read_only: false,
+          avatar: null,
+          card: {
+            spec: "chara_card_v3",
+            spec_version: "3.0",
+            data: {
+              name: "卡芙卡",
+              character_book: {
+                entries: [{ keys: ["卡芙卡"], content: "条目", probability: 50 }],
+              },
+            },
+          },
+        }),
+      });
+
+      render(<CharacterLibraryPage vm={vm} actions={actions} backend={createMockBackend()} />);
+
+      expect(screen.queryByTestId("compat-modal")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "查看卡芙卡的兼容性" }));
+
+      await waitFor(() => {
+        expect(actions.cardGet).toHaveBeenCalledWith("card-saved-002");
+        expect(screen.getByTestId("compat-modal-report")).toBeInTheDocument();
+      });
+      expect(screen.getByText("世界书存而不运行字段（1）")).toBeInTheDocument();
     });
   });
 

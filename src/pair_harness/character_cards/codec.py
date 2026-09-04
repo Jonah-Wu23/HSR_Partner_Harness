@@ -8,8 +8,11 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 
+from pair_harness.character_cards.activation import iter_runtime_trigger_declarations
+from pair_harness.character_cards.macros import find_macros
 from pair_harness.character_cards.models import (
     FIXED_TTS_MODEL,
     HSR_SCHEMA_VERSION,
@@ -50,6 +53,44 @@ _DATA_RESERVED_KEYS = _ROOT_STANDARD_KEYS | {"extensions", "character_book"}
 
 # Character Book v3 在 v2 基础上增补的条目字段。
 _ENTRY_V3_FIELDS = ("name", "case_sensitive", "priority")
+
+# 世界书支持的 position 值（契约 §3.6，与激活引擎一致）。
+_SUPPORTED_POSITIONS = frozenset({"before_char", 0, "after_char", 1, "atDepth", 4})
+
+# 数据宏白名单（契约 §5.2）：大小写敏感、精确匹配这两个 token。
+_WHITELIST_MACROS = frozenset({"{{char}}", "{{user}}"})
+
+# 关键字 ``/pattern/flags`` 形态与可编译 flags（契约 §3.3，与激活引擎一致）。
+_REGEX_FORM_RE = re.compile(r"^/(.+)/([gimsuy]*)$")
+_REGEX_FLAG_MAP = {"i": re.IGNORECASE, "m": re.MULTILINE, "s": re.DOTALL}
+
+# 世界书条目级存而不运行字段：报告字段名 -> extensions/extras 中可能出现的键。
+# camelCase 与 snake_case 双查，只按键存在判定（值 0/空串仍是明确声明）。
+_WORLD_BOOK_NOT_RUN_FIELDS = (
+    ("probability", {"probability"}),
+    ("useProbability", {"useProbability", "use_probability"}),
+    ("recursive_scanning", {"recursive_scanning", "recursiveScanning"}),
+    ("group", {"group"}),
+    ("groupOverride", {"groupOverride", "group_override"}),
+    ("groupWeight", {"groupWeight", "group_weight"}),
+    ("sticky", {"sticky"}),
+    ("cooldown", {"cooldown"}),
+    ("delay", {"delay"}),
+    ("min_activations", {"min_activations", "minActivations"}),
+    ("automationId", {"automation_id", "automationId"}),
+    ("matchPersonaDescription", {"matchPersonaDescription", "match_persona_description"}),
+    ("matchCharacterDescription", {"matchCharacterDescription", "match_character_description"}),
+    ("matchPersonaDescriptionOnly", {
+        "matchPersonaDescriptionOnly", "match_persona_description_only"}),
+    ("matchCharacterDescriptionOnly", {
+        "matchCharacterDescriptionOnly", "match_character_description_only"}),
+    ("matchPersonaDepth", {"matchPersonaDepth", "match_persona_depth"}),
+    ("matchCharacterDepth", {"matchCharacterDepth", "match_character_depth"}),
+    ("matchPersonaCard", {"matchPersonaCard", "match_persona_card"}),
+    ("matchCharacterCard", {"matchCharacterCard", "match_character_card"}),
+    ("scanDepth", {"scanDepth", "scan_depth"}),
+    ("ignoreBudget", {"ignoreBudget", "ignore_budget"}),
+)
 
 
 class CardImportError(ValueError):
@@ -217,6 +258,10 @@ def load_card_payload(payload: dict) -> ImportResult:
         if hsr.command_panels:
             # 政策性声明：声明式面板只作为数据保留与呈现，永不执行。
             report.not_executed.append("data.extensions.hsr.command_panels")
+    # 兼容报告增补（契约 §11）：世界书存而不运行字段、非白名单宏、
+    # runtime_trigger 非 turn kind，以及关键字非法正则退化的警告。
+    # 只在成功路径上做静态扫描，不改变 errors 语义。
+    _extend_compat_report(card, report)
     return ImportResult(card=card, report=report)
 
 
@@ -543,3 +588,216 @@ def _optional_str(source: dict, key: str) -> str | None:
     if not isinstance(value, str):
         raise CardImportError(f"{key} 必须是字符串，得到 {type(value).__name__}")
     return value
+
+
+# ---------------------------------------------------------------- 兼容报告增补扫描
+
+
+def _extend_compat_report(card: CharacterCard, report: CompatReport) -> None:
+    """在导入成功路径上追加静态兼容扫描（契约 §11）。
+
+    只调整 ``not_executed`` 与 ``warnings``，绝不触碰 ``errors`` 语义
+    （errors 非空时仍由调用方决定导入失败）。全部基于输入数据推导，
+    对同一卡重复导入结果完全一致（幂等）。
+    """
+    book = card.character_book
+    if book is not None:
+        report.not_executed.extend(_scan_world_book_not_run(book))
+        for index, entry in enumerate(book.entries):
+            _scan_entry_warnings(entry, index, report.warnings)
+    report.not_executed.extend(_scan_card_macros(card))
+    if card.hsr is not None:
+        _extend_runtime_trigger_not_run(card.hsr, report)
+
+
+def _scan_world_book_not_run(book: CharacterBook) -> list[str]:
+    """世界书存而不运行字段（契约 §3.11），返回 ``not_executed`` 条目。"""
+    items: list[str] = []
+    declared: dict[str, list[int]] = {}
+    for index, entry in enumerate(book.entries):
+        sources = (entry.extensions, entry.extras)
+        for field, keys in _WORLD_BOOK_NOT_RUN_FIELDS:
+            if any(any(k in src for k in keys) for src in sources):
+                declared.setdefault(field, []).append(index)
+    for field, _ in _WORLD_BOOK_NOT_RUN_FIELDS:
+        indices = declared.get(field)
+        if not indices:
+            continue
+        if len(indices) == 1:
+            items.append(f"character_book.entries[{indices[0]}].{field}（存而不运行）")
+        else:
+            items.append(
+                f"character_book.entries[...].{field}（存而不运行，{len(indices)} 处）"
+            )
+
+    # content 首行 ``@@`` 开头的装饰器（@@activate / @@dont_activate 及其他）。
+    decorators: dict[str, list[int]] = {}
+    for index, entry in enumerate(book.entries):
+        content = (entry.content or "").strip()
+        if not content:
+            continue
+        first_line = content.splitlines()[0].strip()
+        if first_line.startswith("@@") and first_line:
+            decorators.setdefault(first_line, []).append(index)
+    for token, indices in decorators.items():
+        if len(indices) == 1:
+            items.append(f"character_book.entries[{indices[0]}].{token}（存而不运行）")
+        else:
+            items.append(
+                f"character_book.entries[...].{token}（存而不运行，{len(indices)} 处）"
+            )
+
+    # position 不属于支持集合的条目整体排除（契约 §3.6）。
+    for index, entry in enumerate(book.entries):
+        if entry.position not in _SUPPORTED_POSITIONS:
+            items.append(
+                f"character_book.entries[{index}]（存而不运行：position={entry.position}）"
+            )
+
+    # CharacterBook 级递归扫描声明同样存而不运行。
+    if book.recursive_scanning is not None:
+        items.append("character_book.recursive_scanning（存而不运行）")
+    return items
+
+
+def _scan_entry_warnings(
+    entry: WorldBookEntry, index: int, warnings: list[str]
+) -> None:
+    """世界书条目静态可判定的警告：非法正则关键字、selectiveLogic 越界。"""
+    for key in entry.keys:
+        match = _REGEX_FORM_RE.match(key)
+        if match:
+            # `/pattern/flags` 形态：按形态自带 flags 编译。
+            try:
+                re.compile(match.group(1), _regex_flags(match.group(2)))
+            except re.error:
+                warnings.append(
+                    f"character_book.entries[{index}].keyword 非法正则已退化字面匹配: {key}"
+                )
+        elif entry.use_regex:
+            # bare key 在 use_regex=True 时按正则编译（契约 §3.3，ST 无此概念）。
+            flag_chars = "" if entry.case_sensitive else "i"
+            try:
+                re.compile(key, _regex_flags(flag_chars))
+            except re.error:
+                warnings.append(
+                    f"character_book.entries[{index}].keyword 非法正则已退化字面匹配: {key}"
+                )
+    logic = entry.extensions.get("selectiveLogic")
+    if logic is not None and (
+        isinstance(logic, bool)
+        or not isinstance(logic, int)
+        or logic not in (0, 1, 2, 3)
+    ):
+        warnings.append(f"character_book.entries[{index}].selectiveLogic 越界: {logic}")
+
+
+def _regex_flags(flag_chars: str) -> int:
+    flags = 0
+    for ch in flag_chars:
+        flags |= _REGEX_FLAG_MAP.get(ch, 0)
+    return flags
+
+
+def _scan_card_macros(card: CharacterCard) -> list[str]:
+    """全卡文本字段非白名单宏扫描（契约 §5.3），返回 ``not_executed`` 条目。
+
+    只对字符串值扫描，键名不是值不入扫描；白名单宏 ``{{char}}``/``{{user}}``
+    精确匹配不报告。同一 (宏 token, 字段路径) 按实际出现次数合并计数。
+    """
+    counts: dict[tuple[str, str], int] = {}
+    order: list[tuple[str, str]] = []
+    for path, text in _iter_card_text_fields(card):
+        for token in find_macros(text):
+            if token in _WHITELIST_MACROS:
+                continue
+            key = (token, path)
+            if key not in counts:
+                counts[key] = 0
+                order.append(key)
+            counts[key] += text.count(token)
+    return [
+        f"macro:{token} @ {path}（未展开，{counts[(token, path)]} 处）"
+        for token, path in order
+    ]
+
+
+def _iter_card_text_fields(card: CharacterCard):
+    """按确定顺序产出 (字段路径, 文本) 对，供宏扫描复用。"""
+    for name in (
+        "description",
+        "personality",
+        "scenario",
+        "first_mes",
+        "mes_example",
+        "system_prompt",
+        "post_history_instructions",
+        "creator_notes",
+    ):
+        yield f"data.{name}", getattr(card, name)
+    for i, greeting in enumerate(card.alternate_greetings):
+        yield f"data.alternate_greetings[{i}]", greeting
+    for i, greeting in enumerate(card.group_only_greetings):
+        yield f"data.group_only_greetings[{i}]", greeting
+    if card.character_book is not None:
+        for i, entry in enumerate(card.character_book.entries):
+            yield f"data.character_book.entries[{i}].content", entry.content
+    depth = card.depth_prompt
+    if depth is not None and isinstance(depth.get("prompt"), str):
+        yield "data.extensions.depth_prompt.prompt", depth["prompt"]
+    if card.hsr is not None:
+        for block in (
+            "world_architecture",
+            "character_architecture",
+            "relationship_system",
+            "event_system",
+            "narrative_rules",
+        ):
+            prefix = f"data.extensions.hsr.{block}"
+            for leaf_path, text in _string_leaves(getattr(card.hsr, block), prefix):
+                yield leaf_path, text
+
+
+def _string_leaves(node, prefix):
+    """递归枚举 dict/list 中的全部字符串叶子，产出 (可读路径, 文本)。"""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from _string_leaves(value, f"{prefix}.{key}")
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from _string_leaves(value, f"{prefix}[{index}]")
+    elif isinstance(node, str):
+        yield prefix, node
+
+
+def _extend_runtime_trigger_not_run(hsr: HsrExtension, report: CompatReport) -> None:
+    """runtime_trigger 非 turn kind 存而不运行（契约 §6.1）。"""
+    paths: dict[int, str] = {}
+    _collect_runtime_trigger_paths(hsr.event_system, "", paths)
+    for entry, trigger in iter_runtime_trigger_declarations(hsr.event_system):
+        kind = trigger.get("kind")
+        # kind 非 turn，或 kind 为 turn 却缺 turn 字段，均不会在运行时执行。
+        if kind != "turn" or "turn" not in trigger:
+            prefix = paths.get(id(entry), "")
+            base = (
+                f"hsr.event_system.runtime_trigger.kind={kind}"
+                if not prefix
+                else f"hsr.event_system.{prefix}.runtime_trigger.kind={kind}"
+            )
+            report.not_executed.append(f"{base}（存而不运行）")
+
+
+def _collect_runtime_trigger_paths(node, prefix: str, out: dict) -> None:
+    """为每个 runtime_trigger 声明记录其子树路径（与 iter_runtime_trigger_declarations 同规则）。"""
+    if isinstance(node, dict):
+        trigger = node.get("runtime_trigger")
+        if isinstance(trigger, dict):
+            out[id(node)] = prefix
+        for key, value in node.items():
+            if key == "runtime_trigger":
+                continue
+            child = f"{prefix}.{key}" if prefix else key
+            _collect_runtime_trigger_paths(value, child, out)
+    elif isinstance(node, list):
+        for index, item in enumerate(node):
+            _collect_runtime_trigger_paths(item, f"{prefix}[{index}]", out)

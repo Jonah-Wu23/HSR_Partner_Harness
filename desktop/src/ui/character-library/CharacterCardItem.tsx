@@ -2,6 +2,7 @@ import type { CharacterCardSummaryView } from "../../contracts/view-models";
 import {
   AlertTriangleIcon,
   ArchiveIcon,
+  CompatCheckIcon,
   DeleteIcon,
   DuplicateIcon,
   EditIcon,
@@ -22,6 +23,7 @@ interface CharacterCardItemProps {
   onArchive: (cardId: string) => void;
   onDeleteRequest: (card: CharacterCardSummaryView) => void;
   onViewError: (card: CharacterCardSummaryView) => void;
+  onViewCompat?: (card: CharacterCardSummaryView) => void;
   onConfigureVoice?: (cardId: string) => void;
 }
 
@@ -34,6 +36,7 @@ export function CharacterCardItem({
   onArchive,
   onDeleteRequest,
   onViewError,
+  onViewCompat,
   onConfigureVoice,
 }: CharacterCardItemProps) {
   const isInvalid = card.state === "invalid";
@@ -79,15 +82,28 @@ export function CharacterCardItem({
       {/* 悬停快捷操作栏 */}
       <div className="char-card-actions" role="toolbar" aria-label={`${card.name} 操作`}>
         {isReadOnly ? (
-          <button
-            type="button"
-            className="char-icon-btn"
-            title="查看"
-            aria-label={`查看${card.name}`}
-            onClick={() => onEdit(card.cardId)}
-          >
-            <EyeIcon />
-          </button>
+          <>
+            <button
+              type="button"
+              className="char-icon-btn"
+              title="查看"
+              aria-label={`查看${card.name}`}
+              onClick={() => onEdit(card.cardId)}
+            >
+              <EyeIcon />
+            </button>
+            {onViewCompat ? (
+              <button
+                type="button"
+                className="char-icon-btn"
+                title="兼容性"
+                aria-label={`查看${card.name}的兼容性`}
+                onClick={() => onViewCompat(card)}
+              >
+                <CompatCheckIcon />
+              </button>
+            ) : null}
+          </>
         ) : isInvalid ? (
           <>
             <button
@@ -142,6 +158,17 @@ export function CharacterCardItem({
             >
               <EditIcon />
             </button>
+            {onViewCompat ? (
+              <button
+                type="button"
+                className="char-icon-btn"
+                title="兼容性"
+                aria-label={`查看${card.name}的兼容性`}
+                onClick={() => onViewCompat(card)}
+              >
+                <CompatCheckIcon />
+              </button>
+            ) : null}
             <button
               type="button"
               className="char-icon-btn"

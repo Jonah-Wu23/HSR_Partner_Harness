@@ -14,6 +14,7 @@ import type {
   PairRecord,
   PairSummary,
   PendingApproval,
+  PowerStatusPayload,
   ProjectRecord,
   QueueItem,
   ToolRun,
@@ -106,6 +107,22 @@ export interface DesktopState {
   characterLibrary: CharacterLibraryViewModel;
   characterCreate: CharacterCreateViewModel;
   remotePairing: RemotePairingViewModel;
+
+  /* —— V0.3.7 电源状态 slice（契约冻结 §1.5/§2.1）—— */
+  /** power.get_status 结果或 power.status_changed 最新载荷；未查询过为 null。 */
+  powerStatus: PowerStatusPayload | null;
+  /** 最近一次 power.get_status 查询失败原文（如 power_status_unavailable）；成功读取后清除。 */
+  powerError: string | null;
+  /** 是否有 power.get_status 查询在途（由 usePowerStatusQuery 维护）。 */
+  powerQueryInFlight: boolean;
+  /** 用户关闭提示后，本次 at_risk 持续期内不再提示；at_risk 消失（false 到达）时复位。 */
+  powerPromptDismissed: boolean;
+  /** 写入一次成功读取的电源状态（主动查询或事件共用）；at_risk=false 复位关闭标记。 */
+  setPowerStatus(payload: PowerStatusPayload): void;
+  /** 如实记录查询失败原文；不伪造任何成功状态。 */
+  setPowerError(message: string): void;
+  setPowerQueryInFlight(inFlight: boolean): void;
+  dismissPowerPrompt(): void;
   setMainView(view: MainView): void;
   setCharacterLibrary(partial: Partial<CharacterLibraryViewModel>): void;
   setCharacterCreate(partial: Partial<CharacterCreateViewModel>): void;
@@ -232,6 +249,10 @@ function createInitialState(): Omit<
   | "setCharacterLibrary"
   | "setCharacterCreate"
   | "setRemotePairing"
+  | "setPowerStatus"
+  | "setPowerError"
+  | "setPowerQueryInFlight"
+  | "dismissPowerPrompt"
 > {
   return {
     status: "booting",
@@ -288,6 +309,10 @@ function createInitialState(): Omit<
       error: null,
       serveAddress: null,
     },
+    powerStatus: null,
+    powerError: null,
+    powerQueryInFlight: false,
+    powerPromptDismissed: false,
   };
 }
 
@@ -1217,6 +1242,17 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
       }
       break;
     }
+    case "power.status_changed": {
+      // V0.3.7 §2.1：payload 与 power.get_status result 完全同形；事件即权威读取，
+      // 覆盖旧状态与旧查询错误。at_risk 消失时复位「本次持续期内不再提示」，
+      // 状态再次出现时允许重新提示。
+      const payload = event.payload as unknown as PowerStatusPayload | null;
+      if (!payload || typeof payload !== "object") break;
+      next.powerStatus = payload;
+      next.powerError = null;
+      if (!payload.at_risk) next.powerPromptDismissed = false;
+      break;
+    }
     case "account.changed": {
       // V0.2 M4：账号变更事件水合当前账号与账号列表（登录/注册/切换）
       const payload = event.payload as { account?: AccountRecord; accounts?: AccountListItem[] };
@@ -1533,6 +1569,23 @@ export const desktopStore = createStore<DesktopState>((set) => ({
   },
   setRemotePairing(patch) {
     set((state) => ({ remotePairing: { ...state.remotePairing, ...patch } }));
+  },
+  setPowerStatus(payload) {
+    set((state) => ({
+      powerStatus: payload,
+      // 成功读取（查询或事件）覆盖旧查询错误；at_risk 持续期间保留用户关闭标记。
+      powerError: null,
+      powerPromptDismissed: payload.at_risk ? state.powerPromptDismissed : false,
+    }));
+  },
+  setPowerError(message) {
+    set({ powerError: message });
+  },
+  setPowerQueryInFlight(inFlight) {
+    set({ powerQueryInFlight: inFlight });
+  },
+  dismissPowerPrompt() {
+    set({ powerPromptDismissed: true });
   },
 }));
 

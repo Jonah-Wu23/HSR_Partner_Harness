@@ -227,6 +227,10 @@ class DialogueRequest(FrozenModel):
     # V0.2：项目运行上下文（名称/目录/时间/时区/模式），角色与助手
     # 按此理解当前工作环境与能力边界；聊天模式下角色不能委派助手。
     runtime_context: "ProjectRuntimeContext | None" = None
+    # V0.3.7：本轮序号——该会话含当前用户消息的用户发起消息累计数，
+    # 1 起算（greeting=开场白不计入）。供世界书 atDepth 注入与确定性
+    # 触发按回合号匹配。默认 0 保证旧构造（不传该字段）不破坏。
+    turn_index: int = 0
 
 
 class ProjectRef(FrozenModel):

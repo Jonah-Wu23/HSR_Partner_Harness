@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "HSR Partner Harness",
-  "version": "0.3.5",
+  "version": "0.3.7",
   "identifier": "com.jonahwu.hsr-partner-harness",
   "build": {
     "beforeDevCommand": "npm run dev",

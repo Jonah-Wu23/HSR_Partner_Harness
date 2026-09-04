@@ -1,0 +1,36 @@
+/* V0.3.7 壳内 WS 地址输入：全宽大字号输入，触控目标 ≥48px，适配单手输入。 */
+
+.ws-address-input {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ws-address-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.ws-address-field {
+  width: 100%;
+  min-height: 48px;
+  padding: 10px 14px;
+  font-size: 16px;
+  /* 16px 以上避免 iOS/WebView 聚焦自动放大；地址含 IP/端口，等宽字体更易核对 */
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--fg);
+  box-sizing: border-box;
+}
+
+.ws-address-field::placeholder {
+  color: var(--muted);
+  opacity: 0.7;
+}
+
+.ws-address-field[aria-invalid="true"] {
+  border-color: var(--danger);
+}

@@ -46,16 +46,21 @@ export function CharacterCreatePage({ vm, actions, onPickFile }: CharacterCreate
   const [mode, setMode] = useState<CreateMode>("quick");
   const [publishStatus, setPublishStatus] = useState<PublishStatus>("idle");
   const [publishError, setPublishError] = useState<string | null>(null);
+  // 整卡 v3 JSON 草稿：世界书与 mufy 高级设定的编辑先合并到这里，再随 card.update 整卡提交。
+  const [cardJson, setCardJson] = useState<Record<string, unknown> | null>(() => vm.card);
 
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestFormDataRef = useRef(formData);
   latestFormDataRef.current = formData;
   const currentCardIdRef = useRef(currentCardId);
   currentCardIdRef.current = currentCardId;
+  const cardJsonRef = useRef(cardJson);
+  cardJsonRef.current = cardJson;
   const isSavingRef = useRef(false);
 
   // 当 vm.card 外部变更时水合；同时拉取服务端 state/avatar 权威状态。
   useEffect(() => {
+    setCardJson(vm.card);
     if (vm.card) {
       setFormData(extractFormData(vm.card));
       setCurrentCardId(vm.cardId);
@@ -120,7 +125,7 @@ export function CharacterCreatePage({ vm, actions, onPickFile }: CharacterCreate
         currentCardIdRef.current = targetId;
       }
 
-      const payload = buildCardPayload(vm.card, currentData);
+      const payload = buildCardPayload(cardJsonRef.current, currentData);
       await actions.updateCard(targetId, payload);
 
       const timeStr = formatTime();
@@ -135,7 +140,7 @@ export function CharacterCreatePage({ vm, actions, onPickFile }: CharacterCreate
     } finally {
       isSavingRef.current = false;
     }
-  }, [actions, vm.card, vm.readOnly]);
+  }, [actions, vm.readOnly]);
 
   // 发布流程
   const performPublish = useCallback(async (): Promise<boolean> => {
@@ -162,6 +167,25 @@ export function CharacterCreatePage({ vm, actions, onPickFile }: CharacterCreate
     }
   }, [performSave, actions]);
 
+  // 未保存标记 + 防抖自动保存：表单字段与整卡 JSON（世界书 / mufy）编辑共用同一状态机。
+  const markDirtyAndScheduleSave = useCallback(() => {
+    setSaveStatus("unsaved");
+    setSaveError(null);
+    setPublishStatus("idle");
+    setPublishError(null);
+
+    // 清除前一个防抖计时器并重设
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+    }
+
+    autoSaveTimerRef.current = setTimeout(() => {
+      if (!vm.readOnly && latestFormDataRef.current.name.trim().length > 0) {
+        void performSave();
+      }
+    }, 1000);
+  }, [performSave, vm.readOnly]);
+
   // 字段变更处理
   const handleFieldChange = useCallback(
     <K extends keyof CharacterFormData>(field: K, value: CharacterFormData[K]) => {
@@ -173,23 +197,50 @@ export function CharacterCreatePage({ vm, actions, onPickFile }: CharacterCreate
         return next;
       });
 
-      setSaveStatus("unsaved");
-      setSaveError(null);
-      setPublishStatus("idle");
-      setPublishError(null);
-
-      // 清除前一个防抖计时器并重设
-      if (autoSaveTimerRef.current) {
-        clearTimeout(autoSaveTimerRef.current);
-      }
-
-      autoSaveTimerRef.current = setTimeout(() => {
-        if (!vm.readOnly && latestFormDataRef.current.name.trim().length > 0) {
-          void performSave();
-        }
-      }, 1000);
+      markDirtyAndScheduleSave();
     },
-    [performSave, vm.readOnly],
+    [markDirtyAndScheduleSave, vm.readOnly],
+  );
+
+  // 整卡 JSON 编辑（世界书 / mufy 高级设定）：合并进草稿后走同一套防抖保存。
+  const handleCardJsonChange = useCallback(
+    (updater: (prev: Record<string, unknown> | null) => Record<string, unknown>) => {
+      if (vm.readOnly) return;
+
+      setCardJson((prev) => {
+        const next = updater(prev);
+        cardJsonRef.current = next;
+        return next;
+      });
+
+      markDirtyAndScheduleSave();
+    },
+    [markDirtyAndScheduleSave, vm.readOnly],
+  );
+
+  // 世界书编辑回传完整 character_book，合并回整卡 JSON；其余字段原样保留。
+  const handleCharacterBookChange = useCallback(
+    (book: Record<string, unknown>) => {
+      handleCardJsonChange((prev) => {
+        const base = prev ?? vm.card ?? { spec: "chara_card_v3", spec_version: "3.0", data: {} };
+        const data = (base.data as Record<string, unknown> | undefined) ?? {};
+        return { ...base, data: { ...data, character_book: book } };
+      });
+    },
+    [handleCardJsonChange, vm.card],
+  );
+
+  // mufy 高级设定回传完整 extensions.hsr，合并回整卡 JSON；extensions 内其他键原样保留。
+  const handleHsrChange = useCallback(
+    (hsr: Record<string, unknown>) => {
+      handleCardJsonChange((prev) => {
+        const base = prev ?? vm.card ?? { spec: "chara_card_v3", spec_version: "3.0", data: {} };
+        const data = (base.data as Record<string, unknown> | undefined) ?? {};
+        const extensions = (data.extensions as Record<string, unknown> | undefined) ?? {};
+        return { ...base, data: { ...data, extensions: { ...extensions, hsr } } };
+      });
+    },
+    [handleCardJsonChange, vm.card],
   );
 
   // 清理计时器
@@ -453,8 +504,10 @@ export function CharacterCreatePage({ vm, actions, onPickFile }: CharacterCreate
           <AdvancedEditorPanel
             formData={formData}
             readOnly={vm.readOnly}
-            cardJson={vm.card}
+            cardJson={cardJson}
             onFieldChange={handleFieldChange}
+            onCharacterBookChange={handleCharacterBookChange}
+            onHsrChange={handleHsrChange}
             onReturnToQuick={() => setMode("quick")}
           />
         )}

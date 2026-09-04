@@ -363,3 +363,214 @@ def test_export_writes_root_compat_copies() -> None:
     # 根级未知字段写回根，不进入 data。
     assert "create_date" in payload
     assert "create_date" not in payload["data"]
+
+
+# ---------------------------------------------------------------- V0.3.7 兼容报告增补
+
+
+def test_report_world_book_not_run_fields_declared() -> None:
+    """条目 extensions 声明 probability/sticky/group/selectiveLogic 存而不运行。"""
+    result = load_card_payload(
+        {
+            "spec": "chara_card_v3",
+            "data": {
+                "name": "存而不运行卡",
+                "character_book": {
+                    "entries": [
+                        {
+                            "keys": ["k"],
+                            "content": "c",
+                            "extensions": {
+                                "probability": 100,
+                                "sticky": 0,
+                                "group": "A",
+                                "selectiveLogic": 9,
+                            },
+                        }
+                    ]
+                },
+            },
+        }
+    )
+    ne = result.report.not_executed
+    assert "character_book.entries[0].probability（存而不运行）" in ne
+    assert "character_book.entries[0].sticky（存而不运行）" in ne
+    assert "character_book.entries[0].group（存而不运行）" in ne
+    # selectiveLogic 越界进 warnings，同时它本身是合法字段不在 not_executed。
+    assert any("selectiveLogic 越界: 9" in w for w in result.report.warnings)
+
+
+def test_report_world_book_not_run_fields_merged_by_entry_count() -> None:
+    """同字段多条目合并为 entries[...] 计数形式。"""
+    result = load_card_payload(
+        {
+            "spec": "chara_card_v3",
+            "data": {
+                "name": "合并卡",
+                "character_book": {
+                    "entries": [
+                        {"keys": ["a"], "content": "1", "extensions": {"probability": 100}},
+                        {"keys": ["b"], "content": "2", "extensions": {"probability": 60}},
+                    ]
+                },
+            },
+        }
+    )
+    assert (
+        "character_book.entries[...].probability（存而不运行，2 处）"
+        in result.report.not_executed
+    )
+
+
+def test_report_book_level_recursive_scanning_not_run() -> None:
+    """CharacterBook 级 recursive_scanning（书声明）同样报告。"""
+    result = load_card_payload(
+        {
+            "spec": "chara_card_v3",
+            "data": {
+                "name": "书级扫描卡",
+                "character_book": {"recursive_scanning": False, "entries": []},
+            },
+        }
+    )
+    assert "character_book.recursive_scanning（存而不运行）" in result.report.not_executed
+
+
+def test_report_invalid_regex_key_degrades_to_warning() -> None:
+    """/bad[/i 形态 + use_regex=true 编译失败 → warnings 退化记录。"""
+    result = load_card_payload(
+        {
+            "spec": "chara_card_v3",
+            "data": {
+                "name": "非法正则卡",
+                "character_book": {
+                    "entries": [
+                        {"keys": ["/bad[/i"], "content": "c", "use_regex": True}
+                    ]
+                },
+            },
+        }
+    )
+    assert any(
+        "character_book.entries[0].keyword 非法正则已退化字面匹配: /bad[/i" in w
+        for w in result.report.warnings
+    )
+
+
+def test_report_non_whitelisted_macros_scanned_and_counted() -> None:
+    """{{setvar}}/{{time}} 报告，{{char}}/{{user}} 白名单不报告。"""
+    result = load_card_payload(
+        {
+            "spec": "chara_card_v3",
+            "data": {
+                "name": "宏卡",
+                "personality": "{{setvar::x::1}} 我叫 {{char}}，你好 {{user}}",
+                "description": "现在是 {{time}} 和 {{time}}",
+            },
+        }
+    )
+    ne = result.report.not_executed
+    assert "macro:{{setvar::x::1}} @ data.personality（未展开，1 处）" in ne
+    assert "macro:{{time}} @ data.description（未展开，2 处）" in ne
+    assert not any(x.startswith("macro:{{char}}") for x in ne)
+    assert not any(x.startswith("macro:{{user}}") for x in ne)
+
+
+def test_report_runtime_trigger_non_turn_not_run() -> None:
+    """runtime_trigger 非 turn kind 记录，turn kind 不记录。"""
+    result = load_card_payload(
+        {
+            "spec": "chara_card_v3",
+            "data": {
+                "name": "mufy 卡",
+                "extensions": {
+                    "hsr": {
+                        "event_system": {
+                            "chapter1": {
+                                "runtime_trigger": {"kind": "time", "at": "洛克城"},
+                                "content": "夜幕降临",
+                            },
+                            "chapter2": {
+                                "runtime_trigger": {"kind": "turn", "turn": 3},
+                                "content": "第三回合",
+                            },
+                        }
+                    }
+                },
+            },
+        }
+    )
+    ne = result.report.not_executed
+    assert any(
+        "hsr.event_system.chapter1.runtime_trigger.kind=time（存而不运行）" in x
+        for x in ne
+    )
+    assert not any(
+        "runtime_trigger.kind=turn" in x and "chapter2" in x for x in ne
+    )
+
+
+def test_report_depth_prompt_whitelisted_user_not_reported() -> None:
+    """depth_prompt.prompt 中 {{user}} 属白名单，不进 not_executed。"""
+    result = load_card_payload(
+        {
+            "spec": "chara_card_v3",
+            "data": {
+                "name": "深度提示卡",
+                "extensions": {
+                    "depth_prompt": {
+                        "prompt": "对 {{user}} 保持陪伴",
+                        "depth": 4,
+                        "role": "system",
+                    }
+                },
+            },
+        }
+    )
+    assert not any("macro:{{user}}" in x for x in result.report.not_executed)
+
+
+def test_baiyu_fixture_report_not_run_labels_and_whitelist() -> None:
+    """白厄 fixture：probability/sticky 等存而不运行标签存在，宏白名单不报告。"""
+    result = load_card_json(_load_sample())
+    ne = result.report.not_executed
+    assert any(".probability（存而不运行" in x for x in ne)
+    assert any(".sticky（存而不运行" in x for x in ne)
+    assert any(".group（存而不运行" in x for x in ne)
+    assert not any(x == "macro:{{char}}" or x.startswith("macro:{{char}}") for x in ne)
+    assert not any(x == "macro:{{user}}" or x.startswith("macro:{{user}}") for x in ne)
+
+
+def test_report_scan_idempotent() -> None:
+    """同一 payload 导入两次，兼容报告 JSON 完全一致。"""
+    payload = {
+        "spec": "chara_card_v3",
+        "data": {
+            "name": "幂等卡",
+            "personality": "{{setvar::a::1}} 内容",
+            "character_book": {
+                "recursive_scanning": True,
+                "entries": [
+                    {
+                        "keys": ["/bad[/i"],
+                        "content": "c",
+                        "use_regex": True,
+                        "extensions": {"probability": 100, "selectiveLogic": 5},
+                    }
+                ],
+            },
+            "extensions": {
+                "hsr": {
+                    "event_system": {
+                        "t1": {
+                            "runtime_trigger": {"kind": "time", "at": "x"},
+                            "content": "触发",
+                        }
+                    }
+                }
+            },
+        },
+    }
+    first = json.dumps(load_card_payload(payload).report.to_dict(), sort_keys=True)
+    second = json.dumps(load_card_payload(payload).report.to_dict(), sort_keys=True)
+    assert first == second

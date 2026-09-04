@@ -66,6 +66,23 @@
   border-radius: 14px;
 }
 
+/* V0.3.7 壳内桌面端地址卡：与扫码卡同节奏，保存按钮全宽大触控。 */
+.ws-address-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ws-address-card .hint {
+  margin: 0;
+}
+
+.ws-address-save-btn {
+  min-height: 44px;
+  width: 100%;
+  font-size: 14px;
+}
+
 .scan-title {
   margin: 0;
   font-size: 14px;

@@ -7,6 +7,7 @@ import type {
   ToolRun,
 } from "@shared/contracts/protocol";
 import { mobileWsClient, useMobileStore } from "../../../lib/mobileStore";
+import { navigate } from "../../../lib/router";
 import { ChatPage } from "../ChatPage";
 
 class FakeWebSocket {
@@ -670,5 +671,31 @@ describe("ChatPage 移动端聊天页集成测试", () => {
     expect(card).toHaveTextContent("查看项目目录结构");
     expect(card).toHaveAttribute("data-delegation-status", "running");
     expect(screen.queryByText("你")).toBeNull();
+  });
+
+  it("V0.3.7 V9 收尾：从列表进入聊天后点返回，回退历史条目不压新历史", async () => {
+    // 模拟真实进入路径：列表 →（应用内压栈）→ 聊天
+    window.location.hash = "#/list";
+    navigate({ name: "chat", conversationId: "c1" });
+    await vi.waitFor(() => expect(window.location.hash).toBe("#/chat/c1"));
+
+    render(<ChatPage conversationId="c1" />);
+    const lengthBeforeBack = window.history.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "返回聊天列表" }));
+
+    await vi.waitFor(() => expect(window.location.hash).toBe("#/list"));
+    expect(window.history.length).toBe(lengthBeforeBack);
+  });
+
+  it("V0.3.7 V9 收尾：深链直接落在聊天页时点返回，replace 到列表不新增条目", () => {
+    window.location.hash = "#/chat/c1";
+    const lengthBeforeBack = window.history.length;
+
+    render(<ChatPage conversationId="c1" />);
+    fireEvent.click(screen.getByRole("button", { name: "返回聊天列表" }));
+
+    expect(window.location.hash).toBe("#/list");
+    expect(window.history.length).toBe(lengthBeforeBack);
   });
 });

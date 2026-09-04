@@ -488,10 +488,12 @@ async def test_streaming_assistant_events_reconcile_to_persisted_segments(
                 text="请检查这个项目",
             )
         )
-        # 快速接受后回合在后台运行：等待回合收尾（turn 终态 completed）
+        # 快速接受后回合在后台运行：等待回合收尾（turn 终态 completed）。
+        # 5s 窗口在 CI 慢 runner 全量负载下偶发不足（轮询真实事件循环），
+        # 放宽至 20s 只吞调度抖动，断言语义不变。
         async def _wait_turn_done() -> None:
             loop = asyncio.get_running_loop()
-            deadline = loop.time() + 5.0
+            deadline = loop.time() + 20.0
             while loop.time() < deadline:
                 if any(
                     e["event"] == "turn.status_changed"

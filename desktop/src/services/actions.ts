@@ -11,8 +11,10 @@ import type {
   CardDeleteResult,
   CardDuplicateResult,
   CardExportJsonResult,
+  CardExportPngResult,
   CardGetResult,
   CardImportJsonResult,
+  CardImportPngResult,
   CardListResult,
   CardPeekImportResult,
   CardPublishResult,
@@ -25,6 +27,7 @@ import type {
   DesktopCommandMethod,
   DesktopSnapshot,
   ReasoningEffort,
+  PowerStatusPayload,
   RemoteIssueCodeResult,
   RemoteListDevicesResult,
   RemoteRevokeResult,
@@ -534,6 +537,24 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       }
       await this.listCards();
       return result;
+    },
+    /* —— V0.3.7 PNG 导入导出/电源状态 —— */
+    async cardPeekImport(path) {
+      return request<CardPeekImportResult>("card.peek_import", { path });
+    },
+    async cardImportPng(path, asDuplicate) {
+      const result = await request<CardImportPngResult>("card.import_png", {
+        path,
+        as_duplicate: asDuplicate ?? false,
+      });
+      await this.listCards();
+      return result;
+    },
+    async cardExportPng(cardId, path) {
+      return request<CardExportPngResult>("card.export_png", { card_id: cardId, path });
+    },
+    async powerGetStatus() {
+      return request<PowerStatusPayload>("power.get_status");
     },
     /* —— V0.3.5 角色卡音色 —— */
     async voiceCardBindReference(cardId, path) {

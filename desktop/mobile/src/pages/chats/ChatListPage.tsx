@@ -1,5 +1,8 @@
+import { useState } from "react";
 import { navigate } from "../../lib/router";
 import { useMobileStore } from "../../lib/mobileStore";
+import { NotificationPreferences } from "../../components/NotificationPreferences";
+import { PowerStatusBanner } from "../../components/PowerStatusBanner";
 import "./ChatListPage.css";
 
 function formatDateTime(isoString?: string | null): string {
@@ -33,6 +36,15 @@ export function ChatListPage() {
   const bootstrapped = useMobileStore((state) => state.bootstrapped);
   const connection = useMobileStore((state) => state.connection);
   const reconnect = useMobileStore((state) => state.reconnect);
+  const powerStatus = useMobileStore((state) => state.powerStatus);
+
+  // 「知道了」只收敛当前这条警示：电脑状态再次变化（新事件携带新 checked_at）时重新出现，
+  // 不永久吞掉真实状态。
+  const [dismissedCheckedAt, setDismissedCheckedAt] = useState<string | null>(null);
+  const visiblePowerStatus =
+    powerStatus && (!dismissedCheckedAt || powerStatus.checked_at !== dismissedCheckedAt)
+      ? powerStatus
+      : null;
 
   const isConnectionDown =
     connection === "unreachable" ||
@@ -42,6 +54,16 @@ export function ChatListPage() {
   return (
     <main className="page" data-testid="chat-list-page">
       <div className="chat-list-container">
+        {/* V0.3.7 电源状态条（V11）：层级与 ConnectionBanner 对齐，置于页面所有内容之上。 */}
+        {visiblePowerStatus ? (
+          <div className="chat-list-power">
+            <PowerStatusBanner
+              status={visiblePowerStatus}
+              onDismiss={() => setDismissedCheckedAt(visiblePowerStatus.checked_at)}
+            />
+          </div>
+        ) : null}
+
         <header className="chat-list-header">
           <h1 className="page-title">聊天列表</h1>
         </header>
@@ -185,6 +207,11 @@ export function ChatListPage() {
             })}
           </div>
         )}
+
+        {/* V0.3.7 通知偏好（V8/V9）：Android 壳内可编辑；PWA 下组件如实说明
+            「仅 Android 壳可用」，不渲染任何伪造开关。同步失败时依旧可查看，
+            通知能力属壳本地能力，不依赖桌面端连接。 */}
+        <NotificationPreferences />
       </div>
     </main>
   );
