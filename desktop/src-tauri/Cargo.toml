@@ -5,6 +5,11 @@ description = "HSR Partner Harness desktop shell"
 authors = ["Jonah Wu"]
 edition = "2021"
 
+# V0.3.7 契约 §9.1：移动端壳以 cdylib 加载应用主体；桌面二进制入口在 src/main.rs。
+[lib]
+name = "hsr_partner_harness_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2.4.1", features = [] }
 
