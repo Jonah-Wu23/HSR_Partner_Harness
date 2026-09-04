@@ -188,6 +188,10 @@ export const CARD_PUBLISH_INVALID = "card_publish_invalid";
 export const CARD_AVATAR_UNSUPPORTED = "card_avatar_unsupported";
 export const CARD_AVATAR_TOO_LARGE = "card_avatar_too_large";
 
+/** V0.3.7 PNG 导出与电源状态错误码（契约冻结 §1.3/§1.5）。 */
+export const CARD_EXPORT_FAILED = "card_export_failed";
+export const POWER_STATUS_UNAVAILABLE = "power_status_unavailable";
+
 /** V0.3.5 角色卡音色错误码。 */
 export const VOICE_NOT_CONFIGURED = "voice_not_configured";
 export const VOICE_REFERENCE_MISSING = "voice_reference_missing";
@@ -336,9 +340,13 @@ export type DesktopCommandMethod =
   | "card.archive"
   | "card.delete"
   | "card.select_active"
+  /* V0.3.7：card.peek_import 为规范名；card.peek_import_json 保留为同一 handler 的别名（deprecated）。 */
+  | "card.peek_import"
   | "card.peek_import_json"
   | "card.import_json"
+  | "card.import_png"
   | "card.export_json"
+  | "card.export_png"
   | "card.publish"
   | "card.set_avatar"
   | "card.remove_avatar"
@@ -353,7 +361,8 @@ export type DesktopCommandMethod =
   | "remote.issue_code"
   | "remote.pair"
   | "remote.list_devices"
-  | "remote.revoke";
+  | "remote.revoke"
+  | "power.get_status";
 
 export interface DesktopCommand {
   kind: "request";
@@ -401,7 +410,8 @@ export type DesktopEventName =
   | "voice.mobile_tts_end"
   | "connection.status"
   | "error.reported"
-  | "serve.started";
+  | "serve.started"
+  | "power.status_changed";
 
 export interface DesktopEvent<T = Record<string, unknown>> {
   kind: "event";
@@ -456,11 +466,16 @@ export interface CompatReportPayload {
   errors: string[];
 }
 
-/** card.peek_import_json 的预览载荷。 */
+/** card.peek_import 的预览载荷（V0.3.7 起 JSON/PNG 双格式共用，format 区分）。 */
 export interface CardImportPreviewPayload {
   name: string;
   spec_version: string;
+  /** V0.3.7：预览格式；真实后端按文件签名分派（PNG 签名优先，不信任扩展名）。 */
+  format?: "json" | "png";
   avatar_available: boolean;
+  /** V0.3.7：PNG 分支携带 IHDR 宽高（像素）；JSON 分支与解析失败时为 null。 */
+  avatar_width?: number | null;
+  avatar_height?: number | null;
   greeting_count: number;
   world_book_entries: number;
   tags: string[];
@@ -568,6 +583,39 @@ export interface ApprovalResolvedPayload {
   decision: "approve" | "deny" | string;
   resolved_by: "desktop" | "remote" | string;
   task_id?: string;
+}
+
+/* ------------------------------------------------------------------ *
+ * V0.3.7 PNG 双向兼容与电源状态（契约见 docs/plans/V0.3.7-契约冻结.md §1/§2）。
+ * ------------------------------------------------------------------ */
+
+/** card.import_png 的结果（与 card.import_json 同形）。 */
+export type CardImportPngResult = CardImportJsonResult;
+
+/** card.export_png 的结果（§1.3：只写 ccv3 块，图像块为头像原始字节）。 */
+export interface CardExportPngResult {
+  exported: boolean;
+  path: string;
+  name: string;
+  spec_version: string;
+  greeting_count: number;
+  world_book_entries: number;
+  extensions: string[];
+}
+
+/** power.get_status 的结果；power.status_changed 事件载荷与其完全同形（§1.5/§2.1）。
+    Windows 读取成功时两个超时字段为秒数（0 表示「从不」），非 Windows 为 null。 */
+export interface PowerStatusPayload {
+  supported: boolean;
+  platform: string;
+  plan_name: string;
+  ac_sleep_timeout_seconds: number | null;
+  dc_sleep_timeout_seconds: number | null;
+  remote_serve_enabled: boolean;
+  threshold_seconds: number;
+  at_risk: boolean;
+  reason: string;
+  checked_at: string;
 }
 
 /* ------------------------------------------------------------------ *

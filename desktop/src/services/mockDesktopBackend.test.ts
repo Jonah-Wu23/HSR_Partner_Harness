@@ -4,7 +4,9 @@ import type { DesktopCommand, DesktopCommandMethod } from "../contracts/protocol
 import {
   APPROVAL_ALREADY_RESOLVED,
   CARD_AVATAR_UNSUPPORTED,
+  CARD_EXPORT_FAILED,
   CARD_IMPORT_FAILED,
+  CARD_READ_ONLY,
   VOICE_AUDIO_SEQ_GAP,
   VOICE_NOT_CONFIGURED,
 } from "../contracts/protocol";
@@ -265,5 +267,158 @@ describe("MockDesktopBackend V0.3.5 角色卡/语音/审批 mock", () => {
     await expect(
       backend.request(cmd("approval.resolve", { approval_id: "app-1", decision: "reject" })),
     ).rejects.toMatchObject({ code: APPROVAL_ALREADY_RESOLVED });
+  });
+});
+
+describe("MockDesktopBackend V0.3.7 PNG 导入导出/电源状态 mock", () => {
+  it("card.peek_import 按扩展名分派 JSON/PNG 预览，card.peek_import_json 别名同行为", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    await expect(
+      backend.request(cmd("card.peek_import", { path: "C:/Cards/bai.json" })),
+    ).resolves.toMatchObject({
+      preview: {
+        name: "白厄（3.4前）",
+        spec_version: "3.0",
+        format: "json",
+        avatar_available: false,
+        avatar_width: null,
+        avatar_height: null,
+        greeting_count: 6,
+        world_book_entries: 20,
+      },
+    });
+    await expect(
+      backend.request(cmd("card.peek_import", { path: "C:/Cards/bai.PNG" })),
+    ).resolves.toMatchObject({
+      preview: {
+        name: "白厄（3.4前）",
+        format: "png",
+        avatar_available: true,
+        avatar_width: 512,
+        avatar_height: 512,
+      },
+    });
+    await expect(
+      backend.request(cmd("card.peek_import_json", { path: "C:/Cards/bai.json" })),
+    ).resolves.toMatchObject({ preview: { format: "json", avatar_available: false } });
+  });
+
+  it("card.peek_import 对损坏文件路径抛出 CARD_IMPORT_FAILED", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    await expect(
+      backend.request(cmd("card.peek_import", { path: "C:/invalid.png" })),
+    ).rejects.toMatchObject({ code: CARD_IMPORT_FAILED });
+  });
+
+  it("card.import_png 返回 card_id/name/state/report 并把 PNG 字节置为头像", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    const result = await backend.request<{ card_id: string; name: string; state: string }>(
+      cmd("card.import_png", { path: "C:/Cards/bai.png" }),
+    );
+    expect(result.state).toBe("imported");
+    expect(result.name).toBe("白厄（3.4前）");
+    expect(result.card_id).toBeTruthy();
+
+    const list = await backend.request<{
+      cards: Array<{ card_id: string; has_avatar: boolean; source: string }>;
+    }>(cmd("card.list"));
+    expect(
+      list.cards.find((card) => card.card_id === result.card_id),
+    ).toMatchObject({ has_avatar: true, source: "imported_png" });
+
+    const detail = await backend.request<{ avatar: { mime_type: string } | null }>(
+      cmd("card.get", { card_id: result.card_id }),
+    );
+    expect(detail.avatar).toMatchObject({ mime_type: "image/png" });
+  });
+
+  it("card.import_png as_duplicate=true 名称追加（副本）；损坏路径抛出 CARD_IMPORT_FAILED", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    const result = await backend.request<{ name: string }>(
+      cmd("card.import_png", { path: "C:/Cards/bai.png", as_duplicate: true }),
+    );
+    expect(result.name).toBe("白厄（3.4前）（副本）");
+    await expect(
+      backend.request(cmd("card.import_png", { path: "C:/missing.png" })),
+    ).rejects.toMatchObject({ code: CARD_IMPORT_FAILED });
+  });
+
+  it("card.export_png 对无头像卡抛出 CARD_EXPORT_FAILED 并引导设置头像", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    await expect(
+      backend.request(
+        cmd("card.export_png", { card_id: "card-draft-001", path: "C:/Export/bai.png" }),
+      ),
+    ).rejects.toMatchObject({
+      code: CARD_EXPORT_FAILED,
+      message: "卡未设置头像，请先设置头像后再导出 PNG",
+    });
+  });
+
+  it("card.export_png 内置卡抛出 CARD_READ_ONLY，有头像卡返回冻结 §1.3 结果", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    await expect(
+      backend.request(
+        cmd("card.export_png", { card_id: "builtin:phainon", path: "C:/Export/builtin.png" }),
+      ),
+    ).rejects.toMatchObject({ code: CARD_READ_ONLY });
+
+    const result = await backend.request<Record<string, unknown>>(
+      cmd("card.export_png", { card_id: "card-saved-002", path: "C:/Export/kafka.png" }),
+    );
+    expect(result).toMatchObject({
+      exported: true,
+      path: "C:/Export/kafka.png",
+      name: "卡芙卡",
+      spec_version: "3.0",
+      greeting_count: 6,
+      world_book_entries: 20,
+      extensions: ["hsr"],
+    });
+  });
+
+  it("power.get_status 返回冻结 §1.5 的 Windows 成功形状", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    const result = await backend.request<Record<string, unknown>>(cmd("power.get_status"));
+    expect(result).toMatchObject({
+      supported: true,
+      platform: "windows",
+      plan_name: "平衡",
+      ac_sleep_timeout_seconds: 1800,
+      dc_sleep_timeout_seconds: 1200,
+      remote_serve_enabled: false,
+      threshold_seconds: 900,
+      at_risk: false,
+      reason: "AC/DC 睡眠超时均不低于阈值",
+    });
+    expect(typeof result.checked_at).toBe("string");
+  });
+
+  it("emitPowerStatusChanged 发出 power.status_changed 并更新 mock 最近状态", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    const events: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const unsubscribe = backend.subscribe((event) =>
+      events.push({ event: event.event, payload: event.payload }),
+    );
+    try {
+      const payload = {
+        supported: true,
+        platform: "windows",
+        plan_name: "平衡",
+        ac_sleep_timeout_seconds: 600,
+        dc_sleep_timeout_seconds: null,
+        remote_serve_enabled: true,
+        threshold_seconds: 900,
+        at_risk: true,
+        reason: "AC 睡眠超时 600 秒低于阈值 900 秒",
+        checked_at: new Date().toISOString(),
+      };
+      backend.emitPowerStatusChanged(payload);
+      const changed = events.find((event) => event.event === "power.status_changed");
+      expect(changed?.payload).toEqual(payload);
+      expect(backend.lastPowerStatus).toEqual(payload);
+    } finally {
+      unsubscribe();
+    }
   });
 });

@@ -23,6 +23,18 @@ export function FileJsonIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function FileImageIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true" {...props}>
+      <path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" />
+      <path d="M14 3v4h4" />
+      <rect x="8" y="13" width="8" height="5" rx="1" />
+      <circle cx="10.5" cy="15" r="0.8" fill="currentColor" stroke="none" />
+      <path d="m12.5 17.5 1.5-1.5 2 2" />
+    </svg>
+  );
+}
+
 export function CheckIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true" {...props}>

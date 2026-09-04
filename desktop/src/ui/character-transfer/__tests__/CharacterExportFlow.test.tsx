@@ -71,6 +71,17 @@ function createMockActions(overrides: Partial<HarnessActions> = {}): HarnessActi
       path: "C:/Cards/卡芙卡.json",
       avatar_saved: true,
     }),
+    cardPeekImport: vi.fn().mockResolvedValue({}),
+    cardImportPng: vi.fn().mockResolvedValue({}),
+    cardExportPng: vi.fn().mockResolvedValue({
+      exported: true,
+      path: "C:/Cards/卡芙卡.png",
+      name: "卡芙卡",
+      spec_version: "3.0",
+      greeting_count: 6,
+      world_book_entries: 20,
+      extensions: ["hsr"],
+    }),
     cardPublish: vi.fn().mockResolvedValue({}),
     cardSetAvatar: vi.fn().mockResolvedValue({}),
     cardRemoveAvatar: vi.fn().mockResolvedValue({}),
@@ -231,6 +242,31 @@ describe("CharacterExportFlow", () => {
     expect(screen.getByLabelText("导出文件名")).toBeInTheDocument();
   });
 
+  it("保存对话框打开失败如实进入错误态并保留原始错误", async () => {
+    const actions = createMockActions();
+    const backend = createMockBackend(null);
+    backend.saveFile = vi.fn().mockRejectedValue(new Error("dialog plugin unavailable"));
+    render(
+      <CharacterExportFlow
+        cardId="card-saved-002"
+        cardName="卡芙卡"
+        backend={backend}
+        actions={actions}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("导出角色")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "导出" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("打开保存对话框失败")).toBeInTheDocument();
+      expect(screen.getByText(/dialog plugin unavailable/)).toBeInTheDocument();
+    });
+    expect(actions.cardExportJson).not.toHaveBeenCalled();
+  });
+
   it("内置卡导出显示 read-only 引导并提供复制入口", async () => {
     const actions = createMockActions({
       cardGet: vi.fn().mockResolvedValue(sampleCardGet({ card_id: "builtin:phainon", read_only: true })),
@@ -349,5 +385,111 @@ describe("CharacterExportFlow", () => {
       expect(screen.getByText("加载角色卡失败")).toBeInTheDocument();
       expect(screen.getByText(/卡不存在/)).toBeInTheDocument();
     });
+  });
+
+  it("切换 PNG 格式：文件名扩展联动，导出调用 cardExportPng，成功展示 §1.3 结果字段", async () => {
+    const actions = createMockActions();
+    const backend = createMockBackend("C:/Cards/卡芙卡.png");
+    render(
+      <CharacterExportFlow
+        cardId="card-saved-002"
+        cardName="卡芙卡"
+        backend={backend}
+        actions={actions}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("导出角色")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("radio", { name: "PNG 格式" }));
+
+    expect(screen.getByLabelText("导出文件名")).toHaveValue("卡芙卡.png");
+    // PNG 头像内嵌，不出现「另存头像文件」选项
+    expect(screen.queryByRole("checkbox", { name: "同时保存头像文件" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "导出" }));
+
+    await waitFor(() => {
+      expect(backend.saveFile).toHaveBeenCalledWith({
+        title: "导出角色卡 PNG",
+        defaultPath: "卡芙卡.png",
+        filters: [{ name: "PNG Character Card", extensions: ["png"] }],
+      });
+    });
+
+    await waitFor(() => {
+      expect(actions.cardExportPng).toHaveBeenCalledWith("card-saved-002", "C:/Cards/卡芙卡.png");
+      expect(screen.getByText("导出完成")).toBeInTheDocument();
+      expect(screen.getByText("C:/Cards/卡芙卡.png")).toBeInTheDocument();
+      expect(screen.getByText("卡芙卡")).toBeInTheDocument();
+      expect(screen.getByText("Character Card v3.0")).toBeInTheDocument();
+      expect(screen.getByText("hsr")).toBeInTheDocument();
+      expect(screen.getByText(/头像已内嵌 PNG 图像块/)).toBeInTheDocument();
+    });
+  });
+
+  it("无头像卡选 PNG：预览面板如实警告，导出被后端真实拒绝后呈现原始错误与设置头像引导", async () => {
+    const exportError = new Error("卡未设置头像，请先设置头像后再导出 PNG");
+    (exportError as Error & { code?: string }).code = "card_export_failed";
+    const actions = createMockActions({
+      cardGet: vi.fn().mockResolvedValue(sampleCardGet({ avatar: null })),
+      cardExportPng: vi.fn().mockRejectedValue(exportError),
+    });
+    const backend = createMockBackend("C:/Cards/卡芙卡.png");
+    render(
+      <CharacterExportFlow
+        cardId="card-saved-002"
+        cardName="卡芙卡"
+        backend={backend}
+        actions={actions}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("导出角色")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("radio", { name: "PNG 格式" }));
+
+    expect(screen.getByText("未设置头像，PNG 导出将被拒绝")).toBeInTheDocument();
+    expect(screen.getByText(/导出将被后端拒绝/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "导出" }));
+
+    await waitFor(() => {
+      expect(actions.cardExportPng).toHaveBeenCalledWith("card-saved-002", "C:/Cards/卡芙卡.png");
+      expect(screen.getByText("导出失败")).toBeInTheDocument();
+      expect(screen.getByText(/card_export_failed/)).toBeInTheDocument();
+      expect(screen.getByText(/卡未设置头像，请先设置头像后再导出 PNG/)).toBeInTheDocument();
+      expect(screen.getByText("PNG 导出需要头像")).toBeInTheDocument();
+      expect(screen.getByText(/请先在角色编辑页为该卡设置头像/)).toBeInTheDocument();
+    });
+  });
+
+  it("JSON 格式（默认）的导出行为与头像行文案保持不变", async () => {
+    const actions = createMockActions();
+    const backend = createMockBackend("C:/Cards/卡芙卡.json");
+    render(
+      <CharacterExportFlow
+        cardId="card-saved-002"
+        cardName="卡芙卡"
+        backend={backend}
+        actions={actions}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("导出角色")).toBeInTheDocument());
+
+    expect(screen.getByRole("radio", { name: "JSON 格式" })).toBeChecked();
+    expect(screen.getByText("已绑定头像")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "导出" }));
+
+    await waitFor(() => {
+      expect(actions.cardExportJson).toHaveBeenCalledWith("card-saved-002", "C:/Cards/卡芙卡.json", true);
+      expect(screen.getByText("头像文件已配套保存")).toBeInTheDocument();
+    });
+    expect(actions.cardExportPng).not.toHaveBeenCalled();
   });
 });

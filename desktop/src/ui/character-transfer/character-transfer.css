@@ -186,20 +186,205 @@
 }
 
 .xfer-report-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
   font-family: var(--font-mono, monospace);
   font-size: 12px;
   color: var(--text-secondary);
-  max-height: 120px;
+  max-height: 160px;
   overflow-y: auto;
   padding-right: 4px;
+  word-break: break-word;
 }
 
 .xfer-report-empty {
   color: var(--text-muted);
   font-size: 12px;
+}
+
+/* 兼容报告完整视图（V6） */
+.xfer-compat-report {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4, 16px);
+  min-width: 0;
+}
+
+.xfer-report-subgroups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 12px);
+}
+
+.xfer-report-subgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 10px;
+  border-left: 2px solid var(--separator, #2a303c);
+}
+
+.xfer-report-subgroup-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* 紧凑变体（V6 角色详情挂载点） */
+.xfer-compat-report-compact {
+  gap: 10px;
+}
+
+.xfer-compat-report-compact > .xfer-report-section {
+  gap: 4px;
+}
+
+.xfer-compat-report-compact .xfer-report-list {
+  font-size: 11px;
+  gap: 2px;
+  max-height: 120px;
+}
+
+.xfer-compat-report-compact .xfer-report-subgroups {
+  gap: 8px;
+}
+
+.xfer-compat-report-compact .xfer-report-subgroup-label,
+.xfer-compat-report-compact .xfer-report-empty {
+  font-size: 11px;
+}
+
+/* PNG 语义说明行 */
+.xfer-note-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--separator, #2a303c);
+  border-left: 3px solid var(--accent, #296ce1);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--bg-panel, #161a21);
+}
+
+.xfer-note-row svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin-top: 2px;
+  color: var(--accent, #296ce1);
+}
+
+/* 导出格式切换 */
+.xfer-format-toggle {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.xfer-format-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border: 1px solid var(--separator, #2a303c);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--bg-panel, #161a21);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.xfer-format-option svg {
+  width: 16px;
+  height: 16px;
+}
+
+.xfer-format-option input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent, #296ce1);
+}
+
+.xfer-format-option.active {
+  border-color: var(--accent, #296ce1);
+  background: var(--accent-soft, #1b2a45);
+  color: var(--text-primary);
+}
+
+/* 导出前警告横幅（无头像 + PNG） */
+.xfer-warn-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in oklch, var(--warning, #ca8a04) 40%, transparent);
+  border-radius: var(--radius-sm, 8px);
+  background: color-mix(in oklch, var(--warning, #ca8a04) 10%, transparent);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.xfer-warn-banner svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin-top: 2px;
+  color: var(--warning, #ca8a04);
+}
+
+/* 错误面板引导块（先去设置头像） */
+.xfer-guide-block {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--separator, #2a303c);
+  border-left: 3px solid var(--accent, #296ce1);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--bg-panel, #161a21);
+  text-align: left;
+}
+
+.xfer-guide-block svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin-top: 2px;
+  color: var(--accent, #296ce1);
+}
+
+/* PNG 导出结果事实表 */
+.xfer-result-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 360px;
+}
+
+.xfer-fact {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.xfer-fact-label {
+  color: var(--text-muted);
+  flex: none;
+}
+
+.xfer-fact-value {
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+  text-align: right;
+  word-break: break-word;
 }
 
 /* 字段 */

@@ -1,0 +1,102 @@
+/* V0.3.7 U5 电源提示与设置页电源状态小节 */
+
+/* —— 桌面端非打扰提示（右下角固定卡片） —— */
+
+.power-prompt {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  z-index: var(--z-tooltip);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 320px;
+  max-width: calc(100vw - var(--space-8));
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-elevated);
+  border: 1px solid var(--separator);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-popup);
+  font-size: var(--text-b2-size);
+}
+
+.power-prompt-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.power-prompt-close {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  transition: background-color var(--dur-press) var(--ease-out),
+    color var(--dur-press) var(--ease-out);
+}
+.power-prompt-close:hover {
+  background: var(--fill-hover);
+  color: var(--text-primary);
+}
+
+.power-prompt-reason {
+  color: var(--text-primary);
+  overflow-wrap: break-word;
+}
+
+.power-prompt-facts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+}
+.power-prompt-facts > div {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.power-prompt-facts dt {
+  color: var(--text-muted);
+}
+.power-prompt-facts dd {
+  margin: 0;
+  text-align: right;
+}
+
+.power-prompt-guide {
+  color: var(--text-muted);
+  font-size: var(--text-c1-size);
+  overflow-wrap: break-word;
+}
+
+/* —— 设置页「远程设备」电源状态小节 —— */
+
+.power-status-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2) var(--space-5);
+  margin: var(--space-2) 0;
+}
+.power-status-facts > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.power-status-facts dt {
+  color: var(--text-muted);
+  font-size: var(--text-c1-size);
+}
+.power-status-facts dd {
+  margin: 0;
+  overflow-wrap: break-word;
+}
+
+.power-status-at-risk {
+  color: var(--warning);
+}

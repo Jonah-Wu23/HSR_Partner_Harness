@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { HarnessActions } from "../../contracts/actions";
-import type { CardImportPreviewPayload, CardImportJsonResult, CompatReportPayload } from "../../contracts/protocol";
+import type { CardImportPreviewPayload, CardImportJsonResult } from "../../contracts/protocol";
 import type { DesktopBackend } from "../../services/backend";
+import { CompatReportView } from "./CompatReportView";
 import {
   AlertCircleIcon,
-  AlertTriangleIcon,
   CheckIcon,
+  FileImageIcon,
   FileJsonIcon,
   RetryIcon,
   UploadIcon,
@@ -20,29 +21,57 @@ interface CharacterImportFlowProps {
   onSuccess?: () => void;
 }
 
+type ImportFormat = "json" | "png";
+
 type ImportPhase =
   | { kind: "idle" }
   | { kind: "peeking"; path: string }
-  | { kind: "preview"; path: string; preview: CardImportPreviewPayload }
-  | { kind: "importing"; path: string; asDuplicate: boolean }
+  | { kind: "preview"; path: string; preview: CardImportPreviewPayload; format: ImportFormat }
+  | { kind: "importing"; path: string; asDuplicate: boolean; format: ImportFormat }
   | { kind: "success"; result: CardImportJsonResult }
   | { kind: "error"; path: string | null; title: string; message: string };
 
-const JSON_FILTER = { name: "Character Card JSON", extensions: ["json"] };
+const CARD_FILE_FILTERS = [
+  { name: "角色卡（JSON / PNG）", extensions: ["json", "png"] },
+  { name: "Character Card JSON", extensions: ["json"] },
+  { name: "PNG Character Card", extensions: ["png"] },
+];
 
-function reportSummary(report: CompatReportPayload): string {
+function reportSummary(report: CardImportPreviewPayload["report"]): string {
   const parts: string[] = [];
   if (report.applied.length) parts.push(`已应用 ${report.applied.length} 项`);
   if (report.preserved.length) parts.push(`已保留 ${report.preserved.length} 项`);
   if (report.not_executed.length) parts.push(`未执行 ${report.not_executed.length} 项`);
+  if (report.normalized_from_root.length) parts.push(`根级回退 ${report.normalized_from_root.length} 项`);
   if (report.warnings.length) parts.push(`警告 ${report.warnings.length} 项`);
   if (report.errors.length) parts.push(`错误 ${report.errors.length} 项`);
   return parts.length ? parts.join(" · ") : "无兼容报告项";
 }
 
-function formatReportList(items: string[]): string {
-  if (!items.length) return "";
-  return items.slice(0, 8).join("\n") + (items.length > 8 ? `\n…等 ${items.length} 项` : "");
+/** 解析拖放事件携带的路径：一次只接受一个角色卡文件。 */
+export function resolveDroppedCardPath(
+  paths: readonly string[],
+): { ok: true; path: string } | { ok: false; reason: string } {
+  if (paths.length === 0) {
+    return { ok: false, reason: "拖放事件未携带文件路径。" };
+  }
+  if (paths.length > 1) {
+    return {
+      ok: false,
+      reason: `一次只能导入一个角色卡文件，本次拖放了 ${paths.length} 个文件。`,
+    };
+  }
+  return { ok: true, path: paths[0] };
+}
+
+function isTauriRuntime(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+/** §1.1：新后端 JSON/PNG 两分支恒返回 format；缺省 json 是协议推导
+    （支持 peek_import 但不回 format 的旧后端只能解析 JSON，PNG 会在 peek 报错）。 */
+function resolveFormat(preview: CardImportPreviewPayload): ImportFormat {
+  return preview.format ?? "json";
 }
 
 export function CharacterImportFlow({
@@ -57,6 +86,7 @@ export function CharacterImportFlow({
   // StrictMode 开发模式会 mount→cleanup→再 mount：effect 体必须重新置 true，
   // 否则 cleanup 后 mountedRef 永久 false，异步阶段的 setPhase 全被守卫吞掉。
   const mountedRef = useRef(true);
+  const phaseRef = useRef(phase);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -64,6 +94,10 @@ export function CharacterImportFlow({
       mountedRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
 
   const handleError = useCallback((error: unknown, path: string | null, title: string) => {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -74,6 +108,27 @@ export function CharacterImportFlow({
     }
   }, []);
 
+  const startPeek = useCallback(
+    async (path: string) => {
+      setAsDuplicate(false);
+      setPhase({ kind: "peeking", path });
+      try {
+        const result = await actions.cardPeekImport(path);
+        if (mountedRef.current) {
+          setPhase({
+            kind: "preview",
+            path,
+            preview: result.preview,
+            format: resolveFormat(result.preview),
+          });
+        }
+      } catch (error) {
+        handleError(error, path, "解析失败");
+      }
+    },
+    [actions, handleError],
+  );
+
   const handlePickFile = useCallback(async () => {
     if (!backend) {
       handleError(
@@ -83,26 +138,27 @@ export function CharacterImportFlow({
       );
       return;
     }
-    const path = await backend.pickFile({ title: "选择角色卡 JSON", filters: [JSON_FILTER] });
-    if (!path) return;
-    setAsDuplicate(false);
-    setPhase({ kind: "peeking", path });
+    let path: string | null;
     try {
-      const result = await actions.cardPeekImportJson(path);
-      if (mountedRef.current) {
-        setPhase({ kind: "preview", path, preview: result.preview });
-      }
+      path = await backend.pickFile({ title: "选择角色卡文件", filters: CARD_FILE_FILTERS });
     } catch (error) {
-      handleError(error, path, "解析失败");
+      handleError(error, null, "打开文件对话框失败");
+      return;
     }
-  }, [backend, actions, handleError]);
+    if (!path) return;
+    void startPeek(path);
+  }, [backend, startPeek, handleError]);
 
   const handleImport = useCallback(async () => {
     if (phase.kind !== "preview") return;
-    const { path } = phase;
-    setPhase({ kind: "importing", path, asDuplicate });
+    const { path, format } = phase;
+    setPhase({ kind: "importing", path, asDuplicate, format });
     try {
-      const result = await actions.cardImportJson(path, asDuplicate);
+      // 导入分派跟随 peek 的 format（后端按文件签名分派，不信任扩展名）
+      const result =
+        format === "png"
+          ? await actions.cardImportPng(path, asDuplicate)
+          : await actions.cardImportJson(path, asDuplicate);
       if (mountedRef.current) {
         setPhase({ kind: "success", result });
         onSuccess?.();
@@ -119,17 +175,8 @@ export function CharacterImportFlow({
       setPhase({ kind: "idle" });
       return;
     }
-    setAsDuplicate(false);
-    setPhase({ kind: "peeking", path });
-    actions
-      .cardPeekImportJson(path)
-      .then((result) => {
-        if (mountedRef.current) {
-          setPhase({ kind: "preview", path, preview: result.preview });
-        }
-      })
-      .catch((error) => handleError(error, path, "解析失败"));
-  }, [phase, actions, handleError]);
+    void startPeek(path);
+  }, [phase, startPeek]);
 
   const handleContinue = useCallback(() => {
     setAsDuplicate(false);
@@ -150,11 +197,11 @@ export function CharacterImportFlow({
     (e: React.DragEvent) => {
       e.preventDefault();
       setDragOver(false);
-      // 浏览器 File 对象没有绝对路径，契约只接收 path；Tauri 拖拽事件未接入。
-      // 这里不做实际导入，提示用户使用选择文件按钮。
+      // 浏览器 File 对象没有绝对路径，契约只接收 path；Tauri 桌面端拖拽
+      // 走下方 onDragDropEvent 订阅（携带绝对路径），这里只兜浏览器开发模式。
       if (e.dataTransfer.files.length > 0) {
         handleError(
-          new Error("浏览器环境无法从拖放文件获取绝对路径，请使用「选择文件」按钮。"),
+          new Error("浏览器环境无法从拖放文件获取绝对路径，请使用「选择文件」按钮；桌面端可直接拖入文件。"),
           null,
           "不支持此操作",
         );
@@ -162,6 +209,49 @@ export function CharacterImportFlow({
     },
     [handleError],
   );
+
+  // Tauri 拖拽事件（dragDropEnabled 默认开启，DOM drop 不携带路径）：
+  // enter/over 点亮拖放区，drop 取绝对路径进入解析；导入进行中忽略新拖放。
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    void import("@tauri-apps/api/webview")
+      .then(({ getCurrentWebview }) =>
+        getCurrentWebview().onDragDropEvent((event) => {
+          const payload = event.payload;
+          if (payload.type === "enter" || payload.type === "over") {
+            setDragOver(true);
+            return;
+          }
+          setDragOver(false);
+          if (payload.type !== "drop") return;
+          if (!mountedRef.current) return;
+          if (phaseRef.current.kind === "importing") return;
+          const resolved = resolveDroppedCardPath(payload.paths);
+          if (!resolved.ok) {
+            handleError(new Error(resolved.reason), null, "不支持此操作");
+            return;
+          }
+          void startPeek(resolved.path);
+        }),
+      )
+      .then((fn) => {
+        if (cancelled) {
+          fn?.();
+          return;
+        }
+        unlisten = fn ?? null;
+      })
+      .catch((error) => {
+        // 订阅失败如实记录：拖放不可用不阻断「选择文件」路径，也不伪造成功
+        console.error("拖拽事件订阅失败：", error);
+      });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [startPeek, handleError]);
 
   const renderIdle = () => (
     <div className="xfer-page">
@@ -188,10 +278,14 @@ export function CharacterImportFlow({
           <UploadIcon />
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: "6px", alignItems: "center" }}>
-          <div style={{ fontWeight: 600, color: "var(--text-primary)" }}>将角色卡 JSON 拖到这里</div>
-          <p className="xfer-muted">支持 Character Card v2 / v3 JSON，解析在本地完成。</p>
+          <div style={{ fontWeight: 600, color: "var(--text-primary)" }}>
+            将角色卡 JSON / PNG 拖到这里
+          </div>
+          <p className="xfer-muted">
+            支持 Character Card v2 / v3 JSON 与 v3 PNG（单文件、头像内嵌），解析在本地完成。
+          </p>
           <p className="xfer-muted" style={{ fontSize: "12px" }}>
-            浏览器开发模式请使用下方按钮；桌面端拖拽需 Tauri 运行时支持。
+            浏览器开发模式请使用下方按钮；桌面端可直接拖入文件。
           </p>
         </div>
         <button type="button" className="xfer-btn xfer-btn-secondary" onClick={(e) => { e.stopPropagation(); void handlePickFile(); }}>
@@ -226,12 +320,16 @@ export function CharacterImportFlow({
 
   const renderPreview = () => {
     if (phase.kind !== "preview") return null;
-    const { preview, path } = phase;
+    const { preview, path, format } = phase;
+    const isPng = format === "png";
     return (
       <div className="xfer-page">
         <div className="xfer-title-row">
           <h2 className="xfer-title">导入预览</h2>
-          <span className="xfer-pill char-pill char-pill-accent">{preview.spec_version}</span>
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <span className="xfer-pill char-pill char-pill-accent">{isPng ? "PNG 卡" : "JSON 卡"}</span>
+            <span className="xfer-pill char-pill char-pill-accent">{preview.spec_version}</span>
+          </div>
         </div>
         <div className="xfer-card xfer-card-subtle">
           <div className="xfer-preview-grid">
@@ -263,50 +361,30 @@ export function CharacterImportFlow({
                   <span className="xfer-stat-value">{preview.tags.length}</span>
                   <span className="xfer-stat-label">标签</span>
                 </div>
+                {isPng && (
+                  <div className="xfer-stat">
+                    <span className="xfer-stat-value">
+                      {preview.avatar_width != null && preview.avatar_height != null
+                        ? `${preview.avatar_width} × ${preview.avatar_height}`
+                        : "未能解析"}
+                    </span>
+                    <span className="xfer-stat-label">头像尺寸（像素）</span>
+                  </div>
+                )}
               </div>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-              <div className="xfer-field">
-                <label>兼容报告摘要</label>
-                <div className="xfer-muted" style={{ fontSize: "12px" }}>
-                  {reportSummary(preview.report)}
-                </div>
-              </div>
-              {preview.report.applied.length > 0 && (
-                <div className="xfer-report-section">
-                  <label className="xfer-muted">已应用</label>
-                  <pre className="xfer-report-list">{formatReportList(preview.report.applied)}</pre>
-                </div>
-              )}
-              {preview.report.preserved.length > 0 && (
-                <div className="xfer-report-section">
-                  <label className="xfer-muted">已保留</label>
-                  <pre className="xfer-report-list">{formatReportList(preview.report.preserved)}</pre>
-                </div>
-              )}
-              {preview.report.not_executed.length > 0 && (
-                <div className="xfer-report-section">
-                  <label className="xfer-muted">未执行（原样保留）</label>
-                  <pre className="xfer-report-list">{formatReportList(preview.report.not_executed)}</pre>
-                </div>
-              )}
-              {preview.report.warnings.length > 0 && (
-                <div className="xfer-report-section">
-                  <label className="xfer-muted" style={{ color: "var(--warning)" }}>
-                    警告
-                  </label>
-                  <pre className="xfer-report-list">{formatReportList(preview.report.warnings)}</pre>
-                </div>
-              )}
-              {preview.report.errors.length > 0 && (
-                <div className="xfer-report-section">
-                  <label className="xfer-muted" style={{ color: "var(--danger)" }}>
-                    错误
-                  </label>
-                  <pre className="xfer-report-list">{formatReportList(preview.report.errors)}</pre>
+              {isPng && (
+                <div className="xfer-note-row">
+                  <FileImageIcon />
+                  <span className="xfer-muted">
+                    PNG 字节即头像：导入时该文件的图像字节将直接存为此卡头像，无需另配头像文件。
+                  </span>
                 </div>
               )}
             </div>
+            <CompatReportView report={preview.report} title="兼容报告" />
+          </div>
+          <div className="xfer-muted" style={{ fontSize: "12px" }}>
+            摘要：{reportSummary(preview.report)}
           </div>
         </div>
         <div className="xfer-card">
@@ -342,7 +420,7 @@ export function CharacterImportFlow({
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
           <span className="char-dot char-dot-progress" />
           <span className="xfer-muted">
-            {phase.kind === "importing" ? `正在写入 ${phase.asDuplicate ? "副本" : ""}角色…` : ""}
+            {phase.kind === "importing" ? `正在写入${phase.asDuplicate ? "副本" : ""}角色…` : ""}
           </span>
         </div>
       </div>

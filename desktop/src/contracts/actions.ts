@@ -116,6 +116,15 @@ export interface HarnessActions {
   cardSetAvatar(cardId: string, path: string): Promise<import("./protocol").CardSetAvatarResult>;
   /** 移除角色卡头像。 */
   cardRemoveAvatar(cardId: string): Promise<import("./protocol").CardRemoveAvatarResult>;
+  /* —— V0.3.7 PNG 导入导出/电源状态 —— */
+  /** 预览本地角色卡（JSON/PNG 按文件签名自动分派），不落库；失败抛错。 */
+  cardPeekImport(path: string): Promise<import("./protocol").CardPeekImportResult>;
+  /** 导入本地 PNG 角色卡（PNG 字节即头像）；asDuplicate=true 时名称追加「（副本）」。 */
+  cardImportPng(path: string, asDuplicate?: boolean): Promise<import("./protocol").CardImportPngResult>;
+  /** 导出角色卡为 PNG（含头像图像块）；卡无头像时后端以 card_export_failed 拒绝。 */
+  cardExportPng(cardId: string, path: string): Promise<import("./protocol").CardExportPngResult>;
+  /** 读取电源状态；非 Windows 平台如实返回 supported=false，不抛错。 */
+  powerGetStatus(): Promise<import("./protocol").PowerStatusPayload>;
   /* —— V0.3.5 角色卡音色 —— */
   /** 为角色卡绑定参考音频；不改变音色状态。 */
   voiceCardBindReference(cardId: string, path: string): Promise<import("./protocol").VoiceCardBindReferenceResult>;

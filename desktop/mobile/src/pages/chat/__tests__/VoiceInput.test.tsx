@@ -342,4 +342,55 @@ describe("ChatPage V0.3.5 语音交互", () => {
       expect(screen.getByTestId("voice-retry-btn")).toBeInTheDocument();
     });
   });
+
+  it("V0.3.7 V9 收尾：录制中卸载页面补发 voice.mobile_ptt_stop，不泄漏服务端会话", async () => {
+    const { unmount } = render(<ChatPage conversationId="c1" />);
+
+    fireEvent.click(screen.getByTestId("voice-trigger-btn"));
+    await vi.waitFor(() => expect(findSentFrame("voice.mobile_ptt_start")).toBeDefined());
+
+    const startFrame = findSentFrame("voice.mobile_ptt_start")!;
+    lastInstance().emit({
+      kind: "response",
+      id: startFrame.id,
+      ok: true,
+      result: { session_id: "sess-unmount-1" },
+    });
+    await waitFor(() => {
+      expect(useMobileStore.getState().voice.capture.sessionId).toBe("sess-unmount-1");
+    });
+
+    unmount();
+
+    await vi.waitFor(() => {
+      const stopFrame = findSentFrame("voice.mobile_ptt_stop");
+      expect(stopFrame).toBeDefined();
+      expect(stopFrame?.params).toMatchObject({ session_id: "sess-unmount-1" });
+    });
+  });
+
+  it("V0.3.7 V9 收尾：启动中卸载页面，服务端会话建立后仍补发停止", async () => {
+    const { unmount } = render(<ChatPage conversationId="c1" />);
+
+    fireEvent.click(screen.getByTestId("voice-trigger-btn"));
+    await vi.waitFor(() => expect(findSentFrame("voice.mobile_ptt_start")).toBeDefined());
+
+    // 卸载发生在 voice.mobile_ptt_start 仍在途时
+    const startFrame = findSentFrame("voice.mobile_ptt_start")!;
+    unmount();
+
+    // 服务端此刻才确认会话建立
+    lastInstance().emit({
+      kind: "response",
+      id: startFrame.id,
+      ok: true,
+      result: { session_id: "sess-unmount-race" },
+    });
+
+    await vi.waitFor(() => {
+      const stopFrame = findSentFrame("voice.mobile_ptt_stop");
+      expect(stopFrame).toBeDefined();
+      expect(stopFrame?.params).toMatchObject({ session_id: "sess-unmount-race" });
+    });
+  });
 });

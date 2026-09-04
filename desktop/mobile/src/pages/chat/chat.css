@@ -5,7 +5,10 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* 100vh 是不支持 dvh 引擎的回退；dvh 让虚拟键盘/浏览器工具栏收起展开时
+     容器跟随真实可视高度，输入区不再被键盘遮住。 */
   max-height: 100vh;
+  max-height: 100dvh;
   background: var(--bg);
   color: var(--fg);
   overflow: hidden;

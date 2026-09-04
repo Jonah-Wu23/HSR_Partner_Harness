@@ -123,6 +123,7 @@ beforeEach(() => {
     streamId: null,
     lastSequence: 0,
     bootstrapped: false,
+    powerStatus: null,
     voice: {
       capture: { state: "idle", sessionId: null, error: null },
       transcript: null,
@@ -238,6 +239,137 @@ describe("mobileStore 事件一致性", () => {
       payload: { approval_id: "a1" },
     });
     expect(useMobileStore.getState().approvals).toHaveLength(0);
+  });
+});
+
+describe("mobileStore V0.3.7 电源状态", () => {
+  const atRiskPayload = {
+    supported: true,
+    platform: "windows",
+    plan_name: "平衡",
+    ac_sleep_timeout_seconds: 600,
+    dc_sleep_timeout_seconds: 1800,
+    remote_serve_enabled: true,
+    threshold_seconds: 900,
+    at_risk: true,
+    reason: "AC 睡眠超时 600 秒低于阈值 900 秒",
+    checked_at: "2026-09-02T10:00:00",
+  };
+
+  it("power.status_changed 事件原样写入电源状态切片", async () => {
+    await pairAndBootstrap();
+    lastInstance().emit({
+      kind: "event",
+      event: "power.status_changed",
+      sequence: 11,
+      payload: atRiskPayload,
+    });
+    // 事件载荷与 power.get_status result 完全同形（冻结 §2.1），原样存储不重算。
+    expect(useMobileStore.getState().powerStatus).toEqual(atRiskPayload);
+  });
+
+  it("旧序号的电源事件被去重，不覆盖状态", async () => {
+    await pairAndBootstrap();
+    lastInstance().emit({
+      kind: "event",
+      event: "power.status_changed",
+      sequence: 11,
+      payload: atRiskPayload,
+    });
+    lastInstance().emit({
+      kind: "event",
+      event: "power.status_changed",
+      sequence: 8,
+      payload: { ...atRiskPayload, at_risk: false, reason: "旧数据" },
+    });
+    expect(useMobileStore.getState().powerStatus).toEqual(atRiskPayload);
+  });
+
+  it("形状不符的电源事件不入状态并保留日志", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await pairAndBootstrap();
+    lastInstance().emit({
+      kind: "event",
+      event: "power.status_changed",
+      sequence: 11,
+      payload: { broken: true },
+    });
+    expect(useMobileStore.getState().powerStatus).toBeNull();
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it("disconnect 清空电源状态", async () => {
+    await pairAndBootstrap();
+    lastInstance().emit({
+      kind: "event",
+      event: "power.status_changed",
+      sequence: 11,
+      payload: atRiskPayload,
+    });
+    expect(useMobileStore.getState().powerStatus).toEqual(atRiskPayload);
+
+    useMobileStore.getState().disconnect();
+    expect(useMobileStore.getState().powerStatus).toBeNull();
+  });
+
+  it("连接代次（stream）变化时清空旧电源状态，等新 stream 重新推送", async () => {
+    await pairAndBootstrap();
+    lastInstance().emit({
+      kind: "event",
+      event: "power.status_changed",
+      sequence: 11,
+      payload: atRiskPayload,
+    });
+    expect(useMobileStore.getState().powerStatus).toEqual(atRiskPayload);
+
+    // 旧 stream 的电源状态在代次切换时立即作废；serve 启动按冻结 §2.1 会重新 emit。
+    lastInstance().emit({
+      kind: "event",
+      event: "connection.status",
+      stream_id: "stream-next",
+      sequence: 0,
+      payload: { status: "connected" },
+    });
+    expect(useMobileStore.getState().powerStatus).toBeNull();
+
+    await vi.waitFor(() => {
+      expect(lastSentFrame().method).toBe("app.bootstrap");
+    });
+    const bootstrapFrame = lastSentFrame();
+    lastInstance().emit({
+      kind: "response",
+      id: bootstrapFrame.id,
+      ok: true,
+      result: { ...snapshotResult(0), stream_id: "stream-next" },
+    });
+    await vi.waitFor(() => {
+      expect(useMobileStore.getState().bootstrapped).toBe(true);
+    });
+  });
+
+  it("新 stream 的电源事件属于桌面端新一轮会话，重置后照常入状态", async () => {
+    await pairAndBootstrap();
+    lastInstance().emit({
+      kind: "event",
+      event: "power.status_changed",
+      sequence: 11,
+      payload: atRiskPayload,
+    });
+    const freshPayload = {
+      ...atRiskPayload,
+      plan_name: "高性能",
+      reason: "DC 睡眠超时 300 秒低于阈值 900 秒",
+      checked_at: "2026-09-02T11:00:00",
+    };
+    lastInstance().emit({
+      kind: "event",
+      event: "power.status_changed",
+      stream_id: "stream-next",
+      sequence: 0,
+      payload: freshPayload,
+    });
+    // 旧值被代次重置清掉，随后新 stream 的最新事实照常写入，不残留旧计划名。
+    expect(useMobileStore.getState().powerStatus).toEqual(freshPayload);
   });
 });
 

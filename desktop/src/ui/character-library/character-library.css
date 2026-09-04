@@ -590,3 +590,41 @@
   gap: 10px;
   margin-top: 8px;
 }
+
+/* 兼容性详情弹窗（V6） */
+.char-compat-modal-box {
+  width: 560px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+}
+
+.char-compat-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.char-compat-modal-head .char-modal-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.char-compat-modal-head .char-modal-title svg {
+  width: 18px;
+  height: 18px;
+  color: var(--gold, #b08d57);
+}
+
+.char-compat-modal-note {
+  padding: 10px 12px;
+  border: 1px solid var(--separator, oklch(0.25 0.008 60));
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg-subtle, rgba(255, 255, 255, 0.02));
+}
+
+.char-compat-modal-body {
+  min-height: 48px;
+}

@@ -71,6 +71,7 @@ export function useVoiceCapture(conversationId: string): VoiceCaptureStatus {
   const [mode, setMode] = useState<VoiceInputMode>("off");
   const engineRef = useRef<ReturnType<typeof createVoiceCaptureEngine> | null>(null);
   const stoppingRef = useRef(false);
+  const disposedRef = useRef(false);
 
   const disabledReason = buildDisabledReason(connection, availability);
   const usable = disabledReason === null;
@@ -115,6 +116,12 @@ export function useVoiceCapture(conversationId: string): VoiceCaptureStatus {
         if (!sessionId) {
           throw new Error("服务端未返回语音会话 ID");
         }
+        if (disposedRef.current) {
+          // 卸载发生在启动中途：服务端会话刚建立就没人接管了，
+          // 显式携带 sessionId 补发停止，避免泄漏到 watchdog 超时。
+          await stopSession(sessionId);
+          return;
+        }
         // 服务端会话建立后再取麦克风，避免无意义采集
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         await refreshVoiceAvailability();
@@ -138,6 +145,11 @@ export function useVoiceCapture(conversationId: string): VoiceCaptureStatus {
         });
         engineRef.current = engine;
         await engine.start(stream);
+        if (disposedRef.current) {
+          // 卸载发生在采集启动完成后：立即停引擎与服务端会话。
+          await stopSession();
+          return;
+        }
       } catch (err) {
         await refreshVoiceAvailability();
         // 服务端会话可能已建立（getUserMedia/引擎失败）：显式携带刚返回的
@@ -195,12 +207,17 @@ export function useVoiceCapture(conversationId: string): VoiceCaptureStatus {
     }
   }, [capture.state, mode]);
 
-  // 组件卸载时清理
+  // 组件卸载时清理：停本地采集之外，还必须向服务端补发 voice.mobile_ptt_stop，
+  // 否则录制中离开页面（返回键/切页）会让服务端会话泄漏到 watchdog 超时。
+  // 停止失败（如已断连）照常写入 store 的 capture.error，不伪造成功。
   useEffect(() => {
+    disposedRef.current = false;
     return () => {
+      disposedRef.current = true;
       stopEngine();
+      void stopSession();
     };
-  }, [stopEngine]);
+  }, [stopEngine, stopSession]);
 
   return {
     mode,

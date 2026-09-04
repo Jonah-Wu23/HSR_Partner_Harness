@@ -9,6 +9,7 @@ import type {
   Message,
   PairRecord,
   PendingApproval,
+  PowerStatusPayload,
   ProjectRecord,
   ToolRun,
 } from "@shared/contracts/protocol";
@@ -78,6 +79,8 @@ export interface MobileState {
   streamId: string | null;
   lastSequence: number;
   bootstrapped: boolean;
+  /** V0.3.7：桌面端电源状态（power.status_changed 事件驱动；无数据时为 null，不本地推导）。 */
+  powerStatus: PowerStatusPayload | null;
   /** V0.3.5：手机语音状态。 */
   voice: {
     capture: MobileVoiceCapture;
@@ -270,6 +273,9 @@ export const useMobileStore = create<MobileState>((set, get) => {
           approvals: [],
           pair: null,
           activeTask: null,
+          // 新 stream 属于桌面端新一轮会话：旧电源状态随之作废，
+          // serve 启动时按冻结 §2.1 会重新 emit，之前不展示旧值。
+          powerStatus: null,
         });
       }
       applySnapshot(set, snapshot, get);
@@ -337,6 +343,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
         approvals: [],
         pair: null,
         activeTask: null,
+        powerStatus: null,
       });
       void bootstrap().catch(reportBootstrapFailure);
     } else if (eventStream && !state.streamId) {
@@ -630,6 +637,22 @@ export const useMobileStore = create<MobileState>((set, get) => {
         }
         break;
       }
+      case "power.status_changed": {
+        // V0.3.7 电源状态（冻结 §2.1）：payload 与 power.get_status result 完全同形，
+        // 由 Sidecar 确定性推导，手机端原样存储展示，不本地重算 at_risk。
+        const powerPayload = event.payload as Partial<PowerStatusPayload> | null;
+        if (
+          powerPayload &&
+          typeof powerPayload.supported === "boolean" &&
+          typeof powerPayload.at_risk === "boolean"
+        ) {
+          set({ powerStatus: event.payload as unknown as PowerStatusPayload });
+        } else {
+          // 形状不符属协议违规：不入状态（残缺数据会伪造横幅），保留原始载荷日志。
+          console.warn("mobileStore 收到形状不符的 power.status_changed 事件，已忽略：", event.payload);
+        }
+        break;
+      }
       case "task.busy_changed": {
         // V0.3.4 Codex 建议 A/B：活动任务是会话级权威状态；任务结束（busy=false）
         // 时清空当前会话的活动任务，委派卡不再误判为运行中。只取当前会话条目，
@@ -672,6 +695,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
     streamId: null,
     lastSequence: 0,
     bootstrapped: false,
+    powerStatus: null,
     voice: {
       capture: { state: "idle", sessionId: null, error: null },
       transcript: null,
@@ -909,6 +933,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
         streamId: null,
         lastSequence: 0,
         bootstrapped: false,
+        powerStatus: null,
         voice: {
           capture: { state: "idle", sessionId: null, error: null },
           transcript: null,

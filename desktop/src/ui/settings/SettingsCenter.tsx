@@ -14,6 +14,7 @@ import type { CharacterCardVoicePageViewModel, RemotePairingViewModel } from "..
 import type { FileFilter } from "../../services/backend";
 import { CharacterVoiceSection } from "./CharacterVoiceSection";
 import { RemotePairingPanel } from "./remote/RemotePairingPanel";
+import { PowerStatusSection } from "../power/PowerStatusSection";
 
 export type SettingsPage = "account" | "coding" | "model" | "voice" | "remote";
 
@@ -862,12 +863,16 @@ function VoicePage(props: SettingsCenterProps) {
 
 function RemotePage(props: SettingsCenterProps) {
   return (
-    <RemotePairingPanel
-      vm={props.remote}
-      onIssuePairingCode={props.onIssuePairingCode}
-      onListRemoteDevices={props.onListRemoteDevices}
-      onRevokeRemoteDevice={props.onRevokeRemoteDevice}
-    />
+    <>
+      <RemotePairingPanel
+        vm={props.remote}
+        onIssuePairingCode={props.onIssuePairingCode}
+        onListRemoteDevices={props.onListRemoteDevices}
+        onRevokeRemoteDevice={props.onRevokeRemoteDevice}
+      />
+      {/* V0.3.7 V10：远程管理区常驻电源状态小节（只读；失败如实显示错误）。 */}
+      <PowerStatusSection actions={props.actions} />
+    </>
   );
 }
 
