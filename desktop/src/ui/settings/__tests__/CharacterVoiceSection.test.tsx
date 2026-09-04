@@ -448,13 +448,14 @@ describe("CharacterVoiceSection", () => {
 
     fireEvent.click(screen.getByTestId("create-mode-design"));
 
-    // 全量套件并行线程竞争下 jsdom 渲染可能超过 waitFor 默认 1000ms 墙钟，
-    // 断言不变，仅放宽超时窗口（曾观察到偶发闪烁失败）。
+    // 全量套件并行线程竞争下 jsdom 渲染可能远超默认 waitFor 窗口（曾放宽
+    // 1000→5000ms 后 CI 慢 runner 仍偶发超时）；断言本身同步派生、不依赖
+    // 真实时钟，放宽至 15s 只为吞掉 CI 渲染排队抖动，不改变断言语义。
     await waitFor(
       () => {
         expect(screen.getByTestId("create-voice-btn")).toBeDisabled();
       },
-      { timeout: 5000 },
+      { timeout: 15000 },
     );
     expect(actions.voiceCardCreate).not.toHaveBeenCalled();
   });
