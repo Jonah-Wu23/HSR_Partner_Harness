@@ -41,6 +41,12 @@ export interface Message {
   /** V0.3.2 M1：助手 segment 归属的任务与统一时间线序号；旧记录为空。 */
   task_id?: string | null;
   timeline_order?: number | null;
+  /**
+   * V0.3.7 移动端朗读可用性（服务端权威，随 message.created 下发）：
+   * 角色自然语言回复产生时服务端能否真实合成语音（账号专属音色已生成
+   * 且凭据齐备）。undefined/旧消息与 false 一律不得展示朗读入口。
+   */
+  tts_ready?: boolean;
 }
 
 export type ToolRunStatus = "running" | "succeeded" | "failed" | "denied";

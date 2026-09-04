@@ -19,6 +19,7 @@
  * 时如实返回不可用并保留原始错误日志，全程不抛错、不伪造可用。
  */
 
+import { useSyncExternalStore } from "react";
 import {
   isPermissionGranted,
   requestPermission,
@@ -43,6 +44,75 @@ export function detectShellEnvironment(): ShellEnvironment {
 
 export function isAndroidShell(): boolean {
   return detectShellEnvironment() === "android_shell";
+}
+
+/** React hook：订阅式壳判定（竞态安全）；非 React 消费方用同步函数。 */
+export function useShellEnvironment(): ShellEnvironment {
+  const environment: ShellEnvironment = useSyncExternalStore(
+    onShellEnvironmentChange,
+    detectShellEnvironment,
+    (): ShellEnvironment => "pwa",
+  );
+  // 真机竞态诊断探针：记录 hook 每次提交的快照值与时刻（仅诊断，不参与逻辑）。
+  if (typeof window !== "undefined") {
+    const probe = window as unknown as { __phmShellSnapshots?: string[] };
+    const snapshots: string[] = probe.__phmShellSnapshots ?? [];
+    const entry: string = `${Date.now()}:${environment}`;
+    if (snapshots[snapshots.length - 1] !== entry) {
+      snapshots.push(entry);
+    }
+    probe.__phmShellSnapshots = snapshots;
+  }
+  return environment;
+}
+
+/**
+ * 壳注入的延迟容限（毫秒）：Android WebView 上 `__TAURI_INTERNALS__` 由
+ * document-start 脚本注入，与首个 JS bundle 的执行存在可观测竞态——
+ * 首帧 render 时 internals 可能尚未就位（真机 00:58 实证：PairPage 首判
+ * pwa、百毫秒后判定为壳）。渲染期消费判定必须经 useShellEnvironment
+ * 订阅重估，不得在 render 一次性求值后固化。
+ */
+const SHELL_INJECTION_GRACE_MS = 2500;
+
+const shellListeners = new Set<(environment: ShellEnvironment) => void>();
+let shellPollActive = false;
+
+function notifyShellListeners(): void {
+  const environment = detectShellEnvironment();
+  shellListeners.forEach((listener) => listener(environment));
+}
+
+function ensureShellWatch(): void {
+  if (shellPollActive || typeof window === "undefined") return;
+  shellPollActive = true;
+  const startedAt = Date.now();
+  const poll = (): void => {
+    notifyShellListeners();
+    if (detectShellEnvironment() !== "pwa" || Date.now() - startedAt > SHELL_INJECTION_GRACE_MS) {
+      // 注入已就位或宽限期过：本轮轮询停止。环境仍为 pwa 时，后续新订阅者
+      // （如另一页面挂载）会重启一轮——不做常驻探针，也不永久封死。
+      if (detectShellEnvironment() === "pwa") shellPollActive = false;
+      return;
+    }
+    window.setTimeout(poll, 100);
+  };
+  window.setTimeout(poll, 50);
+}
+
+/**
+ * 订阅壳环境变化（注入竞态下首帧可能判为 pwa，internals 就位后回调壳值）。
+ * 返回退订函数。React 侧经 useSyncExternalStore 消费；轮询在壳值出现或
+ * 宽限期耗尽后自动停止，环境仍为 pwa 时新订阅者会重启一轮。
+ */
+export function onShellEnvironmentChange(
+  listener: (environment: ShellEnvironment) => void,
+): () => void {
+  shellListeners.add(listener);
+  ensureShellWatch();
+  return () => {
+    shellListeners.delete(listener);
+  };
 }
 
 /** 通知插件 JS API 的最小形状（@tauri-apps/plugin-notification v2 的三个核心函数）。 */

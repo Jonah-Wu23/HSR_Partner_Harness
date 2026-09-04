@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { RemoteCommandError, getStoredDeviceName } from "../../lib/wsClient";
 import { useMobileStore } from "../../lib/mobileStore";
-import { isAndroidShell } from "../../lib/shellCapabilities";
+import { useShellEnvironment } from "../../lib/shellCapabilities";
 import { WsAddressInput, validateWsAddress } from "../../components/WsAddressInput";
 import "./PairPage.css";
 
@@ -75,7 +75,9 @@ export function PairPage() {
   // V0.3.7 Android 壳内的桌面端服务地址输入（冻结 §9.1）：壳没有浏览器地址栏，
   // 二维码 ?ws= 无法随链接带入。输入建立在既有 phm.wsUrl localStorage 机制之上
   // （resolveWsUrl 与扫码 extractPairCode 写入同一键），PWA 下不渲染本区、体验不变。
-  const inAndroidShell = isAndroidShell();
+  // 判定必须订阅式：壳 internals 注入与首帧 render 存在竞态（真机实证），一次性
+  // 求值会在注入未就位时把壳误判为 PWA 且不再恢复。
+  const inAndroidShell = useShellEnvironment() === "android_shell";
   const [wsAddress, setWsAddress] = useState(() => {
     if (typeof window === "undefined") return "";
     return window.localStorage.getItem("phm.wsUrl") ?? "";

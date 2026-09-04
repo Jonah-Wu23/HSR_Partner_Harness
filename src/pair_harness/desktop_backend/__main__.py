@@ -237,7 +237,12 @@ async def _run(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     faulthandler.enable(file=sys.stderr, all_threads=True)
-    logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
+    # 日志级别可经 PAIR_HARNESS_LOG_LEVEL 调高（INFO/DEBUG）：serve 验收
+    # 需要观察 mobile-tts 等下发链路时不必改代码。默认 WARNING 保持安静。
+    logging.basicConfig(
+        stream=sys.stderr,
+        level=getattr(logging, os.getenv("PAIR_HARNESS_LOG_LEVEL", "WARNING").upper(), logging.WARNING),
+    )
     return asyncio.run(_run(args))
 
 

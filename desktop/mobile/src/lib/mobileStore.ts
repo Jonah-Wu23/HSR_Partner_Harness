@@ -431,7 +431,23 @@ export const useMobileStore = create<MobileState>((set, get) => {
       case "message.status_changed": {
         // V0.3.4 Codex 建议 A：委派执行的完成/失败/取消由 message.status_changed
         // 推进消息状态；按 message_id upsert，委派卡据此退出「运行中」。
-        const message = (event.payload as { message?: Message }).message;
+        const createdPayload = event.payload as {
+          message?: Message;
+          /** V0.3.7：服务端预判的移动端朗读可用性随 created 下发。 */
+          tts_ready?: boolean;
+        };
+        let message = createdPayload.message;
+        if (
+          event.event === "message.created" &&
+          message &&
+          typeof message.message_id === "string" &&
+          createdPayload.tts_ready !== undefined &&
+          message.tts_ready === undefined
+        ) {
+          // created 附带的朗读可用性是产生时刻的服务端判定；快照/旧消息
+          // 无此字段时保持原样（手机端按不可朗读保守处理，不猜测）。
+          message = { ...message, tts_ready: createdPayload.tts_ready };
+        }
         if (
           message &&
           typeof message.message_id === "string" &&

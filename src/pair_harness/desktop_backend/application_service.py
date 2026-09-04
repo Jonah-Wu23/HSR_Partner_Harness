@@ -3364,16 +3364,46 @@ class DesktopApplicationService:
             task.cancel()
         return {"message_id": message_id, "stopped": True}
 
-    def _maybe_relay_mobile_tts(self, message: Message) -> None:
-        """角色自然语言回复 → 手机 TTS 下发；助手/工具/思考零下发。"""
+    def _maybe_relay_mobile_tts(
+        self, message: Message, voice_id: str | None = None
+    ) -> None:
+        """角色自然语言回复 → 手机 TTS 下发；助手/工具/思考零下发。
+
+        ``voice_id`` 由调用方（_on_message）预判注入：无可用音色时如实
+        跳过，不空耗任务槽。None 时按自身解析兜底（兼容旧调用点）。
+        """
         if self._event_fanout is None:
+            logger.info("mobile-tts: fanout 未挂载，跳过 %s", message.message_id)
             return
         if not self._event_fanout.has_remote_subscribers():
+            logger.info("mobile-tts: 无远程订阅者，跳过 %s", message.message_id)
             return
         if message.source != MessageSource.CHARACTER or not message.tts_eligible:
+            logger.info(
+                "mobile-tts: 非角色可朗读消息，跳过 source=%s kind=%s eligible=%s",
+                message.source, message.kind, message.tts_eligible,
+            )
             return
         if not message.text.strip():
+            logger.info("mobile-tts: 空文本，跳过 %s", message.message_id)
             return
+        if voice_id is None:
+            # 调用方未预判（旧路径）：按权威解析再决定。
+            try:
+                conversation = self.store.get_conversation(message.conversation_id)
+            except KeyError:
+                conversation = None
+            voice_id = (
+                self._resolve_mobile_tts_voice_id(
+                    message.conversation_id, conversation.character_card_id
+                )
+                if conversation is not None
+                else None
+            )
+        if not voice_id:
+            logger.info("mobile-tts: 无可用音色，跳过 %s", message.message_id)
+            return
+        logger.info("mobile-tts: 触发下发 %s（len=%s）", message.message_id, len(message.text))
         task = asyncio.create_task(
             self._relay_mobile_tts_task(message),
             name=f"mobile-tts:{message.message_id}",
@@ -3383,14 +3413,20 @@ class DesktopApplicationService:
             lambda _t: self._mobile_tts_tasks.pop(message.message_id, None)
         )
 
-    async def _relay_mobile_tts_task(self, message: Message) -> None:
+    def _resolve_mobile_tts_voice_id(
+        self, conversation_id: str, card_id: str | None
+    ) -> str | None:
+        """移动端朗读的可用音色解析（message.created 预判与 relay 共用）。
+
+        与 _relay_mobile_tts_task 同规则：卡级 voice_ready 优先，否则账号
+        级/作者级解析；解析不出可用音色返回 None——调用方按「如实不合成」
+        处理（手机端据此不展示可朗读入口，杜绝点了没声音的假象）。
+        """
         try:
-            conversation = self.store.get_conversation(message.conversation_id)
+            conversation = self.store.get_conversation(conversation_id)
         except KeyError:
-            return
-        # 音色按对话绑定卡优先（卡级 voice_ready），否则账号级解析。
+            return None
         voice_id = ""
-        card_id = conversation.character_card_id
         if card_id:
             record = None
             try:
@@ -3411,11 +3447,33 @@ class DesktopApplicationService:
                     voice_id = profile.voice_id
         if not voice_id:
             pair = self._effective_voice_pair(
-                conversation.pair_id, message.conversation_id
+                conversation.pair_id, conversation_id
             )
             voice_id = pair.character.voice_id
         if not voice_id:
+            return None
+        config = self._load_account_config()
+        settings = Settings.overlay(Settings.from_environment(), config)
+        api_key = (config.get("voice.api_key") or "").strip() or (
+            settings.dashscope_api_key or ""
+        )
+        if not api_key:
+            return None
+        return voice_id
+
+    async def _relay_mobile_tts_task(self, message: Message) -> None:
+        conversation = None
+        try:
+            conversation = self.store.get_conversation(message.conversation_id)
+        except KeyError:
+            logger.info("mobile-tts: 会话不存在 %s", message.conversation_id)
+            return
+        voice_id = self._resolve_mobile_tts_voice_id(
+            message.conversation_id, conversation.character_card_id
+        )
+        if not voice_id:
             # 没有可用音色：如实不合成、不发事件（不空耗额度）。
+            logger.info("mobile-tts: 无可用音色，跳过 %s", message.message_id)
             return
         config = self._load_account_config()
         settings = Settings.overlay(Settings.from_environment(), config)
@@ -3423,7 +3481,12 @@ class DesktopApplicationService:
             settings.dashscope_api_key or ""
         )
         if not api_key:
+            logger.info("mobile-tts: 无 voice.api_key，跳过 %s", message.message_id)
             return
+        logger.info(
+            "mobile-tts: 开始合成 %s voice=%s ws=%s",
+            message.message_id, voice_id, settings.resolved_ws_url,
+        )
         from pair_harness.adapters.audio.qwen_tts import QwenSpeechSynthesizer
         from pair_harness.core.contracts import SpeechRequest
 
@@ -3432,6 +3495,7 @@ class DesktopApplicationService:
         )
         self._mobile_tts.begin(message.message_id, message.conversation_id)
         end_payload: dict[str, Any] | None = None
+        chunk_count = 0
         try:
             async for chunk in synthesizer.synthesize(
                 SpeechRequest(
@@ -3442,8 +3506,12 @@ class DesktopApplicationService:
             ):
                 # feed/end 的返回值就是事件 payload 本身（契约 §5.2）。
                 payload = self._mobile_tts.feed(message.message_id, chunk.pcm)
+                chunk_count += 1
                 self._publish_remote_only("voice.mobile_tts_chunk", payload)
             end_payload = self._mobile_tts.end(message.message_id)
+            logger.info(
+                "mobile-tts: 合成完成 %s chunks=%s", message.message_id, chunk_count
+            )
         except asyncio.CancelledError:
             # 手机端主动停止（voice.mobile_tts_stop）走 stop 清理，不是失败。
             raise
@@ -4507,10 +4575,34 @@ class DesktopApplicationService:
     # ------------------------------------------------------------------ 状态与事件
 
     def _on_message(self, message: Message) -> None:
-        self.emitter.emit("message.created", {"message": message})
+        payload: dict[str, Any] = {"message": message}
+        # 角色自然语言回复：预判移动端朗读可用性并随 message.created 下发。
+        # tts_ready=false（账号音色未生成/无 Key）时手机端不得展示可朗读
+        # 入口——服务端是合成能力的唯一权威，前端不做语义猜测。
+        voice_id: str | None = None
+        if (
+            message.source == MessageSource.CHARACTER
+            and message.tts_eligible
+            and message.text.strip()
+        ):
+            try:
+                conversation = self.store.get_conversation(message.conversation_id)
+            except KeyError:
+                conversation = None
+            if conversation is not None:
+                voice_id = self._resolve_mobile_tts_voice_id(
+                    message.conversation_id, conversation.character_card_id
+                )
+            payload["tts_ready"] = voice_id is not None
+            if not voice_id:
+                logger.info(
+                    "mobile-tts: message.created 标注 tts_ready=false %s",
+                    message.message_id,
+                )
+        self.emitter.emit("message.created", payload)
         # V0.3.5：角色自然语言回复 → 在线手机端 TTS 下发（契约 §5.2）；
         # 助手/工具/思考/系统消息零音频下发。
-        self._maybe_relay_mobile_tts(message)
+        self._maybe_relay_mobile_tts(message, voice_id)
 
     def _emit_state_snapshot(self) -> None:
         """发出与事件自身序号一致的完整快照。"""

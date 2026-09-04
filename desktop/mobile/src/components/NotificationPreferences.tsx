@@ -81,6 +81,11 @@ const IMPORTANCE_OPTIONS: ReadonlyArray<{
 ];
 
 const STORAGE_KEY = "phm.notificationPreferences.v1";
+/**
+ * 申请权限的 await 超时上限：插件上游「已授权空分支」缺陷下 invoke 永不
+ * resolve（真机实证），超时后以重查系统真实状态为最终判据，不伪造结果。
+ */
+const REQUEST_PERMISSION_TIMEOUT_MS = 8000;
 
 function readStorage(): Storage | null {
   try {
@@ -180,6 +185,23 @@ export function NotificationPreferences({
     };
   }, []);
 
+  // 回前台即重探系统权限：用户可能按指引去系统设置手动开启通知后返回，
+  // 若只依赖挂载时探测，UI 会与系统真实授权状态永久脱节。
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+      probeNotificationCapability().then((capability) => {
+        if (capability.kind !== "ready") return;
+        setPhase({ stage: "ready", permissionGranted: capability.permission_granted });
+        if (capability.permission_granted) {
+          setRequestError(null);
+        }
+      });
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
+
   useEffect(() => {
     if (initialPreferences) {
       setPreferences({ ...initialPreferences });
@@ -202,19 +224,39 @@ export function NotificationPreferences({
   const handleRequestPermission = async () => {
     setRequesting(true);
     setRequestError(null);
+    let requestFailed = false;
+    let granted: boolean | null = null;
     try {
-      const granted = await requestNotificationPermission();
+      // 上游缺陷兜底：tauri-plugin-notification 2.4.0 Android 13+ 的
+      // requestPermissions 在「已授权」路径存在空分支不 resolve（真机 02:02
+      // 实证：允许后再次点击按钮永久卡在申请中）。await 竞速超时，超时不伪造
+      // 结果——最终判据是申请完成后的真实重查（checkPermissions 无弹窗幂等）。
+      granted = await Promise.race([
+        requestNotificationPermission(),
+        new Promise<null>((resolve) => {
+          window.setTimeout(() => resolve(null), REQUEST_PERMISSION_TIMEOUT_MS);
+        }),
+      ]);
       if (granted) {
         setPhase({ stage: "ready", permissionGranted: true });
-      } else {
+      }
+    } catch (error) {
+      requestFailed = true;
+      setRequestError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRequesting(false);
+      // 申请动作结束（成功/拒绝/超时/异常）统一以系统真实状态刷新 UI；
+      // 超时悬死时 granted=null——重查若已授权则如实显示已获得。
+      const capability = await probeNotificationCapability();
+      if (capability.kind !== "ready") return;
+      setPhase({ stage: "ready", permissionGranted: capability.permission_granted });
+      if (capability.permission_granted) {
+        setRequestError(null);
+      } else if (!requestFailed) {
         setRequestError(
           "仍未获得系统通知权限。若手机此前弹过「拒绝」提示，请到 系统设置 → 应用 → 通知 中手动开启后重试。",
         );
       }
-    } catch (error) {
-      setRequestError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setRequesting(false);
     }
   };
 

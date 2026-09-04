@@ -39,6 +39,24 @@ function moduleStub(overrides: {
   });
 }
 
+/**
+ * 状态化 stub：模拟真实系统授权协议——requestPermission 授予后，
+ * 后续 isPermissionGranted（checkPermissions）如实返回 granted。
+ * 修复前测试用「固定 false」夹具与真实协议矛盾（申请成功但重查仍
+ * false 在真实系统里不会发生）；申请后组件会重查，夹具必须一致。
+ */
+function statefulPermissionModuleStub(initialGranted = false) {
+  let granted = initialGranted;
+  return async () => ({
+    isPermissionGranted: async () => granted,
+    requestPermission: async () => {
+      granted = true;
+      return true;
+    },
+    sendNotification: vi.fn(),
+  });
+}
+
 beforeEach(() => {
   delete window.__TAURI_INTERNALS__;
   delete window.__TAURI__;
@@ -52,6 +70,7 @@ afterEach(() => {
   delete window.__TAURI_INTERNALS__;
   delete window.__TAURI__;
   setNotificationModuleLoader(null);
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -127,14 +146,9 @@ describe("NotificationPreferences 组件", () => {
     expect(screen.getByTestId("notif-importance-taskCompleted")).toBeDisabled();
   });
 
-  it("尚未授权时提供权限申请入口：申请成功切换为已授权", async () => {
+  it("尚未授权时提供权限申请入口：申请成功切换为已授权（含申请后重查）", async () => {
     stubAndroidShell();
-    setNotificationModuleLoader(
-      moduleStub({
-        isPermissionGranted: async () => false,
-        requestPermission: async () => true,
-      }),
-    );
+    setNotificationModuleLoader(statefulPermissionModuleStub(false));
 
     render(<NotificationPreferences />);
     await screen.findByTestId("notif-permission-missing");
@@ -216,5 +230,60 @@ describe("NotificationPreferences 组件", () => {
     fireEvent.click(screen.getByTestId("notif-toggle-delegationResult"));
     expect(onPreferencesChange).toHaveBeenCalledTimes(1);
     expect(onPreferencesChange.mock.calls[0][0].delegationResult.enabled).toBe(false);
+  });
+
+  it("插件 requestPermission 悬死（上游已授权空分支缺陷）时超时兜底，重查已授权则如实显示", async () => {
+    stubAndroidShell();
+    // 初始未授权；点申请后系统实际授予（isPermissionGranted 变 true），但
+    // 插件的 requestPermission promise 永不 resolve（模拟 2.4.0 已授权空分支
+    // 缺陷：回调丢失、invoke 悬死）。最终 UI 应以超时后的重查为准。
+    let granted = false;
+    setNotificationModuleLoader(async () => ({
+      isPermissionGranted: async () => granted,
+      requestPermission: () => {
+        granted = true; // 系统弹窗授予已发生，但回调未回到 JS
+        return new Promise<boolean>(() => {});
+      },
+      sendNotification: vi.fn(),
+    }));
+
+    render(<NotificationPreferences />);
+    await screen.findByTestId("notif-permission-missing");
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByTestId("btn-request-permission"));
+    // 超时（8s）后进入 finally 重查 → 系统已授予 → 如实显示已授权，按钮不再卡申请中。
+    await vi.advanceTimersByTimeAsync(8500);
+    vi.useRealTimers();
+    expect(await screen.findByTestId("notif-permission-granted")).toBeInTheDocument();
+    expect(screen.queryByText("正在申请权限")).toBeNull();
+  });
+
+  it("回前台（visibilitychange→visible）自动重探：从系统设置开启权限后返回即更新", async () => {
+    stubAndroidShell();
+    // 状态化：初始未授权，模拟用户在系统设置手动授予后 isPermissionGranted 变 true。
+    let granted = false;
+    setNotificationModuleLoader(async () => ({
+      isPermissionGranted: async () => granted,
+      requestPermission: async () => true,
+      sendNotification: vi.fn(),
+    }));
+
+    render(<NotificationPreferences />);
+    await screen.findByTestId("notif-permission-missing");
+
+    granted = true; // 用户去系统设置手动开启
+    Object.defineProperty(document, "visibilityState", {
+      value: "hidden",
+      configurable: true,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    Object.defineProperty(document, "visibilityState", {
+      value: "visible",
+      configurable: true,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    expect(await screen.findByTestId("notif-permission-granted")).toBeInTheDocument();
   });
 });
