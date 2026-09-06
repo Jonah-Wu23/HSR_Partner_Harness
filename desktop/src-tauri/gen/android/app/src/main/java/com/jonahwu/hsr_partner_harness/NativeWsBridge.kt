@@ -3,7 +3,9 @@ package com.jonahwu.hsr_partner_harness
 import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -35,6 +37,7 @@ object NativeWsBridge {
   private const val TAG = "NativeWs"
   private const val DEDUP_CAPACITY = 32
   private val TURN_TERMINAL_STATUSES = setOf("completed", "failed", "cancelled")
+  const val EXTRA_CONVERSATION_ID = "conversation_id"
 
   /** 渠道 id 基础名与 JS 侧 NotificationEngine 完全一致。 */
   private val CHANNEL_IDS = mapOf(
@@ -235,7 +238,7 @@ object NativeWsBridge {
     synchronized(dedupSeen) {
       if (!dedupSeen.add(turnId)) return false
       if (dedupTurnIds.size >= DEDUP_CAPACITY) {
-        dedupSeen.remove(dedupTurnIds.poll())
+        dedupTurnIds.poll()?.let { dedupSeen.remove(it) }
       }
       dedupTurnIds.offer(turnId)
       return true
@@ -284,12 +287,26 @@ object NativeWsBridge {
       "silent" -> NotificationCompat.PRIORITY_LOW
       else -> NotificationCompat.PRIORITY_DEFAULT
     }
+    val intent = Intent(context, MainActivity::class.java).apply {
+      flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+      if (conversationId.isNotBlank()) {
+        putExtra(EXTRA_CONVERSATION_ID, conversationId)
+      }
+    }
+    val requestCode = ("native-$typeKey-$conversationId").hashCode()
+    val pendingIntent = PendingIntent.getActivity(
+      context,
+      requestCode,
+      intent,
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
     val notification = NotificationCompat.Builder(context, channelId)
       .setSmallIcon(android.R.drawable.stat_notify_chat)
       .setContentTitle(title)
       .setContentText(body)
       .setPriority(priority)
       .setAutoCancel(true)
+      .setContentIntent(pendingIntent)
       .build()
     manager.notify(("native-$typeKey-$conversationId").hashCode(), notification)
     Log.i(TAG, "原生通道投递通知：$typeKey turn 去重=$deduped")

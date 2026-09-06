@@ -2,6 +2,7 @@ package com.jonahwu.hsr_partner_harness
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.os.Build
 import android.os.Handler
@@ -28,9 +29,19 @@ class MainActivity : TauriActivity() {
   // V0.3.8 T1（真机验收 C1）：原生保活通道的配置桥接指纹（避免重复重连）。
   private var bridgedConfigFingerprint: String? = null
 
+  // Codex Review 意见响应：原生通知点击携带会话 ID 路由跳转
+  private var pendingNavigationConversationId: String? = null
+
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    handleConversationIntent(intent)
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    handleConversationIntent(intent)
   }
 
   override fun onStart() {
@@ -58,6 +69,7 @@ class MainActivity : TauriActivity() {
     webView?.let { attachCrashRecoveryClient(it) }
     probeRendererHealth()
     bridgeNativeKeepaliveConfig()
+    dispatchPendingConversationNavigation()
   }
 
   override fun onPause() {
@@ -121,6 +133,7 @@ class MainActivity : TauriActivity() {
       healthProbePending = false
       mainHandler.removeCallbacks(recoverIfSilent)
       healthProbeTimeout = null
+      dispatchPendingConversationNavigation()
     }
   }
 
@@ -214,6 +227,31 @@ class MainActivity : TauriActivity() {
     } catch (e: Exception) {
       Logger.warn("电池优化设置页不可用（如实记录）: $e")
     }
+  }
+
+  /**
+   * 消费原生通知 Intent 中的会话 ID，支持点击通知唤起后自动切换到对应会话。
+   */
+  private fun handleConversationIntent(intent: Intent?) {
+    val convId = intent?.getStringExtra(NativeWsBridge.EXTRA_CONVERSATION_ID) ?: return
+    intent.removeExtra(NativeWsBridge.EXTRA_CONVERSATION_ID)
+    if (convId.isNotBlank()) {
+      pendingNavigationConversationId = convId
+      dispatchPendingConversationNavigation()
+    }
+  }
+
+  /**
+   * 将待导航会话派发给前端 WebView（修改 window.location.hash 触发 hashchange）。
+   */
+  private fun dispatchPendingConversationNavigation() {
+    val view = webView ?: return
+    val convId = pendingNavigationConversationId ?: return
+    pendingNavigationConversationId = null
+    val encoded = Uri.encode(convId)
+    val js =
+      "(function(){try{var t='#/chat/' + '$encoded';if(window.location.hash!==t){window.location.hash=t;}}catch(e){}})()"
+    view.evaluateJavascript(js, null)
   }
 
   private companion object {
