@@ -98,7 +98,17 @@ class SubprocessJsonLineConnection:
             text = line.decode("utf-8", errors="replace").strip()
             if text:
                 self._stderr_tail.append(text[-500:])
-                logger.debug("Codex app-server stderr: %s", text)
+                # V0.3.8 T4：app-server stderr 是引擎诊断的第一手来源（如模型
+                # 供给误配的重试告警）。INFO 档可在 PAIR_HARNESS_LOG_LEVEL=INFO
+                # 下查看，默认 WARNING 不输出，不再无声排空。
+                logger.info("Codex app-server stderr: %s", text)
+
+    def stderr_tail(self, limit: int = 6) -> str:
+        """最近 stderr 行拼接（idle 超时等场景携带底层原因，不吞原文）。"""
+        if not self._stderr_tail:
+            return ""
+        lines = list(self._stderr_tail)[-limit:]
+        return " | ".join(lines)[-1500:]
 
     async def exit_description(self) -> str:
         """返回子进程退出码和最近的 stderr，避免只暴露泛化 EOF。"""
@@ -336,6 +346,16 @@ class JsonlProcessTransport:
         if isinstance(item, BaseException):
             raise item
         return item
+
+    def stderr_tail(self, limit: int = 6) -> str:
+        """转发当前连接的 stderr 尾部；无连接或连接不支持时如实返回空。"""
+        connection = self._connection
+        if connection is None:
+            return ""
+        tail = getattr(connection, "stderr_tail", None)
+        if tail is None:
+            return ""
+        return tail(limit)
 
     def subscribe_session(self, session_id: str) -> SessionSubscription:
         """V0.3.2 M3：订阅指定 ACP session 的通知。

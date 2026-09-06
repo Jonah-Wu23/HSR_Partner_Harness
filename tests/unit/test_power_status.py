@@ -68,6 +68,53 @@ def _runner_for(ac: int, dc: int) -> _FakeRunner:
 
 
 # ============================================================
+# 字节解码（powercfg 输出编码跟随控制台输出代码页，非恒为 GBK）
+# ============================================================
+
+
+class TestDecodeBytes:
+    def test_console_cp65001_utf8_output_decodes(self, monkeypatch) -> None:
+        """chcp 65001 终端：powercfg 输出 UTF-8，即便 Python 首选编码是 cp936 也必须解对。
+
+        回归：cp936 能把 UTF-8 中文误解成乱码「成功」，故控制台代码页必须排在首选编码之前。
+        """
+        monkeypatch.setattr(power, "_console_output_encoding", lambda: "utf-8")
+        monkeypatch.setattr(power.locale, "getpreferredencoding", lambda *a: "cp936")
+        text = power._decode_bytes(SCHEME_OUT.encode("utf-8"))
+        assert text == "电源方案 GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (平衡)\n"
+
+    def test_console_cp936_gbk_output_decodes(self, monkeypatch) -> None:
+        """chcp 936 终端（中文 Windows 默认）：GBK 输出按 cp936 直接解对。"""
+        monkeypatch.setattr(power, "_console_output_encoding", lambda: "cp936")
+        monkeypatch.setattr(power.locale, "getpreferredencoding", lambda *a: "utf-8")
+        text = power._decode_bytes(SCHEME_OUT.encode("gbk"))
+        assert text == "电源方案 GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (平衡)\n"
+
+    def test_no_console_gbk_falls_back_from_utf8_preferred(self, monkeypatch) -> None:
+        """无控制台（CI/服务进程）+ PYTHONUTF8=1：首选 utf-8 解 GBK 失败，回退 gbk 成功。"""
+        monkeypatch.setattr(power, "_console_output_encoding", lambda: None)
+        monkeypatch.setattr(power.locale, "getpreferredencoding", lambda *a: "utf-8")
+        text = power._decode_bytes(SCHEME_OUT.encode("gbk"))
+        assert text == "电源方案 GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (平衡)\n"
+
+    def test_unknown_console_codepage_is_skipped(self, monkeypatch) -> None:
+        """控制台代码页对应无效编码名（LookupError）时跳过该候选，不影响后续解码。"""
+        monkeypatch.setattr(power, "_console_output_encoding", lambda: "cp99999")
+        monkeypatch.setattr(power.locale, "getpreferredencoding", lambda *a: "utf-8")
+        text = power._decode_bytes(SCHEME_OUT.encode("gbk"))
+        assert "平衡" in text
+
+    def test_undecodable_bytes_raise_with_candidates(self, monkeypatch) -> None:
+        """全部候选失败时如实抛错，错误携带尝试过的候选编码。"""
+        monkeypatch.setattr(power, "_console_output_encoding", lambda: "cp99999")
+        monkeypatch.setattr(power.locale, "getpreferredencoding", lambda *a: "utf-8")
+        with pytest.raises(power.PowerStatusError) as exc:
+            power._decode_bytes(b"\xff\xff\xff")
+        assert "cp99999" in str(exc.value)
+        assert "utf-8" in str(exc.value) and "gbk" in str(exc.value)
+
+
+# ============================================================
 # 解析成功
 # ============================================================
 

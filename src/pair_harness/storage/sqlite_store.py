@@ -438,6 +438,38 @@ class SQLiteStore(StateStore):
                 ).fetchall()
         return [self.get_conversation(row["conversation_id"]) for row in rows]
 
+    def find_active_conversation(
+        self,
+        project_id: str,
+        *,
+        character_card_id: str,
+        account_id: str | None = None,
+    ) -> Conversation | None:
+        """V0.3.8 T6（契约冻结 §14.2）：按项目 + 角色卡找最新活跃会话。
+
+        conversation.create 的 ``reuse_active`` 复用键；只匹配
+        archived=0 的会话，无角色卡的会话不参与复用（调用方保证
+        character_card_id 非空）。无匹配返回 None。
+        """
+        if account_id:
+            row = self.connection.execute(
+                """SELECT conversation_id FROM conversations
+                WHERE project_id = ? AND character_card_id = ?
+                AND archived = 0 AND account_id = ?
+                ORDER BY julianday(updated_at) DESC LIMIT 1""",
+                (project_id, character_card_id, account_id),
+            ).fetchone()
+        else:
+            row = self.connection.execute(
+                """SELECT conversation_id FROM conversations
+                WHERE project_id = ? AND character_card_id = ? AND archived = 0
+                ORDER BY julianday(updated_at) DESC LIMIT 1""",
+                (project_id, character_card_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return self.get_conversation(row["conversation_id"])
+
     def save_message(self, message: Message) -> None:
         self.connection.execute(
             """

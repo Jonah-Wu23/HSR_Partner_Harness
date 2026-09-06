@@ -26,7 +26,7 @@ import asyncio
 import base64
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from pair_harness.core.contracts import (
@@ -41,6 +41,8 @@ from pair_harness.core.contracts import (
 from pair_harness.core.ports import CodingEngine
 
 logger = logging.getLogger(__name__)
+
+NO_PROGRESS_ALERT_INTERVAL_S = 60.0
 
 
 class AcpCodingEngine(CodingEngine):
@@ -60,9 +62,18 @@ class AcpCodingEngine(CodingEngine):
     _POST_PROMPT_DRAIN_IDLE_SECONDS = 0.25
     _POST_PROMPT_DRAIN_MAX_SECONDS = 2.0
 
-    def __init__(self, transport: Any, *, model: str | None = None) -> None:
+    def __init__(
+        self,
+        transport: Any,
+        *,
+        model: str | None = None,
+        idle_timeout: float = 600.0,
+        diagnostic_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
         self.transport = transport
         self.model = model or ""
+        self.idle_timeout = idle_timeout
+        self.diagnostic_callback = diagnostic_callback
         self._initialized = False
         self._init_lock = asyncio.Lock()
         self._transport_generation = getattr(transport, "generation", 0)
@@ -190,6 +201,7 @@ class AcpCodingEngine(CodingEngine):
         assistant_chunks: list[str] = []
         tool_succeeded = False
         tool_failed = False
+        quiet_seconds = 0.0
 
         def remember_event(event: EngineEvent) -> None:
             nonlocal tool_succeeded, tool_failed
@@ -235,9 +247,67 @@ class AcpCodingEngine(CodingEngine):
                 # 事件通知与 prompt 响应并发等待：逐条消费映射
                 notification_task = asyncio.create_task(subscription.next())
                 try:
-                    done, _ = await asyncio.wait(
-                        {prompt_task, notification_task}, return_when=asyncio.FIRST_COMPLETED
+                    remaining = self.idle_timeout - quiet_seconds
+                    slice_timeout = max(
+                        min(NO_PROGRESS_ALERT_INTERVAL_S, remaining),
+                        0.05,
                     )
+                    done, _ = await asyncio.wait(
+                        {prompt_task, notification_task},
+                        timeout=slice_timeout,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if not done:
+                        quiet_seconds += slice_timeout
+                        if quiet_seconds >= self.idle_timeout:
+                            cancel_error = None
+                            try:
+                                await self.transport.notify(
+                                    "session/cancel",
+                                    {"sessionId": acp_session_id},
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                cancel_error = f"{type(exc).__name__}: {exc}"
+                                logger.error(
+                                    "Reasonix idle timeout cancel failed: %s", exc
+                                )
+                            if not prompt_task.done():
+                                prompt_task.cancel()
+                            await asyncio.gather(
+                                prompt_task, return_exceptions=True
+                            )
+                            stderr_tail = self.transport.stderr_tail()
+                            error_text = (
+                                "Reasonix ACP idle timeout after "
+                                f"{self.idle_timeout}s"
+                            )
+                            if stderr_tail:
+                                error_text += (
+                                    f"；Reasonix 最近输出：{stderr_tail}"
+                                )
+                            payload: dict[str, Any] = {
+                                "error": error_text,
+                                "original_error": "idle timeout",
+                            }
+                            if stderr_tail:
+                                payload["stderr_tail"] = stderr_tail
+                            if cancel_error is not None:
+                                payload["cancel_error"] = cancel_error
+                            yield EngineEvent(
+                                conversation_id=request.conversation_id,
+                                task_id=request.task_id,
+                                engine_turn_id=binding["engine_turn_id"],
+                                sequence=0,
+                                type=EngineEventType.TURN_FAILED,
+                                payload=payload,
+                            )
+                            return
+                        self._emit_no_progress_warning(
+                            quiet_seconds,
+                            binding["engine_turn_id"],
+                        )
+                        continue
+                    quiet_seconds = 0.0
                     if prompt_task in done:
                         if notification_task in done:
                             # 通知与 prompt 同时到达：先消费通知，不丢事件
@@ -355,6 +425,31 @@ class AcpCodingEngine(CodingEngine):
                 else EngineEventType.TURN_FAILED
             ),
             payload=terminal_payload,
+        )
+
+    def _emit_no_progress_warning(
+        self, quiet_seconds: float, engine_turn_id: str
+    ) -> None:
+        logger.warning(
+            "Reasonix turn no progress: turn=%s quiet=%.1fs",
+            engine_turn_id,
+            quiet_seconds,
+        )
+        if self.diagnostic_callback is None:
+            return
+        self.diagnostic_callback(
+            {
+                "source": "reasonix-acp",
+                "code": "engine_no_progress",
+                "message": (
+                    f"DeepSeek Reasonix 已 {int(quiet_seconds)}s 未产生任何事件，"
+                    f"超过 {int(self.idle_timeout)}s 将按空闲超时取消"
+                ),
+                "detail": {
+                    "elapsed_s": round(quiet_seconds, 1),
+                    "engine_turn_id": engine_turn_id,
+                },
+            }
         )
 
     async def cancel_turn(self, session_ref: EngineSessionRef, turn_id: str) -> None:

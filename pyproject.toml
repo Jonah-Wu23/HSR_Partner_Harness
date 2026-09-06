@@ -26,6 +26,10 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# 桌面已迁移至 Tauri。旧环境的 pytest-qt 会自动加载 PyQt5 自带的
+# MSVCP140 14.26，与 onnxruntime 所需的新运行库冲突；本项目没有 Qt 测试。
+# 仅禁用遗留 Qt 插件，保留 faulthandler 等错误诊断。
+addopts = "-p no:pytest-qt"
 asyncio_mode = "auto"
 markers = [
     "live: requires live credentials (DeepSeek dialogue + codex app-server)",

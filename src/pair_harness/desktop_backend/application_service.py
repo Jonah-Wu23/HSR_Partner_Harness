@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
 import json
 import logging
 import os
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, cast
 from urllib.parse import urlsplit
@@ -106,6 +108,15 @@ def _params_card_id(params: Mapping[str, Any]) -> str | None:
 
 logger = logging.getLogger(__name__)
 
+# V0.3.8 T4（C4）：审批等待上限，与 codex 引擎 idle 看门狗同量级。审批发出
+# 后长时间无人裁决（如手机退后台）必须如实失败并释放 busy/队列，不允许
+# 任务无限期挂在 await future 上（生成器暂停在 yield 时看门狗触发不到）。
+APPROVAL_TIMEOUT_S = 600.0
+
+# V0.3.8 T4（契约 §14.1）：回合终态集合（协议无 interrupted）。到达任一
+# 终态后队列立即派发下一条；排队项不回退 queued，避免失败项无限自动重试。
+_TURN_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+
 
 class ServiceError(RuntimeError):
     """可直接返回给前端的业务错误。
@@ -169,7 +180,16 @@ class ApprovalBroker:
             },
         )
         try:
-            return await future
+            # V0.3.8 T4（C4）：审批等待有上限——超时如实失败（approval_timeout），
+            # 由回合失败链释放 busy 并放行队列；用户迟到应答会收到
+            # approval_not_found，不伪造裁决结果。
+            return await asyncio.wait_for(future, timeout=APPROVAL_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            raise ServiceError(
+                f"审批超时未裁决（{int(APPROVAL_TIMEOUT_S)}s）："
+                "任务已按失败终止并释放，可重新发起",
+                code="approval_timeout",
+            ) from None
         finally:
             self._pending.pop(approval_id, None)
 
@@ -403,6 +423,8 @@ class DesktopApplicationService:
         # 手机下行 TTS 分片编目与在途下发任务。
         self._mobile_tts = MobileTtsSequencer()
         self._mobile_tts_tasks: dict[str, asyncio.Task[None]] = {}
+        # 播放归属由稳定设备标识持有；网络断开不构成退出控制。
+        self._active_remote_controllers: set[str] = set()
         # 装配结果缓存（card_id → (updated_at, AssembledPrompt)）。
         self._assembled_cache: dict[str, tuple[str, AssembledPrompt]] = {}
         # V0.3.7 电源契约：--serve 模式开启远程服务（power.get_status 的
@@ -643,11 +665,21 @@ class DesktopApplicationService:
         """审批归属当前展示聊天；V0.3.2 M4 起审批项自身携带聊天/任务 id。"""
         return self.current_conversation_id
 
+    def has_active_remote_controller(self) -> bool:
+        """V0.3.8 D2：是否存在活跃的远程手机控制端（设备互斥）。"""
+        return bool(self._active_remote_controllers)
+
     def attach_voice_runtime(self, runtime: VoiceRuntime) -> None:
         self.voice_runtime = runtime
         self._voice_state["supported"] = True
-        self.orchestrator.add_message_listener(runtime.on_message)
+        self.orchestrator.add_message_listener(self._on_message_for_voice)
         self._emit_voice_changed()
+
+    def _on_message_for_voice(self, message: Message) -> None:
+        if self.has_active_remote_controller():
+            return
+        if self.voice_runtime is not None:
+            self.voice_runtime.on_message(message)
 
     async def start_voice(self) -> None:
         if self.voice_runtime is None:
@@ -680,7 +712,7 @@ class DesktopApplicationService:
         """
         old_runtime = self.voice_runtime
         if old_runtime is not None:
-            self.orchestrator.remove_message_listener(old_runtime.on_message)
+            self.orchestrator.remove_message_listener(self._on_message_for_voice)
             self.voice_runtime = None
             try:
                 await old_runtime.shutdown()
@@ -1001,6 +1033,7 @@ class DesktopApplicationService:
             "project.update_settings": self._project_update_settings,
             "project.archive": self._project_archive,
             "conversation.create": self._conversation_create,
+            "ping": self._ping,
             "conversation.select": self._conversation_select,
             "conversation.open": self._conversation_open,
             "conversation.rename": self._conversation_rename,
@@ -1068,6 +1101,8 @@ class DesktopApplicationService:
             "remote.pair": self._remote_pair,
             "remote.list_devices": self._remote_list_devices,
             "remote.revoke": self._remote_revoke,
+            "remote.claim_control": self._remote_claim_control,
+            "remote.release_control": self._remote_release_control,
         }
         if command.method == "approval.resolve":
             # V0.3.5：审批应答需要命令来源做双端仲裁，其余 handler 只收 params。
@@ -1078,6 +1113,14 @@ class DesktopApplicationService:
             # V0.3.5：语音会话绑定传输层注入的连接 key，供断开清理。
             return await self._voice_mobile_ptt_start(
                 command.params, connection_key=command.connection_key
+            )
+        if command.method == "remote.claim_control":
+            return await self._remote_claim_control(
+                command.params, device_key=self._remote_control_device_key(command)
+            )
+        if command.method == "remote.release_control":
+            return await self._remote_release_control(
+                command.params, device_key=self._remote_control_device_key(command)
             )
         handler = handlers[command.method]
         return await handler(command.params)
@@ -1230,6 +1273,14 @@ class DesktopApplicationService:
                 self.current_conversation_id = ""
         return self.bootstrap()
 
+    async def _ping(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """V0.3.8 T1（契约 §14.3）：WS 心跳——响应携带服务端时间作活性信号。
+
+        只探测传输活性，不做任何状态变化、不触发事件；客户端约 30s 收不到
+        任何入站消息即判定半开连接，主动断开走既有重连。
+        """
+        return {"server_time": datetime.now(timezone.utc).isoformat()}
+
     async def _conversation_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
         pair_id = self._requested_pair_id(params)
         project_id = str(params.get("project_id") or self.current_project_id)
@@ -1239,6 +1290,20 @@ class DesktopApplicationService:
         card_id = str(params.get("character_card_id") or "").strip() or None
         if card_id is None:
             card_id = self._effective_active_card_id()
+        # V0.3.8 T6（契约冻结 §14.2）：reuse_active=true 时同项目 + 同角色卡
+        # 已有活跃会话则直接复用——不新建、不重复插入开场白、不改标题。
+        # 无角色卡的普通会话不参与复用，普通「新建聊天」永远显式新建。
+        if bool(params.get("reuse_active", False)) and card_id is not None:
+            existing = self.store.find_active_conversation(
+                project.project_id,
+                character_card_id=card_id,
+                account_id=self.current_account_id,
+            )
+            if existing is not None:
+                await self._select_conversation_context(existing.conversation_id, emit=True)
+                result = self.bootstrap()
+                result["reused"] = True
+                return result
         conversation = self.store.create_conversation(
             project_id=project.project_id,
             pair_id=pair_id,
@@ -1254,7 +1319,9 @@ class DesktopApplicationService:
             if record is not None:
                 self._insert_character_greeting(conversation, record.card)
         await self._select_conversation_context(conversation.conversation_id, emit=True)
-        return self.bootstrap()
+        result = self.bootstrap()
+        result["reused"] = False
+        return result
 
     async def _conversation_select(self, params: Mapping[str, Any]) -> dict[str, Any]:
         conversation_id = self._required_string(params, "conversation_id")
@@ -1337,14 +1404,20 @@ class DesktopApplicationService:
 
     async def _conversation_archive(self, params: Mapping[str, Any]) -> dict[str, Any]:
         conversation_id = str(params.get("conversation_id") or self.current_conversation_id)
-        self._current_account_conversation(conversation_id)
+        conversation = self._current_account_conversation(conversation_id)
+        # V0.3.8 T6：补建判断用被归档会话自身的项目。归档非当前项目的最后
+        # 聊天不得在当前项目凭空补“新聊天”；_current_account_conversation
+        # 已拒绝无项目的日常聊天，这里只做类型收窄。
+        project_id = conversation.project_id
+        if project_id is None:
+            raise ServiceError("日常聊天尚未接入桌面迁移", code="daily_chat_unavailable")
         self.store.archive_conversation(conversation_id)
         remaining = self.store.list_conversations(
-            self.current_project_id, account_id=self.current_account_id
+            project_id, account_id=self.current_account_id
         )
         if not remaining:
             created = self._find_or_create_conversation(
-                self.current_project_id, pair_id=self.pair_config.pair_id
+                project_id, pair_id=self.pair_config.pair_id
             )
             remaining = [created]
         if conversation_id == self.current_conversation_id:
@@ -1370,6 +1443,9 @@ class DesktopApplicationService:
         # M3.1：chat.submit 与账号切换/配置保存互斥。锁从模式/上下文切换
         # 开始持有，避免切换过程中提交落到半旧半新的状态。
         async with self._account_switch_lock:
+            # V0.3.8 T6：mode 缺省时不改写会话 last_mode（“委派”标签与
+            # updated_at 不再被普通消息漂移）；显式携带 mode 的提交仍按
+            # 请求持久化该会话的模式，显式切换走 conversation.set_mode。
             mode = params.get("mode")
             if mode is not None:
                 if mode not in {"chat", "collaboration"}:
@@ -1573,6 +1649,9 @@ class DesktopApplicationService:
                 # 首次完整回复已经落库后再生成标题，保证命名上下文至少包含
                 # 一问一答。失败回合不命名，后续成功回合仍可再次尝试。
                 self._schedule_title_generation(conversation_id, target)
+            # V0.3.8 T4（契约 §14.1）：任一终态都放行队列——cancelled/failed
+            # 照常呈现真实终态与原因，不阻塞后续排队消息。
+            if status in _TURN_TERMINAL_STATUSES:
                 await self._dispatch_from_inbox(conversation_id)
         except asyncio.CancelledError:
             self._ensure_turn_terminal(turn_id, "cancelled")
@@ -1618,11 +1697,14 @@ class DesktopApplicationService:
             )
 
     async def _dispatch_from_inbox(self, conversation_id: str) -> None:
-        """V0.2 M2：持久化队列自动派发——processing → 回合 → 完成删除；
-        回合失败退回 queued（可重试），不再自动派发后续。
+        """V0.2 M2：持久化队列自动派发——processing → 回合 → 终态删除。
 
-        M1.2：记录当前 queue item，只有 completed 才删除；异常/取消在
-        finally 中把仍为 processing 的项目退回 queued。
+        V0.3.8 T4（契约 §14.1）：回合到达任一终态（completed/failed/
+        cancelled）即删除该项并派发下一条；真实终态与原因已在消息流与回合
+        记录中呈现，排队项不再回退 queued（避免失败项无限自动重试）。
+        M1.2：回合异常（CancelledError 等，无终态回执）在 finally 中把仍为
+        processing 的项目退回 queued——该路径没有回合终态呈现，删除会静默
+        丢失用户输入。
         """
         while True:
             item = self.store.peek_queue_item(conversation_id)
@@ -1651,10 +1733,14 @@ class DesktopApplicationService:
                     turn["turn_id"],
                     exec_context,
                 )
-                if status != "completed":
-                    self.store.set_queue_item_status(queue_item_id, "queued")
-                    self._emit_queue_changed(conversation_id)
-                    return
+                if status not in _TURN_TERMINAL_STATUSES:
+                    # 协议违规：回合链只允许三终态。如实暴露，不允许未知
+                    # 状态滞留队列冒充正常派发。
+                    raise RuntimeError(
+                        f"回合返回未知终态 {status!r}"
+                        f"（conversation={conversation_id}，"
+                        f"queue_item={queue_item_id}）"
+                    )
                 self.store.delete_queue_item(queue_item_id)
                 self._emit_queue_changed(conversation_id)
             except BaseException:
@@ -1944,6 +2030,7 @@ class DesktopApplicationService:
 
     async def _voice_tts_play(self, params: Mapping[str, Any]) -> dict[str, Any]:
         """逐条朗读：按 message_id 从会话取消息文本，重新合成入队（可重播）。"""
+        self._require_desktop_playback_control()
         if self.voice_runtime is None:
             raise ServiceError("语音运行时未启用", code="voice_unavailable")
         conversation_id = str(
@@ -1965,6 +2052,7 @@ class DesktopApplicationService:
                 "助手语音已禁用，不可朗读助手消息",
                 code="assistant_tts_disabled",
             )
+        self._require_desktop_playback_control()
         self.voice_runtime.replay_message(message)
         return {"voice": self._voice_snapshot()}
 
@@ -1982,6 +2070,7 @@ class DesktopApplicationService:
         音色；开发机作者音色仍只允许当前搭档。显式传入未知 ID 时如实
         报错，不能静默替换成角色音色。voice_id 缺省时使用当前角色音色。
         """
+        self._require_desktop_playback_control()
         if self.voice_runtime is None:
             raise ServiceError("语音运行时未启用", code="voice_unavailable")
         text = self._required_string(params, "text")
@@ -3012,6 +3101,7 @@ class DesktopApplicationService:
         }
 
     async def _voice_card_preview(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self._require_desktop_playback_control()
         card_id = self._required_string(params, "card_id")
         if self.voice_runtime is None:
             raise ServiceError("语音运行时未启用", code="voice_unavailable")
@@ -3314,9 +3404,7 @@ class DesktopApplicationService:
 
     def handle_remote_disconnect(self, connection_key: str) -> None:
         """契约 §5.3：连接断开时取消该连接全部未完成语音会话（静默）。
-
-        manager 端 cancel_all_for_connection 已关闭识别器并清理登记；
-        对应 watchdog 到期后的 cancel 幂等，无副作用。
+        播放归属持续到显式释放或设备撤销；锁屏、切后台和短暂断线不恢复桌面播放。
         """
         self._mobile_asr.cancel_all_for_connection(connection_key)
         for task in tuple(self._mobile_asr_watchdogs.values()):
@@ -3324,6 +3412,19 @@ class DesktopApplicationService:
                 continue
         # watchdog 与 session 的对应关系由 manager 清理；此处只需确保
         # 已完成任务的表项最终被移除（done 回调与 stop 路径均会清理）。
+
+    async def _voice_mobile_tts_stop(
+        self, params: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        message_id = self._required_string(params, "message_id")
+        self._mobile_tts.stop(message_id)
+        task = self._mobile_tts_tasks.pop(message_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+        # 控制期间联动停声；退出控制后迟到的手机停止请求不得打断新的桌面播放。
+        if self.voice_runtime is not None and self.has_active_remote_controller():
+            await self.voice_runtime.stop_speaking_async()
+        return {"message_id": message_id, "stopped": True}
 
     async def _voice_mobile_ptt_stop(
         self, params: Mapping[str, Any]
@@ -3353,16 +3454,6 @@ class DesktopApplicationService:
             {"conversation_id": conversation_id, "target": "character", "text": text}
         )
         return {"session_id": session_id, "transcript": text}
-
-    async def _voice_mobile_tts_stop(
-        self, params: Mapping[str, Any]
-    ) -> dict[str, Any]:
-        message_id = self._required_string(params, "message_id")
-        self._mobile_tts.stop(message_id)
-        task = self._mobile_tts_tasks.pop(message_id, None)
-        if task is not None and not task.done():
-            task.cancel()
-        return {"message_id": message_id, "stopped": True}
 
     def _maybe_relay_mobile_tts(
         self, message: Message, voice_id: str | None = None
@@ -3404,6 +3495,12 @@ class DesktopApplicationService:
             logger.info("mobile-tts: 无可用音色，跳过 %s", message.message_id)
             return
         logger.info("mobile-tts: 触发下发 %s（len=%s）", message.message_id, len(message.text))
+        # V0.3.8 修复：下一条消息回答出现时抢占旧消息，中断前序未完成的 mobile-tts 任务
+        for old_msg_id, old_task in tuple(self._mobile_tts_tasks.items()):
+            if old_msg_id != message.message_id and not old_task.done():
+                logger.info("mobile-tts: 新回复到达，抢占中断旧合成任务 %s", old_msg_id)
+                old_task.cancel()
+                self._mobile_tts.stop(old_msg_id)
         task = asyncio.create_task(
             self._relay_mobile_tts_task(message),
             name=f"mobile-tts:{message.message_id}",
@@ -3600,12 +3697,51 @@ class DesktopApplicationService:
             if entry.get("device_name") == device_name and not entry.get("revoked"):
                 if self.pairing_service.revoke(entry["token"]):
                     revoked += 1
+                    self._active_remote_controllers.discard(
+                        hashlib.sha256(entry["token"].encode("utf-8")).hexdigest()
+                    )
         if revoked == 0:
             raise ServiceError(
                 f"没有可撤销的设备：{device_name}", code="device_not_found"
             )
         self._persist_pairing_state()
         return {"device_name": device_name, "revoked_tokens": revoked}
+
+    @staticmethod
+    def _remote_control_device_key(command: DesktopCommand) -> str:
+        if command.origin != "remote" or not command.remote_device_key:
+            raise ServiceError("远程控制需要已鉴权设备身份", code="remote_identity_required")
+        return command.remote_device_key
+
+    def _require_desktop_playback_control(self) -> None:
+        if self.has_active_remote_controller():
+            raise ServiceError(
+                "手机正在控制语音，请先在手机退出远程控制或撤销该设备",
+                code="remote_playback_active",
+            )
+
+    async def _remote_claim_control(
+        self, params: Mapping[str, Any], *, device_key: str
+    ) -> dict[str, Any]:
+        """V0.3.8 D2：手机端声明取得远程控制权（播放设备互斥）。"""
+        del params
+        key = device_key
+        self._active_remote_controllers.add(key)
+        # 互斥生效：立即停止桌面端任何正在播放的本地声音
+        if self.voice_runtime is not None:
+            await self.voice_runtime.stop_speaking_async()
+        logger.info("remote-control: 控制器已认领 key=%s, total=%d", key, len(self._active_remote_controllers))
+        return {"claimed": True, "active_controllers": len(self._active_remote_controllers)}
+
+    async def _remote_release_control(
+        self, params: Mapping[str, Any], *, device_key: str
+    ) -> dict[str, Any]:
+        """V0.3.8 D2：手机端释放远程控制权（恢复桌面播放资格）。"""
+        del params
+        key = device_key
+        self._active_remote_controllers.discard(key)
+        logger.info("remote-control: 控制器已释放 key=%s, remaining=%d", key, len(self._active_remote_controllers))
+        return {"released": True, "active_controllers": len(self._active_remote_controllers)}
 
     async def _account_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
@@ -4101,6 +4237,7 @@ class DesktopApplicationService:
             base_url=dialogue_base,
             api_key=dialogue_key,
             reasoning_effort=reasoning_effort,
+            diagnostic_callback=self._emit_diagnostic_warning,
         )
         return {
             "dialogue_model": dialogue_model,
@@ -4193,6 +4330,10 @@ class DesktopApplicationService:
     @staticmethod
     def _engine_for_provider(provider: str) -> str:
         return "deepseek" if provider == "deepseek" else "codex"
+
+    def _emit_diagnostic_warning(self, payload: dict[str, Any]) -> None:
+        """V0.3.8 T4（契约 §14.6）：引擎诊断告警转发到客户端事件通道。"""
+        self.emitter.emit("diagnostic.warning", payload)
 
     @staticmethod
     def _provider_defaults(provider: str) -> tuple[str, str]:
@@ -5391,6 +5532,10 @@ def _build_service(
     broker = ApprovalBroker(emitter)
     settings: Settings | None = None
 
+    def emit_diagnostic_warning(payload: dict[str, Any]) -> None:
+        """V0.3.8 T4（契约 §14.6）：引擎诊断告警转发到客户端事件通道。"""
+        emitter.emit("diagnostic.warning", payload)
+
     if demo:
         dialogue_model: Any = ScriptedDialogueModel()
         coding_engine: Any = ScriptedCodingEngine()
@@ -5424,6 +5569,7 @@ def _build_service(
             model=dialogue_model_name,
             base_url=dialogue_base,
             api_key=dialogue_key,
+            diagnostic_callback=emit_diagnostic_warning,
         )
 
     orchestrator = ConversationOrchestrator(
