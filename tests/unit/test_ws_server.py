@@ -380,3 +380,43 @@ async def test_disconnect_invokes_on_disconnect_with_connection_key() -> None:
     finally:
         await session.close()
         await harness.server.stop()
+
+# ------------------------------------------------------------ V0.3.8 T1 心跳
+
+
+@pytest.mark.asyncio
+async def test_ping_command_dispatched_after_auth() -> None:
+    """契约 §14.3：ping 走鉴权门（不在白名单豁免集），认证后转发 dispatch。"""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        harness = await _start(Path(tmp))
+        try:
+            session = aiohttp.ClientSession()
+            ws = await session.ws_connect(harness.base + "/ws")
+            await ws.send_str(json.dumps(_req("ping", "p-1", token="phone-token")))
+            reply = await _recv_text(ws, "p-1")
+            assert reply["ok"] is True
+            assert any(
+                payload["method"] == "ping" for payload in harness.fake.invoked
+            )
+            await ws.close()
+            await session.close()
+        finally:
+            await harness.server.stop()
+
+
+def test_ping_not_in_unauthenticated_methods() -> None:
+    """心跳不豁免鉴权：未认证连接的 ping 必须被拒绝。"""
+    assert "ping" not in UNAUTHENTICATED_METHODS
+
+
+def test_ws_response_configures_heartbeat() -> None:
+    """契约 §14.3：服务端 WebSocketResponse 开启 heartbeat（半开连接暴露）。"""
+    import inspect
+
+    from pair_harness.desktop_backend.ws_server import WSServerMode
+
+    source = inspect.getsource(WSServerMode._handle_ws)
+    assert "heartbeat=30.0" in source

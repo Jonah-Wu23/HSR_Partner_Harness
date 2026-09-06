@@ -1,6 +1,6 @@
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, fireEvent } from "@testing-library/react";
+import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ChatListPage } from "../ChatListPage";
 import { useMobileStore } from "../../../lib/mobileStore";
 import * as router from "../../../lib/router";
@@ -63,7 +63,7 @@ describe("ChatListPage 组件", () => {
     expect(reconnectSpy).toHaveBeenCalled();
   });
 
-  it("未水合且处于 auth_failed 时「重新配对」先清凭据再跳转", () => {
+  it("未水合且处于 auth_failed 时「重新配对」先清凭据再跳转", async () => {
     const navigateSpy = vi.spyOn(router, "navigate");
     const disconnectSpy = vi.spyOn(useMobileStore.getState(), "disconnect");
     useMobileStore.setState({
@@ -80,7 +80,17 @@ describe("ChatListPage 组件", () => {
     fireEvent.click(repairBtn);
     // 只 navigate 会被 App 路由守卫按 token 存在性弹回列表页，必须先 disconnect 清凭据
     expect(disconnectSpy).toHaveBeenCalledTimes(1);
-    expect(navigateSpy).toHaveBeenCalledWith({ name: "pair" });
+    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith({ name: "pair" }));
+  });
+
+  it("重新配对释放失败显示错误且不跳转", async () => {
+    const navigateSpy = vi.spyOn(router, "navigate");
+    vi.spyOn(useMobileStore.getState(), "disconnect").mockRejectedValue(new Error("release failed"));
+    useMobileStore.setState({connection:"auth_failed", bootstrapped:false});
+    render(<ChatListPage />);
+    fireEvent.click(screen.getByTestId("chat-list-btn-repair"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("release failed");
+    expect(navigateSpy).not.toHaveBeenCalled();
   });
 
   it("已水合并且项目为空时展示空态引导", () => {

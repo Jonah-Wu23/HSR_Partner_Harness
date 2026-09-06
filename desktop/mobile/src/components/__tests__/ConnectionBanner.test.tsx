@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ConnectionBanner } from "../ConnectionBanner";
 import { useMobileStore } from "../../lib/mobileStore";
 import * as router from "../../lib/router";
@@ -48,7 +48,7 @@ describe("ConnectionBanner 组件", () => {
     expect(reconnectSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("auth_failed 态「重新配对」先清本地凭据再跳转 pair 页", () => {
+  it("auth_failed 态「重新配对」先清本地凭据再跳转 pair 页", async () => {
     const navigateSpy = vi.spyOn(router, "navigate");
     const disconnectSpy = vi.spyOn(useMobileStore.getState(), "disconnect");
     render(<ConnectionBanner connection="auth_failed" />);
@@ -61,7 +61,16 @@ describe("ConnectionBanner 组件", () => {
     fireEvent.click(repairBtn);
     // 只 navigate 会被 App 路由守卫按 token 存在性弹回列表页，必须先 disconnect 清凭据
     expect(disconnectSpy).toHaveBeenCalledTimes(1);
-    expect(navigateSpy).toHaveBeenCalledWith({ name: "pair" });
+    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith({ name: "pair" }));
+  });
+
+  it("释放失败显示原始错误并停留当前页", async () => {
+    const navigateSpy = vi.spyOn(router, "navigate");
+    vi.spyOn(useMobileStore.getState(), "disconnect").mockRejectedValue(new Error("release failed"));
+    render(<ConnectionBanner connection="auth_failed" />);
+    fireEvent.click(screen.getByTestId("btn-repair"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("release failed");
+    expect(navigateSpy).not.toHaveBeenCalled();
   });
 
   it("disconnected 态展示醒目红色并提供「重试」入口", () => {

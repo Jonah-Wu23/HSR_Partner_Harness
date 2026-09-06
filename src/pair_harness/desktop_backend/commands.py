@@ -14,6 +14,8 @@ DESKTOP_COMMANDS = frozenset(
         "project.update_settings",
         "project.archive",
         "conversation.create",
+        # V0.3.8 T1（契约 §14.3）：WS 心跳——仅探测传输活性，不承载业务语义。
+        "ping",
         "conversation.select",
         "conversation.open",
         "conversation.rename",
@@ -84,6 +86,8 @@ DESKTOP_COMMANDS = frozenset(
         "remote.pair",
         "remote.list_devices",
         "remote.revoke",
+        "remote.claim_control",
+        "remote.release_control",
     }
 )
 
@@ -107,6 +111,8 @@ class DesktopCommand:
     # V0.3.5：WS 连接唯一 key（服务端注入，stdin 路径为 None）。手机语音
     # 会话绑定它；连接断开时按 key 自动取消未完成转写（契约 §5.3）。
     connection_key: str | None = None
+    # 传输层从已鉴权 token 派生的稳定标识，重连不变，不接受 params 注入。
+    remote_device_key: str | None = None
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> "DesktopCommand":

@@ -161,6 +161,7 @@ beforeEach(() => {
         supported: true,
       },
       ttsChunks: {},
+      ttsDroppedChunks: {},
     },
   });
 

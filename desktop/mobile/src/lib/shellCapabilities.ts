@@ -78,6 +78,7 @@ const SHELL_INJECTION_GRACE_MS = 2500;
 
 const shellListeners = new Set<(environment: ShellEnvironment) => void>();
 let shellPollActive = false;
+let shellPollTimer: number | null = null;
 
 function notifyShellListeners(): void {
   const environment = detectShellEnvironment();
@@ -89,6 +90,11 @@ function ensureShellWatch(): void {
   shellPollActive = true;
   const startedAt = Date.now();
   const poll = (): void => {
+    shellPollTimer = null;
+    if (typeof window === "undefined" || shellListeners.size === 0) {
+      shellPollActive = false;
+      return;
+    }
     notifyShellListeners();
     if (detectShellEnvironment() !== "pwa" || Date.now() - startedAt > SHELL_INJECTION_GRACE_MS) {
       // 注入已就位或宽限期过：本轮轮询停止。环境仍为 pwa 时，后续新订阅者
@@ -96,9 +102,11 @@ function ensureShellWatch(): void {
       if (detectShellEnvironment() === "pwa") shellPollActive = false;
       return;
     }
-    window.setTimeout(poll, 100);
+    if (typeof window !== "undefined") {
+      shellPollTimer = window.setTimeout(poll, 100);
+    }
   };
-  window.setTimeout(poll, 50);
+  shellPollTimer = window.setTimeout(poll, 50);
 }
 
 /**
@@ -113,6 +121,13 @@ export function onShellEnvironmentChange(
   ensureShellWatch();
   return () => {
     shellListeners.delete(listener);
+    if (shellListeners.size === 0) {
+      shellPollActive = false;
+      if (shellPollTimer !== null && typeof window !== "undefined") {
+        window.clearTimeout(shellPollTimer);
+        shellPollTimer = null;
+      }
+    }
   };
 }
 
@@ -122,6 +137,10 @@ export function onShellEnvironmentChange(
  */
 export function resetShellEnvironmentWatch(): void {
   shellPollActive = false;
+  if (shellPollTimer !== null && typeof window !== "undefined") {
+    window.clearTimeout(shellPollTimer);
+    shellPollTimer = null;
+  }
 }
 
 /** 通知插件 JS API 的最小形状（@tauri-apps/plugin-notification v2 核心函数）。 */

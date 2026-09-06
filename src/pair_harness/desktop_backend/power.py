@@ -10,6 +10,7 @@ stderr / 输出摘要 / 异常原文，不猜数值、不降级伪造。
 
 from __future__ import annotations
 
+import ctypes
 import locale
 import re
 import subprocess
@@ -54,22 +55,41 @@ class PowerStatus:
     warnings: list[str] = field(default_factory=list)   # 非致命提示（如计划名缺失）
 
 
+def _console_output_encoding() -> str | None:
+    """控制台输出代码页对应的 Python 编码名；非 Windows 或不可得时返回 None。
+
+    实测（2026-09-06，中文 Windows）：powercfg 输出重定向到管道时按调用方控制台的
+    输出代码页编码——`chcp 936` 下为 GBK，`chcp 65001` 下为 UTF-8，并非恒为 GBK。
+    解码 powercfg 字节输出时以它为首选，与子进程真实编码一致，不做猜测。
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        cp = ctypes.windll.kernel32.GetConsoleOutputCP()
+    except (OSError, AttributeError):
+        return None
+    if not cp or cp <= 0:
+        return None
+    return "utf-8" if cp == 65001 else f"cp{cp}"
+
+
 def _decode_bytes(data: bytes) -> str:
     """按真实编码解码 powercfg 字节输出。
 
-    powercfg 输出使用系统 ANSI 代码页（中文 Windows 为 GBK/cp936）。运行/测试环境
-    若被强制 UTF-8 模式（PYTHONUTF8=1），`subprocess` 的 text 模式会按 UTF-8 解 GBK
-    而失败并静默得到空输出，因此这里手工按「首选编码 → gbk」顺序解码；取到的都是
-    真实输出，不做任何猜测；全部失败则如实抛错。
+    powercfg 输出编码跟随调用方控制台的输出代码页（见 `_console_output_encoding`）：
+    中文 Windows 默认 cp936/GBK，`chcp 65001` 的终端下为 UTF-8，并非恒为 GBK。
+    `PYTHONUTF8=1` 只改 Python 自己的首选编码（`subprocess` text 模式会按 UTF-8 解
+    GBK 静默得到空输出），不影响 powercfg 的输出编码。因此这里捕获字节并按
+    「控制台代码页 → 首选编码 → gbk → utf-8」顺序解码，取到的都是真实输出，
+    不做任何猜测；全部失败则如实抛错。
     """
     if not data:
         return ""
     preferred = locale.getpreferredencoding(False)
     candidates: list[str] = []
-    if preferred:
-        candidates.append(preferred)
-        if preferred.lower().replace("-", "") != "gbk":
-            candidates.append("gbk")
+    for enc in (_console_output_encoding(), preferred, "gbk", "utf-8"):
+        if enc and enc not in candidates:
+            candidates.append(enc)
     for enc in candidates:
         try:
             return data.decode(enc).replace("\r\n", "\n")

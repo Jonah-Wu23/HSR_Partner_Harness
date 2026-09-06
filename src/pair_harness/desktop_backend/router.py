@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import sys
@@ -142,6 +143,15 @@ class SidecarRouter:
         if origin != "desktop" or connection_key is not None:
             # V0.3.5：传输层注入来源与连接 key；payload 里的同名字段一律忽略。
             command = replace(command, origin=origin, connection_key=connection_key)
+        if origin == "remote":
+            payload = json.loads(line)
+            auth = payload.get("auth")
+            token = auth.get("token") if isinstance(auth, dict) else None
+            if isinstance(token, str) and token:
+                command = replace(
+                    command,
+                    remote_device_key=hashlib.sha256(token.encode("utf-8")).hexdigest(),
+                )
 
         try:
             result = await self.service.handle_command(command)

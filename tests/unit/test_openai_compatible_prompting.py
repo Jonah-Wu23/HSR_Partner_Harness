@@ -73,8 +73,14 @@ def fake_chat_server(monkeypatch: pytest.MonkeyPatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeChatHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    # httpx 默认 trust_env：本机系统代理会把 127.0.0.1 请求转发到代理，
-    # 代理无法回连本机端口而返回 502——测试必须绕开代理
+    # httpx 默认 trust_env，两类代理来源都必须对本地假服务屏蔽：
+    # 1) 终端注入的 socks5:// 代理变量会让 AsyncClient 在构造期就因缺 socksio 抛
+    #    ImportError（2026-09-06 全量 12 项失败根因），故测试进程内清除代理变量；
+    # 2) 环境无代理变量时 urllib 在 Windows 上回退读系统代理（WinINET），
+    #    127.0.0.1 请求被转发到代理、代理无法回连本机端口而 502——NO_PROXY 兜住回环。
+    for var in ("ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy",
+                "HTTPS_PROXY", "https_proxy"):
+        monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
     monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
     yield f"http://127.0.0.1:{server.server_address[1]}"

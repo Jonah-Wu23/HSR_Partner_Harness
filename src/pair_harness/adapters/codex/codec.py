@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from pair_harness.core.contracts import EngineEvent, EngineEventType
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -27,6 +30,11 @@ class CodexCodec:
     }
     _AGENT_MESSAGE_ITEM_TYPES = {"agentMessage"}
     _FILE_CHANGE_ITEM_TYPES = {"fileChange"}
+
+    def __init__(self) -> None:
+        # V0.3.8 T4：未识别 method 按 method 名去重告警——首次如实暴露
+        # （协议漂移信号），同 method 后续出现不重复刷屏。
+        self._warned_methods: set[str] = set()
 
     def _event(
         self,
@@ -226,5 +234,15 @@ class CodexCodec:
                 binding,
                 EngineEventType.TURN_FAILED,
                 payload={"error": turn.get("error") or params.get("error") or status},
+            )
+        # V0.3.8 T4：未识别的 method 不再静默丢弃——协议漂移必须留下痕迹。
+        if method and method not in self._warned_methods:
+            self._warned_methods.add(method)
+            logger.warning(
+                "Codex app-server 未识别的通知 method=%s（turn=%s，params 键=%s）"
+                "已忽略；若持续出现说明 app-server 协议已漂移，需同步 codec 映射",
+                method,
+                native_turn_id,
+                sorted(params.keys()),
             )
         return None

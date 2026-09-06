@@ -127,6 +127,8 @@ describe("NotificationPreferences 组件", () => {
   it("关闭「任务完成」并调整「审批请求」提醒方式后立即持久化到 localStorage", async () => {
     stubAndroidShell();
     setNotificationModuleLoader(moduleStub({}));
+    const syncConfig = vi.fn();
+    vi.stubGlobal("PairHarnessNative", { syncConfig });
 
     render(<NotificationPreferences />);
     await screen.findByTestId("notif-permission-granted");
@@ -142,6 +144,10 @@ describe("NotificationPreferences 组件", () => {
     expect(stored.delegationResult).toEqual(
       DEFAULT_NOTIFICATION_PREFERENCES.delegationResult,
     );
+    expect(syncConfig).toHaveBeenCalled();
+    const syncedPrefs = JSON.parse(syncConfig.mock.calls.at(-1)![2]);
+    expect(syncedPrefs.taskCompleted.enabled).toBe(false);
+    expect(syncedPrefs.approvalRequested.importance).toBe("silent");
     // 关闭后提醒方式不可再调
     expect(screen.getByTestId("notif-importance-taskCompleted")).toBeDisabled();
   });

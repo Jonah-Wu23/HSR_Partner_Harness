@@ -988,7 +988,9 @@ async def test_runtime_rebuild_keeps_character_resolver(tmp_path: Path, monkeypa
     真实模式启动时 `_build_service` 会用账号配置经 `_install_runtime_candidate`
     重建并换入新实例，resolver 静默丢失，角色卡装配永远回退内置角色。
     """
-    monkeypatch.setenv("PAIR_HARNESS_DIALOGUE_BASE_URL", "http://mock.local/v1")
+    # V0.3.8 T4：非 OpenAI 官方端点 × codex 引擎在装配层被显式拒绝；
+    # 本测试只关心 resolver 挂载，端点用 DeepSeek（引擎走 reasonix 分支）。
+    monkeypatch.setenv("PAIR_HARNESS_DIALOGUE_BASE_URL", "https://api.deepseek.com")
     monkeypatch.setenv("PAIR_HARNESS_DIALOGUE_API_KEY", "mock")
     monkeypatch.setenv("PAIR_HARNESS_DIALOGUE_MODEL", "mock-model")
     log = EventLog()

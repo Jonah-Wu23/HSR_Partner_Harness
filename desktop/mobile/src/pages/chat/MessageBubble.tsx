@@ -12,6 +12,8 @@ export interface MessageBubbleProps {
   playingMessageId?: string | null;
   /** V0.3.5：停止当前朗读。 */
   onStopPlayback?: () => void;
+  /** V0.3.8：本条消息朗读失败的真实错误（store playback.error 透传）。 */
+  playbackError?: string | null;
 }
 
 function sourceBadge(source: MessageSource, pairNames?: { character?: string; assistant?: string }): string | null {
@@ -34,6 +36,7 @@ export function MessageBubble({
   pairNames,
   playingMessageId,
   onStopPlayback,
+  playbackError,
 }: MessageBubbleProps) {
   const badge = sourceBadge(message.source, pairNames);
   const isTtsEligible = message.source === "character" && message.tts_eligible === true;
@@ -122,7 +125,8 @@ export function MessageBubble({
         ) : null}
 
         {/* V0.3.5：角色自然语言回复的朗读入口 / 朗读中标记。
-            V0.3.7：仅服务端确认可合成（tts_ready=true）才渲染入口。 */}
+            V0.3.7：仅服务端确认可合成（tts_ready=true）才渲染入口。
+            V0.3.8：播放异常（resume 失败/结束信号超时等）如实呈现原始错误。 */}
         {isTtsReadable ? (
           <button
             type="button"
@@ -138,6 +142,11 @@ export function MessageBubble({
             />
             {isPlaying ? "朗读中" : "可朗读"}
           </button>
+        ) : null}
+        {isTtsReadable && playbackError ? (
+          <p className="mobile-msg-tts-error" role="alert" data-testid="msg-tts-error">
+            朗读失败：{playbackError}
+          </p>
         ) : null}
       </div>
     </div>

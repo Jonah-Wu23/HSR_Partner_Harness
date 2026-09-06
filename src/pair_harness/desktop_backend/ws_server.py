@@ -198,7 +198,10 @@ class WSServerMode:
         return len(matched)
 
     async def _handle_ws(self, request: web.Request) -> web.WebSocketResponse:
-        ws = web.WebSocketResponse()
+        # V0.3.8 T1（契约 §14.3）：heartbeat=30s——服务端周期 ping，客户端
+        # （WebView/浏览器）自动回 pong；半开连接（对端掐网不回 RST）在
+        # 2×heartbeat 内暴露并按既有断连流程清理，不再向死 socket 静默写事件。
+        ws = web.WebSocketResponse(heartbeat=30.0, receive_timeout=75.0)
         await ws.prepare(request)
         conn = _RemoteConnection(self.fanout, ws)
         self._connections.add(conn)

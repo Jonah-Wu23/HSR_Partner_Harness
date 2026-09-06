@@ -15,6 +15,8 @@ import os
 import tempfile
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
 
 from pair_harness.adapters.codex.auth import CodexAuthService
 from pair_harness.adapters.codex.engine import CodexAppServerEngine
@@ -23,6 +25,9 @@ from pair_harness.adapters.codex.transport import (
     SubprocessJsonLineConnection,
 )
 from pair_harness.config.providers import load_reasoning_preset, normalize_effort
+
+# V0.3.8 T4：codex 引擎的诊断告警出口（引擎无进展等），由装配方注入。
+DiagnosticCallback = Callable[[dict[str, Any]], None]
 
 
 # 古代机械只需要项目文件和命令执行工具。工作流控制工具属于宿主会话，
@@ -71,10 +76,10 @@ def build_codex_transport(
 ) -> JsonlProcessTransport:
     executable = resolve_codex_executable(codex_bin)
     env = {**codex_auth.env_overrides, **_provider_env(base_url=base_url, api_key=api_key, model=None)}
-    if base_url:
-        env["OPENAI_BASE_URL"] = base_url
-    if api_key:
-        env["OPENAI_API_KEY"] = api_key
+    # V0.3.8 T4（C4 根因）：不再注入 OPENAI_BASE_URL/OPENAI_API_KEY——codex-cli
+    # 不跟随该变量（0.147.0 实证），注入只会让请求静默打向 api.openai.com
+    # 无限重试。codex 的官方供给只认 CODEX_HOME 内的 OAuth/API Key 登录态；
+    # 第三方后端的端点覆盖在 build_coding_engine 装配层显式拒绝。
 
     async def connection() -> SubprocessJsonLineConnection:
         return await SubprocessJsonLineConnection.create(
@@ -99,6 +104,29 @@ def build_codex_dialogue_model(
         build_codex_transport(codex_auth=codex_auth, codex_bin=codex_bin),
         model=model,
         reasoning_effort=reasoning_effort,
+    )
+
+
+def _require_responses_backend(base_url: str | None) -> None:
+    """V0.3.8 T4（C4 根因）：codex 引擎只允许 Responses API 后端。
+
+    codex 0.122+ 已移除 ``wire_api="chat"``，仅支持 Responses 协议；DeepSeek
+    与通用 OpenAI 兼容端点只有 Chat Completions。此前这种误配会静默打向
+    不可达端点无限重试（客户端零通知）。装配时显式拒绝并说明处置建议，
+    DeepSeek 对话配置应走 reasonix 引擎（``_engine_for_provider`` 推导）。
+    base_url 为空表示走 codex 自身 OAuth/API Key 登录态（OpenAI 官方），
+    放行。
+    """
+    if not base_url:
+        return
+    host = (urlparse(base_url).hostname or "").lower()
+    if host == "api.openai.com" or host.endswith(".openai.com"):
+        return
+    raise RuntimeError(
+        "codex 引擎要求 Responses API 后端，当前对话端点不兼容："
+        f"{base_url}。codex-cli 无法对接 Chat Completions 端点（0.122+ 已移除 "
+        "wire_api=chat）。请改用 DeepSeek 对话配置（委派将自动走 reasonix "
+        "引擎），或提供 Responses 兼容后端。"
     )
 
 
@@ -237,12 +265,15 @@ def build_coding_engine(
     api_key: str | None = None,
     reasoning_effort: str = "auto",
     codex_idle_timeout: float = 600.0,
+    diagnostic_callback: DiagnosticCallback | None = None,
 ) -> "CodexAppServerEngine | AcpCodingEngine":
     """按统一供应商构建编程助手引擎；角色与助手共享模型参数。
 
     ``reasoning_effort`` 是账号级 ``dialogue.reasoning_effort``，用于
     Reasonix 生成配置与 Codex 回合请求。``codex_idle_timeout`` 是 Codex
     app-server 回合连续无事件后的空闲超时（秒），默认 10 分钟。
+    ``diagnostic_callback`` 接收引擎诊断告警（如回合无进展），由装配方
+    转发到客户端事件通道（V0.3.8 T4，契约 §14.6）。
     """
     shared_env = _provider_env(base_url=base_url, api_key=api_key, model=model)
     if engine_choice == "deepseek":
@@ -270,8 +301,11 @@ def build_coding_engine(
                 executable, connection_factory=acp_connection, request_timeout=3600.0
             ),
             model=model,
+            idle_timeout=codex_idle_timeout,
+            diagnostic_callback=diagnostic_callback,
         )
 
+    _require_responses_backend(base_url)
     transport = build_codex_transport(
         codex_auth=codex_auth,
         codex_bin=codex_bin,
@@ -284,4 +318,5 @@ def build_coding_engine(
         model=model or "gpt-5.6-sol",
         reasoning_effort=reasoning_effort,
         idle_timeout=codex_idle_timeout,
+        diagnostic_callback=diagnostic_callback,
     )

@@ -3,7 +3,9 @@ import {
   clearCredentials,
   getStoredDeviceName,
   getStoredToken,
+  INBOUND_STALE_MS,
   MobileWsClient,
+  PING_INTERVAL_MS,
   RemoteCommandError,
   resolveWsUrl,
   saveCredentials,
@@ -93,6 +95,30 @@ describe("凭证存储", () => {
     expect(getStoredDeviceName()).toBe("我的小米");
     clearCredentials();
     expect(getStoredToken()).toBeNull();
+  });
+
+  it("配对写入和解绑清除会立即同步 Android 原生连接", () => {
+    const syncConfig = vi.fn();
+    vi.stubGlobal("PairHarnessNative", { syncConfig });
+    window.history.pushState({}, "", "/?ws=ws://192.168.1.8:8765/ws");
+    window.localStorage.setItem(
+      "phm.notificationPreferences.v1",
+      '{"taskCompleted":{"enabled":false,"importance":"silent"}}',
+    );
+
+    saveCredentials("tok-native", "Android");
+    expect(syncConfig).toHaveBeenLastCalledWith(
+      "ws://192.168.1.8:8765/ws",
+      "tok-native",
+      '{"taskCompleted":{"enabled":false,"importance":"silent"}}',
+    );
+
+    clearCredentials();
+    expect(syncConfig).toHaveBeenLastCalledWith(
+      "ws://192.168.1.8:8765/ws",
+      "",
+      '{"taskCompleted":{"enabled":false,"importance":"silent"}}',
+    );
   });
 });
 
@@ -198,5 +224,99 @@ describe("MobileWsClient", () => {
     vi.advanceTimersByTime(60000);
     expect(FakeWebSocket.instances).toHaveLength(1);
     expect(client.getState()).toBe("disconnected");
+  });
+});
+
+describe("MobileWsClient 心跳（V0.3.8 T1 契约 §14.3）", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  it("连接后每 15s 发一次 ping，30s 无入站即判半开主动断开重连", () => {
+    saveCredentials("tok-hb", "设备");
+    const client = new MobileWsClient();
+    client.connect();
+    const ws = lastInstance();
+    ws.open();
+    expect(client.getState()).toBe("connected");
+
+    vi.advanceTimersByTime(PING_INTERVAL_MS);
+    expect(lastSentFrame(ws).method).toBe("ping");
+
+    // 收到入站消息刷新活性时间戳；超过 INBOUND_STALE_MS 无人应答才判死
+    vi.advanceTimersByTime(PING_INTERVAL_MS);
+    expect(lastSentFrame(ws).method).toBe("ping");
+
+    // 30s 无入站：下一个心跳 tick 判定半开并主动 close → 走重连
+    vi.advanceTimersByTime(PING_INTERVAL_MS + INBOUND_STALE_MS);
+    const closedSent = ws.sent.some(
+      (raw) => (JSON.parse(raw) as { method?: string }).method === "ping",
+    );
+    expect(closedSent).toBe(true);
+    expect(client.getState()).toBe("reconnecting");
+  });
+
+  it("持续有入站消息不误判半开", () => {
+    saveCredentials("tok-hb", "设备");
+    const client = new MobileWsClient();
+    client.connect();
+    const ws = lastInstance();
+    ws.open();
+
+    for (let i = 0; i < 8; i += 1) {
+      vi.advanceTimersByTime(PING_INTERVAL_MS);
+      ws.emit({
+        kind: "event",
+        event: "queue.changed",
+        sequence: i,
+        payload: {},
+      });
+    }
+    expect(client.getState()).toBe("connected");
+    const pingCount = ws.sent.filter(
+      (raw) => (JSON.parse(raw) as { method?: string }).method === "ping",
+    ).length;
+    expect(pingCount).toBeGreaterThanOrEqual(7);
+  });
+});
+
+describe("MobileWsClient 回前台重同步（V0.3.8 T1 契约 §14.4）", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  it("unreachable 终态回前台自动复位重连，不再永久停摆", () => {
+    saveCredentials("tok-fg", "设备");
+    const client = new MobileWsClient();
+    client.connect();
+    let ws = lastInstance();
+    ws.open();
+    ws.close();
+    // 连续 5 次"连接失败"（新连接不 open 即 close）耗尽退避 → unreachable。
+    // onopen 成功会重置退避计数，因此这里绝不 open。
+    for (let i = 0; i < 5; i += 1) {
+      vi.advanceTimersByTime(16000);
+      ws = lastInstance();
+      ws.close();
+    }
+    expect(client.getState()).toBe("unreachable");
+
+    expect(client.notifyAppForeground()).toBe("reconnecting");
+    expect(client.getState()).toBe("connecting");
+  });
+
+  it("connected 时回前台返回 resync（由调用方重新 bootstrap 补拉）", () => {
+    saveCredentials("tok-fg", "设备");
+    const client = new MobileWsClient();
+    client.connect();
+    lastInstance().open();
+    expect(client.notifyAppForeground()).toBe("resync");
+  });
+
+  it("connecting/reconnecting 时回前台返回 none（维持既有流程）", () => {
+    saveCredentials("tok-fg", "设备");
+    const client = new MobileWsClient();
+    client.connect();
+    expect(client.notifyAppForeground()).toBe("none");
   });
 });

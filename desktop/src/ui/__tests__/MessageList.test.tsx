@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { Message, PairRecord } from "../../contracts/protocol";
@@ -36,11 +36,15 @@ function makeMessage(overrides: Partial<Message>): Message {
   };
 }
 
-function makeTimeline(messages: Message[]): ConversationTimelineViewModel {
+function makeTimeline(
+  messages: Message[],
+  queueItems: ConversationTimelineViewModel["queueItems"] = [],
+): ConversationTimelineViewModel {
   return {
     conversationId: "conv-1",
     messages,
     isStreaming: messages.some((message) => message.streaming === true),
+    queueItems,
   };
 }
 
@@ -144,5 +148,31 @@ describe("MessageList 流式与身份展示", () => {
     );
     expect(container.querySelector(".message-column-virtual")).not.toBeNull();
     expect(container.querySelectorAll("[data-message-source]").length).toBeLessThan(500);
+  });
+
+  it("忙时排队项在消息流尾部全文呈现（V0.3.8 T5）", () => {
+    render(
+      <MessageList
+        timeline={makeTimeline([], [
+          {
+            queue_item_id: "q-1",
+            account_id: "",
+            conversation_id: "conv-1",
+            target: "assistant",
+            text: "排队中的委派任务全文",
+            intent: "followup",
+            position: 0,
+            status: "queued",
+            created_at: "2026-08-11T00:00:00+00:00",
+            source_message_id: null,
+          },
+        ])}
+        pair={pair}
+        emptyText="空"
+      />,
+    );
+    const row = screen.getByText("排队中的委派任务全文");
+    expect(row).toBeTruthy();
+    expect(screen.getByText("排队中")).toBeTruthy();
   });
 });

@@ -1,4 +1,5 @@
 import type {
+  QueueItem,
   ActiveTask,
   ApprovalMode,
   ConversationRecord,
@@ -67,6 +68,8 @@ export interface ConversationTimelineViewModel {
   conversationId: string;
   messages: Message[];
   isStreaming: boolean;
+  /** V0.3.8 T5（C3）：忙时排队中的用户消息（完整文本，消息流尾部呈现）。 */
+  queueItems: QueueItem[];
 }
 
 /** V0.3.2 M1：工作台统一时间线条目——助手 segment 与工具卡按真实事件顺序混排。 */

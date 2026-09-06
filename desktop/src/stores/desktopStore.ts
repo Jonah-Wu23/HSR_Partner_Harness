@@ -1231,6 +1231,12 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
     }
     case "error.reported":
       return applyErrorReported(next, event);
+    case "diagnostic.warning": {
+      // V0.3.8 T4（契约 §14.6）：引擎诊断告警的客户端最低要求——console
+      // 可见且不崩溃；UI 呈现归后续版本。payload 原样输出，不改写不吞。
+      console.warn("[diagnostic.warning]", event.payload);
+      break;
+    }
     case "serve.started": {
       // V0.3.4 缺陷 6：Sidecar --serve 上报真实监听地址，二维码按它生成。
       const payload = event.payload as { host?: unknown; port?: unknown };

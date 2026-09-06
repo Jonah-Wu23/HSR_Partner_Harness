@@ -131,6 +131,20 @@ export function MessageList({ timeline, pair, emptyText }: MessageListProps) {
             <MessageBubble key={message.message_id} message={message} pair={pair} />
           ))
         )}
+        {timeline.queueItems.length > 0 ? (
+          <div className="queue-in-stream">
+            {timeline.queueItems.map((item) => (
+              <div key={item.queue_item_id} className="msg-row msg-row-user" data-queued="true">
+                <div className="msg-bubble msg-user queue-in-stream-bubble">
+                  <span className="queue-in-stream-badge">
+                    {item.status === "processing" ? "执行中" : "排队中"}
+                  </span>
+                  {item.text}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
       </div>
       {!pinned ? (
         <button type="button" className="scroll-latest-btn" onClick={jumpToLatest}>

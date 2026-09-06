@@ -36,11 +36,11 @@ import {
 } from "../components/NotificationPreferences";
 import { navigate, parseHash } from "./router";
 
-/** 渠道 importance 数值与插件枚举一致：Default=3 / High=4。 */
-const NOTIFICATION_CHANNEL_IMPORTANCE: Record<NotificationTypeKey, number> = {
-  taskCompleted: 3,
-  delegationResult: 3,
-  approvalRequested: 4,
+/** 渠道 importance 数值与插件枚举一致：Low=2 / Default=3 / High=4。 */
+const NOTIFICATION_CHANNEL_IMPORTANCE: Record<NotificationImportance, number> = {
+  silent: 2,
+  default: 3,
+  high: 4,
 };
 
 const NOTIFICATION_CHANNEL_IDS: Record<NotificationTypeKey, string> = {
@@ -66,9 +66,26 @@ interface ApprovalRequestedPayload {
 
 const TERMINAL_TURN_STATUSES = new Set(["completed", "failed", "cancelled"]);
 
-/** 发送决策：偏好档位 → 是否发送。silent 档 = 仅通知栏展示，无提醒，本引擎不发。 */
-function shouldNotify(importance: NotificationImportance): boolean {
-  return importance === "high" || importance === "default";
+function notificationChannelId(
+  type: NotificationTypeKey,
+  importance: NotificationImportance,
+): string {
+  return NOTIFICATION_CHANNEL_IDS[type] + "_" + importance;
+}
+
+function notificationChannelName(
+  type: NotificationTypeKey,
+  importance: NotificationImportance,
+): string {
+  let name = "任务完成";
+  if (type === "approvalRequested") {
+    name = "审批请求";
+  } else if (type === "delegationResult") {
+    name = "委派结果";
+  }
+  if (importance === "silent") return name + "（静默）";
+  if (importance === "high") return name + "（高优先级）";
+  return name;
 }
 
 interface PendingNotification {
@@ -153,11 +170,11 @@ function dispatchNotification(pending: PendingNotification): void {
   if (document.visibilityState !== "hidden") return;
   const preferences = loadNotificationPreferences();
   const preference = preferences[pending.type];
-  if (!preference.enabled || !shouldNotify(preference.importance)) return;
+  if (!preference.enabled) return;
   sendLocalNotification({
     title: pending.title,
     body: pending.body,
-    channelId: NOTIFICATION_CHANNEL_IDS[pending.type],
+    channelId: notificationChannelId(pending.type, preference.importance),
   });
   if (pending.conversationId) {
     lastNotifiedConversationId = pending.conversationId;
@@ -187,18 +204,16 @@ function refreshPermissionCache(): void {
 function ensureChannels(): void {
   if (channelsEnsured) return;
   channelsEnsured = true;
+  const importanceLevels: NotificationImportance[] = ["high", "default", "silent"];
   ensureNotificationChannels(
-    (Object.keys(NOTIFICATION_CHANNEL_IDS) as NotificationTypeKey[]).map((key) => ({
-      id: NOTIFICATION_CHANNEL_IDS[key],
-      name:
-        key === "approvalRequested"
-          ? "审批请求"
-          : key === "delegationResult"
-            ? "委派结果"
-            : "任务完成",
-      description: "角色/助手事件提醒（V0.3.7 本地通知）",
-      importance: NOTIFICATION_CHANNEL_IMPORTANCE[key],
-    })),
+    (Object.keys(NOTIFICATION_CHANNEL_IDS) as NotificationTypeKey[]).flatMap((key) =>
+      importanceLevels.map((importance) => ({
+        id: notificationChannelId(key, importance),
+        name: notificationChannelName(key, importance),
+        description: "角色/助手事件提醒（V0.3.7 本地通知）",
+        importance: NOTIFICATION_CHANNEL_IMPORTANCE[importance],
+      })),
+    ),
   );
 }
 

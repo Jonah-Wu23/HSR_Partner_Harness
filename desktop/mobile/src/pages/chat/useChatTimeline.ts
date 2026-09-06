@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { Message, ToolRun } from "@shared/contracts/protocol";
+import type { Message, QueueItem, ToolRun } from "@shared/contracts/protocol";
 import { useMobileStore } from "../../lib/mobileStore";
 
 export type TimelineItem =
@@ -14,6 +14,13 @@ export type TimelineItem =
       id: string;
       toolRun: ToolRun;
       order: number;
+    }
+  | {
+      /** V0.3.8 T5（契约 §14.1）：忙时排队中的用户消息（可撤回/编辑/置顶）。 */
+      kind: "queue_item";
+      id: string;
+      queueItem: QueueItem;
+      order: number;
     };
 
 /**
@@ -23,6 +30,7 @@ export type TimelineItem =
 export function useChatTimeline(conversationId: string) {
   const storeMessages = useMobileStore((state) => state.messages);
   const storeToolRuns = useMobileStore((state) => state.toolRuns);
+  const queueItems = useMobileStore((state) => state.queueItems);
 
   const messages = useMemo(
     () => storeMessages.filter((message) => message.conversation_id === conversationId),
@@ -60,8 +68,21 @@ export function useChatTimeline(conversationId: string) {
       });
     });
 
+    // 排队项天然在当前回合之后：order 取消息最大 order 之后的偏移段。
+    const lastOrder = list.reduce((max, item) => Math.max(max, item.order), 0);
+    queueItems
+      .filter((queueItem) => queueItem.conversation_id === conversationId)
+      .forEach((queueItem) => {
+        list.push({
+          kind: "queue_item",
+          id: `queue-${queueItem.queue_item_id}`,
+          queueItem,
+          order: lastOrder + 1000 + queueItem.position,
+        });
+      });
+
     return list.sort((a, b) => a.order - b.order);
-  }, [messages, toolRuns]);
+  }, [messages, toolRuns, queueItems]);
 
   const isStreaming = useMemo(
     () =>

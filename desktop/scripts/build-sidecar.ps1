@@ -80,6 +80,9 @@ if ($codexShim) {
         $nativeRootCandidates += ,(Join-Path $shimRoot "node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc")
     }
 }
+if (Test-Path -LiteralPath (Join-Path $codexResourceRoot "bin\codex.exe") -PathType Leaf) {
+    $nativeRootCandidates += ,$codexResourceRoot
+}
 
 $nativeRoot = $null
 foreach ($candidate in $nativeRootCandidates) {
@@ -94,8 +97,12 @@ if (-not $nativeRoot) {
 }
 
 New-Item -ItemType Directory -Path $codexResourceRoot -Force | Out-Null
-Get-ChildItem -LiteralPath $nativeRoot -Force | ForEach-Object {
-    Copy-Item -LiteralPath $_.FullName -Destination $codexResourceRoot -Recurse -Force
+$resolvedSource = [IO.Path]::GetFullPath($nativeRoot).TrimEnd('\')
+$resolvedDest = [IO.Path]::GetFullPath($codexResourceRoot).TrimEnd('\')
+if ($resolvedSource -ne $resolvedDest) {
+    Get-ChildItem -LiteralPath $nativeRoot -Force | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $codexResourceRoot -Recurse -Force
+    }
 }
 
 $bundledCodex = Join-Path $codexResourceRoot "bin\codex.exe"
@@ -172,8 +179,13 @@ if ([string]::IsNullOrWhiteSpace($mobileRoot) -or -not (Test-Path -LiteralPath $
 # Push-Location 不会同步子进程继承的工作目录（PowerShell 的 Location 与
 # [Environment]::CurrentDirectory 是两回事），此前 npm 实际跑在 desktop 根
 # 目录、mobile-dist 从未被重建。改用 cmd /c cd /d 显式固定 npm 的工作目录，
-# 失败时以非零退出码如实暴露，不做任何成功回执。
-& cmd.exe /d /s /c "cd /d `"$mobileRoot`" && npm ci && npm run build"
+if (-not (Test-Path -LiteralPath (Join-Path $mobileRoot "node_modules") -PathType Container)) {
+    & cmd.exe /d /s /c "cd /d `"$mobileRoot`" && npm install"
+    if ($LASTEXITCODE -ne 0) {
+        throw "mobile npm install failed with exit code $LASTEXITCODE (cwd=$mobileRoot)."
+    }
+}
+& cmd.exe /d /s /c "cd /d `"$mobileRoot`" && npm run build"
 if ($LASTEXITCODE -ne 0) {
     throw "mobile PWA build failed with exit code $LASTEXITCODE (cwd=$mobileRoot)."
 }

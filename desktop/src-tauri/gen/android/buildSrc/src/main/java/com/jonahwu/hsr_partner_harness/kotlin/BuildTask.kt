@@ -16,14 +16,29 @@ open class BuildTask : DefaultTask() {
 
     @TaskAction
     fun assemble() {
-        // V0.3.7 spike：Windows 未开启开发者模式时 tauri CLI 的 jniLibs
-        // 符号链接会被系统拒绝。构建脚本已在 cargo 产物就绪后把 .so 以
-        // 普通文件复制进 jniLibs、并把前端资产同步进 assets——预置 .so
-        // 存在即跳过 tauri CLI 回调，由 gradle 直接打包。
+        // build-android.ps1 builds Rust and embedded frontend assets first.
+        // Only its explicitly supplied library hash may bypass the CLI callback.
         val prebuilt = project.projectDir
             .resolve("src/main/jniLibs/arm64-v8a/libhsr_partner_harness_lib.so")
-        if (prebuilt.exists()) {
-            project.logger.lifecycle("V0.3.7 spike: 预置 .so 已就位，跳过 tauri CLI 回调")
+        val expectedHash = project.findProperty("pairHarnessPrebuiltLibrarySha256") as? String
+        if (expectedHash != null) {
+            if (target != "aarch64" || !prebuilt.isFile) {
+                throw GradleException("Explicit prebuilt library requires the arm64 target and a built .so")
+            }
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
+            prebuilt.inputStream().use { input ->
+                val buffer = ByteArray(65536)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count)
+                }
+            }
+            val actualHash = digest.digest().joinToString("") { "%02x".format(it) }
+            if (!actualHash.equals(expectedHash, ignoreCase = true)) {
+                throw GradleException("Prebuilt library hash does not match the current build")
+            }
+            project.logger.lifecycle("Using explicitly verified arm64 Rust library: $actualHash")
             return
         }
         val executable = """node""";

@@ -1790,11 +1790,12 @@ async def test_oauth_switch_from_deepseek_persists_before_starting_login(
 
 
 @pytest.mark.asyncio
-async def test_queue_item_failure_returns_to_queued_for_retry(tmp_path: Path) -> None:
-    """F2/非功能-可靠：队列项回合失败退回 queued（可重试），不删除不吞掉。
+async def test_queue_item_failure_presents_failed_turn_and_advances(tmp_path: Path) -> None:
+    """V0.3.8 T4（契约 §14.1）：队列项回合失败呈现真实 failed 终态后，
+    排队项删除（不回退 queued 无限自动重试），队列继续前进。
 
-    ``_dispatch_from_inbox`` 的失败分支（application_service 776-779）——
-    队列项执行失败后不得被删除，也不得继续派发后续项。
+    ``_dispatch_from_inbox`` 终态派发分支——失败回合的失败消息照常落
+    消息流，失败原因对用户可见，不阻塞也不滞留队列。
     """
     events: list[dict] = []
     service = build_demo_service(
@@ -1844,7 +1845,6 @@ async def test_queue_item_failure_returns_to_queued_for_retry(tmp_path: Path) ->
             )
         )
         assert queued["queued"] is True
-        item_id = queued["queue_item"]["queue_item_id"]
 
         # 清理忙碌：下一条提交触发回合，完成后自动派发队列项
         service.orchestrator.state.finish("task-busy")
@@ -1858,21 +1858,18 @@ async def test_queue_item_failure_returns_to_queued_for_retry(tmp_path: Path) ->
                 text="现在有空了",
             )
         )
-        # 队列项的回合失败：退回 queued（可重试），不是删除
+        # 队列项的回合失败：契约 §14.1——真实终态呈现，排队项删除（不回退
+        # queued），队列继续前进
         await _wait_until(
             lambda: any(
                 e["event"] == "turn.status_changed"
                 and e["payload"]["turn"]["status"] == "failed"
                 for e in events
-            )
-            and service.store.list_queue_items(conversation_id)[0]["status"] == "queued",
-            message="队列项失败后应退回 queued 而非删除",
+            ),
+            message="队列项回合失败必须呈现 failed 终态",
         )
         items = service.store.list_queue_items(conversation_id)
-        assert len(items) == 1
-        assert items[0]["queue_item_id"] == item_id
-        assert items[0]["text"] == "排队任务"
-        assert items[0]["status"] == "queued"
+        assert items == [], "失败的排队项必须出队删除，不滞留队列（契约 §14.1）"
         # 失败的队列项也留下可见失败回合（不留悬空状态）
         failed_turns = [
             e["payload"]["turn"]
@@ -2027,7 +2024,9 @@ async def test_rebuild_runtime_for_account_switches_engine_immediately(tmp_path:
         service._demo = False
         base_config = {
             "dialogue.provider": "openai_compatible",
-            "dialogue.base_url": "https://api.example.com/v1",
+            # V0.3.8 T4：codex 引擎只允许 Responses API 后端（OpenAI 官方），
+            # 通用第三方 Chat Completions 端点在装配层被显式拒绝。
+            "dialogue.base_url": "https://api.openai.com/v1",
             "dialogue.api_key": "sk-test",
             "dialogue.model": "gpt-5.6-sol",
         }

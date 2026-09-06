@@ -4,6 +4,7 @@ import {
   probeNotificationCapability,
   requestNotificationPermission,
 } from "../lib/shellCapabilities";
+import { syncNativeKeepaliveConfig } from "../lib/wsClient";
 import "./NotificationPreferences.css";
 
 /**
@@ -143,6 +144,7 @@ export function saveNotificationPreferences(
   const store = readStorage();
   if (!store) return;
   store.setItem(STORAGE_KEY, JSON.stringify(preferences));
+  syncNativeKeepaliveConfig();
 }
 
 type ProbePhase =

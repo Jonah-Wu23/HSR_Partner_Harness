@@ -295,6 +295,12 @@ export interface ConversationOpenResult {
   stream_id?: string | number;
 }
 
+/** V0.3.8 T6（契约冻结 §14.2）：conversation.create 的 result——bootstrap
+    快照 + reused。params 可选 reuse_active（默认 false）：true 时同项目 +
+    同角色卡已有活跃会话则复用（不新建、不重复开场白、不改标题），
+    无角色卡的普通会话不参与复用。 */
+export type ConversationCreateResult = DesktopSnapshot & { reused: boolean };
+
 export type DesktopCommandMethod =
   | "app.bootstrap"
   | "app.shutdown"
@@ -416,6 +422,7 @@ export type DesktopEventName =
   | "voice.mobile_tts_end"
   | "connection.status"
   | "error.reported"
+  | "diagnostic.warning"
   | "serve.started"
   | "power.status_changed";
 
