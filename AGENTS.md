@@ -96,6 +96,8 @@ npm run tauri -- build --bundles nsis
 
 发布节奏：开发迭代只更新 `desktop/src-tauri/target/release/hsr-partner-harness.exe`，不重新生成或上传安装包。v0.3.2 已重新生成并上传 NSIS 安装包；下一次安装包更新安排在 v0.4.0。
 
+Android arm64 Debug APK：配置 `JAVA_HOME`、`ANDROID_HOME`、`NDK_HOME` 后，在 `desktop/` 运行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-android.ps1`，依赖已缓存时可加 `-Offline`。脚本先构建移动前端及包含前端资源的 Rust 动态库，再打包 APK，不执行安装。不得仅复制 `assets/` 或因旧 `.so` 存在就宣称新代码已打入 APK。
+
 ## 外部代码
 
 `src/pair_harness/config/providers.py` 含有根据 DeepSeek-Reasonix 改写的供应商识别逻辑。修改这部分时保留文件内出处，并同步检查 `THIRD_PARTY_NOTICES.md`。
