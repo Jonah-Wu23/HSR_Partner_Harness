@@ -73,10 +73,90 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
       target: "assistant",
       summary: "帮我跑一遍全部测试并整理失败原因，然后给出后续修…", // 超 24 字截断加省略号
       position: 1,
-      waitingFor: "等待当前回复结束",
+      // V0.3.8 T5（C3）：waitingFor 按真实状态派生——会话无活动任务时如实
+      // 呈现“等待派发”，不再硬编码“等待当前回复结束”。
+      waitingFor: "等待派发",
       intent: "followup",
     });
     expect(queueItems[1]).toMatchObject({ queueItemId: "q-2", summary: "继续", position: 2 });
+  });
+
+  it("queueItems：waitingFor 区分执行中/等待当前回复/队列顺序（V0.3.8 T5）", () => {
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "task.busy_changed",
+        sequence: 1,
+        payload: {
+          busy: true,
+          active_tasks: [
+            {
+              project_id: "p1",
+              conversation_id: "conv-1",
+              task_id: "task-1",
+              engine_turn_id: null,
+            },
+          ],
+        },
+      },
+      {
+        kind: "event",
+        event: "queue.changed",
+        sequence: 2,
+        payload: {
+          conversation_id: "conv-1",
+          items: [
+            {
+              queue_item_id: "q-run",
+              account_id: "",
+              conversation_id: "conv-1",
+              target: "character",
+              text: "正在执行",
+              intent: "followup",
+              position: 0,
+              status: "processing",
+              created_at: "2026-08-11T00:00:00+00:00",
+              source_message_id: null,
+            },
+            {
+              queue_item_id: "q-first",
+              account_id: "",
+              conversation_id: "conv-1",
+              target: "character",
+              text: "队首等待",
+              intent: "followup",
+              position: 1,
+              status: "queued",
+              created_at: "2026-08-11T00:00:00+00:00",
+              source_message_id: null,
+            },
+            {
+              queue_item_id: "q-second",
+              account_id: "",
+              conversation_id: "conv-1",
+              target: "character",
+              text: "队尾等待",
+              intent: "followup",
+              position: 2,
+              status: "queued",
+              created_at: "2026-08-11T00:00:00+00:00",
+              source_message_id: null,
+            },
+          ],
+        },
+      },
+    ]);
+    const { queueItems } = presentAppShell(desktopStore.getState());
+    expect(queueItems[0]).toMatchObject({ queueItemId: "q-run", waitingFor: "执行中" });
+    // processing 项占据队首，后续 queued 项等待的是“当前回复 + 前面各项”。
+    expect(queueItems[1]).toMatchObject({
+      queueItemId: "q-first",
+      waitingFor: "等待当前回复及前面 1 项",
+    });
+    expect(queueItems[2]).toMatchObject({
+      queueItemId: "q-second",
+      waitingFor: "等待当前回复及前面 2 项",
+    });
   });
 
   it("delegation：委派卡按真实消息状态展示运行/完成", () => {

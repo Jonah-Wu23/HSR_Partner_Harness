@@ -1625,3 +1625,20 @@
 }
 
 .chat-tab-window:hover { background: var(--fill-active); color: var(--text-primary); }
+
+/* V0.3.8 T5（C3）：忙时排队中的用户消息进入消息流尾部（全文可见）。 */
+.queue-in-stream-badge {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--accent, #4c7dff);
+  border: 1px solid currentcolor;
+  border-radius: 999px;
+  padding: 1px 8px;
+  margin-right: 8px;
+  vertical-align: 1px;
+}
+
+.queue-in-stream-bubble {
+  white-space: pre-wrap;
+  word-break: break-word;
+}

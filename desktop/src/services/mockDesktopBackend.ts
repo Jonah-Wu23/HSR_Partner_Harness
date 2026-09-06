@@ -946,12 +946,17 @@ export class MockDesktopBackend implements DesktopBackend {
     return { conversation_id: conversationId, mode };
   }
 
-  private createConversation(params: Record<string, unknown>): DesktopSnapshot {
+  /** V0.3.8 T6（契约冻结 §14.2）：result 顶层带 reused。mock 场景的会话
+      无角色卡绑定（不参与复用），reuse_active 始终新建。 */
+  private createConversation(
+    params: Record<string, unknown>,
+  ): DesktopSnapshot & { reused: boolean } {
     const projectId = String(params.project_id ?? this.scenario.snapshot.current_project_id);
     const projectIndex = this.scenario.snapshot.projects.findIndex(
       (item) => item.project_id === projectId,
     );
-    if (projectIndex < 0) return this.snapshotResult<DesktopSnapshot>();
+    if (projectIndex < 0)
+      return { ...this.snapshotResult<DesktopSnapshot>(), reused: false };
     const selectedProject = this.scenario.snapshot.projects[projectIndex];
     const conversationId = `${projectId}-conversation-${selectedProject.conversations.length + 1}`;
     const pairId =
@@ -971,7 +976,7 @@ export class MockDesktopBackend implements DesktopBackend {
     );
     this.scenario.snapshot.current_project_id = projectId;
     this.scenario.snapshot.current_conversation_id = conversationId;
-    return this.snapshotResult<DesktopSnapshot>();
+    return { ...this.snapshotResult<DesktopSnapshot>(), reused: false };
   }
 
   private selectConversation(params: Record<string, unknown>): DesktopSnapshot {

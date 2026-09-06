@@ -6,7 +6,7 @@ import type {
   ProjectViewModel,
   WorkbenchItem,
 } from "../contracts/view-models";
-import type { Message, ToolRun } from "../contracts/protocol";
+import type { Message, QueueItem, ToolRun } from "../contracts/protocol";
 import type { DesktopRenderState } from "../stores/desktopStore";
 import type { QueueItemView, ToastItem } from "../ui/status/types";
 import type { DelegationCardView } from "../ui/workspace/DelegationCard";
@@ -38,20 +38,35 @@ function truncateSingleLine(text: string, max = 24): string {
   return compact.length <= max ? compact : `${compact.slice(0, max)}…`;
 }
 
-/** V0.2 M4：排队条视图——指定会话未撤回的队列项按 position 升序。 */
-function presentQueueItems(state: DesktopRenderState, conversationId: string): QueueItemView[] {
-  const items = state.queueItemsByConversation[conversationId] ?? [];
-  return items
+/** V0.3.8 T5：指定会话未撤回的排队项（完整文本，按 position 升序）。
+    消息流尾部呈现排队消息全文用；胶囊条走 presentQueueItems 的截断摘要。 */
+function queuedItemsFor(state: DesktopRenderState, conversationId: string): QueueItem[] {
+  return (state.queueItemsByConversation[conversationId] ?? [])
     .filter((item) => item.status !== "withdrawn")
-    .sort((a, b) => a.position - b.position)
-    .map((item) => ({
-      queueItemId: item.queue_item_id,
-      target: item.target,
-      summary: truncateSingleLine(item.text),
-      position: item.position + 1,
-      waitingFor: "等待当前回复结束",
-      intent: item.intent,
-    }));
+    .sort((a, b) => a.position - b.position);
+}
+
+/** V0.2 M4：排队条视图——指定会话未撤回的队列项按 position 升序。
+    V0.3.8 T5（C3）：waitingFor 按真实状态派生，区分执行中/排队，不再
+    硬编码“等待当前回复结束”；空闲会话出现排队项时如实呈现“等待派发”。 */
+function presentQueueItems(state: DesktopRenderState, conversationId: string): QueueItemView[] {
+  const ordered = queuedItemsFor(state, conversationId);
+  const hasActiveTurn = Boolean(state.activeTasksByConversation[conversationId]);
+  return ordered.map((item, index) => ({
+    queueItemId: item.queue_item_id,
+    target: item.target,
+    summary: truncateSingleLine(item.text),
+    position: item.position + 1,
+    waitingFor:
+      item.status === "processing"
+        ? "执行中"
+        : hasActiveTurn
+          ? index === 0
+            ? "等待当前回复结束"
+            : `等待当前回复及前面 ${index} 项`
+          : "等待派发",
+    intent: item.intent,
+  }));
 }
 
 /** V0.2 M4：委派卡——指定会话中角色发起的委派（origin=character_delegation
@@ -430,6 +445,8 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
             conversationId: workspaceConversation.conversation_id,
             messages: characterMessages,
             isStreaming: characterMessages.some((message) => message.streaming === true),
+            // V0.3.8 T5（C3）：排队消息全文进入消息流尾部呈现（操作仍在胶囊条）。
+            queueItems: queuedItemsFor(state, workspaceConversation.conversation_id),
           },
           assistant: {
             conversationId: workspaceConversation.conversation_id,

@@ -21,6 +21,7 @@ import type {
   CardRemoveAvatarResult,
   CardSetAvatarResult,
   CardUpdateResult,
+  ConversationCreateResult,
   ConversationOpenResult,
   DesktopCommand,
   DesktopEvent,
@@ -139,11 +140,14 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async archiveProject(projectId) {
       await request("project.archive", { project_id: projectId });
     },
-    async createConversation(projectId, title, pairId) {
-      await request("conversation.create", {
+    async createConversation(projectId, title, pairId, opts) {
+      // V0.3.8 T6：「使用该角色」类入口带 reuse_active 复用活跃会话；
+      // 「新建聊天」按钮不带该参数，维持显式新建（契约冻结 §14.2）。
+      await request<ConversationCreateResult>("conversation.create", {
         project_id: projectId,
         title,
         ...(pairId ? { pair_id: pairId } : {}),
+        ...(opts?.reuseActive ? { reuse_active: true } : {}),
       });
       focusBackendConversation();
     },
@@ -220,10 +224,12 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       // M5.3：草稿由 Composer 在收到 accepted/queued 回执后清除；这里不清空，
       // 请求失败时输入文字与 target 都保留。
       // V0.3.2 M5：提交到本窗口当前聊天（活动标签优先），其他窗口不受影响。
+      // V0.3.8 T6：不再携带窗口全局 mode——会话保持自己的 last_mode，
+      // 顺带改写会把普通消息盖成“委派”标签；显式切换走 switchMode
+      // （conversation.set_mode）。
       return request<SubmitMessageResult>("chat.submit", {
         conversation_id: selectWindowConversationId(state),
         target: actualTarget,
-        mode: state.mode,
         text,
         ...(intent ? { intent } : {}),
       });

@@ -21,7 +21,15 @@ export interface HarnessActions {
   repairProjectPath(projectId: string): Promise<void>;
   selectProject(projectId: string): Promise<void>;
   archiveProject(projectId: string): Promise<void>;
-  createConversation(projectId?: string, title?: string, pairId?: string): Promise<void>;
+  /** 创建聊天。opts.reuseActive=true（V0.3.8 T6 契约冻结 §14.2）时下发
+      reuse_active：「使用该角色」类入口复用同项目同角色卡的活跃会话；
+      「新建聊天」按钮不传，维持显式新建。 */
+  createConversation(
+    projectId?: string,
+    title?: string,
+    pairId?: string,
+    opts?: { reuseActive?: boolean },
+  ): Promise<void>;
   selectConversation(conversationId: string): Promise<void>;
   /** V0.3.2 M5：打开（或聚焦）本窗口聊天标签；同时把本窗口当前聊天切到该会话
       （使用只读 conversation.open，不改 Sidecar 全局导航）。 */

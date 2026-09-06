@@ -294,7 +294,8 @@ export function CharacterCreatePage({ vm, actions, onPickFile }: CharacterCreate
       if (!cardId) return;
       confirmLeave(async () => {
         await actions.selectActiveCard(cardId);
-        await actions.createConversation();
+        // V0.3.8 T6：reuse_active 复用同项目同角色卡的活跃会话，不重复建聊天。
+        await actions.createConversation(undefined, undefined, undefined, { reuseActive: true });
         actions.openChat();
       });
     },
