@@ -37,6 +37,8 @@ export function ChatListPage() {
   const connection = useMobileStore((state) => state.connection);
   const reconnect = useMobileStore((state) => state.reconnect);
   const powerStatus = useMobileStore((state) => state.powerStatus);
+  const [repairError, setRepairError] = useState<string | null>(null);
+  const [repairing, setRepairing] = useState(false);
 
   // 「知道了」只收敛当前这条警示：电脑状态再次变化（新事件携带新 checked_at）时重新出现，
   // 不永久吞掉真实状态。
@@ -67,6 +69,7 @@ export function ChatListPage() {
         <header className="chat-list-header">
           <h1 className="page-title">聊天列表</h1>
         </header>
+        {repairError && <p role="alert">{repairError}</p>}
 
         {/* 1. 未水合状态 */}
         {!bootstrapped && (
@@ -86,10 +89,20 @@ export function ChatListPage() {
                   <button
                     type="button"
                     className="primary chat-list-retry-btn"
-                    onClick={() => {
+                    disabled={repairing}
+                    onClick={async () => {
                       // 与 ConnectionBanner 一致：先清凭据再跳转，否则被路由守卫弹回。
-                      useMobileStore.getState().disconnect();
-                      navigate({ name: "pair" });
+                      setRepairError(null);
+                      setRepairing(true);
+                      try {
+                        await useMobileStore.getState().disconnect();
+                        navigate({ name: "pair" });
+                      } catch (error) {
+                        console.error("重新配对前释放控制权失败", error);
+                        setRepairError(error instanceof Error ? error.message : String(error));
+                      } finally {
+                        setRepairing(false);
+                      }
                     }}
                     data-testid="chat-list-btn-repair"
                   >

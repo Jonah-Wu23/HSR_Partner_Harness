@@ -7,6 +7,7 @@ import type {
   ConversationRecord,
   DesktopSnapshot,
   Message,
+  QueueItem,
   PairRecord,
   PendingApproval,
   PowerStatusPayload,
@@ -52,6 +53,55 @@ export interface MobileVoiceAvailability {
   supported: boolean;
 }
 
+/** 下行 TTS 分片（``voice.mobile_tts_chunk`` payload 的缓冲形态）。 */
+export interface MobileTtsChunk {
+  seq: number;
+  mime: string;
+  data: string;
+  /** 解码后 PCM 字节数（容量核算用，避免重复解码）。 */
+  bytes: number;
+}
+
+/** 服务端下行 PCM 规格：24kHz mono s16le（2 字节/采样）。 */
+const TTS_SAMPLE_RATE = 24000;
+const TTS_BYTES_PER_SAMPLE = 2;
+
+/**
+ * V0.3.8：未播分片缓冲上限 ≈ 300 秒音频（14.4MB），防长回复内存尖峰。
+ * 正常播放边收边放只留网络突发量；超限见于播放停滞/结束信号丢失等异常。
+ */
+export const TTS_MAX_BUFFERED_PCM_BYTES = TTS_SAMPLE_RATE * TTS_BYTES_PER_SAMPLE * 300;
+
+/** 标准 base64 长度换算解码后字节数（仅容量核算，不解码）。 */
+export function base64PcmByteLength(base64: string): number {
+  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+  return Math.floor((base64.length * 3) / 4) - padding;
+}
+
+/**
+ * V0.3.8：有界追加 TTS 分片。总字节超上限时如实丢弃最旧分片（至少保留
+ * 最新一条），丢弃数由调用方记入 store 计数（可观测，不静默）。
+ */
+export function appendTtsChunkBounded(
+  chunks: MobileTtsChunk[],
+  chunk: MobileTtsChunk,
+  maxBytes: number,
+): { chunks: MobileTtsChunk[]; dropped: number } {
+  if (chunks.some((item) => item.seq === chunk.seq)) {
+    return { chunks, dropped: 0 };
+  }
+  const merged = [...chunks, chunk].sort((a, b) => a.seq - b.seq);
+  let total = merged.reduce((sum, item) => sum + item.bytes, 0);
+  let dropped = 0;
+  while (total > maxBytes && merged.length > 1) {
+    const oldest = merged.shift();
+    if (!oldest) break;
+    total -= oldest.bytes;
+    dropped += 1;
+  }
+  return { chunks: merged, dropped };
+}
+
 export interface MobileState {
   connection: MobileConnectionState;
   deviceName: string | null;
@@ -60,6 +110,9 @@ export interface MobileState {
   activeConversationId: string | null;
   messages: Message[];
   toolRuns: ToolRun[];
+  /** V0.3.8 T5（契约 §14.1）：活跃会话的排队项（queue.changed/快照驱动），
+      忙时消息可见、可撤回/编辑/置顶。 */
+  queueItems: QueueItem[];
   approvals: PendingApproval[];
   /** V0.3.5：已决审批记录（含 resolved_by/decision），供 UI 表达双端仲裁结果。 */
   resolvedApprovals: Array<{
@@ -81,15 +134,17 @@ export interface MobileState {
   bootstrapped: boolean;
   /** V0.3.7：桌面端电源状态（power.status_changed 事件驱动；无数据时为 null，不本地推导）。 */
   powerStatus: PowerStatusPayload | null;
-  /** V0.3.5：手机语音状态。 */
-  voice: {
-    capture: MobileVoiceCapture;
-    transcript: MobileVoiceTranscript | null;
-    playback: MobileVoicePlayback;
-    availability: MobileVoiceAvailability;
-    /** 下行 TTS 分片缓冲：message_id → 有序分片。 */
-    ttsChunks: Record<string, Array<{ seq: number; mime: string; data: string }>>;
-  };
+    /** V0.3.5：手机语音状态。 */
+    voice: {
+      capture: MobileVoiceCapture;
+      transcript: MobileVoiceTranscript | null;
+      playback: MobileVoicePlayback;
+      availability: MobileVoiceAvailability;
+      /** 下行 TTS 分片缓冲：message_id → 有序分片（有界，见 TTS_MAX_BUFFERED_PCM_BYTES）。 */
+      ttsChunks: Record<string, MobileTtsChunk[]>;
+      /** V0.3.8：缓冲超限被丢弃的最旧分片计数（按 message_id，可观测不静默）。 */
+      ttsDroppedChunks: Record<string, number>;
+    };
 
   start: () => void;
   /** 手动重连入口（unreachable/auth_failed 后由 UI 重试按钮调用）。 */
@@ -99,6 +154,10 @@ export interface MobileState {
   submitDelegation: (text: string) => Promise<void>;
   /** V0.3.4 缺陷 3：手机端普通角色消息输入（target=character，任何模式可用）。 */
   submitMessage: (text: string) => Promise<void>;
+  /** V0.3.8 T5：队列三命令——撤回 / 编辑文本 / 置顶（仅 queued 项）。 */
+  withdrawQueueItem: (queueItemId: string) => Promise<void>;
+  editQueueItem: (queueItemId: string, text: string) => Promise<void>;
+  prioritizeQueueItem: (queueItemId: string) => Promise<void>;
   /** V0.3.4 缺陷 4：会话模式切换（chat/collaboration），委派仅在协作模式可用。 */
   setConversationMode: (conversationId: string, mode: ConversationMode) => Promise<void>;
   resolveApproval: (approvalId: string, decision: string) => Promise<void>;
@@ -111,8 +170,12 @@ export interface MobileState {
   stopVoicePlayback: (messageId: string) => Promise<void>;
   /** V0.3.5：本地 TTS 队列自然播放到末尾后复位 playback 状态。 */
   finishVoicePlayback: (messageId: string) => void;
+  /** V0.3.8：分片已解码移交播放引擎（≤ uptoSeq），从 store 释放。 */
+  releaseTtsChunksUpTo: (messageId: string, uptoSeq: number) => void;
+  /** V0.3.8：播放引擎异常（resume 失败/结束信号超时）如实置 failed 并保留错误。 */
+  failVoicePlayback: (messageId: string, error: string) => void;
   refreshVoiceAvailability: () => Promise<void>;
-  disconnect: () => void;
+  disconnect: () => Promise<void>;
 }
 
 const client = new MobileWsClient();
@@ -129,6 +192,26 @@ function indexConversations(projects: ProjectRecord[]): Record<string, Conversat
     }
   }
   return map;
+}
+
+/** V0.3.8 T5：chat.submit 的排队回执（忙时 accepted=false→queued=true）。 */
+interface SubmitReceipt {
+  queued?: boolean;
+  queue_item?: QueueItem;
+}
+
+function applySubmitReceipt(
+  set: (partial: Partial<MobileState>) => void,
+  get: () => MobileState,
+  conversationId: string,
+  receipt: SubmitReceipt,
+): void {
+  if (receipt.queued !== true || !receipt.queue_item) return;
+  if (receipt.queue_item.conversation_id !== conversationId) return;
+  if (get().activeConversationId !== conversationId) return;
+  const existing = get().queueItems;
+  if (existing.some((item) => item.queue_item_id === receipt.queue_item!.queue_item_id)) return;
+  set({ queueItems: [...existing, receipt.queue_item] });
 }
 
 function applySnapshot(
@@ -173,12 +256,17 @@ function applySnapshot(
   const snapshotMatchesActive = !activeConvId || snapshotConversationId === activeConvId;
   const messages = snapshotMatchesActive ? snapshot.messages : get().messages;
   const toolRuns = snapshotMatchesActive ? snapshot.tool_runs : get().toolRuns;
+  // V0.3.8 T5：快照 queue_items 属于快照当前会话；不匹配本会话时不覆盖。
+  const queueItems = snapshotMatchesActive
+    ? snapshot.queue_items.filter((item) => item.status === "queued")
+    : get().queueItems;
 
   set({
     projects: snapshot.projects,
     conversationsById: indexConversations(snapshot.projects),
     messages,
     toolRuns,
+    queueItems,
     approvals: snapshot.approvals,
     pair,
     activeTask,
@@ -188,31 +276,109 @@ function applySnapshot(
   });
 }
 
+const stoppedOrTerminalMessages = new Set<string>();
+const endedTtsMessages = new Set<string>();
+
+/** 测试专用：复位语音终态与结束信号集合，隔离用例间的模块级状态。 */
+export function resetVoiceTerminalStateForTests(): void {
+  stoppedOrTerminalMessages.clear();
+  endedTtsMessages.clear();
+}
+
 export const useMobileStore = create<MobileState>((set, get) => {
   let wired = false;
   let bootstrapping: Promise<void> | null = null;
   let bootstrapGeneration = 0;
+  let releasingControl = false;
   let openConversationGeneration = 0;
   let stableConversationView: Pick<
     MobileState,
     "activeConversationId" | "messages" | "toolRuns" | "pair" | "activeTask"
   > | null = null;
   const eventCollectors = new Set<WireEvent[]>();
+  const nextQueuedPlayback = (
+    chunks: Record<string, MobileTtsChunk[]>,
+    fallback: MobileVoicePlayback = { messageId: null, state: "idle", error: null },
+  ): MobileVoicePlayback => {
+    const messageId = Object.keys(chunks).find(
+      (id) => chunks[id].length > 0 && !stoppedOrTerminalMessages.has(id),
+    );
+    return messageId
+      ? { messageId, state: endedTtsMessages.has(messageId) ? "playing" : "buffering", error: null }
+      : fallback;
+  };
+
+  /**
+   * V0.3.8 修复：新消息回答出现时，主动打断并截断前序正在播放的旧语音。
+   * 清除本地分片缓冲并向服务端发送 voice.mobile_tts_stop 终止旧合成任务。
+   */
+  const preemptOldPlayback = (newMessageId: string): void => {
+    const currentVoice = get().voice;
+    const activeMsgId = currentVoice.playback.messageId;
+    if (
+      !activeMsgId ||
+      activeMsgId === newMessageId ||
+      (currentVoice.playback.state !== "buffering" && currentVoice.playback.state !== "playing")
+    ) {
+      return;
+    }
+    stoppedOrTerminalMessages.add(activeMsgId);
+    endedTtsMessages.delete(activeMsgId);
+    void client.request("voice.mobile_tts_stop", { message_id: activeMsgId }).catch(() => {});
+    const nextChunks = { ...currentVoice.ttsChunks };
+    delete nextChunks[activeMsgId];
+    const nextDropped = { ...currentVoice.ttsDroppedChunks };
+    delete nextDropped[activeMsgId];
+    set({
+      voice: {
+        ...currentVoice,
+        playback: { messageId: null, state: "idle", error: null },
+        ttsChunks: nextChunks,
+        ttsDroppedChunks: nextDropped,
+      },
+    });
+  };
 
   /** connect() 只发起握手；pair 等调用必须等 connected 后才能发请求。 */
-  const waitForConnected = (): Promise<void> => {
+  const waitForConnected = (timeoutMs = 10_000): Promise<void> => {
     if (client.getState() === "connected") return Promise.resolve();
-    if (client.getState() === "disconnected") {
+    // V0.3.8 D4：若处于 auth_failed，但底层 socket 物理连接仍为 OPEN，
+    // 对于 remote.pair 等免鉴权请求物理链路可用，立即放行，杜绝配对按钮永久挂起。
+    if (client.getState() === "auth_failed" && client.isSocketConnected()) {
+      return Promise.resolve();
+    }
+    if (client.getState() === "disconnected" && !client.isSocketConnected()) {
       return Promise.reject(new Error("连接已断开"));
     }
     return new Promise<void>((resolve, reject) => {
-      const unsubscribe = client.onStateChange((connection) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      let unsubscribe: (() => void) | null = null;
+
+      const cleanup = () => {
+        if (timer !== null) clearTimeout(timer);
+        if (unsubscribe) unsubscribe();
+      };
+
+      timer = setTimeout(() => {
+        cleanup();
+        reject(
+          new Error(
+            `等待连接超时（${timeoutMs / 1000}s，当前状态：${client.getState()}）`,
+          ),
+        );
+      }, timeoutMs);
+
+      unsubscribe = client.onStateChange((connection) => {
         if (connection === "connected") {
-          unsubscribe();
+          cleanup();
           resolve();
         }
-        if (connection === "unreachable" || connection === "auth_failed") {
-          unsubscribe();
+        if (connection === "auth_failed" && client.isSocketConnected()) {
+          cleanup();
+          resolve();
+        }
+        if (connection === "unreachable" || connection === "disconnected") {
+          cleanup();
           reject(new Error(`连接失败：${connection}`));
         }
       });
@@ -246,18 +412,23 @@ export const useMobileStore = create<MobileState>((set, get) => {
 
   const reportBootstrapFailure = (error: unknown): void => {
     console.error("手机端状态同步失败", error);
-    set({ bootstrapped: false });
   };
 
   const bootstrap = async (): Promise<void> => {
+    if (releasingControl) return;
     if (bootstrapping) return bootstrapping;
     const generation = ++bootstrapGeneration;
+    set({ bootstrapped: false });
     const activeConversationId = get().activeConversationId;
     const collector = collectEvents();
     let tracked: Promise<void>;
     const request = (async () => {
       const snapshot = await client.request<DesktopSnapshot>("app.bootstrap");
       if (generation !== bootstrapGeneration) return;
+      // 控制声明必须成功后才公布同步完成；活跃聊天重连也走同一条路径。
+      await client.request("remote.claim_control");
+      if (generation !== bootstrapGeneration) return;
+      client.confirmAuthenticated();
       const snapshotStream =
         snapshot.stream_id == null ? null : String(snapshot.stream_id);
       // app.bootstrap 是新连接的权威基线；重连后即使旧 streamId 仍在本地，也采纳响应代次。
@@ -324,6 +495,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
         set({
           messages: conversation.messages,
           toolRuns: conversation.tool_runs,
+          queueItems: conversation.queue_items.filter((item) => item.status === "queued"),
           pair: conversation.pair,
           activeTask: conversation.active_task,
           streamId: conversationStream,
@@ -335,7 +507,10 @@ export const useMobileStore = create<MobileState>((set, get) => {
       }
       replayEventsAfter(collector.events, snapshot.sequence, snapshotStream ?? get().streamId);
     })();
-    tracked = request.finally(() => {
+    tracked = request.catch((error: unknown) => {
+      if (generation === bootstrapGeneration) set({ bootstrapped: false });
+      throw error;
+    }).finally(() => {
       collector.stop();
       if (bootstrapping === tracked) bootstrapping = null;
     });
@@ -472,6 +647,13 @@ export const useMobileStore = create<MobileState>((set, get) => {
           typeof message.conversation_id === "string" &&
           message.conversation_id === get().activeConversationId
         ) {
+          if (
+            event.event === "message.created" &&
+            message.source === "character" &&
+            message.tts_ready !== false
+          ) {
+            preemptOldPlayback(message.message_id);
+          }
           const rest = get().messages.filter((m) => m.message_id !== message.message_id);
           set({ messages: [...rest, message] });
         }
@@ -501,6 +683,9 @@ export const useMobileStore = create<MobileState>((set, get) => {
         const existing = get().messages.find(
           (message) => message.message_id === payload.message_id,
         );
+        if (!existing && !isReasoning && payload.source === "character" && payload.message_id) {
+          preemptOldPlayback(payload.message_id);
+        }
         const message: Message = existing
           ? {
               ...existing,
@@ -607,23 +792,81 @@ export const useMobileStore = create<MobileState>((set, get) => {
           data?: string;
         };
         if (!payload.message_id || typeof payload.seq !== "number") break;
+        const msgId = payload.message_id;
         const voice = get().voice;
-        const chunks = voice.ttsChunks[payload.message_id] ?? [];
-        const exists = chunks.some((item) => item.seq === payload.seq);
-        const nextChunks = exists
-          ? chunks
-          : [...chunks, { seq: payload.seq, mime: payload.mime ?? "audio/pcm;rate=24000", data: payload.data ?? "" }].sort(
-              (a, b) => a.seq - b.seq,
-            );
+        // 终态与已停止防御：已停止或已终态的消息分片不得复活播放状态
+        if (
+          stoppedOrTerminalMessages.has(msgId) ||
+          (voice.playback.messageId === msgId &&
+            (voice.playback.state === "failed" || voice.playback.state === "stopping"))
+        ) {
+          break;
+        }
+        const data = payload.data ?? "";
+        const chunk: MobileTtsChunk = {
+          seq: payload.seq,
+          mime: payload.mime ?? "audio/pcm;rate=24000",
+          data,
+          bytes: base64PcmByteLength(data),
+        };
+
+        // V0.3.8 修复：新语音分片到达时，若正在播放前序旧消息，立即抢占打断旧消息
+        const nextChunks = { ...voice.ttsChunks };
+        const nextDropped = { ...voice.ttsDroppedChunks };
+        const currentMsgId = voice.playback.messageId;
+        if (
+          currentMsgId &&
+          currentMsgId !== msgId &&
+          (voice.playback.state === "buffering" || voice.playback.state === "playing")
+        ) {
+          stoppedOrTerminalMessages.add(currentMsgId);
+          endedTtsMessages.delete(currentMsgId);
+          delete nextChunks[currentMsgId];
+          delete nextDropped[currentMsgId];
+          void client.request("voice.mobile_tts_stop", { message_id: currentMsgId }).catch(() => {});
+        }
+
+        const bounded = appendTtsChunkBounded(
+          nextChunks[msgId] ?? [],
+          chunk,
+          TTS_MAX_BUFFERED_PCM_BYTES,
+        );
+        if (bounded.dropped > 0) {
+          nextDropped[msgId] =
+            (nextDropped[msgId] ?? 0) + bounded.dropped;
+          // Let It Fail：超限丢分片是真实损失，日志与计数都必须可见。
+          console.warn(
+            `TTS 分片缓冲超限：message_id=${msgId} 丢弃最旧 ${bounded.dropped} 条（累计 ${nextDropped[msgId]}）`,
+          );
+        }
+        nextChunks[msgId] = bounded.chunks;
+
+        let nextPlayback = voice.playback;
+        if (
+          !voice.playback.messageId ||
+          voice.playback.state === "idle" ||
+          voice.playback.state === "failed" ||
+          voice.playback.messageId !== msgId
+        ) {
+          nextPlayback = {
+            messageId: msgId,
+            state: endedTtsMessages.has(msgId) ? "playing" : "buffering",
+            error: null,
+          };
+        } else if (voice.playback.messageId === msgId) {
+          nextPlayback = {
+            messageId: msgId,
+            state: voice.playback.state,
+            error: null,
+          };
+        }
+
         set({
           voice: {
             ...voice,
-            playback: {
-              messageId: payload.message_id,
-              state: voice.playback.state === "idle" ? "buffering" : voice.playback.state,
-              error: null,
-            },
-            ttsChunks: { ...voice.ttsChunks, [payload.message_id]: nextChunks },
+            playback: nextPlayback,
+            ttsChunks: nextChunks,
+            ttsDroppedChunks: nextDropped,
           },
         });
         break;
@@ -637,19 +880,27 @@ export const useMobileStore = create<MobileState>((set, get) => {
         };
         if (failedPayload.message_id) {
           const failedVoice = get().voice;
+          const messageId = failedPayload.message_id;
+          const error = failedPayload.error ?? "角色语音合成失败";
+          console.error("角色语音合成失败", messageId, error);
+          if (stoppedOrTerminalMessages.has(messageId)) break;
+          stoppedOrTerminalMessages.add(messageId);
+          endedTtsMessages.delete(messageId);
+          const nextChunks = Object.fromEntries(
+            Object.entries(failedVoice.ttsChunks).filter(([id]) => id !== messageId),
+          );
           set({
             voice: {
               ...failedVoice,
-              ttsChunks: Object.fromEntries(
-                Object.entries(failedVoice.ttsChunks).filter(
+              ttsChunks: nextChunks,
+              ttsDroppedChunks: Object.fromEntries(
+                Object.entries(failedVoice.ttsDroppedChunks).filter(
                   ([id]) => id !== failedPayload.message_id,
                 ),
               ),
-              playback: {
-                messageId: failedPayload.message_id,
-                state: "failed",
-                error: failedPayload.error ?? "角色语音合成失败",
-              },
+              playback: !failedVoice.playback.messageId || failedVoice.playback.messageId === messageId
+                ? nextQueuedPlayback(nextChunks, { messageId, state: "failed", error })
+                : failedVoice.playback,
             },
           });
         }
@@ -658,16 +909,30 @@ export const useMobileStore = create<MobileState>((set, get) => {
       case "voice.mobile_tts_end": {
         const payload = event.payload as { message_id?: string };
         if (payload.message_id) {
-          set({
-            voice: {
-              ...get().voice,
-              playback: {
-                messageId: payload.message_id,
-                state: "playing",
-                error: null,
+          const msgId = payload.message_id;
+          const voice = get().voice;
+          // V0.3.8：失败/停止是终态，迟到的 end 不得掩盖已如实呈现的播放异常；
+          // 此事件只是整体结束信号，真实收尾等引擎把最后一个分片播完。
+          if (
+            stoppedOrTerminalMessages.has(msgId) ||
+            (voice.playback.messageId === msgId &&
+              (voice.playback.state === "failed" || voice.playback.state === "stopping"))
+          ) {
+            break;
+          }
+          endedTtsMessages.add(msgId);
+          if (voice.playback.messageId === msgId) {
+            set({
+              voice: {
+                ...voice,
+                playback: {
+                  messageId: msgId,
+                  state: "playing",
+                  error: null,
+                },
               },
-            },
-          });
+            });
+          }
         }
         break;
       }
@@ -709,6 +974,31 @@ export const useMobileStore = create<MobileState>((set, get) => {
         set({ activeTask });
         break;
       }
+      case "queue.changed": {
+        // V0.3.8 T5（契约 §14.1）：全量快照按会话对齐——只更新当前活跃
+        // 会话的排队项；其他会话的队列由其打开时的 conversation.open 带回。
+        const queuePayload = event.payload as {
+          conversation_id?: unknown;
+          items?: unknown;
+        };
+        if (
+          typeof queuePayload.conversation_id === "string" &&
+          queuePayload.conversation_id === get().activeConversationId &&
+          Array.isArray(queuePayload.items)
+        ) {
+          set({
+            queueItems: (queuePayload.items as QueueItem[]).filter(
+              (item) => item.status === "queued",
+            ),
+          });
+        }
+        break;
+      }
+      case "diagnostic.warning":
+        // V0.3.8 T4（契约 §14.6）：引擎诊断告警的客户端最低要求——console
+        // 可见且不崩溃；不中断事件流，不伪造任何状态。
+        console.warn("[diagnostic.warning]", event.payload);
+        break;
       default:
         break;
     }
@@ -722,6 +1012,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
     activeConversationId: null,
     messages: [],
     toolRuns: [],
+    queueItems: [],
     approvals: [],
     resolvedApprovals: [],
     pair: null,
@@ -740,6 +1031,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
         supported: typeof navigator !== "undefined" && Boolean(navigator.mediaDevices?.getUserMedia),
       },
       ttsChunks: {},
+      ttsDroppedChunks: {},
     },
 
     start() {
@@ -747,11 +1039,28 @@ export const useMobileStore = create<MobileState>((set, get) => {
       wired = true;
       client.onStateChange((connection) => {
         set({ connection });
-        if (connection === "connected" && getStoredToken()) {
+        if (connection === "disconnected" || connection === "reconnecting" || connection === "unreachable") {
+          bootstrapGeneration += 1;
+          bootstrapping = null;
+          set({ bootstrapped: false });
+        }
+        if (connection === "connected" && getStoredToken() && !releasingControl) {
           void bootstrap().catch(reportBootstrapFailure);
         }
       });
       client.onEvent(handleEvent);
+      // V0.3.8 T1（契约 §14.4）：回前台重同步——connected 时重新 bootstrap
+      // 全量覆盖本地快照（幂等补拉）；unreachable 终态由客户端复位重连，
+      // 连接成功后自会 bootstrap，不再永久停摆。
+      if (typeof document !== "undefined") {
+        document.addEventListener("visibilitychange", () => {
+          if (document.visibilityState !== "visible") return;
+          const action = client.notifyAppForeground();
+          if (action === "resync") {
+            void bootstrap().catch(reportBootstrapFailure);
+          }
+        });
+      }
       client.connect();
     },
 
@@ -829,6 +1138,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
         activeConversationId: conversationId,
         messages: result.messages,
         toolRuns: result.tool_runs,
+        queueItems: result.queue_items.filter((item) => item.status === "queued"),
         pair: result.pair,
         activeTask: result.active_task,
         streamId: resultStream,
@@ -849,23 +1159,39 @@ export const useMobileStore = create<MobileState>((set, get) => {
       const conversationId = get().activeConversationId;
       if (!conversationId) throw new Error("尚未打开会话");
       const mode = get().conversationsById[conversationId]?.last_mode ?? "chat";
-      await client.request("chat.submit", {
+      // V0.3.8 T5：忙时回执 queued+queue_item——排队消息立即本地可见，
+      // 随后的 queue.changed 全量快照会对齐（事件为权威）。
+      const receipt = await client.request<SubmitReceipt>("chat.submit", {
         conversation_id: conversationId,
         target: "assistant",
         mode,
         text,
       });
+      applySubmitReceipt(set, get, conversationId, receipt);
     },
 
     async submitMessage(text) {
       const conversationId = get().activeConversationId;
       if (!conversationId) throw new Error("尚未打开会话");
       // 角色消息任何模式都可发送；不带 mode 参数，避免顺带切换会话模式。
-      await client.request("chat.submit", {
+      const receipt = await client.request<SubmitReceipt>("chat.submit", {
         conversation_id: conversationId,
         target: "character",
         text,
       });
+      applySubmitReceipt(set, get, conversationId, receipt);
+    },
+
+    async withdrawQueueItem(queueItemId) {
+      await client.request("queue.withdraw", { queue_item_id: queueItemId });
+    },
+
+    async editQueueItem(queueItemId, text) {
+      await client.request("queue.edit", { queue_item_id: queueItemId, text });
+    },
+
+    async prioritizeQueueItem(queueItemId) {
+      await client.request("queue.prioritize", { queue_item_id: queueItemId });
     },
 
     async setConversationMode(conversationId, mode) {
@@ -944,10 +1270,25 @@ export const useMobileStore = create<MobileState>((set, get) => {
       }
     },
 
-    disconnect() {
+    async disconnect() {
       bootstrapGeneration += 1;
       openConversationGeneration += 1;
       bootstrapping = null;
+      releasingControl = true;
+      try {
+        if (getStoredToken()) {
+          client.connect();
+          await waitForConnected();
+          try {
+            await client.request("remote.release_control");
+          } catch (error) {
+            // 已撤销的凭证无法释放；服务端撤销流程已同步清除控制资格。
+            if (!(error instanceof RemoteCommandError) || error.code !== "unauthorized") throw error;
+          }
+        }
+      } finally {
+        releasingControl = false;
+      }
       eventCollectors.clear();
       stableConversationView = null;
       client.disconnect();
@@ -978,6 +1319,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
             supported: typeof navigator !== "undefined" && Boolean(navigator.mediaDevices?.getUserMedia),
           },
           ttsChunks: {},
+          ttsDroppedChunks: {},
         },
       });
     },
@@ -1069,43 +1411,118 @@ export const useMobileStore = create<MobileState>((set, get) => {
     },
 
     async stopVoicePlayback(messageId) {
+      stoppedOrTerminalMessages.add(messageId);
+      endedTtsMessages.delete(messageId);
       const voice = get().voice;
+      // 只有当前活跃播放确为该消息时，才将全局状态置为 stopping
+      if (voice.playback.messageId === messageId) {
+        set({
+          voice: {
+            ...voice,
+            playback: { messageId, state: "stopping", error: null },
+          },
+        });
+      }
+      // 该消息在本地残留的分片立即释放
+      const nextChunks = { ...get().voice.ttsChunks };
+      delete nextChunks[messageId];
+      const nextDropped = { ...get().voice.ttsDroppedChunks };
+      delete nextDropped[messageId];
       set({
         voice: {
-          ...voice,
-          playback: { messageId, state: "stopping", error: null },
+          ...get().voice,
+          ttsChunks: nextChunks,
+          ttsDroppedChunks: nextDropped,
         },
       });
+
       try {
         await client.request("voice.mobile_tts_stop", { message_id: messageId });
-        set({
-          voice: {
-            ...get().voice,
-            playback: { messageId: null, state: "idle", error: null },
-          },
-        });
+        // 请求成功后：只有当当前全局状态仍属于该 messageId 时才重置为 idle！
+        // 如果当前已切换为新消息，切勿把新消息清空！
+        const currentVoice = get().voice;
+        if (currentVoice.playback.messageId === messageId) {
+          set({
+            voice: {
+              ...currentVoice,
+              playback: nextQueuedPlayback(currentVoice.ttsChunks),
+            },
+          });
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        set({
-          voice: {
-            ...get().voice,
-            playback: { messageId, state: "idle", error: message },
-          },
-        });
+        const currentVoice = get().voice;
+        if (currentVoice.playback.messageId === messageId) {
+          set({
+            voice: {
+              ...currentVoice,
+              playback: nextQueuedPlayback(currentVoice.ttsChunks, { messageId, state: "failed", error: message }),
+            },
+          });
+        }
         throw error;
       }
     },
 
     finishVoicePlayback(messageId) {
+      stoppedOrTerminalMessages.add(messageId);
+      endedTtsMessages.delete(messageId);
       const voice = get().voice;
       if (voice.playback.messageId !== messageId) return;
+      if (voice.playback.state === "stopping") return;
       const nextChunks = { ...voice.ttsChunks };
       delete nextChunks[messageId];
+      const nextDropped = { ...voice.ttsDroppedChunks };
+      delete nextDropped[messageId];
       set({
         voice: {
           ...voice,
-          playback: { messageId: null, state: "idle", error: null },
+          playback: nextQueuedPlayback(nextChunks),
           ttsChunks: nextChunks,
+          ttsDroppedChunks: nextDropped,
+        },
+      });
+    },
+
+    releaseTtsChunksUpTo(messageId, uptoSeq) {
+      const voice = get().voice;
+      const chunks = voice.ttsChunks[messageId];
+      if (!chunks) return;
+      const remaining = chunks.filter((item) => item.seq > uptoSeq);
+      if (remaining.length === chunks.length) return;
+      const nextChunks = { ...voice.ttsChunks };
+      if (remaining.length === 0) {
+        delete nextChunks[messageId];
+      } else {
+        nextChunks[messageId] = remaining;
+      }
+      set({
+        voice: {
+          ...voice,
+          ttsChunks: nextChunks,
+        },
+      });
+    },
+
+    failVoicePlayback(messageId, error) {
+      stoppedOrTerminalMessages.add(messageId);
+      endedTtsMessages.delete(messageId);
+      console.error("语音播放失败", messageId, error);
+      const voice = get().voice;
+      if (voice.playback.messageId !== messageId) return;
+      if (voice.playback.state === "stopping") return;
+      // Let It Fail：播放异常如实置 failed 并保留错误，不清成成功态；
+      // 该消息分片已不可用，随失败一并清理。
+      const nextChunks = { ...voice.ttsChunks };
+      delete nextChunks[messageId];
+      const nextDropped = { ...voice.ttsDroppedChunks };
+      delete nextDropped[messageId];
+      set({
+        voice: {
+          ...voice,
+          playback: nextQueuedPlayback(nextChunks, { messageId, state: "failed", error }),
+          ttsChunks: nextChunks,
+          ttsDroppedChunks: nextDropped,
         },
       });
     },

@@ -17,6 +17,7 @@ import { useVoiceCapture } from "../../lib/useVoiceCapture";
 import { useVoicePlayback } from "../../lib/voicePlayback";
 import { ChatComposer, type ChatComposerTarget } from "./ChatComposer";
 import { MessageBubble } from "./MessageBubble";
+import { QueueItemRow } from "./QueueItemRow";
 import { useChatTimeline, type TimelineItem } from "./useChatTimeline";
 import "./chat.css";
 
@@ -67,6 +68,9 @@ export function ChatPage({ conversationId }: ChatPageProps) {
   const openConversation = useMobileStore((state) => state.openConversation);
   const submitDelegation = useMobileStore((state) => state.submitDelegation);
   const submitMessage = useMobileStore((state) => state.submitMessage);
+  const withdrawQueueItem = useMobileStore((state) => state.withdrawQueueItem);
+  const editQueueItem = useMobileStore((state) => state.editQueueItem);
+  const prioritizeQueueItem = useMobileStore((state) => state.prioritizeQueueItem);
   const setConversationMode = useMobileStore((state) => state.setConversationMode);
   const resolveApproval = useMobileStore((state) => state.resolveApproval);
   const stopVoicePlayback = useMobileStore((state) => state.stopVoicePlayback);
@@ -93,7 +97,7 @@ export function ChatPage({ conversationId }: ChatPageProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const voice = useVoiceCapture(conversationId);
-  const { playingMessageId } = useVoicePlayback(conversationId);
+  const { playingMessageId, playbackMessageId, playbackError } = useVoicePlayback(conversationId);
 
   // 装载会话
   useEffect(() => {
@@ -192,6 +196,18 @@ export function ChatPage({ conversationId }: ChatPageProps) {
     if (item.kind === "tool_run") {
       return <ToolCard key={key ?? item.id} run={item.toolRun} />;
     }
+    if (item.kind === "queue_item") {
+      // V0.3.8 T5（契约 §14.1）：忙时排队中的用户消息可见、可置顶/编辑/撤回。
+      return (
+        <QueueItemRow
+          key={key ?? item.id}
+          queueItem={item.queueItem}
+          onWithdraw={() => void withdrawQueueItem(item.queueItem.queue_item_id)}
+          onPrioritize={() => void prioritizeQueueItem(item.queueItem.queue_item_id)}
+          onEdit={(text) => void editQueueItem(item.queueItem.queue_item_id, text)}
+        />
+      );
+    }
     const message = item.message;
     if (isDelegationMessage(message)) {
       return (
@@ -209,6 +225,9 @@ export function ChatPage({ conversationId }: ChatPageProps) {
         key={key ?? item.id}
         message={message}
         playingMessageId={playingMessageId}
+        playbackError={
+          message.message_id === playbackMessageId ? playbackError : null
+        }
         onStopPlayback={() => {
           if (playingMessageId) {
             void stopVoicePlayback(playingMessageId);

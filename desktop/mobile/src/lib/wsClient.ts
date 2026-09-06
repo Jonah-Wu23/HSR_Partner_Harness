@@ -67,9 +67,16 @@ export class RemoteCommandError extends Error {
 const TOKEN_KEY = "phm.remote.token";
 const DEVICE_NAME_KEY = "phm.remote.deviceName";
 const WS_URL_KEY = "phm.wsUrl";
+const NOTIFICATION_PREFERENCES_KEY = "phm.notificationPreferences.v1";
 
 /** 重连退避序列（毫秒）；用尽后进入 unreachable，等用户手动重试。 */
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000];
+
+/** V0.3.8 T1（契约 §14.3）：心跳口径——每 15s 发一次 ping；30s（2×周期）
+    内未收到任何入站消息即判定半开连接，主动断开走既有重连。服务端
+    WebSocketResponse 另开 heartbeat=30s，双侧都能在超时内暴露死链。 */
+export const PING_INTERVAL_MS = 15_000;
+export const INBOUND_STALE_MS = 30_000;
 
 function storage(): Storage | null {
   try {
@@ -92,6 +99,7 @@ export function saveCredentials(token: string, deviceName: string): void {
   if (!store) return;
   store.setItem(TOKEN_KEY, token);
   store.setItem(DEVICE_NAME_KEY, deviceName);
+  syncNativeKeepaliveConfig();
 }
 
 export function clearCredentials(): void {
@@ -99,6 +107,28 @@ export function clearCredentials(): void {
   if (!store) return;
   store.removeItem(TOKEN_KEY);
   store.removeItem(DEVICE_NAME_KEY);
+  syncNativeKeepaliveConfig();
+}
+
+/**
+ * Android 壳的窄接口：持久化状态变更后立即同步原生常驻 WS。
+ * PWA 和测试环境没有该接口，保持无副作用。
+ */
+export function syncNativeKeepaliveConfig(): void {
+  const store = storage();
+  const nativeBridge = (
+    globalThis as typeof globalThis & {
+      PairHarnessNative?: {
+        syncConfig(wsUrl: string, token: string, prefsJson: string): void;
+      };
+    }
+  ).PairHarnessNative;
+  if (!store || !nativeBridge) return;
+  nativeBridge.syncConfig(
+    resolveWsUrl(),
+    store.getItem(TOKEN_KEY) ?? "",
+    store.getItem(NOTIFICATION_PREFERENCES_KEY) ?? "",
+  );
 }
 
 /**
@@ -133,6 +163,8 @@ export class MobileWsClient {
   private reconnectAttempt = 0;
   private reconnectTimer: number | null = null;
   private manualClose = false;
+  private heartbeatTimer: number | null = null;
+  private lastInboundAt = 0;
 
   getState(): MobileConnectionState {
     return this.state;
@@ -166,13 +198,20 @@ export class MobileWsClient {
     const ws = new WebSocket(resolveWsUrl());
     this.ws = ws;
     ws.onopen = () => {
+      if (this.ws !== ws) return;
       this.reconnectAttempt = 0;
+      this.lastInboundAt = Date.now();
+      this.startHeartbeat();
       this.setState("connected");
     };
     ws.onmessage = (message: MessageEvent<string>) => {
+      if (this.ws !== ws) return;
+      this.lastInboundAt = Date.now();
       this.handleMessage(String(message.data));
     };
     ws.onclose = () => {
+      if (this.ws !== ws) return;
+      this.stopHeartbeat();
       this.ws = null;
       this.failAllPending(new Error("WebSocket 连接已关闭"));
       if (this.manualClose) {
@@ -186,6 +225,7 @@ export class MobileWsClient {
 
   disconnect(): void {
     this.manualClose = true;
+    this.stopHeartbeat();
     if (this.reconnectTimer !== null && typeof window !== "undefined") {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -194,6 +234,18 @@ export class MobileWsClient {
     this.ws = null;
     this.failAllPending(new Error("客户端主动断开"));
     this.setState("disconnected");
+  }
+
+  /** 底层 WebSocket 是否物理处于 OPEN 状态。 */
+  isSocketConnected(): boolean {
+    return Boolean(this.ws && this.ws.readyState === WebSocket.OPEN);
+  }
+
+  /** 调用方已收到携带新凭证的业务成功响应后，恢复鉴权连接状态。 */
+  confirmAuthenticated(): void {
+    if (this.state === "auth_failed" && this.isSocketConnected()) {
+      this.setState("connected");
+    }
   }
 
   /**
@@ -215,9 +267,29 @@ export class MobileWsClient {
     if (!opts?.skipAuth && token) frame.auth = { token };
     const ws = this.ws;
     return new Promise<T>((resolve, reject) => {
+      let timeoutTimer: number | null = null;
+      if (typeof window !== "undefined") {
+        timeoutTimer = window.setTimeout(() => {
+          if (this.pending.has(id)) {
+            this.pending.delete(id);
+            reject(
+              new RemoteCommandError(
+                "request_timeout",
+                `远程命令超时（${method}，30s 未收到响应）`,
+              ),
+            );
+          }
+        }, 30_000);
+      }
       this.pending.set(id, {
-        resolve: resolve as (result: unknown) => void,
-        reject,
+        resolve: (result: unknown) => {
+          if (timeoutTimer !== null) clearTimeout(timeoutTimer);
+          (resolve as (val: unknown) => void)(result);
+        },
+        reject: (error: unknown) => {
+          if (timeoutTimer !== null) clearTimeout(timeoutTimer);
+          reject(error);
+        },
       });
       ws.send(JSON.stringify(frame));
     });
@@ -264,6 +336,44 @@ export class MobileWsClient {
     entry.reject(
       new RemoteCommandError(code, message, frame.error?.details),
     );
+  }
+
+  private startHeartbeat(): void {
+    if (typeof window === "undefined") return;
+    this.stopHeartbeat();
+    this.heartbeatTimer = window.setInterval(() => {
+      if (Date.now() - this.lastInboundAt >= INBOUND_STALE_MS) {
+        // 半开连接：TCP 未断但服务端/网络已死——主动断开，onclose 统一走重连。
+        console.warn("WS 心跳超时（30s 无入站消息），判定半开连接并重连");
+        this.stopHeartbeat();
+        this.ws?.close();
+        return;
+      }
+      this.request("ping", {}).catch((error) => {
+        // 发送失败/被拒由 onclose 或错误响应（auth_failed）驱动状态，这里留痕。
+        console.warn("WS ping 发送失败", error);
+      });
+    }, PING_INTERVAL_MS);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer !== null && typeof window !== "undefined") {
+      window.clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
+  /** V0.3.8 T1（契约 §14.4）：回前台重同步分派——unreachable 终态复位重连
+      （不得永久停摆）；connected 返回 resync 由调用方重新 bootstrap 补拉；
+      connecting/reconnecting 维持既有流程。 */
+  notifyAppForeground(): "resync" | "reconnecting" | "none" {
+    if (this.state === "unreachable") {
+      this.reconnectAttempt = 0;
+      this.connect();
+      return "reconnecting";
+    }
+    if (this.state === "connected") return "resync";
+    return "none";
   }
 
   private scheduleReconnect(): void {

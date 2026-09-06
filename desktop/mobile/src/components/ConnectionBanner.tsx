@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { MobileConnectionState } from "../lib/wsClient";
 import { useMobileStore } from "../lib/mobileStore";
 import { navigate } from "../lib/router";
@@ -29,6 +30,8 @@ const CONNECTION_MESSAGES: Record<MobileConnectionState, string> = {
  * - unreachable / disconnected 提供「重试」按钮（调用 store reconnect）
  */
 export function ConnectionBanner({ connection }: ConnectionBannerProps) {
+  const [repairError, setRepairError] = useState<string | null>(null);
+  const [repairing, setRepairing] = useState(false);
   if (connection === "connected") {
     return null;
   }
@@ -43,11 +46,20 @@ export function ConnectionBanner({ connection }: ConnectionBannerProps) {
     useMobileStore.getState().reconnect();
   };
 
-  const handleRePair = () => {
+  const handleRePair = async () => {
     // 必须先清本地凭据再跳转：App 路由守卫按 token 存在性拦截，
     // 只 navigate 会被守卫立即弹回列表页（V0.3.3 真机验收发现）。
-    useMobileStore.getState().disconnect();
-    navigate({ name: "pair" });
+    setRepairError(null);
+    setRepairing(true);
+    try {
+      await useMobileStore.getState().disconnect();
+      navigate({ name: "pair" });
+    } catch (error) {
+      console.error("重新配对前释放控制权失败", error);
+      setRepairError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRepairing(false);
+    }
   };
 
   return (
@@ -59,12 +71,14 @@ export function ConnectionBanner({ connection }: ConnectionBannerProps) {
       data-state={connection}
     >
       <span className="conn-banner-message">{CONNECTION_MESSAGES[connection]}</span>
+      {repairError && <span role="alert">{repairError}</span>}
       <div className="conn-banner-actions">
         {connection === "auth_failed" && (
           <button
             type="button"
             className="conn-banner-btn"
             onClick={handleRePair}
+            disabled={repairing}
             data-testid="btn-repair"
           >
             重新配对

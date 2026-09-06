@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationRecord, DesktopSnapshot, Message, PairRecord } from "@shared/contracts/protocol";
-import { mobileWsClient, useMobileStore } from "./mobileStore";
+import {
+  appendTtsChunkBounded,
+  mobileWsClient,
+  resetVoiceTerminalStateForTests,
+  TTS_MAX_BUFFERED_PCM_BYTES,
+  useMobileStore,
+  type MobileTtsChunk,
+} from "./mobileStore";
 import { getStoredToken } from "./wsClient";
 
 class FakeWebSocket {
@@ -33,6 +40,12 @@ class FakeWebSocket {
 
   send(data: string): void {
     this.sent.push(data);
+    const frame = JSON.parse(data) as { id: string; method: string };
+    if (frame.method === "remote.claim_control" || frame.method === "remote.release_control") {
+      queueMicrotask(() => this.emit({
+        kind: "response", id: frame.id, ok: true, result: { active: true },
+      }));
+    }
   }
 
   emit(frame: unknown): void {
@@ -62,6 +75,7 @@ function snapshotResult(sequence: number): DesktopSnapshot {
     ],
     messages: [],
     tool_runs: [],
+    queue_items: [],
     approvals: [],
     sequence,
     stream_id: "stream-current",
@@ -104,6 +118,7 @@ async function pairAndBootstrap(): Promise<void> {
 }
 
 beforeEach(() => {
+  resetVoiceTerminalStateForTests();
   vi.stubGlobal("WebSocket", FakeWebSocket);
   mobileWsClient.disconnect();
   FakeWebSocket.instances = [];
@@ -116,6 +131,7 @@ beforeEach(() => {
     activeConversationId: null,
     messages: [],
     toolRuns: [],
+    queueItems: [],
     approvals: [],
     resolvedApprovals: [],
     pair: null,
@@ -130,6 +146,7 @@ beforeEach(() => {
       playback: { messageId: null, state: "idle", error: null },
       availability: { secureContext: false, micPermission: "unknown", supported: false },
       ttsChunks: {},
+      ttsDroppedChunks: {},
     },
   });
   useMobileStore.getState().start();
@@ -308,7 +325,7 @@ describe("mobileStore V0.3.7 电源状态", () => {
     });
     expect(useMobileStore.getState().powerStatus).toEqual(atRiskPayload);
 
-    useMobileStore.getState().disconnect();
+    await useMobileStore.getState().disconnect();
     expect(useMobileStore.getState().powerStatus).toBeNull();
   });
 
@@ -718,6 +735,7 @@ describe("mobileStore 会话操作", () => {
       projects: [{ project_id: "p1", name: "演示项目", conversations: [CONVERSATION] }],
       messages: [],
       tool_runs: [],
+    queue_items: [],
       approvals: [],
       sequence: 20,
       pair: otherPair,
@@ -1032,6 +1050,7 @@ describe("mobileStore 会话操作", () => {
       projects: [{ project_id: "p1", name: "演示项目", conversations: [CONVERSATION] }],
       messages: [],
       tool_runs: [],
+    queue_items: [],
       approvals: [],
       sequence: 20,
       pair: null,
@@ -1135,6 +1154,11 @@ describe("mobileStore 会话操作", () => {
         payload: { message_id: "m-tts", seq: 0, mime: "audio/pcm;rate=24000", data: "ZAA=" },
       });
       expect(useMobileStore.getState().voice.ttsChunks["m-tts"]).toHaveLength(1);
+      // V0.3.8：分片记录解码后 PCM 字节数（"ZAA=" → 2 字节），供容量核算。
+      expect(useMobileStore.getState().voice.ttsChunks["m-tts"]![0]).toMatchObject({
+        seq: 0,
+        bytes: 2,
+      });
       expect(useMobileStore.getState().voice.playback.state).toBe("buffering");
 
       lastInstance().emit({
@@ -1145,6 +1169,106 @@ describe("mobileStore 会话操作", () => {
       });
       expect(useMobileStore.getState().voice.playback.state).toBe("playing");
       expect(useMobileStore.getState().voice.playback.messageId).toBe("m-tts");
+    });
+  });
+
+  describe("mobileStore V0.3.8 TTS 缓冲上限与播放失败", () => {
+    function emitTtsChunk(sequence: number, payload: { seq: number; data: string }): void {
+      lastInstance().emit({
+        kind: "event",
+        event: "voice.mobile_tts_chunk",
+        sequence,
+        payload: { message_id: "m-cap", mime: "audio/pcm;rate=24000", ...payload },
+      });
+    }
+
+    /** data 长度 = bytes*4/3（bytes 可被 3 整除时无 padding），base64PcmByteLength 恰好还原 bytes。 */
+    function chunkData(bytes: number): string {
+      return "A".repeat((bytes * 4) / 3);
+    }
+
+    it("缓冲超上限时丢弃最旧分片并累计丢弃计数（可观测）", async () => {
+      await pairAndBootstrap();
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const cap = TTS_MAX_BUFFERED_PCM_BYTES;
+
+      // 两片各 cap/2：都在限内。
+      emitTtsChunk(11, { seq: 0, data: chunkData(cap / 2) });
+      emitTtsChunk(12, { seq: 1, data: chunkData(cap / 2) });
+      expect(useMobileStore.getState().voice.ttsChunks["m-cap"]).toHaveLength(2);
+      expect(useMobileStore.getState().voice.ttsDroppedChunks["m-cap"]).toBeUndefined();
+
+      // 第三片使总量超过上限：最旧的 seq0 被丢弃，计数与告警日志可见。
+      emitTtsChunk(13, { seq: 2, data: chunkData(48) });
+      expect(
+        useMobileStore.getState().voice.ttsChunks["m-cap"]!.map((item) => item.seq),
+      ).toEqual([1, 2]);
+      expect(useMobileStore.getState().voice.ttsDroppedChunks["m-cap"]).toBe(1);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("TTS 分片缓冲超限"));
+      warnSpy.mockRestore();
+    });
+
+    it("appendTtsChunkBounded：去重、按 seq 排序、超限丢最旧、单独超限分片保留", () => {
+      const mk = (seq: number, bytes: number): MobileTtsChunk => ({
+        seq,
+        mime: "audio/pcm;rate=24000",
+        data: "",
+        bytes,
+      });
+      // 乱序到达按 seq 排序。
+      const sorted = appendTtsChunkBounded([mk(1, 10)], mk(0, 10), 100);
+      expect(sorted.chunks.map((item) => item.seq)).toEqual([0, 1]);
+      expect(sorted.dropped).toBe(0);
+      // 重复 seq 去重，不重复计入容量。
+      const deduped = appendTtsChunkBounded(sorted.chunks, mk(1, 10), 100);
+      expect(deduped.chunks).toHaveLength(2);
+      expect(deduped.dropped).toBe(0);
+      // 超限连续丢最旧，至少保留最新一条。
+      const overflow = appendTtsChunkBounded([mk(0, 60), mk(1, 60)], mk(2, 60), 100);
+      expect(overflow.chunks.map((item) => item.seq)).toEqual([2]);
+      expect(overflow.dropped).toBe(2);
+      // 最新一条单独超限也保留（不出现空缓冲）。
+      const single = appendTtsChunkBounded([mk(0, 60)], mk(1, 200), 100);
+      expect(single.chunks.map((item) => item.seq)).toEqual([1]);
+      expect(single.dropped).toBe(1);
+    });
+
+    it("releaseTtsChunksUpTo 释放已移交引擎的分片，空条目随删", async () => {
+      await pairAndBootstrap();
+      emitTtsChunk(11, { seq: 0, data: "ZAA=" });
+      emitTtsChunk(12, { seq: 1, data: "ZAA=" });
+
+      useMobileStore.getState().releaseTtsChunksUpTo("m-cap", 0);
+      expect(
+        useMobileStore.getState().voice.ttsChunks["m-cap"]!.map((item) => item.seq),
+      ).toEqual([1]);
+      useMobileStore.getState().releaseTtsChunksUpTo("m-cap", 1);
+      expect(useMobileStore.getState().voice.ttsChunks["m-cap"]).toBeUndefined();
+    });
+
+    it("failVoicePlayback 如实置 failed 并保留错误；迟到的 end 不得掩盖失败终态", async () => {
+      await pairAndBootstrap();
+      emitTtsChunk(11, { seq: 0, data: "ZAA=" });
+
+      useMobileStore
+        .getState()
+        .failVoicePlayback("m-cap", "播放结束信号超时：300 秒未收到 voice.mobile_tts_end，已中止播放");
+      expect(useMobileStore.getState().voice.playback).toMatchObject({
+        messageId: "m-cap",
+        state: "failed",
+        error: expect.stringContaining("voice.mobile_tts_end"),
+      });
+      // 失败消息的分片与丢弃计数一并清理，不再驻留。
+      expect(useMobileStore.getState().voice.ttsChunks["m-cap"]).toBeUndefined();
+      expect(useMobileStore.getState().voice.ttsDroppedChunks["m-cap"]).toBeUndefined();
+
+      lastInstance().emit({
+        kind: "event",
+        event: "voice.mobile_tts_end",
+        sequence: 12,
+        payload: { message_id: "m-cap" },
+      });
+      expect(useMobileStore.getState().voice.playback.state).toBe("failed");
     });
   });
 
@@ -1402,3 +1526,338 @@ describe("mobileStore 会话操作", () => {
     });
   });
 });
+
+  describe("mobileStore V0.3.8 T5 队列接入", () => {
+    function queueItem(overrides: Partial<Record<string, unknown>> = {}) {
+      return {
+        queue_item_id: "q-1",
+        account_id: "acc",
+        conversation_id: "c1",
+        target: "character",
+        text: "排队中的消息",
+        intent: "followup",
+        position: 0,
+        status: "queued",
+        created_at: "2026-09-05T00:00:00+00:00",
+        source_message_id: null,
+        ...overrides,
+      };
+    }
+
+    async function openConv() {
+      await pairAndBootstrap();
+      const openPromise = useMobileStore.getState().openConversation("c1");
+      await vi.waitFor(() => {
+        expect(lastSentFrame().method).toBe("conversation.open");
+      });
+      const openFrame = lastSentFrame();
+      lastInstance().emit({
+        kind: "response",
+        id: openFrame.id,
+        ok: true,
+        result: {
+          conversation: CONVERSATION,
+          project: null,
+          pair: null,
+          messages: [],
+          tool_runs: [],
+          queue_items: [],
+          turns: [],
+          active_task: null,
+        },
+      });
+      await openPromise;
+    }
+
+    it("queue.changed 更新活跃会话的排队项（仅保留 queued）", async () => {
+      await openConv();
+      const ws = lastInstance();
+      ws.emit({
+        kind: "event",
+        event: "queue.changed",
+        sequence: 12,
+        payload: {
+          conversation_id: "c1",
+          items: [
+            queueItem(),
+            queueItem({ queue_item_id: "q-2", position: 1, status: "processing" }),
+          ],
+        },
+      });
+      const items = useMobileStore.getState().queueItems;
+      expect(items).toHaveLength(1);
+      expect(items[0].queue_item_id).toBe("q-1");
+      expect(items[0].text).toBe("排队中的消息");
+    });
+
+    it("其他会话的 queue.changed 不覆盖当前会话排队项", async () => {
+      await openConv();
+      useMobileStore.setState({
+        queueItems: [queueItem()] as never,
+      });
+      lastInstance().emit({
+        kind: "event",
+        event: "queue.changed",
+        sequence: 12,
+        payload: { conversation_id: "c2", items: [] },
+      });
+      expect(useMobileStore.getState().queueItems).toHaveLength(1);
+    });
+
+    it("chat.submit 排队回执立即落地本地排队项", async () => {
+      await openConv();
+      const submitPromise = useMobileStore.getState().submitMessage("忙时新消息");
+      await vi.waitFor(() => {
+        expect(lastSentFrame().method).toBe("chat.submit");
+      });
+      const frame = lastSentFrame();
+      lastInstance().emit({
+        kind: "response",
+        id: frame.id,
+        ok: true,
+        result: { queued: true, queue_item: queueItem({ text: "忙时新消息" }) },
+      });
+      await submitPromise;
+      const items = useMobileStore.getState().queueItems;
+      expect(items).toHaveLength(1);
+      expect(items[0].text).toBe("忙时新消息");
+    });
+
+    it("withdraw/prioritize/edit 三命令真实下发", async () => {
+      await openConv();
+      const respond = () => {
+        const cmdFrame = lastSentFrame();
+        lastInstance().emit({ kind: "response", id: cmdFrame.id, ok: true, result: {} });
+        return cmdFrame;
+      };
+      const withdrawPromise = useMobileStore.getState().withdrawQueueItem("q-1");
+      await vi.waitFor(() => {
+        expect(lastSentFrame().method).toBe("queue.withdraw");
+      });
+      const withdrawFrame = respond();
+      expect(withdrawFrame.params).toMatchObject({ queue_item_id: "q-1" });
+      await withdrawPromise;
+
+      const prioritizePromise = useMobileStore.getState().prioritizeQueueItem("q-2");
+      await vi.waitFor(() => {
+        expect(lastSentFrame().method).toBe("queue.prioritize");
+      });
+      const prioritizeFrame = respond();
+      expect(prioritizeFrame.params).toMatchObject({ queue_item_id: "q-2" });
+      await prioritizePromise;
+
+      const editPromise = useMobileStore.getState().editQueueItem("q-3", "改后的文本");
+      await vi.waitFor(() => {
+        expect(lastSentFrame().method).toBe("queue.edit");
+      });
+      const editFrame = respond();
+      expect(editFrame.params).toMatchObject({ queue_item_id: "q-3", text: "改后的文本" });
+      await editPromise;
+    });
+  });
+
+  describe("mobileStore V0.3.8 播放防循环与配对互斥 (D1/D2/D4)", () => {
+    it("stopVoicePlayback 只在当前消息匹配时置 idle，不冲掉已到达的新消息", async () => {
+      await pairAndBootstrap();
+
+      // 设置当前正在播 msg-1
+      useMobileStore.setState({
+        voice: {
+          ...useMobileStore.getState().voice,
+          playback: { messageId: "msg-1", state: "playing", error: null },
+        },
+      });
+
+      const stopPromise = useMobileStore.getState().stopVoicePlayback("msg-1");
+      expect(useMobileStore.getState().voice.playback).toMatchObject({
+        messageId: "msg-1",
+        state: "stopping",
+      });
+
+      // 在等待 stop 响应期间，msg-2 的 chunk 到达，状态切到了 msg-2
+      useMobileStore.setState({
+        voice: {
+          ...useMobileStore.getState().voice,
+          playback: { messageId: "msg-2", state: "buffering", error: null },
+        },
+      });
+
+      // 响应旧消息 msg-1 的 stop
+      await vi.waitFor(() => {
+        expect(lastSentFrame().method).toBe("voice.mobile_tts_stop");
+      });
+      const stopFrame = lastSentFrame();
+      expect(stopFrame.params).toMatchObject({ message_id: "msg-1" });
+      lastInstance().emit({ kind: "response", id: stopFrame.id, ok: true, result: { stopped: true } });
+      await stopPromise;
+
+      // 关键断言：msg-1 的 stop 成功回执绝不能把 msg-2 冲成 idle/null！
+      expect(useMobileStore.getState().voice.playback).toMatchObject({
+        messageId: "msg-2",
+        state: "buffering",
+      });
+    });
+
+    it("已停止的消息分片到达时不复活为 buffering/playing", async () => {
+      await pairAndBootstrap();
+
+      useMobileStore.setState({
+        voice: {
+          ...useMobileStore.getState().voice,
+          playback: { messageId: "msg-stopped", state: "playing", error: null },
+        },
+      });
+
+      const stopPromise = useMobileStore.getState().stopVoicePlayback("msg-stopped");
+      await vi.waitFor(() => {
+        expect(lastSentFrame().method).toBe("voice.mobile_tts_stop");
+      });
+      const stopFrame = lastSentFrame();
+      lastInstance().emit({ kind: "response", id: stopFrame.id, ok: true, result: { stopped: true } });
+      await stopPromise;
+
+      expect(useMobileStore.getState().voice.playback).toMatchObject({
+        messageId: null,
+        state: "idle",
+      });
+
+      // 迟到的已停止分片到达
+      lastInstance().emit({
+        kind: "event",
+        sequence: 101,
+        stream_id: "stream-current",
+        event: "voice.mobile_tts_chunk",
+        payload: { message_id: "msg-stopped", seq: 5, data: "AAAA" },
+      });
+
+      // 依然是 idle，绝不复活成 buffering
+      expect(useMobileStore.getState().voice.playback).toMatchObject({
+        messageId: null,
+        state: "idle",
+      });
+    });
+
+    it("D4：auth_failed 且 socket 物理连接 OPEN 时，pairDevice 立即放行并发出 remote.pair", async () => {
+      // 先建立物理连接并打开
+      mobileWsClient.connect();
+      lastInstance().open();
+
+      // 模拟先前的鉴权失败状态，但 socket 物理连接保持 OPEN
+      useMobileStore.setState({ connection: "auth_failed" });
+      // @ts-expect-error test backdoor
+      mobileWsClient.state = "auth_failed";
+
+      const pairPromise = useMobileStore.getState().pairDevice("112233", "测试设备");
+      await vi.waitFor(() => {
+        expect(lastSentFrame().method).toBe("remote.pair");
+      });
+      const pairFrame = lastSentFrame();
+      expect(pairFrame.params).toMatchObject({ code: "112233", device_name: "测试设备" });
+      lastInstance().emit({ kind: "response", id: pairFrame.id, ok: true, result: { token: "tok-new" } });
+
+      await vi.waitFor(() => {
+        expect(lastSentFrame().method).toBe("app.bootstrap");
+      });
+      const bootstrapFrame = lastSentFrame();
+      lastInstance().emit({
+        kind: "response",
+        id: bootstrapFrame.id,
+        ok: true,
+        result: snapshotResult(1),
+      });
+
+      await pairPromise;
+      expect(useMobileStore.getState().deviceName).toBe("测试设备");
+    });
+
+    it("新角色回复出现（message.created）立即打断正在播放的旧语音", async () => {
+      await pairAndBootstrap();
+
+      useMobileStore.setState({
+        activeConversationId: "conv-preempt",
+        voice: {
+          ...useMobileStore.getState().voice,
+          playback: { messageId: "msg-old", state: "playing", error: null },
+          ttsChunks: { "msg-old": [{ seq: 0, mime: "audio/pcm;rate=24000", data: "AAAA", bytes: 3 }] },
+        },
+      });
+
+      lastInstance().emit({
+        kind: "event",
+        sequence: 11,
+        stream_id: "stream-current",
+        event: "message.created",
+        payload: {
+          conversation_id: "conv-preempt",
+          tts_ready: true,
+          message: {
+            message_id: "msg-new",
+            conversation_id: "conv-preempt",
+            source: "character",
+            text: "这是新的回答内容",
+          },
+        },
+      });
+
+      // 旧语音应立即被打断并复位为 idle，本地旧分片被清理
+      expect(useMobileStore.getState().voice.playback).toMatchObject({
+        messageId: null,
+        state: "idle",
+      });
+      expect(useMobileStore.getState().voice.ttsChunks["msg-old"]).toBeUndefined();
+
+      // 服务端应收到停止旧消息的请求
+      await vi.waitFor(() => {
+        expect(lastSentFrame().method).toBe("voice.mobile_tts_stop");
+      });
+      expect(lastSentFrame().params).toMatchObject({ message_id: "msg-old" });
+
+      // 新消息的语音分片到达，直接进入播放
+      lastInstance().emit({
+        kind: "event",
+        sequence: 12,
+        stream_id: "stream-current",
+        event: "voice.mobile_tts_chunk",
+        payload: { message_id: "msg-new", seq: 0, data: "BBBB" },
+      });
+
+      expect(useMobileStore.getState().voice.playback).toMatchObject({
+        messageId: "msg-new",
+        state: "buffering",
+      });
+    });
+
+    it("新语音分片（voice.mobile_tts_chunk）到达时直接抢占打断正在播放的旧语音", async () => {
+      await pairAndBootstrap();
+
+      useMobileStore.setState({
+        activeConversationId: "conv-preempt",
+        voice: {
+          ...useMobileStore.getState().voice,
+          playback: { messageId: "msg-old-2", state: "playing", error: null },
+          ttsChunks: { "msg-old-2": [{ seq: 0, mime: "audio/pcm;rate=24000", data: "AAAA", bytes: 3 }] },
+        },
+      });
+
+      lastInstance().emit({
+        kind: "event",
+        sequence: 11,
+        stream_id: "stream-current",
+        event: "voice.mobile_tts_chunk",
+        payload: { message_id: "msg-new-2", seq: 0, data: "CCCC" },
+      });
+
+      // 旧语音被抢占打断，新语音立即成为 active
+      expect(useMobileStore.getState().voice.playback).toMatchObject({
+        messageId: "msg-new-2",
+        state: "buffering",
+      });
+      expect(useMobileStore.getState().voice.ttsChunks["msg-old-2"]).toBeUndefined();
+
+      // 服务端应收到停止旧消息的请求
+      await vi.waitFor(() => {
+        expect(lastSentFrame().method).toBe("voice.mobile_tts_stop");
+      });
+      expect(lastSentFrame().params).toMatchObject({ message_id: "msg-old-2" });
+    });
+  });

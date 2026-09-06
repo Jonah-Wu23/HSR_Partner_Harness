@@ -675,6 +675,13 @@
   animation: mobile-pulse 1s ease-in-out infinite;
 }
 
+/* V0.3.8：朗读播放异常（resume 失败/结束信号超时等）如实呈现原始错误 */
+.mobile-msg-tts-error {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--danger);
+}
+
 /* 窄屏 (≤ 360px) 优化 */
 @media (max-width: 360px) {
   .mobile-chat-header {
@@ -689,4 +696,86 @@
   .mobile-composer {
     padding: 8px 8px max(8px, var(--safe-bottom));
   }
+}
+
+/* V0.3.8 T5：忙时排队中的用户消息行（可置顶/编辑/撤回）。 */
+.queue-item {
+  border: 1px dashed var(--border, #2c2c34);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 6px 0;
+}
+
+.queue-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.queue-item-badge {
+  font-size: 11px;
+  color: var(--text-dim, #9a9aa5);
+  border: 1px solid var(--border, #2c2c34);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.queue-item-target {
+  font-size: 11px;
+  color: var(--accent, #4c7dff);
+}
+
+.queue-item-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+}
+
+.queue-item-actions button {
+  background: transparent;
+  border: 1px solid var(--border, #2c2c34);
+  border-radius: 8px;
+  color: var(--text, #f3f3f5);
+  font-size: 12px;
+  padding: 4px 10px;
+  min-height: 32px;
+}
+
+.queue-item-text {
+  margin: 8px 0 0;
+  font-size: 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.queue-item-edit textarea {
+  width: 100%;
+  margin-top: 8px;
+  background: var(--bg-elev, #17171c);
+  color: var(--text, #f3f3f5);
+  border: 1px solid var(--border, #2c2c34);
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 14px;
+}
+
+.queue-item-edit-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.queue-item-edit-actions button {
+  border: 1px solid var(--border, #2c2c34);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text, #f3f3f5);
+  padding: 6px 14px;
+  min-height: 36px;
+}
+
+.queue-item-error {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--danger, #ff6b6b);
 }

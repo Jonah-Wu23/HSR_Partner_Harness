@@ -164,7 +164,7 @@ describe("notificationEngine 规则映射", () => {
     expect(sendNotification).not.toHaveBeenCalled();
   });
 
-  it("静默档（silent）不发送", async () => {
+  it("静默档（silent）发送到低优先级独立渠道", async () => {
     saveNotificationPreferences({
       ...DEFAULT_NOTIFICATION_PREFERENCES,
       approvalRequested: { enabled: true, importance: "silent" },
@@ -173,8 +173,10 @@ describe("notificationEngine 规则映射", () => {
     await startEngineAndWaitReady();
 
     mobileWsClient.emitTestEvent(approvalEvent());
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(sendNotification).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(sendNotification).toHaveBeenCalledTimes(1));
+    expect(sendNotification.mock.calls[0][0]).toMatchObject({
+      channelId: "phm_approval_requested_silent",
+    });
   });
 
   it("前台（visible）不发送", async () => {
@@ -233,7 +235,16 @@ describe("notificationEngine 环境与生命周期", () => {
     disposeEngine = startNotificationEngine();
     await vi.waitFor(() => expect(createChannel).toHaveBeenCalled());
     const ids = createChannel.mock.calls.map((c) => c[0].id).sort();
-    expect(ids).toEqual(["phm_approval_requested", "phm_delegation_result", "phm_task_completed"]);
+    expect(ids).toEqual([
+      "phm_approval_requested_default",
+      "phm_approval_requested_high",
+      "phm_approval_requested_silent",
+      "phm_delegation_result_default",
+      "phm_delegation_result_high",
+      "phm_delegation_result_silent",
+      "phm_task_completed_default",
+      "phm_task_completed_high",
+      "phm_task_completed_silent",
+    ]);
   });
 });
-

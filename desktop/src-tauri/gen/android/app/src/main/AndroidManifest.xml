@@ -11,6 +11,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- V0.3.8 T1（C1）：引导用户豁免电池优化，降低后台 WS 长连接被 MIUI 掐断概率。 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- POST_NOTIFICATIONS（Android 13+ 运行时授权）由 tauri-plugin-notification 的
          library manifest 经 gradle merger 合并，不在 app manifest 重复声明。 -->
 
