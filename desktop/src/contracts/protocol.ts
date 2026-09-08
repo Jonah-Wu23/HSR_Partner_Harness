@@ -7,6 +7,8 @@ export type MessageKind =
   | "assistant.reasoning"
   | "tool.record"
   | "system.status"
+  | "system.summary"
+  | "system.error"
   | "system.approval"
   | "assistant.code"
   | "assistant.command";
@@ -68,6 +70,7 @@ export interface ToolRun {
 export type ApprovalMode = "request_approval" | "review" | "full_auto";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export type ConversationMode = "chat" | "collaboration";
+export type TaskStatus = "pending" | "running" | "amendment_pending" | "completed" | "failed" | "cancelled";
 
 export type TurnStatus =
   | "queued"
@@ -228,6 +231,8 @@ export interface PendingApproval {
     summary: string;
   };
   reason: string;
+  requested_at?: string;
+  expires_at?: string;
   /** V0.3.2 M5：审批归属的任务 id（approval.requested/resolved 载荷新增）。 */
   task_id?: string;
 }
@@ -271,6 +276,9 @@ export interface DesktopSnapshot {
   active_tasks?: ActiveTask[];
   busy: boolean;
   approvals: PendingApproval[];
+  summaries?: ConversationSummary[];
+  memories?: PairMemory[];
+  remote_control?: RemoteControlState;
   voice: VoiceState;
   pair: PairRecord;
   pairs: PairSummary[];
@@ -290,6 +298,10 @@ export interface ConversationOpenResult {
   turns: Turn[];
   queue_items: QueueItem[];
   active_task: ActiveTask | null;
+  approvals?: PendingApproval[];
+  summaries?: ConversationSummary[];
+  memories?: PairMemory[];
+  remote_control?: RemoteControlState;
   /** 响应生成时最近已发出的同连接事件序号，用于重放等待期间的实时事件。 */
   sequence: number;
   stream_id?: string | number;
@@ -302,6 +314,7 @@ export interface ConversationOpenResult {
 export type ConversationCreateResult = DesktopSnapshot & { reused: boolean };
 
 export type DesktopCommandMethod =
+  | "ping"
   | "app.bootstrap"
   | "app.shutdown"
   | "app.reconnect"
@@ -370,10 +383,20 @@ export type DesktopCommandMethod =
   | "voice.mobile_audio_chunk"
   | "voice.mobile_ptt_stop"
   | "voice.mobile_tts_stop"
+  | "summary.get"
+  | "summary.regenerate"
+  | "memory.list"
+  | "memory.update"
+  | "memory.delete"
+  | "metrics.query"
+  | "diagnostics.prompt_assembly"
+  | "remote.control_status"
   | "remote.issue_code"
   | "remote.pair"
   | "remote.list_devices"
   | "remote.revoke"
+  | "remote.claim_control"
+  | "remote.release_control"
   | "power.get_status";
 
 export interface DesktopCommand {
@@ -390,7 +413,7 @@ export interface DesktopResponse<T = unknown> {
   id: string;
   ok: boolean;
   result?: T;
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; details?: Record<string, unknown> };
 }
 
 export type DesktopEventName =
@@ -400,6 +423,11 @@ export type DesktopEventName =
   | "message.status_changed"
   | "message.delta"
   | "message.finalized"
+  | "summary.started"
+  | "summary.completed"
+  | "summary.failed"
+  | "memory.updated"
+  | "memory.deleted"
   | "tool_run.upserted"
   | "approval.requested"
   | "approval.resolved"
@@ -420,6 +448,10 @@ export type DesktopEventName =
   | "voice.mobile_transcript"
   | "voice.mobile_tts_chunk"
   | "voice.mobile_tts_end"
+  | "voice.mobile_tts_failed"
+  | "voice.playback_interrupted"
+  | "remote.control_changed"
+  | "conversation.card_missing"
   | "connection.status"
   | "error.reported"
   | "diagnostic.warning"
@@ -433,6 +465,12 @@ export interface DesktopEvent<T = Record<string, unknown>> {
   /** M2.1：连接代次标识；业务事件按 (stream_id, sequence) 去重和查缺。 */
   stream_id?: string | number;
   payload: T;
+}
+
+export interface MessageCreatedPayload {
+  message: Message;
+  /** 服务端在创建时给出的真实可朗读能力；store 可合并进本地视图模型。 */
+  tts_ready?: boolean;
 }
 
 export interface MessageDeltaPayload {
@@ -589,14 +627,44 @@ export interface VoiceMobileTtsEndPayload {
   message_id: string;
 }
 
-/** V0.3.5 审批仲裁：approval.resolved 携带决策与来源，双端据此收敛。 */
+/** V0.3.9 审批终态；来源缺失保持 null，不由前端伪造。 */
 export interface ApprovalResolvedPayload {
   approval_id: string;
-  conversation_id?: string;
-  decision: "approve" | "deny" | string;
-  resolved_by: "desktop" | "remote" | string;
-  task_id?: string;
+  conversation_id: string;
+  task_id: string | null;
+  decision: "allow" | "allow_for_conversation" | "deny" | "timeout";
+  resolved_by: "desktop" | "remote" | "system" | "reviewer" | null;
+  actor: "user" | "reviewer" | "system" | null;
+  reason: string | null;
+  resolved_at: string;
+  error_code: "approval_timeout" | null;
 }
+
+export interface ConversationSummary {
+  summary_id: string; conversation_id: string; status: "idle" | "running" | "completed" | "failed";
+  covers_from_message_id: string | null; covers_to_message_id: string | null; covers_message_count: number;
+  content: Record<string, unknown> | null; provider: string | null; model: string | null;
+  error_code: string | null; error: string | null; created_at: string; updated_at: string;
+}
+
+export interface MemoryScope { account_id: string; project_id: string; pair_id: string; character_ref: string; }
+export interface PairMemory { memory_id: string; scope: MemoryScope; content: Record<string, unknown>; status: "active" | "deleted"; updated_at: string; }
+
+export interface TurnMetric {
+  metric_id: string; account_id: string; project_id: string; conversation_id: string; pair_id: string; character_ref: string;
+  turn_kind: "character_turn" | "assistant_task"; turn_id: string; task_id: string | null; engine_turn_id: string | null;
+  provider: string | null; model: string | null; engine_type: string | null; reasoning_effort: string | null;
+  status: TurnStatus; started_at: string; first_event_at: string | null; completed_at: string | null; duration_ms: number | null;
+  input_tokens: number | null; output_tokens: number | null; total_tokens: number | null; tool_rounds: number; compression_count: number;
+  approval_count: number; failure_type: string | null; failure_message: string | null; origin: "desktop" | "remote";
+  remote_device_key: string | null; remote_device_name: string | null;
+}
+
+export interface RemoteControlState {
+  state: "free" | "held" | "grace"; device_key: string | null; expires_at: string | null; grace_expires_at: string | null; reason: string | null;
+}
+
+export interface VoiceMobileTtsFailedPayload { conversation_id: string; message_id: string; error_code: string | null; error: string; }
 
 /* ------------------------------------------------------------------ *
  * V0.3.7 PNG 双向兼容与电源状态（契约见 docs/plans/V0.3.7-契约冻结.md §1/§2）。
