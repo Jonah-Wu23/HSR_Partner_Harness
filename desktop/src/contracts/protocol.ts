@@ -647,7 +647,7 @@ export interface ConversationSummary {
   error_code: string | null; error: string | null; created_at: string; updated_at: string;
 }
 
-export interface MemoryScope { account_id: string; project_id: string; pair_id: string; character_ref: string; }
+export interface MemoryScope { account_id: string; project_id: string; pair_id: string; character_ref: string; assistant_identity: string; }
 export interface PairMemory { memory_id: string; scope: MemoryScope; content: Record<string, unknown>; status: "active" | "deleted"; updated_at: string; }
 
 export interface TurnMetric {
