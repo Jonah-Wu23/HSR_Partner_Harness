@@ -12,7 +12,7 @@ import "./ContextStatusStrip.css";
 /**
  * V0.3.9 V02（移动）压缩 / 记忆非消息状态条。
  *
- * 契约依据（docs/plans/V0.3.9-契约冻结.md §2）：
+ * 契约依据（归档正文 .archive/v0.3.9-dual-track-backup-2026-09-10/logic-worktree/V0.3.9-契约冻结.md §2）：
  * - 摘要与记忆状态用非消息状态条展示，不占用消息条目，不承载隐藏提示。
  * - 失败状态可展开原始错误（error_code + error 原文，不重写、不吞）。
  * - summary.regenerate 只针对真实存在的失败记录或用户显式请求；没有真实恢复

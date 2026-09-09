@@ -1,6 +1,6 @@
 """V0.3.9 契约 §2：角色装配顺序中的聊天摘要与配对记忆模块。
 
-契约出处：``docs/plans/V0.3.9-契约冻结.md`` §2（装配顺序与扫描源）。
+契约出处：``.archive/v0.3.9-dual-track-backup-2026-09-10/logic-worktree/V0.3.9-契约冻结.md`` §2（装配顺序与扫描源）。
 """
 
 from __future__ import annotations

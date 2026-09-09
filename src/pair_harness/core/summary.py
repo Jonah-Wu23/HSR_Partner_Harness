@@ -1,6 +1,6 @@
 """聊天级摘要纯逻辑（V0.3.9 契约冻结 §2）。
 
-契约出处：``docs/plans/V0.3.9-契约冻结.md`` §2（原文、摘要、投影与记忆）。
+契约出处：``.archive/v0.3.9-dual-track-backup-2026-09-10/logic-worktree/V0.3.9-契约冻结.md`` §2（原文、摘要、投影与记忆）。
 
 - 摘要键只含 ``conversation_id``，不得跨聊天读取；
 - 角色消息计数只统计 ``source=user|character``、``origin!=character_delegation``

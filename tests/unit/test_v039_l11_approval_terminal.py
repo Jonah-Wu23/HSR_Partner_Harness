@@ -1,4 +1,4 @@
-"""V0.3.9 L11：审批统一终态（契约 docs/plans/V0.3.9-契约冻结.md §6/§9）。
+"""V0.3.9 L11：审批统一终态（契约归档正文 .archive/v0.3.9-dual-track-backup-2026-09-10/logic-worktree/V0.3.9-契约冻结.md §6/§9）。
 
 覆盖：
 1. 超时是终态：恰好一条 approval.resolved(timeout)，字段齐全；

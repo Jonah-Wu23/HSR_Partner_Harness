@@ -4,7 +4,7 @@ import { useMobileStore } from "../../lib/mobileStore";
 /**
  * V0.3.9 V01：会话行徽章数据（组件内适配层，store 归逻辑轨）。
  *
- * 契约依据（docs/plans/V0.3.9-契约冻结.md）：
+ * 契约依据（归档正文 .archive/v0.3.9-dual-track-backup-2026-09-10/logic-worktree/V0.3.9-契约冻结.md）：
  * - §3 运行快照：active_tasks 是全账号权威集合，active_task 仅当前/目标聊天的兼容视图；
  * - §3 本地未读：只在客户端本地派生，键为 conversation_id + message_id，仅后台聊天
  *   收到新的最终 character/assistant 消息计数，进入该聊天即清零；

@@ -1,6 +1,6 @@
 """V0.3.9 契约 §1：长期记忆作用域解析与结构校验。
 
-契约出处：``docs/plans/V0.3.9-契约冻结.md`` §1。
+契约出处：``.archive/v0.3.9-dual-track-backup-2026-09-10/logic-worktree/V0.3.9-契约冻结.md`` §1。
 
 作用域必须包含 ``account_id + project_id + pair_id + character_ref +
 assistant_identity``；``character_ref`` 由聊天解析，``assistant_identity``

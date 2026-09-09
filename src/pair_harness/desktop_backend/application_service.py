@@ -77,6 +77,7 @@ from pair_harness.core.contracts import (
     TurnStatus,
     utc_now,
 )
+from pair_harness.storage.records import TurnMetric, TurnMetricQuery
 from pair_harness.core.orchestrator import ConversationOrchestrator
 from pair_harness.core.voice_policy import is_readable_text
 from pair_harness.core.voice_runtime import VoiceRuntime
@@ -105,6 +106,59 @@ def _params_card_id(params: Mapping[str, Any]) -> str | None:
     """params.character_card_id 的显式值；空/缺失返回 None（走 active 快照）。"""
     value = str(params.get("character_card_id") or "").strip()
     return value or None
+
+
+def _nullable_int(value: Any) -> int | None:
+    """非负整数取值，否则 None（契约 §5：未观测保持 null，不用 0 顶替）。"""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and value >= 0:
+        return int(value)
+    return None
+
+
+def _duration_ms(started_at: str, completed_at: str) -> int | None:
+    """ISO 时间差（毫秒）；任一端不可解析时保持 None。
+
+    同一时刻差值为真实 0，不用 None 顶替。
+    """
+    try:
+        start = datetime.fromisoformat(started_at)
+        end = datetime.fromisoformat(completed_at)
+    except (TypeError, ValueError):
+        return None
+    duration = (end - start).total_seconds()
+    if duration < 0:
+        return None
+    return int(duration * 1000)
+
+
+def _optional_text(params: Mapping[str, Any], key: str) -> str | None:
+    """params 中可选的字符串；空串/缺失返回 None。"""
+    value = params.get(key)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _optional_datetime(params: Mapping[str, Any], key: str) -> Any:
+    """params 中可选的 ISO 时间字符串；不可解析抛 ValueError（由调用方转业务错误码）。"""
+    value = _optional_text(params, key)
+    if value is None:
+        return None
+    return datetime.fromisoformat(value)
+
+
+def _diagnostics_label(value: Any) -> str:
+    """诊断值转单行显示文本（列表/对象逐项展开；只做展示包装不改写含义）。"""
+    if isinstance(value, (list, tuple)):
+        return ", ".join(_diagnostics_label(item) for item in value)
+    if isinstance(value, dict):
+        return ", ".join(f"{k}={_diagnostics_label(v)}" for k, v in value.items())
+    if value is None:
+        return "无数据"
+    return str(value)
 
 
 logger = logging.getLogger(__name__)
@@ -1404,6 +1458,9 @@ class DesktopApplicationService:
             "remote.claim_control": self._remote_claim_control,
             "remote.release_control": self._remote_release_control,
             "remote.control_status": self._remote_control_status,
+            # V0.3.9 §5：显式只读查询（存储层过滤，不改写状态）。
+            "metrics.query": self._metrics_query,
+            "diagnostics.prompt_assembly": self._diagnostics_prompt_assembly,
         }
         if command.method == "approval.resolve":
             # V0.3.5：审批应答需要命令来源做双端仲裁，其余 handler 只收 params。
@@ -2149,7 +2206,121 @@ class DesktopApplicationService:
             # 让 turn 终态成为本回合最后一个事件，前端可以把它作为
             # 回合收尾信号，而不会在其后再次看到流式占位。
             self._emit_turn_status(turn_id, terminal_status)
+            # V0.3.9 §5：turn 终态落一次指标；usage/tool_rounds 取事件流真实值，
+            # 缺失字段为 null（真实零值用 0，绝不估算 token）。
+            self._record_turn_metric(
+                conversation_id,
+                turn_id,
+                user_message,
+                target,
+                terminal_status,
+                outcome=outcome if "outcome" in locals() else None,
+            )
         return result
+
+    def _record_turn_metric(
+        self,
+        conversation_id: str,
+        turn_id: str,
+        user_message: Any,
+        target: str,
+        status: str,
+        *,
+        outcome: Any = None,
+    ) -> None:
+        """把回合终态写为 TurnMetric（幂等：同 turn 重复终态以首次写入为准）。
+
+        契约 §5：未观测或供应商不提供的字段为 null 且键仍存在，真实零值
+        用 0；token 只接受服务端真实 usage，绝不估算。
+        """
+        try:
+            turn = self._turns.get(turn_id)
+            if turn is None:
+                return
+            try:
+                conversation = self.store.get_conversation(conversation_id)
+            except KeyError:
+                return
+            account_id = self.current_account_id
+            project_id = turn.get("project_id") or conversation.project_id or ""
+            config = self._load_account_config()
+            provider = self.dialogue_provider_name(config)
+            model = config.get("dialogue.model") or ""
+            engine_type = config.get("engine") or ""
+            reasoning_effort = config.get("dialogue.reasoning_effort") or "auto"
+
+            input_tokens: int | None = None
+            output_tokens: int | None = None
+            total_tokens: int | None = None
+            tool_rounds = 0
+            engine_turn_id: str | None = None
+            task_id: str | None = None
+            if outcome is not None:
+                for event in outcome.engine_events:
+                    if event.type == EngineEventType.USAGE:
+                        payload = event.payload
+                        input_tokens = _nullable_int(payload.get("input_tokens"))
+                        output_tokens = _nullable_int(payload.get("output_tokens"))
+                        total_tokens = _nullable_int(payload.get("total_tokens"))
+                    elif event.type == EngineEventType.TOOL_STARTED:
+                        tool_rounds += 1
+                active_turn = self.orchestrator.state.get_for_conversation(conversation_id)
+                if active_turn is not None:
+                    task_id = active_turn.task_id
+                    engine_turn_id = active_turn.engine_turn_id
+                elif outcome.task is not None:
+                    task_id = outcome.task.task_id
+                # 引擎事件里的 engine_turn_id 是逐事件一致的；取最后一条。
+                last_engine_events = getattr(outcome, "engine_events", ()) or ()
+                if last_engine_events:
+                    candidate = last_engine_events[-1].engine_turn_id
+                    if candidate:
+                        engine_turn_id = candidate
+
+            started_at = turn.get("created_at") or utc_now().isoformat()
+            completed_at = utc_now().isoformat()
+            duration_ms = _duration_ms(started_at, completed_at)
+            first_event_at = turn.get("updated_at")
+            failure_type = None
+            failure_message = None
+            if status == "failed":
+                failure_type = "turn_failed"
+                failure_message = self._turns.get(turn_id, {}).get("last_error") or \
+                    str(getattr(user_message, "error", "") or "")
+
+            metric = TurnMetric(
+                account_id=account_id,
+                project_id=project_id,
+                conversation_id=conversation_id,
+                pair_id=conversation.pair_id,
+                character_ref=None,
+                assistant_identity=None,
+                turn_kind="assistant_task" if target == "assistant" else "character_turn",
+                turn_id=turn_id,
+                task_id=task_id,
+                engine_turn_id=engine_turn_id,
+                provider=provider or None,
+                model=model or None,
+                engine_type=engine_type or None,
+                reasoning_effort=reasoning_effort or None,
+                status=status,
+                started_at=started_at,
+                first_event_at=first_event_at,
+                completed_at=completed_at,
+                duration_ms=duration_ms,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                tool_rounds=tool_rounds,
+                compression_count=0,
+                approval_count=0,
+                failure_type=failure_type,
+                failure_message=failure_message,
+                origin="desktop",
+            )
+            self.store.upsert_turn_metric(metric)
+        except Exception:  # noqa: BLE001 - 指标记录失败不得影响回合主链路
+            logger.exception("回合指标记录失败（turn=%s）", turn_id)
 
     def _set_conversation_mode(
         self, conversation_id: str, mode: str
@@ -4123,6 +4294,100 @@ class DesktopApplicationService:
         """remote.control_status：只读租约状态（V0.3.9 契约 §6/§7）。"""
         del params
         return self._control_lease_payload()
+
+    async def _metrics_query(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """metrics.query：显式只读查询回合指标（契约 §5）。
+
+        过滤条件可空；limit 默认 50、上限 200（TurnMetricQuery 校验）。
+        未观测字段早已由写入侧保持 null，此处只透传存储层结果。
+        """
+        try:
+            query = TurnMetricQuery(
+                account_id=_optional_text(params, "account_id"),
+                project_id=_optional_text(params, "project_id"),
+                conversation_id=_optional_text(params, "conversation_id"),
+                pair_id=_optional_text(params, "pair_id"),
+                character_ref=_optional_text(params, "character_ref"),
+                assistant_identity=_optional_text(params, "assistant_identity"),
+                turn_kind=_optional_text(params, "turn_kind"),
+                status=_optional_text(params, "status"),
+                origin=_optional_text(params, "origin"),
+                since=_optional_datetime(params, "since"),
+                until=_optional_datetime(params, "until"),
+                limit=int(params.get("limit") or 50),
+                cursor=_optional_text(params, "cursor"),
+            )
+        except ValueError as exc:
+            raise ServiceError(str(exc), code="invalid_metrics_query") from exc
+        page = self.store.query_turn_metrics(query)
+        return {
+            "metrics": [metric.model_dump() for metric in page.items],
+            "next_cursor": page.next_cursor,
+        }
+
+    async def _diagnostics_prompt_assembly(
+        self, params: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """diagnostics.prompt_assembly：显式只读查询装配诊断（契约 §5）。
+
+        默认只返回模块名、字符范围、hash、摘要与记忆是否注入及既有
+        diagnostics；只有 include_hidden=true 时返回隐藏原文（内容来自
+        装配模块的原文，不属于对话流）。无绑定卡/卡已删除时返回空模块
+        列表并附说明，不伪造装配结果。
+        """
+        conversation_id = _optional_text(params, "conversation_id")
+        include_hidden = params.get("include_hidden") is True
+        if not conversation_id:
+            raise ServiceError("prompt_assembly 需要 conversation_id", code="missing_conversation")
+        try:
+            conversation = self.store.get_conversation(conversation_id)
+        except KeyError:
+            raise ServiceError(
+                f"会话不存在：{conversation_id}", code="conversation_not_found"
+            ) from None
+        card_id = conversation.character_card_id
+        modules: list[dict[str, Any]] = []
+        diagnostics: list[str] = []
+        generated_at = utc_now().isoformat()
+        if card_id and not self.card_repository.is_archived(card_id):
+            try:
+                recent = self._recent_scan_messages(conversation_id)
+                assembled = self._resolve_character_prompt(
+                    conversation_id, recent_messages=recent
+                )
+            except KeyError:
+                assembled = None
+            if assembled is not None:
+                for module in assembled.modules:
+                    modules.append(
+                        {
+                            "name": module.title or module.kind,
+                            "char_start": module.char_start,
+                            "char_end": module.char_end,
+                            "hash": None,
+                            "summary": None,
+                            "memory_injected": module.kind in ("chat_summary", "pair_memory"),
+                            "hidden_content": module.content if include_hidden else None,
+                        }
+                    )
+                for key, value in assembled.diagnostics.items():
+                    diagnostics.append(f"{key}: {_diagnostics_label(value)}")
+        return {
+            "conversation_id": conversation_id,
+            "modules": modules,
+            "diagnostics": diagnostics,
+            "generated_at": generated_at,
+        }
+
+    def _recent_scan_messages(self, conversation_id: str) -> tuple:
+        """最近扫描窗口的消息（装配现算段；未绑定会话为空元组）。"""
+        try:
+            loaded = self.store.load_conversation(conversation_id)
+        except KeyError:
+            return ()
+        messages = loaded.get("messages", ())
+        # 契约 §4.4：扫描最近 12 条角色/用户消息。
+        return tuple(messages[-12:])
 
     async def _account_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params

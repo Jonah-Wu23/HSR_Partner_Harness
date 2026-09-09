@@ -361,6 +361,8 @@ class EngineEventType(str, Enum):
     APPROVAL_RESOLVED = "approval.resolved"
     TURN_COMPLETED = "turn.completed"
     TURN_FAILED = "turn.failed"
+    # V0.3.9 §5：服务端真实 usage（input/output/total tokens）；未上报字段为 null。
+    USAGE = "usage.updated"
 
 
 class EngineEvent(FrozenModel):

@@ -1,6 +1,6 @@
 """持久化对话投影纯逻辑（V0.3.9 契约冻结 §1/§2）。
 
-契约出处：``docs/plans/V0.3.9-契约冻结.md`` §1（顺序与身份）、§2（投影）。
+契约出处：``.archive/v0.3.9-dual-track-backup-2026-09-10/logic-worktree/V0.3.9-契约冻结.md`` §1（顺序与身份）、§2（投影）。
 
 - ``messages``/``tool_runs`` 永久保存原文，投影只引用
   ``message_id/summary_id/tool_call_id``，不复制原文；

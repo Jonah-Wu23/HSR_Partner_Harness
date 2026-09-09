@@ -1,4 +1,4 @@
-"""V0.3.9 L08：桌面语音抢占与单调 epoch（契约 docs/plans/V0.3.9-契约冻结.md §6）。
+"""V0.3.9 L08：桌面语音抢占与单调 epoch（契约归档正文 .archive/v0.3.9-dual-track-backup-2026-09-10/logic-worktree/V0.3.9-契约冻结.md §6）。
 
 覆盖：
 1. SpeechQueue 单调 epoch：中断清队列、跳过保留待播项、旧 epoch 条目被丢弃；

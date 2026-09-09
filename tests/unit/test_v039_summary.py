@@ -1,6 +1,6 @@
 """V0.3.9 契约 §2：摘要计数、触发阈值、覆盖区间与状态不变量。
 
-契约出处：``docs/plans/V0.3.9-契约冻结.md`` §2。
+契约出处：``.archive/v0.3.9-dual-track-backup-2026-09-10/logic-worktree/V0.3.9-契约冻结.md`` §2。
 """
 
 from __future__ import annotations

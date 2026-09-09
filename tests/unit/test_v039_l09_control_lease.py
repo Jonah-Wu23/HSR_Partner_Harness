@@ -1,4 +1,4 @@
-"""V0.3.9 L09：远程控制租约（契约 docs/plans/V0.3.9-契约冻结.md §6）。
+"""V0.3.9 L09：远程控制租约（契约归档正文 .archive/v0.3.9-dual-track-backup-2026-09-10/logic-worktree/V0.3.9-契约冻结.md §6）。
 
 覆盖：
 1. 冻结阈值：TTL 45s、断连宽限 15s、最晚 60s 回收；

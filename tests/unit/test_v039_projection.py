@@ -1,6 +1,6 @@
 """V0.3.9 契约 §1/§2：持久化投影、世界书扫描源与角色上下文窗口。
 
-契约出处：``docs/plans/V0.3.9-契约冻结.md`` §1（时间线顺序）、§2（投影）。
+契约出处：``.archive/v0.3.9-dual-track-backup-2026-09-10/logic-worktree/V0.3.9-契约冻结.md`` §1（时间线顺序）、§2（投影）。
 """
 
 from __future__ import annotations

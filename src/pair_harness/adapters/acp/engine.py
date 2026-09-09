@@ -528,6 +528,15 @@ class AcpCodec:
         return ""
 
     @staticmethod
+    def _usage_number(content: Any, *keys: str) -> int | None:
+        """从 usage 对象里取第一个存在的整数 token 值；无则返回 None（不估算）。"""
+        for key in keys:
+            value = content.get(key)
+            if isinstance(value, (int, float)) and value >= 0:
+                return int(value)
+        return None
+
+    @staticmethod
     def _tool_text(content: Any) -> str:
         """tool_call_update 的 content（结果文本）提取。
 
@@ -725,8 +734,36 @@ class AcpCodec:
                     tool_call_id=None,
                     payload={"summary": summary}, **common,
                 )
-            # available_commands_update / usage_update / model_update 等
-            # 界面辅助更新不映射为事件
+            if kind == "usage_update":
+                # V0.3.9 §5：真实 usage 只来自服务端上报，绝不估算。
+                # 兼容 update.usage.tokenUsage / update.usage 扁平 / 顶层
+                # tokenUsage 三种形状；字段缺失保持 null（键仍存在）。
+                usage = update.get("usage")
+                if not isinstance(usage, dict):
+                    usage = update.get("tokenUsage")
+                if not isinstance(usage, dict):
+                    usage = {}
+                nested = usage.get("tokenUsage")
+                if isinstance(nested, dict):
+                    usage = nested
+                payload: dict[str, Any] = {
+                    "input_tokens": AcpCodec._usage_number(
+                        usage, "inputTokens", "input_tokens", "promptTokens",
+                        "prompt_tokens", "input",
+                    ),
+                    "output_tokens": AcpCodec._usage_number(
+                        usage, "outputTokens", "output_tokens",
+                        "completionTokens", "completion_tokens", "output",
+                    ),
+                    "total_tokens": AcpCodec._usage_number(
+                        usage, "totalTokens", "total_tokens", "total",
+                    ),
+                }
+                return EngineEvent(
+                    sequence=self._next(), type=EngineEventType.USAGE,
+                    payload=payload, **common,
+                )
+            # available_commands_update / model_update 等界面辅助更新不映射为事件
             return None
 
         if method == "session/request_permission":
