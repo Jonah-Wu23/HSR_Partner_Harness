@@ -148,7 +148,7 @@ async def test_metrics_query_returns_unknown_fields_as_null(tmp_path: Path) -> N
 async def test_metrics_query_filters_by_status_and_unknown_command_rejected(
     tmp_path: Path,
 ) -> None:
-    """status 过滤生效；白名单外命令（含未实现的 summary.get）被拒绝。"""
+    """status 过滤生效；白名单外命令（如 memory.create）被拒绝。"""
     events: list[dict] = []
     service = build_demo_service(
         database=tmp_path / "data" / "pair_harness.db",
@@ -174,15 +174,15 @@ async def test_metrics_query_filters_by_status_and_unknown_command_rejected(
             command("metrics-2", "metrics.query", status="completed")
         )
         assert all(metric["status"] == "completed" for metric in result["metrics"])
-        # 白名单校验：未实现的 summary.get 不进入 handler（unknown_method）。
+        # 白名单校验：未实现的 memory.create 不进入 handler（unknown_method）。
         from pair_harness.desktop_backend.commands import CommandValidationError
 
         with pytest.raises(CommandValidationError) as exc:
             DesktopCommand.from_payload(
-                {"id": "req-1", "method": "summary.get", "params": {}}
+                {"id": "req-1", "method": "memory.create", "params": {}}
             )
         assert "未知桌面命令" in str(exc.value)
-        # 白名单已放行的命令可通过校验（metrics.query 由 from_payload 接受）。
+        # 白名单已放行的新命令均可通过 from_payload 校验。
         accepted = DesktopCommand.from_payload(
             {"id": "req-2", "method": "metrics.query", "params": {}}
         )

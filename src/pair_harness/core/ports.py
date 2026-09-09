@@ -44,6 +44,17 @@ class DialogueModel(ABC):
         del pair_id, context
         return None
 
+    async def generate_summary(
+        self, *, pair_id: str, assistant_prompt: str, context_text: str
+    ) -> dict | None:
+        """用配置的真实模型生成聊天摘要结构化对象（契约 §2）。
+
+        返回的字典由模型负责；调用方只校验结构与身份，不改写语义。
+        未实现/调用失败返回 None；结构不符由调用方按真实失败处理。
+        """
+        del pair_id, assistant_prompt, context_text
+        return None
+
 
 class CodingEngine(ABC):
     native_preexecution_approval: bool = False

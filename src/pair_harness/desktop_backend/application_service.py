@@ -77,8 +77,36 @@ from pair_harness.core.contracts import (
     TurnStatus,
     utc_now,
 )
-from pair_harness.storage.records import TurnMetric, TurnMetricQuery
+from pair_harness.storage.records import (
+    ConversationSummary as StorageSummary,
+    MemoryScope as StorageMemoryScope,
+    TurnMetric,
+    TurnMetricQuery,
+)
 from pair_harness.core.orchestrator import ConversationOrchestrator
+from pair_harness.core.summary import (
+    SUMMARY_INVALID,
+    SUMMARY_PROVIDER_ERROR,
+    SUMMARY_TIMEOUT,
+    SummaryError,
+    messages_after_coverage,
+    require_summary_conversation,
+    role_messages,
+    summary_event_payload,
+    validate_summary_coverage,
+)
+from pair_harness.core.memory import (
+    MEMORY_INVALID,
+    MEMORY_NOT_FOUND,
+    MEMORY_SCOPE_MISMATCH,
+    ConversationIdentity,
+    MemoryError,
+    PairMemory,
+    active_memories,
+    require_memory_found,
+    require_same_scope,
+    resolve_memory_scope,
+)
 from pair_harness.core.voice_policy import is_readable_text
 from pair_harness.core.voice_runtime import VoiceRuntime
 from pair_harness.settings import Settings
@@ -159,6 +187,98 @@ def _diagnostics_label(value: Any) -> str:
     if value is None:
         return "无数据"
     return str(value)
+
+
+def _speaker_label(message: Any) -> str:
+    """消息展示标签（摘要输入用；只用于上下文呈现，不做语义改写）。"""
+    source = getattr(message, "source", None)
+    if source is None:
+        source = str((message or {}).get("source", ""))
+    return "用户" if str(source) == "user" else "角色"
+
+
+def _message_index(messages: tuple, message_id: str) -> int | None:
+    """按 message_id 找消息下标；不存在返回 None（真实失败由调用方处理）。"""
+    for index, message in enumerate(messages):
+        if message.message_id == message_id:
+            return index
+    return None
+
+
+
+def _summary_payload(summary: Any) -> dict:
+    """storage 层摘要记录 → 协议载荷（content 为 JSON 文本，解析回对象）。"""
+    content = getattr(summary, "content", "") or ""
+    parsed: Any = None
+    if isinstance(content, str) and content.strip():
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            parsed = None
+    elif isinstance(content, Mapping):
+        parsed = dict(content)
+    return {
+        "summary_id": summary.summary_id,
+        "conversation_id": summary.conversation_id,
+        "status": summary.status,
+        "covers_from_message_id": summary.covers_from_message_id,
+        "covers_to_message_id": summary.covers_to_message_id,
+        "covers_message_count": summary.covers_message_count,
+        "content": parsed,
+        "provider": summary.provider,
+        "model": summary.model,
+        "error_code": summary.error_code,
+        "error": summary.error,
+        "created_at": summary.created_at,
+        "updated_at": summary.updated_at,
+    }
+
+
+def _summary_content_text(content: Any) -> str:
+    """模型返回的 JSON 对象 → 存储层 content 文本（JSON 序列化，不改写内容）。"""
+    try:
+        return json.dumps(dict(content), ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return ""
+
+
+def _json_text(content: Any) -> str:
+    """任意 JSON 对象 → 紧凑文本（存储层 content 字段用）。"""
+    return json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _memory_payload(memory: Any, *, conversation_id: str | None = None) -> dict:
+    """storage 层 PairMemory（扁平分量）→ 协议载荷（content 解析回对象）。
+
+    契约 §2：事件携带五元组作用域；content 由模型负责，代码不改写。
+    """
+    scope = memory.scope()
+    payload: dict[str, Any] = {
+        "memory_id": memory.memory_id,
+        "account_id": scope.account_id,
+        "project_id": scope.project_id,
+        "pair_id": scope.pair_id,
+        "character_ref": scope.character_ref,
+        "assistant_identity": scope.assistant_identity,
+        "status": getattr(memory, "status", None),
+        "updated_at": memory.updated_at,
+        "content": _json_load(memory.content),
+    }
+    if conversation_id is not None:
+        payload["conversation_id"] = conversation_id
+    return payload
+
+
+def _json_load(text: str) -> Any:
+    """JSON 文本 → 对象；解析失败按 None（不伪造结构）。"""
+    if isinstance(text, str) and text.strip():
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return None
+    return text
+
+
 
 
 logger = logging.getLogger(__name__)
@@ -588,6 +708,8 @@ class DesktopApplicationService:
         # 时送入语音队列，等最终回执落库时由常规消息监听接手。
         self._assistant_stream_text: dict[tuple[str, str], str] = {}
         self._title_tasks: set[asyncio.Task[None]] = set()
+        # V0.3.9 §2：摘要 regenerate 后台任务（失败保留真实状态，不吞错误）。
+        self._summary_tasks: set[asyncio.Task[None]] = set()
         # V0.2：后台回合任务集合（快速接受后立即返回，回合在后台推进）
         self._turn_tasks: set[asyncio.Task[None]] = set()
         # 角色对话不占用全局 coding busy 状态；用会话级任务记录阻止同一
@@ -1461,6 +1583,11 @@ class DesktopApplicationService:
             # V0.3.9 §5：显式只读查询（存储层过滤，不改写状态）。
             "metrics.query": self._metrics_query,
             "diagnostics.prompt_assembly": self._diagnostics_prompt_assembly,
+            "summary.regenerate": self._summary_regenerate,
+            "summary.get": self._summary_get,
+            "memory.list": self._memory_list,
+            "memory.update": self._memory_update,
+            "memory.delete": self._memory_delete,
         }
         if command.method == "approval.resolve":
             # V0.3.5：审批应答需要命令来源做双端仲裁，其余 handler 只收 params。
@@ -1665,12 +1792,14 @@ class DesktopApplicationService:
         if card_id is None:
             card_id = self._effective_active_card_id()
         # V0.3.8 T6（契约冻结 §14.2）：reuse_active=true 时同项目 + 同角色卡
-        # 已有活跃会话则直接复用——不新建、不重复插入开场白、不改标题。
+        # + 同搭档已有活跃会话则直接复用——不新建、不重复插入开场白、不改标题。
         # 无角色卡的普通会话不参与复用，普通「新建聊天」永远显式新建。
+        # V0.3.9 契约 §1：搭档是会话身份的一部分，跨越搭档不得复用。
         if bool(params.get("reuse_active", False)) and card_id is not None:
             existing = self.store.find_active_conversation(
                 project.project_id,
                 character_card_id=card_id,
+                pair_id=pair_id,
                 account_id=self.current_account_id,
             )
             if existing is not None:
@@ -4324,6 +4453,364 @@ class DesktopApplicationService:
             "metrics": [metric.model_dump() for metric in page.items],
             "next_cursor": page.next_cursor,
         }
+
+    async def _summary_regenerate(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """summary.regenerate：对真实失败记录或用户显式请求重新生成摘要。
+
+        契约 §2：仍调用配置的真实模型；生成失败保留真实失败状态并广播
+        summary.failed（原始 error_code/error），不伪造成功。生成在后台
+        执行：先广播 summary.started，终态后广播 completed/failed。
+        """
+        summary_id = str(params.get("summary_id") or "").strip()
+        conversation_id = str(params.get("conversation_id") or "").strip()
+        if not summary_id:
+            raise ServiceError("summary.regenerate 需要 summary_id", code="summary_invalid")
+        if not conversation_id:
+            raise ServiceError("summary.regenerate 需要 conversation_id", code="summary_invalid")
+        try:
+            conversation = self.store.get_conversation(conversation_id)
+        except KeyError:
+            raise ServiceError(
+                f"会话不存在：{conversation_id}", code="conversation_not_found"
+            ) from None
+        try:
+            summary = self.store.get_summary(summary_id)
+        except KeyError:
+            raise ServiceError(
+                f"摘要不存在：{summary_id}", code="summary_invalid"
+            ) from None
+        require_summary_conversation(summary, conversation_id)
+        if summary.status not in ("failed", "completed"):
+            # 契约 §2：只有真实失败记录或用户显式请求允许重新生成；
+            # running/idle 记录没有可恢复目标，按无效请求失败。
+            raise ServiceError(
+                f"摘要状态 {summary.status} 不支持重新生成（仅 failed/completed）",
+                code="summary_invalid",
+            )
+        # 起点状态机：failed 保留旧覆盖区间；completed 由用户显式请求触发
+        # （重新压缩全量未覆盖消息）。先广播 started 再异步执行。
+        task = asyncio.create_task(
+            self._run_summary_regeneration(conversation, summary),
+            name=f"summary:{conversation_id}:{summary_id}",
+        )
+        self._summary_tasks.add(task)
+        task.add_done_callback(self._summary_tasks.discard)
+        self.emitter.emit(
+            "summary.started",
+            summary_event_payload(
+                summary,
+                account_id=self.current_account_id,
+                project_id=conversation.project_id or "",
+                pair_id=conversation.pair_id,
+                character_ref=self._conversation_character_ref(conversation),
+                assistant_identity=self._conversation_assistant_identity(conversation),
+            ),
+        )
+        return {"summary_id": summary_id, "conversation_id": conversation_id, "status": "running"}
+
+    async def _run_summary_regeneration(
+        self, conversation: Any, previous: Any
+    ) -> None:
+        """后台摘要生成：调真实模型 → 校验 → 落库 → 广播终态。
+
+        失败保留真实失败状态（error_code/error 原文），不生成空摘要。
+        """
+        conversation_id = conversation.conversation_id
+        try:
+            snapshot = self.store.load_conversation(conversation_id)
+            messages = tuple(snapshot.get("messages", ()))
+            # 区间：failed 记录保留了失败时意图覆盖的区间；重新生成压缩
+            # 同一区间（failed 区间不存在/无效时按待摘要全部消息）。
+            if previous.covers_from_message_id and previous.covers_to_message_id:
+                start = _message_index(
+                    messages, previous.covers_from_message_id
+                )
+                end = _message_index(messages, previous.covers_to_message_id)
+                if start is None or end is None or start > end:
+                    raise SummaryError(
+                        "失败摘要区间引用了不存在的消息", code=SUMMARY_INVALID
+                    )
+                window = tuple(messages[start : end + 1])
+                pending = role_messages(window)
+                covers_from = messages[start].message_id
+                covers_to = messages[end].message_id
+                covers_count = len(pending)
+            else:
+                pending = role_messages(messages)
+                if not pending:
+                    raise SummaryError("没有可摘要的新消息", code=SUMMARY_INVALID)
+                covers_from = pending[0].message_id
+                covers_to = pending[-1].message_id
+                covers_count = len(pending)
+            if not pending:
+                raise SummaryError("没有可摘要的新消息", code=SUMMARY_INVALID)
+            pair_id = conversation.pair_id
+            pair_config = load_pair_config(pair_id)
+            assistant_prompt = load_prompt(pair_config.assistant.prompt)
+            context_text = "\n".join(
+                f"{_speaker_label(message)}：{message.text.strip()}"
+                for message in pending
+                if message.text.strip()
+            )
+            raw = await self.dialogue_model.generate_summary(
+                pair_id=pair_id,
+                assistant_prompt=assistant_prompt,
+                context_text=context_text,
+            )
+            if not isinstance(raw, dict):
+                raise SummaryError(
+                    "摘要生成未返回 JSON 对象", code=SUMMARY_PROVIDER_ERROR
+                )
+            config = self._load_account_config()
+            provider = self.dialogue_provider_name(config)
+            model = config.get("dialogue.model") or ""
+            # 幂等语义（契约 §2）：regenerate 更新原 summary_id 行——
+            # storage 的 upsert 以 (conversation_id, covers_from, covers_to)
+            # 为键；失败记录的区间在落库时已保存，此处沿用不换区间。
+            summary = StorageSummary(
+                summary_id=previous.summary_id,
+                conversation_id=conversation_id,
+                covers_from_message_id=covers_from,
+                covers_to_message_id=covers_to,
+                covers_message_count=covers_count,
+                content=_summary_content_text(raw),
+                provider=provider or None,
+                model=model or None,
+                status="completed",
+            )
+            validate_summary_coverage(messages, summary)
+            stored = self.store.upsert_summary(summary)
+            # 投影侧摘要覆盖终点推进；角色上下文随后收窄（保留最近 12 条）。
+            self.orchestrator.set_summary_coverage(
+                conversation_id, stored.covers_to_message_id
+            )
+            self.emitter.emit(
+                "summary.completed",
+                summary_event_payload(
+                    stored,
+                    account_id=self.current_account_id,
+                    project_id=conversation.project_id or "",
+                    pair_id=conversation.pair_id,
+                    character_ref=self._conversation_character_ref(conversation),
+                    assistant_identity=self._conversation_assistant_identity(conversation),
+                ),
+            )
+        except asyncio.CancelledError:
+            raise
+        except SummaryError as exc:
+            await self._broadcast_summary_failed(
+                conversation, previous, error_code=exc.code, error=str(exc)
+            )
+        except Exception as exc:  # noqa: BLE001 - 生成失败保留真实失败状态
+            logger.exception("摘要重新生成失败（conversation=%s）", conversation_id)
+            await self._broadcast_summary_failed(
+                conversation,
+                previous,
+                error_code=SUMMARY_PROVIDER_ERROR,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+    async def _broadcast_summary_failed(
+        self, conversation: Any, previous: Any, *, error_code: str, error: str
+    ) -> None:
+        """摘要失败：落库失败记录并广播 summary.failed（原始错误，不伪造成功）。"""
+        failed = StorageSummary(
+            summary_id=previous.summary_id,
+            conversation_id=conversation.conversation_id,
+            covers_from_message_id=previous.covers_from_message_id,
+            covers_to_message_id=previous.covers_to_message_id,
+            covers_message_count=previous.covers_message_count,
+            content="",
+            status="failed",
+            error_code=error_code,
+            error=error,
+        )
+        stored = self.store.upsert_summary(failed)
+        self.emitter.emit(
+            "summary.failed",
+            summary_event_payload(
+                stored,
+                account_id=self.current_account_id,
+                project_id=conversation.project_id or "",
+                pair_id=conversation.pair_id,
+                character_ref=self._conversation_character_ref(conversation),
+                assistant_identity=self._conversation_assistant_identity(conversation),
+            ),
+        )
+
+    def _conversation_character_ref(self, conversation: Any) -> str:
+        """会话角色身份（card:<id> 或 builtin:<id>）。"""
+        try:
+            identity = self._conversation_identity(conversation)
+        except MemoryError:
+            return ""
+        scope = resolve_memory_scope(identity)
+        return scope.character_ref if scope is not None else ""
+
+    def _conversation_assistant_identity(self, conversation: Any) -> str:
+        try:
+            return self._conversation_identity(conversation).assistant_identity
+        except MemoryError:
+            return ""
+
+    def _conversation_identity(self, conversation: Any) -> ConversationIdentity:
+        """解析会话身份（角色卡与权威搭档配置的 assistant.id，不接受客户端参数）。"""
+        pair_config = load_pair_config(conversation.pair_id)
+        return ConversationIdentity(
+            account_id=self.current_account_id,
+            project_id=conversation.project_id or None,
+            conversation_id=conversation.conversation_id,
+            pair_id=conversation.pair_id,
+            character_card_id=conversation.character_card_id,
+            pair_character_id=pair_config.character.id,
+            assistant_identity=pair_config.assistant.id,
+        )
+
+    def _conversation_scope(self, conversation_id: str) -> StorageMemoryScope:
+        """按会话解析记忆作用域；无项目/身份不完整按真实错误失败（契约 §1/§2）。"""
+        try:
+            conversation = self.store.get_conversation(conversation_id)
+        except KeyError:
+            raise ServiceError(
+                f"会话不存在：{conversation_id}", code="conversation_not_found"
+            ) from None
+        scope = resolve_memory_scope(self._conversation_identity(conversation))
+        if scope is None:
+            raise ServiceError(
+                "日常聊天（无项目）不读写长期记忆",
+                code=MEMORY_INVALID,
+            )
+        # storage 作用域与 core 作用域同构（分量一致）；存储层查询用带
+        # as_key/scope 的 storage 模型，此处显式转换，不依赖鸭子类型。
+        try:
+            return StorageMemoryScope(
+                account_id=scope.account_id,
+                project_id=scope.project_id,
+                pair_id=scope.pair_id,
+                character_ref=scope.character_ref,
+                assistant_identity=scope.assistant_identity,
+            )
+        except ValueError as exc:
+            raise ServiceError(str(exc), code=MEMORY_INVALID) from exc
+
+    def _memory_scope_from_params(self, params: Mapping[str, Any]) -> StorageMemoryScope:
+        """客户端显式作用域请求：只用于查询过滤，写入与更新一律以会话权威作用域为准。
+
+        契约 §1：记忆作用域由服务端解析，不接受客户端拼接键。
+        """
+        try:
+            return StorageMemoryScope(
+                account_id=self.current_account_id,
+                project_id=_optional_text(params, "project_id") or "",
+                pair_id=_optional_text(params, "pair_id") or "",
+                character_ref=_optional_text(params, "character_ref") or "",
+                assistant_identity=_optional_text(params, "assistant_identity") or "",
+            )
+        except ValueError as exc:
+            raise ServiceError(str(exc), code=MEMORY_INVALID) from exc
+
+    async def _summary_get(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """summary.get：按会话读取摘要（显式只读；默认全部状态）。"""
+        conversation_id = _optional_text(params, "conversation_id")
+        if not conversation_id:
+            raise ServiceError("summary.get 需要 conversation_id", code="summary_invalid")
+        try:
+            self.store.get_conversation(conversation_id)
+        except KeyError:
+            raise ServiceError(
+                f"会话不存在：{conversation_id}", code="conversation_not_found"
+            ) from None
+        summaries = self.store.list_summaries(
+            conversation_id, status=_optional_text(params, "status")
+        )
+        return {
+            "summaries": [
+                _summary_payload(summary)
+                for summary in summaries
+            ]
+        }
+
+    async def _memory_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """memory.list：按作用域读取记忆（显式只读；默认 active）。"""
+        conversation_id = _optional_text(params, "conversation_id")
+        scope = (
+            self._conversation_scope(conversation_id)
+            if conversation_id
+            else self._memory_scope_from_params(params)
+        )
+        status = _optional_text(params, "status")
+        limit = params.get("limit")
+        memories = self.store.list_memories(
+            scope,
+            status=status,
+            limit=int(limit) if limit is not None else None,
+        )
+        return {
+            "memories": [
+                _memory_payload(memory, conversation_id=conversation_id)
+                for memory in memories
+            ]
+        }
+
+    async def _memory_update(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """memory.update：更新记忆内容/状态；作用域以会话权威解析，越作用域真实报错。"""
+        conversation_id = _optional_text(params, "conversation_id")
+        scope = (
+            self._conversation_scope(conversation_id)
+            if conversation_id
+            else self._memory_scope_from_params(params)
+        )
+        memory_id = str(params.get("memory_id") or "").strip()
+        if not memory_id:
+            raise ServiceError("memory.update 需要 memory_id", code=MEMORY_INVALID)
+        content = params.get("content")
+        status = _optional_text(params, "status")
+        fields: dict[str, Any] = {}
+        if content is not None:
+            if not isinstance(content, Mapping):
+                raise ServiceError("记忆内容必须是 JSON 对象", code=MEMORY_INVALID)
+            # 存储层 content 是 JSON 文本；协议侧由 memory_event_payload 解析回对象。
+            fields["content"] = _json_text(dict(content))
+        if status is not None:
+            if status not in {"active", "deleted"}:
+                raise ServiceError(
+                    f"未知记忆状态：{status}", code=MEMORY_INVALID
+                )
+            fields["status"] = status
+        if not fields:
+            raise ServiceError("memory.update 无更新字段", code=MEMORY_INVALID)
+        try:
+            stored = self.store.update_memory(memory_id, scope=scope, **fields)
+        except KeyError as exc:
+            raise ServiceError(str(exc), code=MEMORY_NOT_FOUND) from exc
+        except ValueError as exc:
+            raise ServiceError(str(exc), code=MEMORY_INVALID) from exc
+        self.emitter.emit(
+            "memory.updated",
+            _memory_payload(stored, conversation_id=conversation_id),
+        )
+        return {"memory": _memory_payload(stored, conversation_id=conversation_id)}
+
+    async def _memory_delete(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """memory.delete：软删除记忆并持久化广播（契约 §2 真实状态）。"""
+        conversation_id = _optional_text(params, "conversation_id")
+        scope = (
+            self._conversation_scope(conversation_id)
+            if conversation_id
+            else self._memory_scope_from_params(params)
+        )
+        memory_id = str(params.get("memory_id") or "").strip()
+        if not memory_id:
+            raise ServiceError("memory.delete 需要 memory_id", code=MEMORY_INVALID)
+        try:
+            stored = self.store.delete_memory(memory_id, scope=scope)
+        except KeyError as exc:
+            raise ServiceError(str(exc), code=MEMORY_NOT_FOUND) from exc
+        self.emitter.emit(
+            "memory.deleted",
+            _memory_payload(stored, conversation_id=conversation_id),
+        )
+        return {"memory": _memory_payload(stored, conversation_id=conversation_id)}
 
     async def _diagnostics_prompt_assembly(
         self, params: Mapping[str, Any]

@@ -503,6 +503,51 @@ class OpenAICompatibleDialogueModel(DialogueModel):
                 return title
         return None
 
+    async def generate_summary(
+        self, *, pair_id: str, assistant_prompt: str, context_text: str
+    ) -> dict | None:
+        """用配置的真实模型生成聊天摘要结构化对象（契约 §2）。
+
+        摘要由模型负责语义：只要求输出一个 JSON 对象；解析失败如实返回
+        None（由调用方按真实失败处理），不合成摘要、不截断、不改写。
+        """
+        if not context_text.strip():
+            return None
+        config = load_pair_config(pair_id, root=self._config_root)
+        system = f"""你是{config.assistant.name}，当前只负责一项内部工作：把这段话聊生成一个结构化摘要。
+你只能做摘要，不能回答聊天、不能提出任务、不能调用工具。
+只输出一个 JSON 对象，不要输出其他内容。
+
+以下是你的身份与表达边界：
+{assistant_prompt}
+"""
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": context_text},
+        ]
+        for thinking, max_tokens in ((False, 2048), (True, 4096)):
+            body: dict[str, Any] = {
+                "model": self.model,
+                "messages": messages,
+                "stream": False,
+                "temperature": 0.4,
+                "max_tokens": max_tokens,
+            }
+            body.update(deepseek_request_extras(thinking=thinking, model=self.model))
+            response = await self._client_or_raise().post(
+                "/chat/completions", json=body
+            )
+            response.raise_for_status()
+            payload = response.json()
+            choices = payload.get("choices") or []
+            if not choices:
+                continue
+            content = (choices[0].get("message") or {}).get("content", "")
+            parsed = _parse_json_object(content)
+            if parsed is not None:
+                return parsed
+        return None
+
     def _request_extras(self, *, structured_dialogue: bool = False) -> dict[str, Any]:
         """B1：按后端识别注入推理请求形态。
 
@@ -721,6 +766,26 @@ def _normalize_title(value: object) -> str | None:
             text = text[len(prefix) :].strip()
     text = text.rstrip("。！？!?：:，,")
     return text[:16].strip() or None
+
+
+def _parse_json_object(content: str) -> dict | None:
+    """从模型输出中提取第一个 JSON 对象（容前后杂文与 ``` 围栏）。
+
+    只做结构提取，不改写内容；无法解析返回 None（调用方如实失败）。
+    """
+    text = content.strip()
+    if text.startswith("```") and text.endswith("```"):
+        text = text.strip("`").strip()
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        parsed = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _progress_summary_text(summary: CharacterProgressSummary) -> str:

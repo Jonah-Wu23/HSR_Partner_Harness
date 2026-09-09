@@ -91,9 +91,11 @@ DESKTOP_COMMANDS = frozenset(
         # V0.3.9 契约 §6/§7：只读控制租约状态（TTL/宽限/持有设备）。
         "remote.control_status",
         # V0.3.9 契约 §5/§7：摘要、记忆、指标与装配诊断的显式命令。
-        # summary.regenerate 已由 TS 契约引用；summary.get/memory.* 目前
-        # 只有快照与事件通道，尚未有前端调用，若接入时再补齐。
         "summary.regenerate",
+        "summary.get",
+        "memory.list",
+        "memory.update",
+        "memory.delete",
         "metrics.query",
         "diagnostics.prompt_assembly",
     }
