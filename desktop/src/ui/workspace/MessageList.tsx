@@ -43,18 +43,69 @@ export function MessageBubble({ message, pair }: { message: Message; pair: PairR
       ? message.payload.reasoning_seconds
       : undefined;
   const rowClass = ROW_CLASS[message.source];
-  const bubbleClass = BUBBLE_CLASS[message.source];
+  const baseBubbleClass = BUBBLE_CLASS[message.source];
   const displayText = message.text || (message.streaming ? "..." : "");
 
+  const isFailed = message.status === "failed";
+  const isCancelled = message.status === "cancelled";
+  const isQueued = message.status === "queued";
+  const errorMessage =
+    isFailed
+      ? (typeof message.payload?.error === "string" && message.payload.error
+          ? message.payload.error
+          : typeof message.payload?.error_message === "string" && message.payload.error_message
+            ? message.payload.error_message
+            : null)
+      : null;
+  const cancelledReason =
+    isCancelled
+      ? (typeof message.payload?.cancelled_reason === "string" && message.payload.cancelled_reason
+          ? message.payload.cancelled_reason
+          : typeof message.payload?.reason === "string" && message.payload.reason
+            ? message.payload.reason
+            : null)
+      : null;
+
+  const statusModifier = isFailed
+    ? " is-failed msg-bubble-failed"
+    : isCancelled
+      ? " is-cancelled msg-bubble-cancelled"
+      : isQueued
+        ? " is-queued msg-bubble-queued"
+        : "";
+
   return (
-    <div className={rowClass} data-message-source={message.source}>
-      <div className={bubbleClass}>
+    <div
+      className={`${rowClass}${isFailed ? " is-failed" : ""}${isCancelled ? " is-cancelled" : ""}`}
+      data-message-source={message.source}
+      data-message-status={message.status ?? (message.streaming ? "streaming" : "done")}
+    >
+      <div className={`${baseBubbleClass}${statusModifier}`}>
         {reasoning !== null || reasoningStreaming ? (
           <ReasoningRibbon text={reasoning ?? ""} streaming={reasoningStreaming} elapsedSeconds={reasoningSeconds} />
         ) : null}
-        {label ? <span className="msg-source">{label}</span> : null}
+        {label ? (
+          <span className="msg-source">
+            {label}
+            {isQueued ? <span className="msg-status-tag-queued">排队中</span> : null}
+          </span>
+        ) : null}
         {displayText}
         {message.streaming && message.text ? <span className="msg-streaming-caret" aria-hidden /> : null}
+
+        {isFailed ? (
+          <div className="msg-status-banner msg-status-failed" role="alert" data-testid="msg-status-failed">
+            <span className="msg-status-tag">失败</span>
+            <span className="msg-status-detail">{errorMessage || "执行失败（未返回具体错误）"}</span>
+          </div>
+        ) : null}
+
+        {isCancelled ? (
+          <div className="msg-status-banner msg-status-cancelled" data-testid="msg-status-cancelled">
+            <span className="msg-status-tag">已取消</span>
+            {cancelledReason ? <span className="msg-status-detail">{cancelledReason}</span> : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -89,9 +140,19 @@ export function MessageList({ timeline, pair, emptyText }: MessageListProps) {
     }
   }, [timeline.messages, timeline.isStreaming, pinned, shouldVirtualize, virtualizer]);
 
+  const prevLengthRef = useRef(timeline.messages.length);
+  const prevConvIdRef = useRef(timeline.conversationId);
   useEffect(() => {
-    if (shouldVirtualize) virtualizer.measure();
-  }, [timeline.messages, shouldVirtualize, virtualizer]);
+    if (!shouldVirtualize) return;
+    if (
+      timeline.conversationId !== prevConvIdRef.current ||
+      timeline.messages.length !== prevLengthRef.current
+    ) {
+      prevConvIdRef.current = timeline.conversationId;
+      prevLengthRef.current = timeline.messages.length;
+      virtualizer.measure();
+    }
+  }, [timeline.conversationId, timeline.messages.length, shouldVirtualize, virtualizer]);
 
   const jumpToLatest = () => {
     const node = scrollRef.current;

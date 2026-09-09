@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { HarnessActions } from "../../contracts/actions";
 import type { NavigationViewModel } from "../../contracts/view-models";
 import { CollapseIcon } from "../../assets/icons/icons";
+import { BackgroundTaskOverview } from "./BackgroundTaskOverview";
 import { ChatColumn } from "./ChatColumn";
 import { ProjectRail } from "./ProjectRail";
 
@@ -14,10 +15,15 @@ interface NavigationProps {
 /** 双层导航：56px 项目轨道 + 224px 聊天栏，聊天栏可整体收起。 */
 export function Navigation({ navigation, theme, actions }: NavigationProps) {
   const [collapsed, setCollapsed] = useState(false);
+  const [taskOverviewOpen, setTaskOverviewOpen] = useState(false);
 
   return (
     <nav className="app-nav">
-      <ProjectRail navigation={navigation} actions={actions} />
+      <ProjectRail
+        navigation={navigation}
+        actions={actions}
+        onOpenTaskOverview={() => setTaskOverviewOpen(true)}
+      />
       <div className={`chat-column${collapsed ? " is-collapsed" : ""}`} aria-hidden={collapsed}>
         <ChatColumn
           navigation={navigation}
@@ -37,6 +43,13 @@ export function Navigation({ navigation, theme, actions }: NavigationProps) {
           <CollapseIcon style={{ transform: "rotate(180deg)" }} />
         </button>
       ) : null}
+
+      <BackgroundTaskOverview
+        projects={navigation.projects}
+        actions={actions}
+        isOpen={taskOverviewOpen}
+        onClose={() => setTaskOverviewOpen(false)}
+      />
     </nav>
   );
 }
