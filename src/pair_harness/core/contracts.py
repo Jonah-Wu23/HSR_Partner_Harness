@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping as ABCMapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Literal, Mapping
 from uuid import uuid4
@@ -15,6 +15,19 @@ def new_id() -> str:
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def next_created_at(after: datetime | None) -> datetime:
+    """严格单调的消息创建时间戳：不早于 *after*，相同则前进 1µs。
+
+    同一回合内多条消息可能落在同一个微秒；持久化按 (created_at,
+    message_id) 排序，并列时间戳会让恢复后的顺序由随机的 message_id
+    决定，与内存创建顺序不一致（重开聊天会看到顺序交换）。
+    """
+    now = utc_now()
+    if after is not None and now <= after:
+        return after + timedelta(microseconds=1)
+    return now
 
 
 class FrozenModel(BaseModel):

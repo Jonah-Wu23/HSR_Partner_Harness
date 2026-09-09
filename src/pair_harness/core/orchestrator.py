@@ -40,6 +40,7 @@ from .contracts import (
     TaskRequestDraft,
     TaskStatus,
     ToolRun,
+    next_created_at,
 )
 from .engine_state import ActiveTurn, BusyTurnError, GlobalEngineState, TaskLifecycle
 from .ports import CodingEngine, DialogueModel, Reviewer, StateStore
@@ -730,8 +731,13 @@ class ConversationOrchestrator:
         }
         if message_id is not None:
             message_values["message_id"] = message_id
-        message = Message(**message_values)
+        # 同一回合内的角色台词与委派卡片可能落在同一个微秒；持久化按
+        # (created_at, message_id) 排序，并列会让重开后的顺序由随机的
+        # message_id 决定，与内存创建顺序不一致。这里按会话做严格单调。
         history = self._history.setdefault(conversation_id, [])
+        latest = max((m.created_at for m in history), default=None)
+        message_values["created_at"] = next_created_at(latest)
+        message = Message(**message_values)
         for index, existing in enumerate(history):
             if existing.message_id == message.message_id:
                 # M4.2：同一 message_id 是“更新原消息”而不是追加新消息。
