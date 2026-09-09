@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 
 from pair_harness.character_cards.activation import (
@@ -29,6 +30,9 @@ from pair_harness.character_cards.activation import (
 )
 from pair_harness.character_cards.macros import expand_data_macros
 from pair_harness.character_cards.models import CharacterBook, CharacterCard
+
+from .memory import PairMemory, active_memories
+from .summary import ConversationSummary
 
 
 @dataclass(frozen=True)
@@ -239,8 +243,10 @@ def assemble_turn_prompt(
     turn_index: int = 0,
     context_tokens: int = 8192,
     base: "AssembledPrompt | None" = None,
+    summary: ConversationSummary | None = None,
+    memories: "Iterable[PairMemory]" = (),
 ) -> AssembledPrompt:
-    """回合装配（V0.3.7 契约 §4.1 现算段，不缓存）。
+    """回合装配（V0.3.7 契约 §4.1 现算段，不缓存；V0.3.9 契约 §2 顺序）。
 
     - ``base`` 复用参数：传入调用方缓存基座时不重算；缺省内部现算；
     - 世界书：``card.character_book`` 非 None 时 ``activate_world_book``，
@@ -248,9 +254,15 @@ def assemble_turn_prompt(
       ``DepthInjection``（不进 system_text）；
     - ``depth_prompt``：非 None 且 prompt 非空 → ``DepthInjection``；
       ``entries`` 数组变体（v2 多条注入）存而不运行；
+    - V0.3.9 装配顺序（契约 §2）：角色框架、标准角色字段、world book
+      before/after、HSR 扩展、聊天摘要、配对记忆、事件触发、最近原文与
+      depth 注入、任务进度/结果及项目运行上下文。摘要与记忆只接受
+      ``completed`` 摘要与 ``active`` 记忆，内容按模型产出原样呈现，
+      不做改写、摘要或关键词筛选；
     - 确定性触发：``collect_turn_triggers`` 命中条目 → ``hsr.event_trigger``
       模块置于 system_text 最末；
-    - 装配级 ``diagnostics`` 聚合激活诊断、未展开宏与深度注入计数。
+    - 装配级 ``diagnostics`` 聚合激活诊断、未展开宏、深度注入计数与
+      摘要/记忆注入事实（只含 id 与字符数，不含隐藏内容）。
     """
     if base is None:
         base = assemble_character_prompt(card)
@@ -294,6 +306,14 @@ def assemble_turn_prompt(
     # ---- depth_prompt 深度注入（契约 §4.4） ----
     _apply_depth_prompt(card, depth_injections, unexpanded_macros, not_run_labels)
 
+    # ---- 聊天摘要与配对记忆（V0.3.9 契约 §2：HSR 之后、事件触发之前） ----
+    summary_module = _summary_module(summary)
+    if summary_module is not None:
+        modules.append(summary_module)
+    memory_module, memory_ids = _memory_module(memories)
+    if memory_module is not None:
+        modules.append(memory_module)
+
     # ---- 确定性触发（契约 §6.1，模块置于最末） ----
     hsr = card.hsr
     event_system = hsr.event_system if hsr is not None else {}
@@ -323,6 +343,9 @@ def assemble_turn_prompt(
         unexpanded_macros,
         depth_injections,
         not_run_labels,
+        summary_module=summary_module,
+        memory_module=memory_module,
+        memory_ids=memory_ids,
     )
     return AssembledPrompt(
         system_text=system_text,
@@ -500,6 +523,58 @@ def _collect_trigger_texts(
     return texts
 
 
+def _summary_module(summary: ConversationSummary | None) -> AssemblyModule | None:
+    """聊天摘要模块（V0.3.9 契约 §2）。
+
+    只注入 ``completed`` 且含模型产出内容的摘要；内容按模型结构确定性
+    渲染，不改写、不摘要。渲染为空（例如空对象）时不产生模块。
+    """
+    if summary is None or summary.status != "completed" or summary.content is None:
+        return None
+    content = _render_block_text(dict(summary.content))
+    if not content.strip():
+        return None
+    return AssemblyModule(
+        kind="chat_summary",
+        source_field=f"summary:{summary.summary_id}",
+        title="聊天摘要",
+        content=content,
+        char_count=len(content),
+    )
+
+
+def _memory_module(
+    memories: Iterable[PairMemory],
+) -> tuple[AssemblyModule | None, tuple[str, ...]]:
+    """配对记忆模块（V0.3.9 契约 §2）。
+
+    只注入 ``active`` 记忆，按入参顺序拼接；每条内容按模型结构确定性
+    渲染，代码不筛选、不改写。渲染为空的记录不产生内容，也不计入
+    注入清单。返回 (模块, 已注入 memory_id 元组)。
+    """
+    blocks: list[str] = []
+    memory_ids: list[str] = []
+    for memory in active_memories(memories):
+        rendered = _render_block_text(dict(memory.content))
+        if not rendered.strip():
+            continue
+        blocks.append(rendered)
+        memory_ids.append(memory.memory_id)
+    if not blocks:
+        return None, ()
+    content = "\n\n".join(blocks)
+    return (
+        AssemblyModule(
+            kind="pair_memory",
+            source_field="pair_memory",
+            title="配对记忆",
+            content=content,
+            char_count=len(content),
+        ),
+        tuple(memory_ids),
+    )
+
+
 def _assemble_diagnostics(
     activation,
     scan_texts: list,
@@ -507,10 +582,15 @@ def _assemble_diagnostics(
     unexpanded_macros: list,
     depth_injections: list[DepthInjection],
     not_run_labels: set,
+    *,
+    summary_module: AssemblyModule | None = None,
+    memory_module: AssemblyModule | None = None,
+    memory_ids: tuple[str, ...] = (),
 ) -> dict:
-    """装配级诊断（契约 §4.6）：激活诊断 + 未展开宏 + 深度注入计数。
+    """装配级诊断（契约 §4.6；V0.3.9 §5 诊断口径）。
 
     无世界书时提供确定性事实默认（契约 §3.1 空结果形状），字段齐备。
+    摘要/记忆只记录注入事实与 id/字符数，不携带隐藏内容。
     """
     if activation is not None:
         ad = activation.diagnostics
@@ -537,6 +617,21 @@ def _assemble_diagnostics(
     diagnostics["not_run_fields"] = sorted(not_run_labels)
     diagnostics["unexpanded_macros"] = unexpanded_macros
     diagnostics["depth_injections"] = len(depth_injections)
+    diagnostics["summary"] = {
+        "injected": summary_module is not None,
+        "summary_id": (
+            summary_module.source_field.removeprefix("summary:")
+            if summary_module is not None
+            else None
+        ),
+        "char_count": summary_module.char_count if summary_module is not None else 0,
+    }
+    diagnostics["memory"] = {
+        "injected": memory_module is not None,
+        "count": len(memory_ids),
+        "memory_ids": list(memory_ids),
+        "char_count": memory_module.char_count if memory_module is not None else 0,
+    }
     return diagnostics
 
 

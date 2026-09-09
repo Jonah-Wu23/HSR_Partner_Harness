@@ -11,7 +11,8 @@ from pathlib import Path, PurePath
 from typing import Literal, cast
 
 from .approval import ApprovalManager, ApprovalRequired, GateOutcome
-from .context import ExecutionContext, recent_roleplay_context
+from .context import ExecutionContext
+from .projection import role_context_window
 from .contracts import (
     ApprovalDecision,
     ApprovalMode,
@@ -44,6 +45,7 @@ from .engine_state import ActiveTurn, BusyTurnError, GlobalEngineState, TaskLife
 from .ports import CodingEngine, DialogueModel, Reviewer, StateStore
 from .risk_rules import RiskRules, default_risk_rules
 from .sandbox import ProjectSandbox, SandboxViolation
+from .summary import ConversationSummary
 from .voice_policy import is_tts_eligible
 
 logger = logging.getLogger(__name__)
@@ -180,6 +182,15 @@ class ConversationOrchestrator:
         # 刻意不在锁内，执行期间到达的聊天轮与执行产生的系统/助手消息按
         # 落库先后交错，运行中直接输入/修改仍可并发 steer 活动 turn。
         self._conversation_locks: dict[str, asyncio.Lock] = {}
+        # V0.3.9 契约 §1：会话级搭档登记表——消息与系统提示必须使用该聊天
+        # 自己的搭档 id，不能回退到可变全局 self.pair_id（迁移 v8 修过同类
+        # 历史错写）。由 select_context / restore_conversation / 执行上下文登记。
+        self._conversation_pairs: dict[str, str] = {}
+        # V0.3.9 契约 §2：会话最近一次成功摘要的覆盖终点。触发摘要后角色
+        # 上下文只保留最近 12 条原文；未登记时沿用触发前上限。
+        self._summary_coverage: dict[str, str] = {}
+        # 未登记搭档的会话已告警一次（避免逐条消息刷屏）。
+        self._pair_fallback_warned: set[str] = set()
         # 执行生命周期回调（O1.4）：busy 状态由任务开始/结束驱动，UI 不做
         # 文本猜测。V0.3.2 M4：回调携带完整 ActiveTurn，不能再从可变全局
         # 状态反查。
@@ -227,6 +238,7 @@ class ConversationOrchestrator:
         self.project = project
         self.pair_id = pair_id
         self.assistant_instructions = assistant_instructions
+        self._remember_conversation_pair(conversation_id, pair_id)
         self.set_approval_mode(approval_mode, conversation_id=conversation_id)
         self.set_conversation_mode(conversation_id, conversation_mode)
 
@@ -248,6 +260,116 @@ class ConversationOrchestrator:
         保持委派行为与历史一致。聊天模式的边界只在应用明确持久化时生效。
         """
         return self._conversation_modes.get(conversation_id, "collaboration")
+
+    # ---------------------------------------------------------------- V0.3.9 身份与上下文
+
+    def _remember_conversation_pair(self, conversation_id: str, pair_id: str) -> None:
+        """登记会话的权威搭档 id（V0.3.9 契约 §1）。"""
+        if conversation_id and pair_id:
+            self._conversation_pairs[conversation_id] = pair_id
+
+    def _pair_id_for(self, conversation_id: str, explicit: str | None) -> str:
+        """解析消息归属的搭档 id。
+
+        显式传入优先，其次使用该聊天登记过的权威搭档。两者都没有时只可能
+        是单会话直连用法（CLI/单测：从未 select_context 也未恢复快照），
+        此时退回启动搭档并记录一次告警——后台聊天不得静默写到别的搭档名下。
+        """
+        if explicit:
+            return explicit
+        registered = self._conversation_pairs.get(conversation_id)
+        if registered:
+            return registered
+        if conversation_id not in self._pair_fallback_warned:
+            self._pair_fallback_warned.add(conversation_id)
+            logger.warning(
+                "会话 %s 未登记搭档，消息归属退回启动搭档 %s",
+                conversation_id,
+                self.pair_id,
+            )
+        return self.pair_id
+
+    def set_summary_coverage(
+        self, conversation_id: str, covers_to_message_id: str | None
+    ) -> None:
+        """登记该聊天最近一次成功摘要的覆盖终点（V0.3.9 契约 §2）。
+
+        接线方在 ``summary.completed`` 与 ``restore_conversation`` 时调用；
+        传 None 表示该聊天没有成功摘要（退回触发前窗口）。
+        """
+        if covers_to_message_id:
+            self._summary_coverage[conversation_id] = covers_to_message_id
+        else:
+            self._summary_coverage.pop(conversation_id, None)
+
+    def summary_coverage(self, conversation_id: str) -> str | None:
+        """该聊天已成功摘要覆盖到的消息 id（无则 None）。"""
+        return self._summary_coverage.get(conversation_id)
+
+    def _roleplay_context(
+        self, conversation_id: str, *, exclude_message_id: str | None = None
+    ) -> tuple[Message, ...]:
+        """进入角色上下文的原文窗口（三处装配点共用）。
+
+        过滤与窗口规则来自契约 §2（``projection.role_context_window``）：
+        触发摘要后保留最近 12 条角色消息原文，未触发时沿用触发前上限。
+        """
+        history = self._history.get(conversation_id, ())
+        if exclude_message_id is not None:
+            history = tuple(
+                message
+                for message in history
+                if message.message_id != exclude_message_id
+            )
+        return role_context_window(
+            history,
+            covered_to_message_id=self._summary_coverage.get(conversation_id),
+        )
+
+    def _turn_index_for(
+        self, conversation_id: str, source_message_id: str | None
+    ) -> int:
+        """当前用户回合的序号（世界书 atDepth 与确定性触发用）。
+
+        以该用户消息之前的用户真实发言数为基准 +1，三处装配点对同一回合
+        得到同一个值。消息不在历史里时退回整段历史的统计口径（不猜测）。
+        """
+        history = self._history.get(conversation_id, [])
+        if source_message_id:
+            for index, message in enumerate(history):
+                if message.message_id == source_message_id:
+                    return _conversation_turn_index(history[:index])
+        return _conversation_turn_index(history)
+
+    def _dialogue_request(
+        self,
+        *,
+        conversation_id: str,
+        user_message: Message,
+        pair_id: str,
+        runtime_context: ProjectRuntimeContext,
+        turn_index: int,
+        exclude_message_id: str | None = None,
+        progress_summary: CharacterProgressSummary | None = None,
+        result_summary: CharacterResultSummary | None = None,
+    ) -> DialogueRequest:
+        """三处角色装配点共用的 DialogueRequest 构造（V0.3.9 契约 §2）。
+
+        主角色轮、委派纠偏重试轮与任务结果轮必须使用同一份上下文窗口、
+        同一回合序号与同一项目运行上下文，避免窗口/序号漂移。
+        """
+        return DialogueRequest(
+            pair_id=pair_id,
+            conversation_id=conversation_id,
+            user_message=user_message,
+            recent_messages=self._roleplay_context(
+                conversation_id, exclude_message_id=exclude_message_id
+            ),
+            progress_summary=progress_summary,
+            result_summary=result_summary,
+            runtime_context=runtime_context,
+            turn_index=turn_index,
+        )
 
     def _build_runtime_context(
         self,
@@ -285,6 +407,8 @@ class ConversationOrchestrator:
         状态合成，保持旧行为。
         """
         if context is not None:
+            # V0.3.9 契约 §1：执行上下文是该聊天身份的权威来源，就地登记。
+            self._remember_conversation_pair(conversation_id, context.pair_id)
             return context
         return ExecutionContext(
             account_id="",
@@ -378,13 +502,20 @@ class ConversationOrchestrator:
             return updated
         return None
 
-    def report_system_status(self, conversation_id: str, text: str) -> Message:
-        """把运行时错误作为可见且可恢复的系统消息写入当前聊天。"""
+    def report_system_status(
+        self, conversation_id: str, text: str, *, pair_id: str | None = None
+    ) -> Message:
+        """把运行时错误作为可见且可恢复的系统消息写入目标聊天。
+
+        ``pair_id`` 缺省时按该聊天登记过的权威搭档解析（V0.3.9 契约 §1），
+        不再直接使用可变全局搭档。
+        """
         return self._message(
             conversation_id=conversation_id,
             source=MessageSource.SYSTEM,
             kind=MessageKind.SYSTEM_STATUS,
             text=text,
+            pair_id=pair_id,
         )
 
     def add_message_listener(self, callback: Callable[[Message], None]) -> None:
@@ -443,6 +574,19 @@ class ConversationOrchestrator:
         """
         conversation_id = snapshot["conversation"].conversation_id
         self._history[conversation_id] = list(snapshot.get("messages", ()))
+        # V0.3.9 契约 §1：快照里的会话搭档是该聊天的权威身份。
+        self._remember_conversation_pair(
+            conversation_id, snapshot["conversation"].pair_id
+        )
+        # V0.3.9 契约 §2：快照可选携带该聊天最近的摘要记录；只有 completed
+        # 摘要才收窄角色上下文窗口，failed/running 保持原窗口。
+        summary = snapshot.get("summary")
+        if isinstance(summary, dict):
+            summary = ConversationSummary.model_validate(summary)
+        if isinstance(summary, ConversationSummary) and summary.status == "completed":
+            self.set_summary_coverage(conversation_id, summary.covers_to_message_id)
+        else:
+            self.set_summary_coverage(conversation_id, None)
         session_ref = snapshot.get("engine_session")
         if (
             session_ref is not None
@@ -570,7 +714,7 @@ class ConversationOrchestrator:
     ) -> Message:
         message_values = {
             "conversation_id": conversation_id,
-            "pair_id": pair_id or self.pair_id,
+            "pair_id": self._pair_id_for(conversation_id, pair_id),
             "engine_turn_id": engine_turn_id,
             "source": source,
             "kind": kind,
@@ -736,26 +880,20 @@ class ConversationOrchestrator:
                     completed_steps=progress.completed_steps,
                     total_steps=progress.total_steps,
                 )
-            request = DialogueRequest(
-                pair_id=exec_context.pair_id,
+            # V0.3.9：三处装配点共用 ``_dialogue_request``——窗口、回合序号与
+            # 运行上下文一致；当前用户消息由 user_message 承载，故按 id 排除。
+            request = self._dialogue_request(
                 conversation_id=conversation_id,
                 user_message=user_message,
-                # V0.3.7：扫描缓冲上限从默认 12 提到 50，供世界书
-                # scan_depth > 12 的书使用；激活引擎内部再按书级 scan_depth
-                # 裁剪。当前用户消息在 history[-1]，故取 [:-1]。
-                recent_messages=recent_roleplay_context(
-                    self._history[conversation_id][:-1], limit=50
-                ),
-                # V0.3.7：本轮序号 = 该会话用户发起消息累计数（含当前回合，
-                # 因此 +1；当前条在 history[-1] 不计入）。开场白是
-                # CHARACTER/SYSTEM 来源，不计入。
-                turn_index=_conversation_turn_index(
-                    self._history[conversation_id][:-1]
-                ),
-                progress_summary=progress_summary,
+                pair_id=exec_context.pair_id,
                 runtime_context=self._build_runtime_context(
                     conversation_id, exec_context
                 ),
+                turn_index=self._turn_index_for(
+                    conversation_id, user_message.message_id
+                ),
+                exclude_message_id=user_message.message_id,
+                progress_summary=progress_summary,
             )
             character_turn = None
             async for event in self.dialogue_model.stream_reply(request):
@@ -793,6 +931,7 @@ class ConversationOrchestrator:
                 source=MessageSource.SYSTEM,
                 kind=MessageKind.SYSTEM_STATUS,
                 text="当前是聊天模式，角色不能读取或操作项目。切换协作模式后再让它处理项目任务。",
+                pair_id=exec_context.pair_id,
             )
             return ConversationOutcome(messages=tuple((*messages, notice)))
 
@@ -831,6 +970,7 @@ class ConversationOrchestrator:
                     source=MessageSource.SYSTEM,
                     kind=MessageKind.SYSTEM_STATUS,
                     text="角色未返回结构化委派，自动重试后仍未成功，本次没有任务交给助手执行。",
+                    pair_id=exec_context.pair_id,
                 )
                 return ConversationOutcome(messages=tuple((*messages, notice)))
 
@@ -856,6 +996,7 @@ class ConversationOrchestrator:
                     source=MessageSource.SYSTEM,
                     kind=MessageKind.SYSTEM_STATUS,
                     text=f"任务仍在执行，本次委派暂未受理：{exc}",
+                    pair_id=exec_context.pair_id,
                 )
                 return ConversationOutcome(messages=(user_message, character, notice))
             messages.extend(execution.messages)
@@ -882,6 +1023,7 @@ class ConversationOrchestrator:
                     source=MessageSource.SYSTEM,
                     kind=MessageKind.SYSTEM_STATUS,
                     text=f"修改未能应用：{exc}",
+                    pair_id=exec_context.pair_id,
                 )
                 return ConversationOutcome(messages=(user_message, character, notice))
         return ConversationOutcome(messages=tuple(messages))
@@ -909,14 +1051,13 @@ class ConversationOrchestrator:
                 "不需要就返回 delegate=false。不要只在台词里答应让搭档做事。"
             ),
         )
-        request = DialogueRequest(
-            pair_id=context.pair_id,
+        # V0.3.9：与主角色轮同窗口、同回合序号、同运行上下文。
+        request = self._dialogue_request(
             conversation_id=conversation_id,
             user_message=synthetic,
-            recent_messages=recent_roleplay_context(
-                self._history.get(conversation_id, [])
-            ),
+            pair_id=context.pair_id,
             runtime_context=self._build_runtime_context(conversation_id, context),
+            turn_index=self._turn_index_for(conversation_id, user_message.message_id),
         )
         turn: CharacterTurn | None = None
         async for event in self.dialogue_model.stream_reply(request):
@@ -984,6 +1125,7 @@ class ConversationOrchestrator:
                     source=MessageSource.SYSTEM,
                     kind=MessageKind.SYSTEM_STATUS,
                     text=f"修改未能应用：{exc}",
+                    pair_id=exec_context.pair_id,
                 )
                 return ConversationOutcome(messages=(user_message, notice))
             # 修改已交给运行中的任务，本次直接输入不再开启新任务
@@ -1119,6 +1261,9 @@ class ConversationOrchestrator:
                 source=MessageSource.SYSTEM,
                 kind=MessageKind.SYSTEM_STATUS,
                 text="已自动重试一次仍未成功，角色的再次委派没有执行。",
+                pair_id=self._context_or_current(
+                    task.conversation_id, context
+                ).pair_id,
             )
             return ConversationOutcome(
                 messages=(*execution.messages, notice),
@@ -1736,12 +1881,17 @@ class ConversationOrchestrator:
                     "委派；结果失败时，可以立即重新委派重试一次。"
                 ),
             )
-            dialogue_request = DialogueRequest(
-                pair_id=task_pair_id,
+            # V0.3.9：结果轮同样使用统一窗口、该任务所属用户回合的序号与
+            # 项目运行上下文（此前三者都缺失）。
+            dialogue_request = self._dialogue_request(
                 conversation_id=task.conversation_id,
                 user_message=synthetic,
-                recent_messages=recent_roleplay_context(
-                    self._history.get(task.conversation_id, [])
+                pair_id=task_pair_id,
+                runtime_context=self._build_runtime_context(
+                    task.conversation_id, exec_context
+                ),
+                turn_index=self._turn_index_for(
+                    task.conversation_id, task.origin_message_id
                 ),
                 result_summary=result_summary,
             )

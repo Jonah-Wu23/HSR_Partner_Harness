@@ -65,6 +65,11 @@ class MessageKind(str, Enum):
     TOOL_RECORD = "tool.record"
     SYSTEM_STATUS = "system.status"
     APPROVAL = "system.approval"
+    # V0.3.9 契约 §2：摘要与记忆状态走非消息状态条展示。
+    # system.summary 只承载持久化投影引用的摘要记录，
+    # system.error 只承载真实消息级错误；两者都不得承载隐藏提示。
+    SYSTEM_SUMMARY = "system.summary"
+    SYSTEM_ERROR = "system.error"
     CODE = "assistant.code"
     COMMAND = "assistant.command"
 
