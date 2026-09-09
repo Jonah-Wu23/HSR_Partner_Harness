@@ -166,7 +166,7 @@ export interface HarnessActions {
   /* —— V0.3.9 摘要、记忆与诊断（PM/视觉 V-B 2a1fccb）—— */
   /** 重新生成摘要（summary.regenerate），调用真实模型；只针对真实失败记录或用户显式请求。 */
   regenerateSummary?(
-    summaryIdOrTarget: string | { summary_id: string; conversation_id?: string; reason?: string },
+    summaryIdOrTarget: string | { summary_id: string; conversation_id?: string; reason?: "failed_record" | "user_request" },
   ): Promise<void>;
   /** 显式只读查询回合指标（metrics.query）。 */
   queryMetrics?(params?: {

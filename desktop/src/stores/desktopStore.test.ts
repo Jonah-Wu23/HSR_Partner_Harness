@@ -1763,6 +1763,7 @@ describe("V0.3.9 契约消费（摘要/记忆/租约/指标/诊断/审批终态�
       conversation_id: "conv-1",
       pair_id: "phainon_ancient_machine",
       character_ref: "builtin:phainon",
+      assistant_identity: "character",
       turn_kind: "character_turn",
       turn_id: "turn-1",
       task_id: null,
@@ -1797,6 +1798,7 @@ describe("V0.3.9 契约消费（摘要/记忆/租约/指标/诊断/审批终态�
       conversation_id: "conv-1",
       modules: [
         {
+          name: "character_frame",
           kind: "description",
           source_field: "description",
           title: "角色设定",

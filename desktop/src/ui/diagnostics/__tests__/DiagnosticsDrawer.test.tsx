@@ -15,6 +15,7 @@ function metricRecord(overrides: Partial<TurnMetric> = {}): TurnMetric {
     conversation_id: "c1",
     pair_id: "pair-1",
     character_ref: "card:card-1",
+    assistant_identity: "character",
     turn_kind: "character_turn",
     turn_id: "turn-1",
     task_id: null,

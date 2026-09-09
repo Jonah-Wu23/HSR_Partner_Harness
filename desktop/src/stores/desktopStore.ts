@@ -369,7 +369,13 @@ function createInitialState(): Omit<
   | "setSummaries"
   | "upsertSummary"
   | "setMemories"
+  | "setMemoriesForConversation"
   | "upsertMemory"
+  | "setSummaryTriggers"
+  | "setSummaryRegenerateTarget"
+  | "regenerateSummary"
+  | "queryMetrics"
+  | "queryPromptAssembly"
   | "setRemoteControl"
   | "setMetricsPage"
   | "setMetricsError"
@@ -1741,7 +1747,7 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
   return next;
 }
 
-export const desktopStore = createStore<DesktopState>((set) => ({
+export const desktopStore = createStore<DesktopState>((set, get) => ({
   ...createInitialState(),
   hydrate(snapshot) {
     set((state) => {

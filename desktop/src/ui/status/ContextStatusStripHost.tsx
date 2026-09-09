@@ -37,7 +37,8 @@ export function ContextStatusStripHost({ actions }: ContextStatusStripHostProps)
   );
 
   if (!conversationId) return null;
-  if (!actions?.regenerateSummary) {
+  const regenerateSummary = actions?.regenerateSummary;
+  if (!regenerateSummary) {
     // 没有真实重新生成能力时只展示状态，不渲染恢复按钮（组件缺省行为）。
     return (
       <ContextStatusStrip
@@ -55,7 +56,7 @@ export function ContextStatusStripHost({ actions }: ContextStatusStripHostProps)
       triggers={triggers as Record<string, SummaryTriggerInfo> | null | undefined}
       regenerate={regenerate}
       onRegenerate={(target: SummaryRegenerateTarget) =>
-        actions.regenerateSummary({
+        regenerateSummary({
           summary_id: target.summary_id,
           conversation_id: target.conversation_id,
           reason: target.reason,
