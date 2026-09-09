@@ -558,7 +558,8 @@ def test_conversation_character_card_id_roundtrip(tmp_path: Path) -> None:
     """V0.3.5：新建对话绑定角色卡快照——显式传入则写入，未传为 None。"""
     with SQLiteStore(tmp_path / "db.sqlite") as store:
         assert store.connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert SCHEMA_VERSION == 10
+        # 该列由迁移 10 引入；这里只锁定“至少已到 v10”，不锁定具体版本号
+        assert SCHEMA_VERSION >= 10
         # 新库由 schema.sql 直建该列
         assert "character_card_id" in _table_columns(store.connection, "conversations")
 
@@ -620,7 +621,7 @@ def test_migration_v10_adds_character_card_id_without_data_loss(tmp_path: Path) 
     with SQLiteStore(database) as store:
         version = store.connection.execute("PRAGMA user_version").fetchone()[0]
         assert version == SCHEMA_VERSION
-        assert SCHEMA_VERSION == 10
+        assert SCHEMA_VERSION >= 10
         assert "character_card_id" in _table_columns(store.connection, "conversations")
         # 既有数据不丢，迁移后新列值为 NULL
         conversation = store.get_conversation("c")
