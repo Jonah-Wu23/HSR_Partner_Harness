@@ -163,6 +163,26 @@ export interface HarnessActions {
   listRemoteDevices(): Promise<void>;
   /** 按设备名撤销其全部 token 并刷新设备列表。 */
   revokeRemoteDevice(deviceName: string): Promise<void>;
+  /* —— V0.3.9 摘要、记忆与诊断（PM/视觉 V-B 2a1fccb）—— */
+  /** 重新生成摘要（summary.regenerate），调用真实模型；只针对真实失败记录或用户显式请求。 */
+  regenerateSummary?(
+    summaryIdOrTarget: string | { summary_id: string; conversation_id?: string; reason?: string },
+  ): Promise<void>;
+  /** 显式只读查询回合指标（metrics.query）。 */
+  queryMetrics?(params?: {
+    conversation_id?: string;
+    cursor?: string | null;
+    limit?: number;
+    account_id?: string;
+    project_id?: string;
+    pair_id?: string;
+    status?: string;
+  }): Promise<{ metrics: import("./protocol").TurnMetric[]; next_cursor: string | null }>;
+  /** 显式只读查询提示词装配诊断（diagnostics.prompt_assembly）；仅显式 includeHidden=true 返回隐藏原文。 */
+  queryPromptAssembly?(params?: {
+    conversation_id?: string;
+    includeHidden?: boolean;
+  }): Promise<import("./view-models").PromptAssemblyView>;
 }
 
 /** voice.provision 的真实返回：completed 或 partial_failed + 每项结果。 */

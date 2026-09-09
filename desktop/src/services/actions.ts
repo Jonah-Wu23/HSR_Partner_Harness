@@ -37,10 +37,13 @@ import type {
   VoiceCardUnbindResult,
   VoiceMobilePttStartResult,
   VoiceMobilePttStopResult,
+  TurnMetric,
 } from "../contracts/protocol";
 import type {
   CharacterCardSummaryView,
   RemoteDeviceView,
+  PromptAssemblyView,
+  PromptAssemblyModule,
 } from "../contracts/view-models";
 import type { DesktopBackend } from "./backend";
 import { RequestIdFactory } from "./backend";
@@ -636,6 +639,94 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async revokeRemoteDevice(deviceName) {
       await request<RemoteRevokeResult>("remote.revoke", { device_name: deviceName });
       await this.listRemoteDevices();
+    },
+    /* —— V0.3.9 摘要、记忆与诊断（PM/视觉 V-B 2a1fccb）—— */
+    async regenerateSummary(summaryIdOrTarget) {
+      const summaryId =
+        typeof summaryIdOrTarget === "string"
+          ? summaryIdOrTarget
+          : summaryIdOrTarget.summary_id;
+      const conversationId =
+        typeof summaryIdOrTarget === "object" && summaryIdOrTarget.conversation_id
+          ? summaryIdOrTarget.conversation_id
+          : selectWindowConversationId(desktopStore.getState()) ?? "";
+      await request("summary.regenerate", {
+        summary_id: summaryId,
+        conversation_id: conversationId,
+      });
+      await desktopStore.getState().regenerateSummary(summaryIdOrTarget);
+    },
+    async queryMetrics(params) {
+      desktopStore.getState().setMetricsLoading(true);
+      try {
+        const conversationId =
+          params?.conversation_id ?? selectWindowConversationId(desktopStore.getState()) ?? undefined;
+        const result = await request<{ metrics?: TurnMetric[]; next_cursor?: string | null }>(
+          "metrics.query",
+          {
+            ...params,
+            conversation_id: conversationId,
+          },
+        );
+        const metrics = result?.metrics ?? [];
+        const next_cursor = result?.next_cursor ?? null;
+        desktopStore.getState().setMetricsPage({ metrics, cursor: next_cursor });
+        return { metrics, next_cursor };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        desktopStore.getState().setMetricsError(message);
+        throw error;
+      }
+    },
+    async queryPromptAssembly(params) {
+      desktopStore.getState().setPromptAssemblyLoading(true);
+      try {
+        const conversationId =
+          params?.conversation_id ?? selectWindowConversationId(desktopStore.getState()) ?? undefined;
+        const includeHidden = params?.includeHidden === true;
+        const raw = await request<unknown>("diagnostics.prompt_assembly", {
+          conversation_id: conversationId,
+          include_hidden: includeHidden,
+        });
+        const rawObj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+        const rawModules = Array.isArray(rawObj.modules) ? rawObj.modules : [];
+        const modules: PromptAssemblyModule[] = rawModules.map((item: any) => ({
+          name: typeof item?.name === "string" && item.name ? item.name : (item?.title ?? item?.kind ?? "未知模块"),
+          char_start: typeof item?.char_start === "number" ? item.char_start : null,
+          char_end: typeof item?.char_end === "number" ? item.char_end : null,
+          hash: typeof item?.hash === "string" ? item.hash : null,
+          summary: typeof item?.summary === "string" ? item.summary : null,
+          memory_injected: typeof item?.memory_injected === "boolean" ? item.memory_injected : null,
+          hidden_content: includeHidden && typeof item?.hidden_content === "string" ? item.hidden_content : null,
+        }));
+        const assembly = {
+          conversation_id: conversationId ?? null,
+          modules,
+          summary_injected: Boolean(rawObj.summary_injected),
+          memory_injected: Boolean(rawObj.memory_injected),
+          diagnostics: Array.isArray(rawObj.diagnostics)
+            ? (rawObj.diagnostics as string[])
+            : rawObj.diagnostics && typeof rawObj.diagnostics === "object"
+              ? Object.entries(rawObj.diagnostics).map(([k, v]) => `${k}: ${v}`)
+              : [],
+          hidden_content_included: includeHidden,
+          generated_at: typeof rawObj.generated_at === "string" ? rawObj.generated_at : new Date().toISOString(),
+        };
+        desktopStore.getState().setPromptAssembly(assembly);
+        if (includeHidden) {
+          desktopStore.getState().revealPromptAssembly();
+        }
+        return {
+          conversation_id: assembly.conversation_id,
+          modules: assembly.modules,
+          diagnostics: assembly.diagnostics,
+          generated_at: assembly.generated_at,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        desktopStore.getState().setPromptAssemblyError(message);
+        throw error;
+      }
     },
     dismissToast(id) {
       // V0.2 M4：Toast 是本地 UI 状态，不经过后端

@@ -52,24 +52,28 @@ export interface StoreToast {
  * 该形状尚未写入 protocol.ts（不在本任务的文件归属内），故在 store 侧声明。
  */
 export interface PromptAssemblyModule {
-  kind: string;
-  source_field: string;
-  title: string;
-  char_count: number;
+  name: string;
+  kind?: string;
+  source_field?: string;
+  title?: string;
+  char_count?: number;
   char_start: number | null;
   char_end: number | null;
   hash: string | null;
-  diagnostics: Record<string, unknown> | null;
+  summary?: string | null;
+  memory_injected?: boolean | null;
+  diagnostics?: Record<string, unknown> | null;
   hidden_content?: string | null;
 }
 
 export interface PromptAssemblyDiagnostics {
-  conversation_id: string;
+  conversation_id: string | null;
   modules: PromptAssemblyModule[];
-  summary_injected: boolean;
-  memory_injected: boolean;
-  diagnostics: Record<string, unknown> | null;
+  summary_injected?: boolean;
+  memory_injected?: boolean;
+  diagnostics?: Record<string, unknown> | string[] | null;
   hidden_content_included: boolean;
+  generated_at?: string | null;
 }
 
 /** V0.3.9 契约 §6：语音抢占反馈（voice.playback_interrupted）。 */
@@ -147,6 +151,12 @@ export interface DesktopState {
   summariesByConversation: Record<string, ConversationSummary[]>;
   /** V0.3.9 §2：配对长期记忆（服务端按冻结作用域过滤后下发，store 不自行拼接作用域）。 */
   memories: PairMemory[];
+  /** V0.3.9 §2：按聊天存放的长期记忆记录。 */
+  memoriesByConversation: Record<string, PairMemory[]>;
+  /** V0.3.9 §2：摘要触发详情，键为 conversation_id -> summary_id。 */
+  summaryTriggersByConversation: Record<string, Record<string, import("../contracts/view-models").SummaryTriggerInfo>>;
+  /** V0.3.9 §2：真实存在的恢复目标。 */
+  summaryRegenerateTarget: import("../contracts/view-models").SummaryRegenerateTarget | null;
   /** V0.3.9 §6：远程控制租约快照；无数据保持 null，不由前端推导。 */
   remoteControl: RemoteControlState | null;
   /** V0.3.9 §3：按聊天存放的待审批（审批栏只显示当前聊天；其他聊天用计数与导航）。 */
@@ -168,7 +178,13 @@ export interface DesktopState {
   setSummaries(conversationId: string, summaries: ConversationSummary[]): void;
   upsertSummary(summary: ConversationSummary): void;
   setMemories(memories: PairMemory[]): void;
-  upsertMemory(memory: PairMemory): void;
+  setMemoriesForConversation(conversationId: string, memories: PairMemory[]): void;
+  upsertMemory(memory: PairMemory, conversationId?: string): void;
+  setSummaryTriggers(conversationId: string, triggers: Record<string, import("../contracts/view-models").SummaryTriggerInfo>): void;
+  setSummaryRegenerateTarget(target: import("../contracts/view-models").SummaryRegenerateTarget | null): void;
+  regenerateSummary(summaryIdOrTarget: string | { summary_id: string; conversation_id?: string; reason?: "failed_record" | "user_request" }): Promise<void>;
+  queryMetrics(params?: { conversation_id?: string; cursor?: string | null; limit?: number }): Promise<{ metrics: TurnMetric[]; next_cursor: string | null }>;
+  queryPromptAssembly(params?: { conversation_id?: string; includeHidden?: boolean }): Promise<PromptAssemblyDiagnostics>;
   setRemoteControl(state: RemoteControlState | null): void;
   setMetricsPage(page: { metrics: TurnMetric[]; cursor: string | null }): void;
   setMetricsError(message: string | null): void;
@@ -276,6 +292,9 @@ export type DesktopRenderState = Pick<
   | "remotePairing"
   | "summariesByConversation"
   | "memories"
+  | "memoriesByConversation"
+  | "summaryTriggersByConversation"
+  | "summaryRegenerateTarget"
   | "remoteControl"
   | "approvalsByConversation"
   | "approvalOutcomesById"
@@ -423,6 +442,9 @@ function createInitialState(): Omit<
     powerPromptDismissed: false,
     summariesByConversation: {},
     memories: [],
+    memoriesByConversation: {},
+    summaryTriggersByConversation: {},
+    summaryRegenerateTarget: null,
     remoteControl: null,
     approvalsByConversation: {},
     approvalOutcomesById: {},
@@ -787,6 +809,11 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
     // V0.3.9 §2/§6：摘要、记忆与租约随快照全量替换；缺字段即空/ null，不沿用旧值。
     summariesByConversation: groupSummaries(snapshot.summaries),
     memories: snapshot.memories ?? [],
+    memoriesByConversation: snapshot.current_conversation_id
+      ? { [snapshot.current_conversation_id]: snapshot.memories ?? [] }
+      : {},
+    summaryTriggersByConversation: state.summaryTriggersByConversation ?? {},
+    summaryRegenerateTarget: state.summaryRegenerateTarget ?? null,
     remoteControl: normalizeRemoteControl(snapshot.remote_control),
     approvalResolvingById: {},
     reviewActive: false,
@@ -1161,6 +1188,10 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
             decision: payload.decision,
             resolved_by: payload.resolved_by,
             task_id: payload.task_id ?? undefined,
+            ...(payload.actor ? { actor: payload.actor } : {}),
+            ...(payload.reason ? { resolved_reason: payload.reason } : {}),
+            ...(payload.error_code ? { error_code: payload.error_code } : {}),
+            ...(payload.resolved_at ? { resolved_at: payload.resolved_at } : {}),
           },
         ];
       } else {
@@ -1477,19 +1508,43 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
             summary,
           ],
         };
+        if (status === "failed") {
+          next.summaryRegenerateTarget = {
+            summary_id: summaryId,
+            conversation_id: conversationId,
+            reason: "failed_record",
+          };
+        } else if (next.summaryRegenerateTarget?.summary_id === summaryId) {
+          next.summaryRegenerateTarget = null;
+        }
       }
       break;
     }
     case "memory.updated": {
       // V0.3.9 §2：记忆内容由模型负责；store 只按 memory_id 存原始记录，
       // 不按关键词筛选、不静默截断。作用域由服务端下发，客户端不自行拼接。
-      const payload = event.payload as { memory?: PairMemory } & Partial<PairMemory>;
+      const payload = event.payload as { memory?: PairMemory; conversation_id?: string } & Partial<PairMemory>;
       const memory = payload.memory ?? (payload.memory_id ? (payload as PairMemory) : null);
+      const conversationId =
+        payload.conversation_id ??
+        (payload.memory as { scope?: { conversation_id?: string } } | undefined)?.scope?.conversation_id ??
+        next.activeConversationId ??
+        "";
       if (memory && memory.memory_id) {
         next.memories = [
           ...next.memories.filter((item) => item.memory_id !== memory.memory_id),
           memory,
         ];
+        if (conversationId) {
+          const list = next.memoriesByConversation[conversationId] ?? [];
+          next.memoriesByConversation = {
+            ...next.memoriesByConversation,
+            [conversationId]: [
+              ...list.filter((item) => item.memory_id !== memory.memory_id),
+              memory,
+            ],
+          };
+        }
       }
       break;
     }
@@ -1497,18 +1552,37 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
       // V0.3.9 §2：删除必须真实持久化——事件带完整记录时按记录落库，
       // 只带 id 时把已知记录标记为 deleted（状态枚举 active|deleted），
       // 未知 id 不凭空造记录。
-      const payload = event.payload as { memory?: PairMemory } & Partial<PairMemory>;
+      const payload = event.payload as { memory?: PairMemory; conversation_id?: string } & Partial<PairMemory>;
       const memory = payload.memory;
       const memoryId = memory?.memory_id ?? payload.memory_id ?? "";
+      const conversationId = payload.conversation_id ?? next.activeConversationId ?? "";
       if (memory && memoryId) {
         next.memories = [
           ...next.memories.filter((item) => item.memory_id !== memoryId),
           memory,
         ];
+        if (conversationId) {
+          const list = next.memoriesByConversation[conversationId] ?? [];
+          next.memoriesByConversation = {
+            ...next.memoriesByConversation,
+            [conversationId]: [
+              ...list.filter((item) => item.memory_id !== memoryId),
+              memory,
+            ],
+          };
+        }
       } else if (memoryId) {
         next.memories = next.memories.map((item) =>
           item.memory_id === memoryId ? { ...item, status: "deleted" } : item,
         );
+        if (conversationId && next.memoriesByConversation[conversationId]) {
+          next.memoriesByConversation = {
+            ...next.memoriesByConversation,
+            [conversationId]: next.memoriesByConversation[conversationId].map((item) =>
+              item.memory_id === memoryId ? { ...item, status: "deleted" } : item,
+            ),
+          };
+        }
       }
       break;
     }
@@ -1776,6 +1850,9 @@ export const desktopStore = createStore<DesktopState>((set) => ({
         ? { ...state.summariesByConversation, [conversationId]: result.summaries }
         : state.summariesByConversation;
       const memories = result.memories ?? state.memories;
+      const memoriesByConversation = result.memories
+        ? { ...state.memoriesByConversation, [conversationId]: result.memories }
+        : state.memoriesByConversation;
       const remoteControl =
         result.remote_control === undefined
           ? state.remoteControl
@@ -1802,6 +1879,7 @@ export const desktopStore = createStore<DesktopState>((set) => ({
         approvalsByConversation,
         summariesByConversation,
         memories,
+        memoriesByConversation,
         remoteControl,
         openConversationIds,
         activeConversationId: conversationId,
@@ -1988,13 +2066,113 @@ export const desktopStore = createStore<DesktopState>((set) => ({
   setMemories(memories) {
     set({ memories });
   },
-  upsertMemory(memory) {
+  setMemoriesForConversation(conversationId, memories) {
     set((state) => ({
-      memories: [
+      memoriesByConversation: {
+        ...state.memoriesByConversation,
+        [conversationId]: memories,
+      },
+    }));
+  },
+  upsertMemory(memory, conversationId) {
+    set((state) => {
+      const convId = conversationId ?? state.activeConversationId;
+      const nextMemories = [
         ...state.memories.filter((item) => item.memory_id !== memory.memory_id),
         memory,
-      ],
+      ];
+      const nextByConv = { ...state.memoriesByConversation };
+      if (convId) {
+        const list = nextByConv[convId] ?? [];
+        nextByConv[convId] = [
+          ...list.filter((item) => item.memory_id !== memory.memory_id),
+          memory,
+        ];
+      }
+      return {
+        memories: nextMemories,
+        memoriesByConversation: nextByConv,
+      };
+    });
+  },
+  setSummaryTriggers(conversationId, triggers) {
+    set((state) => ({
+      summaryTriggersByConversation: {
+        ...state.summaryTriggersByConversation,
+        [conversationId]: triggers,
+      },
     }));
+  },
+  setSummaryRegenerateTarget(target) {
+    set({ summaryRegenerateTarget: target });
+  },
+  async regenerateSummary(summaryIdOrTarget) {
+    const summaryId =
+      typeof summaryIdOrTarget === "string"
+        ? summaryIdOrTarget
+        : summaryIdOrTarget.summary_id;
+    const conversationId =
+      typeof summaryIdOrTarget === "object" && summaryIdOrTarget.conversation_id
+        ? summaryIdOrTarget.conversation_id
+        : get().activeConversationId ?? "";
+    set((state) => {
+      const list = state.summariesByConversation[conversationId] ?? [];
+      const previous = list.find((s) => s.summary_id === summaryId);
+      if (previous) {
+        return {
+          summariesByConversation: {
+            ...state.summariesByConversation,
+            [conversationId]: list.map((s) =>
+              s.summary_id === summaryId
+                ? { ...s, status: "running" as const, error: null, error_code: null }
+                : s,
+            ),
+          },
+          summaryRegenerateTarget: null,
+        };
+      }
+      return {
+        summaryRegenerateTarget: {
+          summary_id: summaryId,
+          conversation_id: conversationId,
+          reason:
+            typeof summaryIdOrTarget === "object" && summaryIdOrTarget.reason
+              ? summaryIdOrTarget.reason
+              : "user_request",
+        },
+      };
+    });
+  },
+  async queryMetrics(params) {
+    set({ metricsLoading: true, metricsError: null });
+    const convId = params?.conversation_id ?? get().activeConversationId;
+    let metrics = get().turnMetrics;
+    if (convId) {
+      metrics = metrics.filter((m) => m.conversation_id === convId);
+    }
+    const cursor = get().metricsCursor;
+    set({ metricsLoading: false });
+    return { metrics, next_cursor: cursor };
+  },
+  async queryPromptAssembly(params) {
+    set({ promptAssemblyLoading: true, promptAssemblyError: null });
+    const includeHidden = params?.includeHidden === true;
+    const current = get().promptAssembly;
+    set({
+      promptAssemblyLoading: false,
+      promptAssemblyRevealed: includeHidden,
+    });
+    return (
+      current ?? {
+        conversation_id: params?.conversation_id ?? get().activeConversationId ?? null,
+        modules: [],
+        diagnostics: [],
+        summary_injected: false,
+        memory_injected: false,
+        hidden_content_included: includeHidden,
+        generated_at: new Date().toISOString(),
+      }
+    );
   },
   setRemoteControl(remoteControl) {
     set({ remoteControl });
@@ -2137,6 +2315,9 @@ export const selectDesktopRenderState = (state: DesktopState): DesktopRenderStat
   remotePairing: state.remotePairing,
   summariesByConversation: state.summariesByConversation,
   memories: state.memories,
+  memoriesByConversation: state.memoriesByConversation,
+  summaryTriggersByConversation: state.summaryTriggersByConversation,
+  summaryRegenerateTarget: state.summaryRegenerateTarget,
   remoteControl: state.remoteControl,
   approvalsByConversation: state.approvalsByConversation,
   approvalOutcomesById: state.approvalOutcomesById,
