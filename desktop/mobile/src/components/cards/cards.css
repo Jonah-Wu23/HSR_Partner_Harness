@@ -426,6 +426,38 @@
   text-align: right;
 }
 
+/* V0.3.9：已决终态的补充事实（处理者 / 服务端说明 / error_code / 终态时间）。 */
+.mobile-approval-resolved-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mobile-approval-resolved-meta {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: right;
+  word-break: break-word;
+}
+
+/* 决策状态色：-status-<state> 语义，允许 / 拒绝 / 超时各自可辨。 */
+.mobile-approval-status-badge.is-allow,
+.mobile-approval-status-badge.is-allow_for_conversation {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.mobile-approval-status-badge.is-deny {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.mobile-approval-status-badge.is-timeout {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
 /* ========== 思考缎带 ========== */
 
 .mobile-reasoning-ribbon {
