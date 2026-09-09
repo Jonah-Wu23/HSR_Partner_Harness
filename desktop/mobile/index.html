@@ -2,9 +2,13 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <!-- V0.3.9 V08：viewport-fit=cover 供 safe-area 使用；
+         interactive-widget=resizes-content 让软键盘弹出时收缩布局高度（聊天输入区不被键盘
+         遮挡，Android Chrome 108+ 生效；iOS Safari 不识别该值，按默认行为处理）。
+         不设置 maximum-scale/user-scalable，保留用户缩放能力。 -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <title>搭档手机端</title>
   </head>

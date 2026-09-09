@@ -84,4 +84,32 @@ describe("ConnectionBanner 组件", () => {
     fireEvent.click(retryBtn);
     expect(reconnectSpy).toHaveBeenCalledTimes(1);
   });
+
+  it("auth_failed 时若带细分错误码展示具体原因（token_expired 与 token_revoked）", () => {
+    const { rerender } = render(
+      <ConnectionBanner connection="auth_failed" authFailureCode="token_expired" />,
+    );
+    expect(screen.getByTestId("connection-banner")).toHaveTextContent(
+      "配对凭据已过期，请重新配对。",
+    );
+
+    rerender(
+      <ConnectionBanner connection="auth_failed" authFailureCode="token_revoked" />,
+    );
+    expect(screen.getByTestId("connection-banner")).toHaveTextContent(
+      "本设备已被桌面端撤销授权，请重新配对。",
+    );
+  });
+
+  it("unreachable 与 disconnected 态如实提示电脑休眠/关机的可能性（不宣称电脑正在休眠）", () => {
+    const { rerender } = render(<ConnectionBanner connection="unreachable" />);
+    expect(screen.getByTestId("conn-banner-hint")).toHaveTextContent(
+      "电脑休眠、关机或 Sidecar 未运行时也会表现为断连。",
+    );
+
+    rerender(<ConnectionBanner connection="disconnected" />);
+    expect(screen.getByTestId("conn-banner-hint")).toHaveTextContent(
+      "电脑休眠、关机或 Sidecar 未运行时也会表现为断连。",
+    );
+  });
 });
