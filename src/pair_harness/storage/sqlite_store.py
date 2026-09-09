@@ -39,6 +39,17 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _parse_content_field(raw: str) -> dict | None:
+    """摘要 content 文本解析回对象；空串/非对象返回 None（不伪造结构）。"""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def _dt(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
@@ -705,6 +716,43 @@ class SQLiteStore(StateStore):
             )
         self.connection.commit()
 
+    def _latest_summary_dict(self, conversation_id: str) -> dict | None:
+        """最近一条摘要记录（core 形状 content=dict）；无则 None。
+
+        restore_conversation 用 core ConversationSummary 校验（content 为
+        结构化对象），故此处把存储层 JSON 文本解析回对象；非对象内容
+        返回 None（保持原拟合失败语义，不伪造结构）。
+        """
+        try:
+            rows = self.connection.execute(
+                "SELECT * FROM conversation_summaries WHERE conversation_id = ? "
+                "ORDER BY covers_from_message_id, summary_id",
+                (conversation_id,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return None
+        if not rows:
+            return None
+        row = rows[-1]
+        content = _parse_content_field(row["content"])
+        if content is None:
+            return None
+        return {
+            "summary_id": row["summary_id"],
+            "conversation_id": row["conversation_id"],
+            "status": row["status"],
+            "covers_from_message_id": row["covers_from_message_id"],
+            "covers_to_message_id": row["covers_to_message_id"],
+            "covers_message_count": row["covers_message_count"],
+            "content": content,
+            "provider": row["provider"],
+            "model": row["model"],
+            "error_code": row["error_code"],
+            "error": row["error"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
     def load_conversation(self, conversation_id: str) -> dict:
         conversation = self.get_conversation(conversation_id)
         message_rows = self.connection.execute(
@@ -733,6 +781,8 @@ class SQLiteStore(StateStore):
                 if session_row is not None
                 else None
             ),
+            # V0.3.9 §2：最近一条摘要记录（供恢复时回填覆盖终点；无则 None）。
+            "summary": self._latest_summary_dict(conversation_id),
         }
 
     @staticmethod

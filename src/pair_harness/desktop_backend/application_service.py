@@ -89,10 +89,12 @@ from pair_harness.core.summary import (
     SUMMARY_PROVIDER_ERROR,
     SUMMARY_TIMEOUT,
     SummaryError,
+    is_final_message,
     messages_after_coverage,
     require_summary_conversation,
     role_messages,
     summary_event_payload,
+    summary_trigger,
     validate_summary_coverage,
 )
 from pair_harness.core.memory import (
@@ -203,6 +205,50 @@ def _message_index(messages: tuple, message_id: str) -> int | None:
         if message.message_id == message_id:
             return index
     return None
+
+
+def _window_for_record(messages: tuple, record: Any) -> tuple:
+    """摘要记录的 covers 区间在 messages 中的消息窗口（role 消息）。
+
+    区间端点必须是最终落库的真实消息；端点不存在返回空元组（调用方按
+    真实失败处理），不猜测、不回退。
+    """
+    start = _message_index(messages, record.covers_from_message_id)
+    end = _message_index(messages, record.covers_to_message_id)
+    if start is None or end is None or start > end:
+        return ()
+    return tuple(messages[start : end + 1])
+
+
+def _running_summary_record(
+    *,
+    conversation_id: str,
+    summary_id: str,
+    messages: tuple,
+    covered_to_message_id: str | None,
+    trigger: Any,
+) -> Any:
+    """自动压缩的 running 起点记录：区间=触发时刻的未压缩 role 消息。
+
+    契约 §2：covers_* 必须指向真实已落库消息；触发时消息数为 0 或区间
+    异常时按 summary_invalid 失败（调用方落库前校验）。
+    """
+    pending = role_messages(
+        messages_after_coverage(messages, covered_to_message_id)
+    )
+    if not pending:
+        raise SummaryError("没有可摘要的新消息", code=SUMMARY_INVALID)
+    covers_from = pending[0].message_id
+    covers_to = pending[-1].message_id
+    return StorageSummary(
+        summary_id=summary_id,
+        conversation_id=conversation_id,
+        covers_from_message_id=covers_from,
+        covers_to_message_id=covers_to,
+        covers_message_count=len(pending),
+        content="",
+        status="running",
+    )
 
 
 
@@ -710,6 +756,8 @@ class DesktopApplicationService:
         self._title_tasks: set[asyncio.Task[None]] = set()
         # V0.3.9 §2：摘要 regenerate 后台任务（失败保留真实状态，不吞错误）。
         self._summary_tasks: set[asyncio.Task[None]] = set()
+        # 自动压缩防重入：会话级在途标记（任务完成后清除）。
+        self._auto_summary_in_flight: set[str] = set()
         # V0.2：后台回合任务集合（快速接受后立即返回，回合在后台推进）
         self._turn_tasks: set[asyncio.Task[None]] = set()
         # 角色对话不占用全局 coding busy 状态；用会话级任务记录阻止同一
@@ -3859,6 +3907,34 @@ class DesktopApplicationService:
             return None
         return card_id
 
+    def _recent_completed_summary(self, conversation_id: str) -> Any:
+        """最近一条 completed 摘要（core 形状 content=dict）；无则 None。"""
+        try:
+            records = self.store.list_summaries(conversation_id, status="completed")
+        except ValueError:
+            return None
+        if not records:
+            return None
+        latest = records[-1]
+        content = _json_load(latest.content)
+        if not isinstance(content, dict):
+            content = None
+        return {
+            "summary_id": latest.summary_id,
+            "conversation_id": latest.conversation_id,
+            "status": "completed",
+            "covers_from_message_id": latest.covers_from_message_id,
+            "covers_to_message_id": latest.covers_to_message_id,
+            "covers_message_count": latest.covers_message_count,
+            "content": content,
+            "provider": latest.provider,
+            "model": latest.model,
+            "error_code": None,
+            "error": None,
+            "created_at": latest.created_at,
+            "updated_at": latest.updated_at,
+        }
+
     def _resolve_character_prompt(
         self,
         conversation_id: str,
@@ -3891,11 +3967,14 @@ class DesktopApplicationService:
         else:
             base = assemble_character_prompt(record.card)
             self._assembled_cache[card_id] = (record.updated_at, base)
+        # V0.3.9 §2：装配消费最近成功摘要（契约：摘要+最近原文进角色上下文）。
+        summary_record = self._recent_completed_summary(conversation_id)
         return assemble_turn_prompt(
             record.card,
             scan_texts=[m.text for m in recent_messages],
             turn_index=turn_index,
             base=base,
+            summary=summary_record,
         )
 
     def _insert_character_greeting(
@@ -4609,6 +4688,155 @@ class DesktopApplicationService:
                 error_code=SUMMARY_PROVIDER_ERROR,
                 error=f"{type(exc).__name__}: {exc}",
             )
+
+    def _maybe_auto_summary(self, message: Any) -> None:
+        """消息落库后的自动压缩触发判定（V0.3.9 §2）。
+
+        只做纯函数判定（同会话未压缩 role 消息 ≥80 条或正文 ≥256KiB）：
+        - 只有最终落库的角色消息才计数（summary_trigger 内 role_messages 过滤）；
+        - 会话已有在途自动压缩/regenerate 任务时不重复触发；
+        - 触发后异步跑 _run_auto_summary（后台调模型），不阻塞对话主链路；
+        - 频繁消息下判定只读内存/DB，不做同步模型调用。
+        """
+        if not is_final_message(message):
+            return
+        conversation_id = message.conversation_id
+        if conversation_id in self._auto_summary_in_flight:
+            return
+        try:
+            self.store.get_conversation(conversation_id)
+        except KeyError:
+            return
+        snapshot = self.store.load_conversation(conversation_id)
+        messages = tuple(snapshot.get("messages", ()))
+        covered_to = self.orchestrator.summary_coverage(conversation_id)
+        trigger = summary_trigger(messages, covered_to_message_id=covered_to)
+        if not trigger.should_start:
+            return
+        # 标记在途（防重入），广播 started 再异步生成。
+        self._auto_summary_in_flight.add(conversation_id)
+        try:
+            conversation = self.store.get_conversation(conversation_id)
+        except KeyError:
+            self._auto_summary_in_flight.discard(conversation_id)
+            return
+        # 区间在触发时刻固定（生成期间新消息不改变本次 covers_*）。
+        summary_id = f"auto-{conversation_id}-{message.message_id}"
+        running_record = _running_summary_record(
+            conversation_id=conversation_id,
+            summary_id=summary_id,
+            messages=messages,
+            covered_to_message_id=covered_to,
+            trigger=trigger,
+        )
+        self.emitter.emit(
+            "summary.started",
+            summary_event_payload(
+                running_record,
+                account_id=self.current_account_id,
+                project_id=conversation.project_id or "",
+                pair_id=conversation.pair_id,
+                character_ref=self._conversation_character_ref(conversation),
+                assistant_identity=self._conversation_assistant_identity(conversation),
+            ),
+        )
+        task = asyncio.create_task(
+            self._run_auto_summary(conversation, running_record, trigger),
+            name=f"auto-summary:{conversation_id}",
+        )
+        self._summary_tasks.add(task)
+
+        def _clear(completed: asyncio.Task[None]) -> None:
+            self._summary_tasks.discard(completed)
+            self._auto_summary_in_flight.discard(conversation_id)
+
+        task.add_done_callback(_clear)
+
+    async def _run_auto_summary(
+        self, conversation: Any, running_record: Any, trigger: Any
+    ) -> None:
+        """自动压缩后台生成：区间=触发时刻固定（running 记录已定 covers_*）。
+
+        生成期间新消息不改变本次区间；成功推进覆盖终点，失败保留真实
+        失败状态（_broadcast_summary_failed 沿用 running 区间）。
+        """
+        conversation_id = conversation.conversation_id
+        try:
+            snapshot = self.store.load_conversation(conversation_id)
+            messages = tuple(snapshot.get("messages", ()))
+            # 窗口=触发时刻 running 记录固定的 covers 区间（生成期间新消息
+            # 不改变本次压缩范围，留给下一次触发）。
+            window_messages = _window_for_record(messages, running_record)
+            if not window_messages:
+                raise SummaryError("没有可摘要的新消息", code=SUMMARY_INVALID)
+            content, provider, model = await self._generate_summary_content(
+                conversation, window_messages
+            )
+            summary = StorageSummary(
+                summary_id=running_record.summary_id,
+                conversation_id=conversation_id,
+                covers_from_message_id=running_record.covers_from_message_id,
+                covers_to_message_id=running_record.covers_to_message_id,
+                covers_message_count=running_record.covers_message_count,
+                content=_summary_content_text(content),
+                provider=provider,
+                model=model,
+                status="completed",
+            )
+            validate_summary_coverage(messages, summary)
+            stored = self.store.upsert_summary(summary)
+            self.orchestrator.set_summary_coverage(
+                conversation_id, stored.covers_to_message_id
+            )
+            self.emitter.emit(
+                "summary.completed",
+                summary_event_payload(
+                    stored,
+                    account_id=self.current_account_id,
+                    project_id=conversation.project_id or "",
+                    pair_id=conversation.pair_id,
+                    character_ref=self._conversation_character_ref(conversation),
+                    assistant_identity=self._conversation_assistant_identity(conversation),
+                ),
+            )
+        except asyncio.CancelledError:
+            raise
+        except SummaryError as exc:
+            await self._broadcast_summary_failed(
+                conversation, running_record, error_code=exc.code, error=str(exc)
+            )
+        except Exception as exc:  # noqa: BLE001 - 生成失败保留真实失败状态
+            logger.exception("自动压缩失败（conversation=%s）", conversation_id)
+            await self._broadcast_summary_failed(
+                conversation,
+                running_record,
+                error_code=SUMMARY_PROVIDER_ERROR,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+    async def _generate_summary_content(
+        self, conversation: Any, messages: tuple
+    ) -> tuple[dict, str | None, str | None]:
+        """调模型生成摘要内容；返回 (content, provider, model)。"""
+        pair_id = conversation.pair_id
+        pair_config = load_pair_config(pair_id)
+        assistant_prompt = load_prompt(pair_config.assistant.prompt)
+        context_text = "\n".join(
+            f"{_speaker_label(message)}：{message.text.strip()}"
+            for message in messages
+            if message.text.strip()
+        )
+        raw = await self.dialogue_model.generate_summary(
+            pair_id=pair_id,
+            assistant_prompt=assistant_prompt,
+            context_text=context_text,
+        )
+        if not isinstance(raw, dict):
+            raise SummaryError(
+                "摘要生成未返回 JSON 对象", code=SUMMARY_PROVIDER_ERROR
+            )
+        config = self._load_account_config()
+        return raw, self.dialogue_provider_name(config) or None, config.get("dialogue.model") or None
 
     async def _broadcast_summary_failed(
         self, conversation: Any, previous: Any, *, error_code: str, error: str
@@ -5877,6 +6105,8 @@ class DesktopApplicationService:
         # V0.3.5：角色自然语言回复 → 在线手机端 TTS 下发（契约 §5.2）；
         # 助手/工具/思考/系统消息零音频下发。
         self._maybe_relay_mobile_tts(message, voice_id)
+        # V0.3.9 §2：最终落库消息到达后判定自动压缩触发（纯函数，不调模型）。
+        self._maybe_auto_summary(message)
 
     def _emit_state_snapshot(self) -> None:
         """发出与事件自身序号一致的完整快照。"""
