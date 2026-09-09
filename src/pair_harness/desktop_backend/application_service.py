@@ -7,7 +7,8 @@ import json
 import logging
 import os
 import threading
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, cast
 from urllib.parse import urlsplit
@@ -113,6 +114,16 @@ logger = logging.getLogger(__name__)
 # 任务无限期挂在 await future 上（生成器暂停在 yield 时看门狗触发不到）。
 APPROVAL_TIMEOUT_S = 600.0
 
+# V0.3.9 契约 §6：timeout 是服务端专属终态——只能由 broker 在等待超时后
+# 产生，客户端提交 decision="timeout" 一律按 invalid_decision 拒绝。
+APPROVAL_TIMEOUT_DECISION = "timeout"
+
+# V0.3.9 契约 §6：远程控制租约按 device_key 独立记录。TTL 45s（持有者每
+# 15s 心跳续租，3 次容错）；断连后额外宽限 15s（重连窗口），最晚 60s 回收。
+CONTROL_LEASE_TTL_S = 45.0
+CONTROL_LEASE_GRACE_S = 15.0
+CONTROL_LEASE_SWEEP_INTERVAL_S = 5.0
+
 # V0.3.8 T4（契约 §14.1）：回合终态集合（协议无 interrupted）。到达任一
 # 终态后队列立即派发下一条；排队项不回退 queued，避免失败项无限自动重试。
 _TURN_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
@@ -138,7 +149,12 @@ class ApprovalBroker:
 
     V0.3.2 M4：``request`` 显式接收 conversation_id 与 task_id（由编排器
     从执行上下文捕获），不再通过全局当前任务反查归属。
+    V0.3.9 契约 §6：全部终态（allow/allow_for_conversation/deny/timeout）
+    统一走 :meth:`_finish`——首个终态获胜，approval.resolved 字段齐全，
+    缺失保持 null，不伪造 desktop/remote 来源。
     """
+
+    _RESOLVED_CAPACITY = 256
 
     def __init__(self, emitter: EventEmitter) -> None:
         self._emitter = emitter
@@ -146,11 +162,22 @@ class ApprovalBroker:
         # V0.3.5：已决审批的短时结果记录——双端并发应答同一审批时，后到者
         # 收到 approval_already_resolved 与先到者的真实结果，双端状态收敛
         # （docs/plans/V0.3.5-契约冻结.md §6）。容量有界，防长会话累积。
+        # V0.3.9：记录携带全部终态字段与 emitted 标记（首个终态只广播一次）。
         self._resolved: dict[str, dict[str, Any]] = {}
 
     @property
     def pending(self) -> dict[str, dict[str, Any]]:
         return self._pending
+
+    def resolution(self, approval_id: str) -> dict[str, Any] | None:
+        """已决终态记录（未决或未知返回 None）。"""
+        return self._resolved.get(approval_id)
+
+    def mark_emitted(self, approval_id: str) -> None:
+        """标记该终态的 approval.resolved 已广播（引擎路径去重用）。"""
+        record = self._resolved.get(approval_id)
+        if record is not None:
+            record["emitted"] = True
 
     async def request(
         self,
@@ -181,10 +208,32 @@ class ApprovalBroker:
         )
         try:
             # V0.3.8 T4（C4）：审批等待有上限——超时如实失败（approval_timeout），
-            # 由回合失败链释放 busy 并放行队列；用户迟到应答会收到
-            # approval_not_found，不伪造裁决结果。
+            # 由回合失败链释放 busy 并放行队列。
+            # V0.3.9 契约 §6：超时是终态——广播 approval.resolved(timeout) 并
+            # 记入已决记录，迟到点击拿到真实终态而不是笼统的 not_found。
             return await asyncio.wait_for(future, timeout=APPROVAL_TIMEOUT_S)
         except asyncio.TimeoutError:
+            if future.done() and not future.cancelled():
+                # 同一事件循环 tick 内已被 resolve 完成：以真实裁决为准，
+                # 不把已决审批误报成超时。
+                self._pending.pop(approval_id, None)
+                return future.result()
+            item = self._pending.get(approval_id) or {
+                "future": future,
+                "conversation_id": conversation_id,
+                "task_id": task_id,
+                "reason": reason,
+            }
+            self._finish(
+                approval_id,
+                item,
+                APPROVAL_TIMEOUT_DECISION,
+                resolved_by="system",
+                actor="system",
+                reason="等待审批超时",
+                error_code="approval_timeout",
+                emit=True,
+            )
             raise ServiceError(
                 f"审批超时未裁决（{int(APPROVAL_TIMEOUT_S)}s）："
                 "任务已按失败终止并释放，可重新发起",
@@ -200,36 +249,39 @@ class ApprovalBroker:
         if item is None:
             prior = self._resolved.get(approval_id)
             if prior is not None:
-                # 契约 §6：后到者拿到先到者的真实结果（结构化字段），
+                # 契约 §6：后到者拿到先到者的真实终态（结构化字段），
                 # 双端据此收敛展示，不必解析 message 文案。
                 raise ServiceError(
-                    f"审批已由 {prior['resolved_by']} 应答（{prior['decision']}），"
-                    "不能重复应答",
+                    f"审批已由 {prior.get('resolved_by') or '系统'} 应答"
+                    f"（{prior.get('decision')}），不能重复应答",
                     code="approval_already_resolved",
-                    details={
-                        "decision": prior["decision"],
-                        "resolved_by": prior["resolved_by"],
-                    },
+                    details=self._resolution_details(prior),
                 )
             raise ServiceError(
                 f"审批请求不存在或已经完成：{approval_id}",
                 code="approval_not_found",
             )
+        if decision == APPROVAL_TIMEOUT_DECISION:
+            # 契约 §6：timeout 只能由服务端产生，客户端不可伪造。
+            raise ServiceError(
+                "timeout 由服务端产生，不能作为用户裁决提交",
+                code="invalid_decision",
+            )
         try:
             parsed = ApprovalDecision(decision)
         except ValueError as exc:
             raise ServiceError(f"未知审批决定：{decision}", code="invalid_decision") from exc
-        future = cast(asyncio.Future[ApprovalDecision], item["future"])
-        if not future.done():
-            future.set_result(parsed)
-        # 先到者立即占位：并发第二答在 pending 已移除后走 already_resolved，
-        # 不会因 future 已 done 而静默成功（request 的 finally pop 幂等）。
-        self._pending.pop(approval_id, None)
-        outcome = {"decision": parsed.value, "resolved_by": resolved_by}
-        self._resolved[approval_id] = outcome
-        if len(self._resolved) > 256:
-            self._resolved.pop(next(iter(self._resolved)))
-        return outcome
+        # 用户裁决先记录终态；approval.resolved 由引擎路径统一广播
+        # （避免同一审批两条事件，首个终态获胜）。
+        return self._finish(
+            approval_id,
+            item,
+            parsed.value,
+            resolved_by=resolved_by,
+            actor="user",
+            reason=str(item.get("reason") or ""),
+            emit=False,
+        )
 
     def cancel_all(self) -> None:
         for approval_id, item in tuple(self._pending.items()):
@@ -259,23 +311,90 @@ class ApprovalBroker:
                     "任务已取消，审批已否决",
                 )
 
-    def _cancel_item(
-        self, approval_id: str, item: dict[str, Any], reason: str
-    ) -> None:
+    def _finish(
+        self,
+        approval_id: str,
+        item: dict[str, Any],
+        decision: str,
+        *,
+        resolved_by: str | None,
+        actor: str | None,
+        reason: str,
+        error_code: str | None = None,
+        emit: bool,
+    ) -> dict[str, Any]:
+        """记录终态（首个终态获胜）并按需广播 approval.resolved。
+
+        V0.3.9 契约 §6：decision/resolved_by/actor/reason/resolved_at/
+        error_code 全部落进记录；缺失保持 null，不伪造来源。timeout 不是
+        ApprovalDecision 成员，不向等待方回填伪造裁决（由 wait_for 超时
+        路径如实失败）。
+        """
         future = cast(asyncio.Future[ApprovalDecision], item["future"])
         if not future.done():
-            future.set_result(ApprovalDecision.DENY)
+            try:
+                future.set_result(ApprovalDecision(decision))
+            except ValueError:
+                pass
         self._pending.pop(approval_id, None)
+        record: dict[str, Any] = {
+            "decision": decision,
+            "resolved_by": resolved_by,
+            "actor": actor,
+            "reason": reason,
+            "resolved_at": datetime.now(timezone.utc).isoformat(),
+            "error_code": error_code,
+            "conversation_id": item.get("conversation_id"),
+            "task_id": item.get("task_id"),
+            "emitted": False,
+        }
+        self._resolved[approval_id] = record
+        while len(self._resolved) > self._RESOLVED_CAPACITY:
+            self._resolved.pop(next(iter(self._resolved)))
+        if emit:
+            self._emit_resolved(approval_id, record)
+        return {"decision": decision, "resolved_by": resolved_by}
+
+    def _emit_resolved(self, approval_id: str, record: dict[str, Any]) -> None:
         self._emitter.emit(
             "approval.resolved",
             {
                 "approval_id": approval_id,
-                "conversation_id": item.get("conversation_id"),
-                "task_id": item.get("task_id"),
-                "decision": ApprovalDecision.DENY.value,
-                "reason": reason,
-                "actor": "system",
+                "conversation_id": record.get("conversation_id"),
+                "task_id": record.get("task_id"),
+                "decision": record.get("decision"),
+                "resolved_by": record.get("resolved_by"),
+                "actor": record.get("actor"),
+                "reason": record.get("reason"),
+                "resolved_at": record.get("resolved_at"),
+                "error_code": record.get("error_code"),
             },
+        )
+        record["emitted"] = True
+
+    @staticmethod
+    def _resolution_details(record: dict[str, Any]) -> dict[str, Any]:
+        """approval_already_resolved 的结构化真实终态（契约 §6）。"""
+        return {
+            "decision": record.get("decision"),
+            "resolved_by": record.get("resolved_by"),
+            "actor": record.get("actor"),
+            "reason": record.get("reason"),
+            "resolved_at": record.get("resolved_at"),
+            "error_code": record.get("error_code"),
+        }
+
+    def _cancel_item(
+        self, approval_id: str, item: dict[str, Any], reason: str
+    ) -> None:
+        self._finish(
+            approval_id,
+            item,
+            ApprovalDecision.DENY.value,
+            resolved_by="system",
+            actor="system",
+            reason=reason,
+            emit=True,
         )
 
     def snapshot(self) -> list[dict[str, Any]]:
@@ -291,6 +410,58 @@ class ApprovalBroker:
             }
             for approval_id, item in self._pending.items()
         ]
+
+
+@dataclasses.dataclass
+class _ControlLease:
+    """一条远程控制租约（V0.3.9 契约 §6，按 device_key 独立记录）。
+
+    TTL 45s 由持有者的 ping/claim 刷新；断连后额外宽限 15s（重连窗口），
+    因此最晚 60s 回收。宽限只在断连期间存在（grace_expires_at 否则为 null）。
+    回收判定用 monotonic 截止时刻；协议展示用续租时算好的 wall-clock 时间，
+    保证同一租约的多次快照返回同一个 expires_at。
+    """
+
+    device_key: str
+    granted_at: float
+    last_refresh_at: float
+    expires_at_wall: datetime
+    connection_key: str | None = None
+    disconnected_at: float | None = None
+    grace_expires_at_wall: datetime | None = None
+    reason: str = "claimed"
+
+    @property
+    def expires_at(self) -> float:
+        return self.last_refresh_at + CONTROL_LEASE_TTL_S
+
+    @property
+    def grace_expires_at(self) -> float | None:
+        if self.disconnected_at is None:
+            return None
+        return self.expires_at + CONTROL_LEASE_GRACE_S
+
+    def reclaim_at(self) -> float:
+        grace = self.grace_expires_at
+        return grace if grace is not None else self.expires_at
+
+    def renew(self, now: float) -> None:
+        """续租：重置 TTL 与协议展示时刻，并清除断连宽限。"""
+        self.last_refresh_at = now
+        self.disconnected_at = None
+        self.grace_expires_at_wall = None
+        self.expires_at_wall = datetime.now(timezone.utc) + timedelta(
+            seconds=CONTROL_LEASE_TTL_S
+        )
+
+    def mark_disconnected(self, now: float) -> None:
+        """记录断连并进入重连宽限（幂等：重复断连不重复顺延）。"""
+        if self.disconnected_at is not None:
+            return
+        self.disconnected_at = now
+        self.grace_expires_at_wall = self.expires_at_wall + timedelta(
+            seconds=CONTROL_LEASE_GRACE_S
+        )
 
 
 class DesktopApplicationService:
@@ -423,8 +594,10 @@ class DesktopApplicationService:
         # 手机下行 TTS 分片编目与在途下发任务。
         self._mobile_tts = MobileTtsSequencer()
         self._mobile_tts_tasks: dict[str, asyncio.Task[None]] = {}
-        # 播放归属由稳定设备标识持有；网络断开不构成退出控制。
-        self._active_remote_controllers: set[str] = set()
+        # V0.3.9 契约 §6：远程控制租约按 device_key 独立记录（TTL 45s，
+        # 断连宽限 15s）；断连不立即释放，宽限结束后过期回收。
+        self._control_leases: dict[str, _ControlLease] = {}
+        self._control_sweeper: asyncio.Task[None] | None = None
         # 装配结果缓存（card_id → (updated_at, AssembledPrompt)）。
         self._assembled_cache: dict[str, tuple[str, AssembledPrompt]] = {}
         # V0.3.7 电源契约：--serve 模式开启远程服务（power.get_status 的
@@ -456,6 +629,10 @@ class DesktopApplicationService:
         if self._shutdown:
             return
         self._shutdown = True
+        if self._control_sweeper is not None and not self._control_sweeper.done():
+            self._control_sweeper.cancel()
+            await asyncio.gather(self._control_sweeper, return_exceptions=True)
+        self._control_sweeper = None
         self.approval_broker.cancel_all()
         for task in tuple(self._title_tasks):
             task.cancel()
@@ -652,6 +829,7 @@ class DesktopApplicationService:
             "busy": active is not None,
             "active_tasks": to_jsonable(active_tasks),
             "approvals": self.approval_broker.snapshot(),
+            "remote_control": self._control_lease_payload(),
             "voice": self._voice_snapshot(),
             "pair": self._pair_payload(self.pair_config),
             "pairs": [self._pair_payload(pair) for pair in self.pair_catalog],
@@ -666,8 +844,103 @@ class DesktopApplicationService:
         return self.current_conversation_id
 
     def has_active_remote_controller(self) -> bool:
-        """V0.3.8 D2：是否存在活跃的远程手机控制端（设备互斥）。"""
-        return bool(self._active_remote_controllers)
+        """是否存在未过期的远程控制租约（V0.3.9 契约 §6）。
+
+        读取前先做一次惰性回收，保证过期租约不会继续阻断桌面播放。
+        """
+        self._sweep_control_leases()
+        return bool(self._control_leases)
+
+    def _sweep_control_leases(self, *, now: float | None = None) -> int:
+        """回收已过期租约并广播 remote.control_changed，返回回收条数。"""
+        current = time.monotonic() if now is None else now
+        expired = [
+            lease
+            for lease in self._control_leases.values()
+            if current > lease.reclaim_at()
+        ]
+        for lease in expired:
+            self._control_leases.pop(lease.device_key, None)
+            logger.info(
+                "remote-control: 租约过期回收 key=%s reason=%s",
+                lease.device_key,
+                lease.reason,
+            )
+            self._emit_control_changed(lease, state="free", reason="expired")
+        return len(expired)
+
+    def _ensure_control_sweeper(self) -> None:
+        """确保存在周期回收任务（最晚 60s 回收过期租约并广播事件）。"""
+        task = self._control_sweeper
+        if task is not None and not task.done():
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # 无运行中的事件循环（同步构造/测试）时只保留惰性回收。
+            return
+        self._control_sweeper = asyncio.create_task(
+            self._control_sweep_loop(), name="remote-control-sweeper"
+        )
+
+    async def _control_sweep_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(CONTROL_LEASE_SWEEP_INTERVAL_S)
+                self._sweep_control_leases()
+                if not self._control_leases:
+                    # 无租约时退出；下次认领会重新创建回收任务。
+                    return
+        except asyncio.CancelledError:
+            raise
+
+    def _control_lease_payload(self) -> dict[str, Any]:
+        """remote_control 快照/状态：state/device_key/expires_at/
+        grace_expires_at/reason，无值一律 null（契约 §6）。"""
+        self._sweep_control_leases()
+        if not self._control_leases:
+            return {
+                "state": "free",
+                "device_key": None,
+                "expires_at": None,
+                "grace_expires_at": None,
+                "reason": None,
+            }
+        lease = min(
+            self._control_leases.values(),
+            key=lambda item: (item.reclaim_at(), item.device_key),
+        )
+        return {
+            "state": "held",
+            "device_key": lease.device_key,
+            "expires_at": lease.expires_at_wall.isoformat(),
+            "grace_expires_at": (
+                lease.grace_expires_at_wall.isoformat()
+                if lease.grace_expires_at_wall is not None
+                else None
+            ),
+            "reason": lease.reason,
+        }
+
+    def _emit_control_changed(
+        self, lease: _ControlLease, *, state: str, reason: str
+    ) -> None:
+        """广播 remote.control_changed（契约 §6）。"""
+        lease.reason = reason
+        self.emitter.emit(
+            "remote.control_changed",
+            {
+                "state": state,
+                "device_key": lease.device_key,
+                "expires_at": lease.expires_at_wall.isoformat(),
+                "grace_expires_at": (
+                    lease.grace_expires_at_wall.isoformat()
+                    if lease.grace_expires_at_wall is not None
+                    else None
+                ),
+                "reason": reason,
+            },
+        )
 
     def attach_voice_runtime(self, runtime: VoiceRuntime) -> None:
         self.voice_runtime = runtime
@@ -737,6 +1010,7 @@ class DesktopApplicationService:
                         on_asr_partial=self._on_asr_partial,
                         on_error=self._on_voice_error,
                         on_tts_state=self._on_tts_state,
+                        on_interrupted=self._on_voice_interrupted,
                         on_text_input=self._submit_voice_input,
                         voices=voices,
                     )
@@ -1012,6 +1286,32 @@ class DesktopApplicationService:
         self._voice_state["tts"] = state
         self._emit_voice_changed()
 
+    def _on_voice_interrupted(
+        self, conversation_id: str, message_id: str | None, reason: str
+    ) -> None:
+        """桌面朗读被抢占（V0.3.9 契约 §7：voice.playback_interrupted）。"""
+        self.emitter.emit(
+            "voice.playback_interrupted",
+            {
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+                "reason": reason,
+            },
+        )
+
+    async def _interrupt_desktop_speech(self, reason: str) -> str | None:
+        """抢占桌面本地朗读（契约 §6）。
+
+        运行时未提供抢占入口（测试替身）时如实跳过：既有的
+        stop_speaking_async 调用点语义不变，新增的抢占点只对真实
+        VoiceRuntime 生效。
+        """
+        runtime = self.voice_runtime
+        interrupt = getattr(runtime, "interrupt_async", None) if runtime is not None else None
+        if interrupt is None:
+            return None
+        return await interrupt(reason)
+
     def _on_asr_partial(self, text: str) -> None:
         self._voice_state["asr_partial"] = text
         self.emitter.emit("voice.asr_partial", {"text": text})
@@ -1103,6 +1403,7 @@ class DesktopApplicationService:
             "remote.revoke": self._remote_revoke,
             "remote.claim_control": self._remote_claim_control,
             "remote.release_control": self._remote_release_control,
+            "remote.control_status": self._remote_control_status,
         }
         if command.method == "approval.resolve":
             # V0.3.5：审批应答需要命令来源做双端仲裁，其余 handler 只收 params。
@@ -1116,11 +1417,18 @@ class DesktopApplicationService:
             )
         if command.method == "remote.claim_control":
             return await self._remote_claim_control(
-                command.params, device_key=self._remote_control_device_key(command)
+                command.params,
+                device_key=self._remote_control_device_key(command),
+                connection_key=command.connection_key,
             )
         if command.method == "remote.release_control":
             return await self._remote_release_control(
                 command.params, device_key=self._remote_control_device_key(command)
+            )
+        if command.method == "ping":
+            # V0.3.9 契约 §6：已鉴权持有者的心跳刷新控制租约（无事件）。
+            return await self._ping(
+                command.params, device_key=command.remote_device_key
             )
         handler = handlers[command.method]
         return await handler(command.params)
@@ -1273,12 +1581,21 @@ class DesktopApplicationService:
                 self.current_conversation_id = ""
         return self.bootstrap()
 
-    async def _ping(self, params: Mapping[str, Any]) -> dict[str, Any]:
+    async def _ping(
+        self, params: Mapping[str, Any], *, device_key: str | None = None
+    ) -> dict[str, Any]:
         """V0.3.8 T1（契约 §14.3）：WS 心跳——响应携带服务端时间作活性信号。
 
-        只探测传输活性，不做任何状态变化、不触发事件；客户端约 30s 收不到
-        任何入站消息即判定半开连接，主动断开走既有重连。
+        客户端约 30s 收不到任何入站消息即判定半开连接，主动断开走既有重连。
+        V0.3.9 契约 §6 修订：已鉴权持有者的 ping 刷新控制租约（TTL 45s），
+        续租本身不发事件；非持有者的 ping 不续租、不夺权。响应形状不变。
         """
+        del params
+        if device_key is not None:
+            lease = self._control_leases.get(device_key)
+            if lease is not None:
+                lease.renew(time.monotonic())
+                lease.reason = "renewed"
         return {"server_time": datetime.now(timezone.utc).isoformat()}
 
     async def _conversation_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -1440,6 +1757,9 @@ class DesktopApplicationService:
         text = self._required_string(params, "text")
         if target not in {"character", "assistant"}:
             raise ServiceError("target 必须是 character 或 assistant", code="invalid_target")
+        # V0.3.9 契约 §6：用户发送立即停声——epoch 递增、清队列、停播放器，
+        # 旧 epoch 的迟到 PCM 永不写入（排队提交同样先停声）。
+        await self._interrupt_desktop_speech("user_send")
         # M3.1：chat.submit 与账号切换/配置保存互斥。锁从模式/上下文切换
         # 开始持有，避免切换过程中提交落到半旧半新的状态。
         async with self._account_switch_lock:
@@ -3404,14 +3724,24 @@ class DesktopApplicationService:
 
     def handle_remote_disconnect(self, connection_key: str) -> None:
         """契约 §5.3：连接断开时取消该连接全部未完成语音会话（静默）。
-        播放归属持续到显式释放或设备撤销；锁屏、切后台和短暂断线不恢复桌面播放。
+
+        V0.3.9 契约 §6：断连不立即释放控制租约——给持有者 15s 重连宽限，
+        宽限结束后由回收流程过期；锁屏、切后台和短暂断线都不恢复桌面播放。
         """
         self._mobile_asr.cancel_all_for_connection(connection_key)
-        for task in tuple(self._mobile_asr_watchdogs.values()):
-            if not task.done():
+        now = time.monotonic()
+        for lease in self._control_leases.values():
+            if lease.connection_key != connection_key:
                 continue
-        # watchdog 与 session 的对应关系由 manager 清理；此处只需确保
-        # 已完成任务的表项最终被移除（done 回调与 stop 路径均会清理）。
+            if lease.disconnected_at is None:
+                lease.mark_disconnected(now)
+                lease.reason = "disconnected"
+                logger.info(
+                    "remote-control: 连接断开，进入重连宽限 key=%s grace=%ss",
+                    lease.device_key,
+                    int(CONTROL_LEASE_GRACE_S),
+                )
+        self._ensure_control_sweeper()
 
     async def _voice_mobile_tts_stop(
         self, params: Mapping[str, Any]
@@ -3697,9 +4027,17 @@ class DesktopApplicationService:
             if entry.get("device_name") == device_name and not entry.get("revoked"):
                 if self.pairing_service.revoke(entry["token"]):
                     revoked += 1
-                    self._active_remote_controllers.discard(
-                        hashlib.sha256(entry["token"].encode("utf-8")).hexdigest()
-                    )
+                    device_key = hashlib.sha256(
+                        entry["token"].encode("utf-8")
+                    ).hexdigest()
+                    lease = self._control_leases.pop(device_key, None)
+                    if lease is not None:
+                        logger.info(
+                            "remote-control: 设备撤销回收租约 key=%s", device_key
+                        )
+                        self._emit_control_changed(
+                            lease, state="free", reason="revoked"
+                        )
         if revoked == 0:
             raise ServiceError(
                 f"没有可撤销的设备：{device_name}", code="device_not_found"
@@ -3721,27 +4059,70 @@ class DesktopApplicationService:
             )
 
     async def _remote_claim_control(
-        self, params: Mapping[str, Any], *, device_key: str
+        self,
+        params: Mapping[str, Any],
+        *,
+        device_key: str,
+        connection_key: str | None = None,
     ) -> dict[str, Any]:
-        """V0.3.8 D2：手机端声明取得远程控制权（播放设备互斥）。"""
+        """手机端声明/续租远程控制权（V0.3.9 契约 §6）。
+
+        按 device_key 独立记录：重复认领只续租不发事件；首次认领抢占桌面
+        本地朗读（epoch 递增）并广播 remote.control_changed。
+        """
         del params
-        key = device_key
-        self._active_remote_controllers.add(key)
-        # 互斥生效：立即停止桌面端任何正在播放的本地声音
-        if self.voice_runtime is not None:
-            await self.voice_runtime.stop_speaking_async()
-        logger.info("remote-control: 控制器已认领 key=%s, total=%d", key, len(self._active_remote_controllers))
-        return {"claimed": True, "active_controllers": len(self._active_remote_controllers)}
+        self._sweep_control_leases()
+        now = time.monotonic()
+        lease = self._control_leases.get(device_key)
+        if lease is None:
+            lease = _ControlLease(
+                device_key=device_key,
+                granted_at=now,
+                last_refresh_at=now,
+                expires_at_wall=datetime.now(timezone.utc)
+                + timedelta(seconds=CONTROL_LEASE_TTL_S),
+                connection_key=connection_key,
+                reason="claimed",
+            )
+            self._control_leases[device_key] = lease
+            # 抢占生效：epoch 递增并停止桌面端任何正在播放的本地声音。
+            if self.voice_runtime is not None:
+                await self.voice_runtime.stop_speaking_async("remote_claim")
+            self._ensure_control_sweeper()
+            logger.info(
+                "remote-control: 控制器已认领 key=%s, total=%d",
+                device_key,
+                len(self._control_leases),
+            )
+            self._emit_control_changed(lease, state="held", reason="claimed")
+        else:
+            lease.renew(now)
+            lease.connection_key = connection_key or lease.connection_key
+            lease.reason = "renewed"
+        return {"claimed": True, "active_controllers": len(self._control_leases)}
 
     async def _remote_release_control(
         self, params: Mapping[str, Any], *, device_key: str
     ) -> dict[str, Any]:
-        """V0.3.8 D2：手机端释放远程控制权（恢复桌面播放资格）。"""
+        """手机端释放自己的控制租约（恢复桌面播放资格）。
+
+        V0.3.9 契约 §6：只回收该 device_key，不误释放其他设备。
+        """
         del params
-        key = device_key
-        self._active_remote_controllers.discard(key)
-        logger.info("remote-control: 控制器已释放 key=%s, remaining=%d", key, len(self._active_remote_controllers))
-        return {"released": True, "active_controllers": len(self._active_remote_controllers)}
+        lease = self._control_leases.pop(device_key, None)
+        if lease is not None:
+            logger.info(
+                "remote-control: 控制器已释放 key=%s, remaining=%d",
+                device_key,
+                len(self._control_leases),
+            )
+            self._emit_control_changed(lease, state="free", reason="released")
+        return {"released": True, "active_controllers": len(self._control_leases)}
+
+    async def _remote_control_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """remote.control_status：只读租约状态（V0.3.9 契约 §6/§7）。"""
+        del params
+        return self._control_lease_payload()
 
     async def _account_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         del params
@@ -4932,14 +5313,44 @@ class DesktopApplicationService:
                 )
             self._emit_tool_run(event)
         elif event_type == EngineEventType.APPROVAL_RESOLVED:
-            self.emitter.emit(
-                "approval.resolved",
-                {
-                    "conversation_id": event.conversation_id,
-                    "task_id": event.task_id,
-                    **dict(event.payload),
-                },
-            )
+            self._emit_engine_approval_resolved(event)
+
+    def _emit_engine_approval_resolved(self, event: EngineEvent) -> None:
+        """统一 approval.resolved 载荷（V0.3.9 契约 §6）。
+
+        引擎路径只在没有更早终态时广播：取消/超时已由 broker 广播过同一
+        approval_id 时直接跳过（首个终态获胜）。resolved_by 只取真实来源
+        （desktop/remote/system），缺失保持 null，不伪造。
+        """
+        payload = dict(event.payload)
+        approval_id = str(payload.get("approval_id") or "")
+        record = self.approval_broker.resolution(approval_id)
+        if record is not None and record.get("emitted"):
+            return
+        if record is not None:
+            resolved_at = record.get("resolved_at")
+            resolved_by = record.get("resolved_by")
+            error_code = record.get("error_code")
+            self.approval_broker.mark_emitted(approval_id)
+        else:
+            resolved_at = datetime.now(timezone.utc).isoformat()
+            resolved_by = None
+            error_code = None
+        self.emitter.emit(
+            "approval.resolved",
+            {
+                "approval_id": approval_id,
+                "conversation_id": event.conversation_id,
+                "task_id": event.task_id,
+                "decision": payload.get("decision"),
+                "resolved_by": resolved_by,
+                "actor": payload.get("actor"),
+                "reason": payload.get("reason"),
+                "resolved_at": resolved_at,
+                "error_code": error_code,
+                "suggestion": payload.get("suggestion"),
+            },
+        )
 
     def _assistant_stream_message_id(self, event: EngineEvent) -> str:
         """V0.3.2 M1：优先使用编排器分配的 segment 消息 id。

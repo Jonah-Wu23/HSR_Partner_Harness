@@ -88,6 +88,8 @@ DESKTOP_COMMANDS = frozenset(
         "remote.revoke",
         "remote.claim_control",
         "remote.release_control",
+        # V0.3.9 契约 §6/§7：只读控制租约状态（TTL/宽限/持有设备）。
+        "remote.control_status",
     }
 )
 

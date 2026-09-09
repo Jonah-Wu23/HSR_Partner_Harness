@@ -384,7 +384,11 @@ def test_codec_mismatched_turn_id_stays_silent(caplog) -> None:
 
 @pytest.mark.asyncio
 async def test_approval_request_times_out_and_releases_pending(monkeypatch, service) -> None:
-    """审批无裁决满 600s（测试压缩为 0.1s）如实失败，pending 释放、迟到应答报错。"""
+    """审批无裁决满 600s（测试压缩为 0.1s）如实失败，pending 释放。
+
+    V0.3.9 契约 §6：超时是终态——广播 approval.resolved(timeout)，迟到应答
+    拿到带真实终态的 approval_already_resolved（不再是笼统的 not_found）。
+    """
     monkeypatch.setattr(app_service_module, "APPROVAL_TIMEOUT_S", 0.1)
     operation = PendingOperation(
         tool_kind="shell", command="echo hi", paths=(), summary="测试操作"
@@ -402,9 +406,21 @@ async def test_approval_request_times_out_and_releases_pending(monkeypatch, serv
     assert "审批超时未裁决" in str(excinfo.value)
     assert "appr-1" not in service.approval_broker.pending
 
+    resolved = service.event_log.payloads("approval.resolved")
+    assert len(resolved) == 1
+    assert resolved[0]["approval_id"] == "appr-1"
+    assert resolved[0]["decision"] == "timeout"
+    assert resolved[0]["resolved_by"] == "system"
+    assert resolved[0]["actor"] == "system"
+    assert resolved[0]["error_code"] == "approval_timeout"
+    assert resolved[0]["resolved_at"]
+
     with pytest.raises(ServiceError) as late:
         service.approval_broker.resolve("appr-1", "allow")
-    assert late.value.code == "approval_not_found"
+    assert late.value.code == "approval_already_resolved"
+    assert late.value.details["decision"] == "timeout"
+    assert late.value.details["resolved_by"] == "system"
+    assert late.value.details["error_code"] == "approval_timeout"
 
 
 @pytest.mark.asyncio

@@ -97,6 +97,9 @@ def build_real_voice_runtime(
     on_asr_partial: Callable[[str], None],
     on_error: Callable[[str], None],
     on_tts_state: Callable[[str], None] = lambda _s: None,
+    on_interrupted: Callable[[str, str | None, str], None] = (
+        lambda _conversation_id, _message_id, _reason: None
+    ),
     on_text_input: Callable[[str, str], Awaitable[None]] | None = None,
     voices: EffectiveVoiceProfile | None = None,
     account_config: Mapping[str, str] | None = None,
@@ -159,5 +162,6 @@ def build_real_voice_runtime(
         on_asr_partial=on_asr_partial,
         on_error=on_error,
         on_tts_state=on_tts_state,
+        on_interrupted=on_interrupted,
         on_text_input=on_text_input,
     )

@@ -192,7 +192,7 @@ async def test_remote_control_release_preserves_other_device(service) -> None:
         request_id="release", method="remote.release_control", params={},
         origin="remote", connection_key="new-a", remote_device_key="phone-a",
     ))
-    assert service._active_remote_controllers == {"phone-b"}
+    assert set(service._control_leases) == {"phone-b"}
 
 
 @pytest.mark.asyncio
