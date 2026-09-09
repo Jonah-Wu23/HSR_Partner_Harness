@@ -198,3 +198,35 @@
   color: var(--muted);
   border: 1px solid var(--border);
 }
+
+/* V0.3.9 V01：会话行徽章位于标题/时间下方，占据独立一行，不挤压标题省略号。 */
+.conversation-badges {
+  margin-top: 2px;
+}
+
+/* V0.3.9 V08：窄屏（≤360px）收敛。会话行、按钮与徽章保持可操作（≥44px 触控目标）。 */
+@media (max-width: 360px) {
+  .chat-list-container {
+    gap: 10px;
+  }
+  .conversation-row {
+    padding: 8px 10px;
+    gap: 8px;
+  }
+  .conversation-title {
+    font-size: 14px;
+  }
+  .conversation-mode-tag {
+    padding: 2px 6px;
+    font-size: 11px;
+  }
+  .project-count-badge {
+    font-size: 11px;
+  }
+  .chat-list-retry-btn {
+    width: 100%;
+  }
+  .project-section-header {
+    gap: 8px;
+  }
+}

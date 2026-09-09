@@ -1,0 +1,40 @@
+/* V0.3.9 V06：聊天页页内提示条。窄屏允许换行，不遮挡消息流。 */
+
+.chat-status-hint {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 12px;
+  font-size: 12px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.chat-status-line {
+  display: block;
+  word-break: break-word;
+}
+
+.chat-status-line.is-connecting,
+.chat-status-line.is-reconnecting,
+.chat-status-line.is-resync {
+  color: var(--warn);
+}
+
+.chat-status-line.is-unreachable,
+.chat-status-line.is-disconnected,
+.chat-status-line.is-auth_failed {
+  color: var(--danger);
+}
+
+.chat-status-line.is-lease-lost {
+  color: var(--warn);
+}
+
+@media (max-width: 360px) {
+  .chat-status-hint {
+    padding: 6px 8px;
+    font-size: 11px;
+  }
+}

@@ -229,6 +229,23 @@
 }
 .project-rail::-webkit-scrollbar { display: none; }
 
+.rail-projects-scroll {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  position: relative;
+}
+.rail-projects-scroll::-webkit-scrollbar { display: none; }
+.rail-projects-virtual {
+  width: 100%;
+}
+
 .rail-item {
   position: relative;
   display: flex;
@@ -327,6 +344,137 @@
 .rail-new-label {
   font-size: var(--text-c1-size);
   line-height: var(--text-c1-line);
+}
+
+/* ---- 跨聊天后台任务总览（V0.3.9 V01） ---- */
+.task-overview-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--mask);
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.task-overview-panel {
+  width: min(520px, 90vw);
+  max-height: 80vh;
+  background: var(--bg-card);
+  border: 1px solid var(--separator-strong);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-popup);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.task-overview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--separator);
+  background: var(--bg-panel);
+}
+
+.task-overview-header-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.task-overview-header-title h2 {
+  font-size: var(--text-b1-size);
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.task-overview-pulse-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--running);
+  animation: ph-pulse 1.6s ease-in-out infinite;
+}
+
+.task-overview-count-badge {
+  font-size: var(--text-c1-size);
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 1px 8px;
+  border-radius: var(--radius-full);
+  font-weight: 500;
+}
+
+.task-overview-body {
+  padding: var(--space-3) var(--space-4);
+  overflow-y: auto;
+  max-height: calc(80vh - 60px);
+}
+
+.task-overview-empty {
+  text-align: center;
+  color: var(--text-muted);
+  padding: var(--space-6) 0;
+  font-size: var(--text-b2-size);
+}
+
+.task-overview-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.task-overview-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-panel);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-md);
+  transition: border-color var(--dur-fast) ease;
+}
+.task-overview-item:hover {
+  border-color: var(--separator-strong);
+}
+
+.task-overview-item-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  flex: 1;
+}
+
+.task-overview-project-tag {
+  font-size: var(--text-c1-size);
+  color: var(--text-muted);
+  background: var(--fill-hover);
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  flex: none;
+}
+
+.task-overview-conv-title {
+  font-size: var(--text-b2-size);
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-overview-status-tag {
+  font-size: 11px;
+  color: var(--running);
+  background: rgba(41, 108, 225, 0.12);
+  border: 1px solid rgba(41, 108, 225, 0.3);
+  border-radius: var(--radius-xs);
+  padding: 0 5px;
+  flex: none;
 }
 
 .rail-divider {
@@ -860,6 +1008,74 @@
   animation: ph-pulse 1s ease-in-out infinite;
 }
 
+/* ---- 消息状态呈现（V0.3.9 V01：failed/cancelled 显示错误原文与不同终态外观） ---- */
+.msg-bubble.is-failed,
+.msg-bubble-failed {
+  border-color: var(--danger) !important;
+}
+.msg-bubble.is-cancelled,
+.msg-bubble-cancelled {
+  border-color: var(--text-muted) !important;
+  opacity: 0.88;
+}
+.msg-bubble.is-queued,
+.msg-bubble-queued {
+  border-color: var(--queued) !important;
+  border-style: dashed;
+}
+
+.msg-status-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding: 4px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-c1-size);
+  line-height: var(--text-c1-line);
+}
+.msg-status-banner.msg-status-failed {
+  background: rgba(220, 38, 38, 0.12);
+  color: var(--danger);
+  border: 1px solid rgba(220, 38, 38, 0.28);
+}
+.msg-status-banner.msg-status-cancelled {
+  background: rgba(107, 118, 134, 0.14);
+  color: var(--text-secondary);
+  border: 1px solid rgba(107, 118, 134, 0.25);
+}
+.msg-status-tag {
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  flex: none;
+  font-size: 11px;
+}
+.msg-status-banner.msg-status-failed .msg-status-tag {
+  background: var(--danger);
+  color: #FFFFFF;
+}
+.msg-status-banner.msg-status-cancelled .msg-status-tag {
+  background: var(--text-muted);
+  color: #FFFFFF;
+}
+.msg-status-tag-queued {
+  display: inline-block;
+  margin-left: 6px;
+  background: var(--queued-soft);
+  color: var(--queued);
+  border: 1px solid var(--queued);
+  border-radius: var(--radius-xs);
+  padding: 0 5px;
+  font-size: 11px;
+}
+.msg-status-detail {
+  flex: 1;
+  word-break: break-all;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
 /* ---- 工具卡片 ---- */
 
 .tool-card {
@@ -1005,6 +1221,67 @@
 .approval-review-allow { color: var(--success); }
 .approval-review-deny { color: var(--danger); }
 .approval-review-pending { color: var(--text-secondary); }
+
+.approval-item {
+  padding-bottom: var(--space-2);
+}
+.approval-item + .approval-item {
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px dashed var(--separator);
+}
+
+.approval-cross-chat-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--separator);
+  font-size: var(--text-c1-size);
+  color: var(--text-secondary);
+}
+
+.approval-bar-cross-chat {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-color: var(--warning);
+}
+.approval-cross-chat-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-b2-size);
+  color: var(--text-primary);
+}
+.approval-badge-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warning);
+  animation: ph-pulse 1.6s ease-in-out infinite;
+}
+
+/* ---- 非聊天视图返回运行中聊天横幅（V0.3.9 V04） ---- */
+.non-chat-running-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-card);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-lg);
+  flex: none;
+}
+.non-chat-running-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-b2-size);
+  color: var(--text-primary);
+}
 
 /* ========== 输入区 ========== */
 
@@ -1599,6 +1876,41 @@
 
 .chat-tab-dot.is-approval { background: var(--warning); }
 .chat-tab-dot.is-queued { background: var(--text-muted); }
+.chat-tab-dot.is-completed { background: var(--success); }
+
+.chat-tab-unread-badge,
+.conv-unread-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  color: #FFFFFF;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  flex: none;
+}
+
+.conv-unread-badge {
+  margin-left: auto;
+}
+
+.chat-tab-unread-badge {
+  margin-left: 6px;
+}
+
+.conv-completed-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  flex: none;
+  margin-right: 4px;
+}
 
 .chat-tab-close {
   flex: none;

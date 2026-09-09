@@ -262,4 +262,83 @@ describe("ChatListPage V0.3.7 接线（电源状态与通知偏好）", () => {
     expect(note).toHaveTextContent("本地通知仅在 Android 壳内可用");
     expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
   });
+
+  it("V0.3.9 V01：会话行根据 store 真实数据渲染运行中与待审批徽章", () => {
+    const mockProjects: ProjectRecord[] = [
+      {
+        project_id: "p1",
+        name: "主工程",
+        root_path: "/workspace/p1",
+        approval_mode: "request_approval",
+        reasoning_effort: "medium",
+        archived: false,
+        created_at: "2026-08-20T10:00:00Z",
+        last_opened_at: "2026-08-20T12:00:00Z",
+        path_available: true,
+        conversations: [
+          {
+            conversation_id: "c1",
+            project_id: "p1",
+            pair_id: "pair-1",
+            title: "核心开发",
+            last_mode: "collaboration",
+            archived: false,
+            created_at: "2026-08-20T10:00:00Z",
+            updated_at: "2026-08-20T14:30:00Z",
+          },
+        ],
+      },
+    ];
+
+    useMobileStore.setState({
+      bootstrapped: true,
+      connection: "connected",
+      projects: mockProjects,
+      activeTask: {
+        project_id: "p1",
+        task_id: "t1",
+        conversation_id: "c1",
+        engine_turn_id: "e1",
+      },
+      activeTasks: [
+        {
+          project_id: "p1",
+          task_id: "t1",
+          conversation_id: "c1",
+          engine_turn_id: "e1",
+        },
+      ],
+      approvals: [
+        {
+          approval_id: "a1",
+          conversation_id: "c1",
+          task_id: "t1",
+          decision: "allow",
+          operation: { type: "command", summary: "test" },
+          created_at: "2026-08-20T10:00:00Z",
+        } as unknown as import("@shared/contracts/protocol").PendingApproval,
+      ],
+    });
+
+    render(<ChatListPage />);
+    expect(screen.getByTestId("badge-running-c1")).toHaveTextContent("运行中");
+    expect(screen.getByTestId("badge-approvals-c1")).toHaveTextContent("待审批 1");
+  });
+
+  it("V0.3.9 V06：已水合状态下挂载连接详情抽屉，点击可展开收起", () => {
+    useMobileStore.setState({
+      bootstrapped: true,
+      connection: "connected",
+      projects: [],
+    });
+
+    render(<ChatListPage />);
+    const toggle = screen.getByTestId("btn-toggle-connection-details");
+    expect(toggle).toBeInTheDocument();
+    expect(screen.queryByTestId("lease-status-panel")).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(screen.getByTestId("lease-status-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("device-list-panel")).toBeInTheDocument();
+  });
 });

@@ -6,7 +6,11 @@ import type {
   PendingApproval,
   ToolRun,
 } from "@shared/contracts/protocol";
-import { mobileWsClient, useMobileStore } from "../../../lib/mobileStore";
+import {
+  mobileWsClient,
+  useMobileStore,
+  type MobileState,
+} from "../../../lib/mobileStore";
 import { navigate } from "../../../lib/router";
 import { ChatPage } from "../ChatPage";
 
@@ -126,11 +130,24 @@ describe("ChatPage 移动端聊天页集成测试", () => {
       messages: [],
       toolRuns: [],
       approvals: [],
+      resolvedApprovals: [],
       pair: null,
       activeTask: null,
       lastSequence: 10,
       bootstrapped: true,
-    });
+      voice: {
+        capture: { state: "idle", sessionId: null, error: null },
+        transcript: null,
+        playback: { messageId: null, state: "idle", error: null },
+        availability: {
+          secureContext: typeof window !== "undefined" ? window.isSecureContext : false,
+          micPermission: "unknown",
+          supported: typeof navigator !== "undefined" && Boolean(navigator.mediaDevices?.getUserMedia),
+        },
+        ttsChunks: {},
+        ttsDroppedChunks: {},
+      },
+    } as unknown as Partial<MobileState>);
 
     useMobileStore.getState().start();
     mobileWsClient.connect();
@@ -697,5 +714,290 @@ describe("ChatPage 移动端聊天页集成测试", () => {
 
     expect(window.location.hash).toBe("#/list");
     expect(window.history.length).toBe(lengthBeforeBack);
+  });
+
+  /* ---------- V0.3.9 V02 / V07 / V08 ---------- */
+
+  async function openConversationOnce() {
+    render(<ChatPage conversationId="c1" />);
+    await vi.waitFor(() => {
+      expect(lastSentFrame().method).toBe("conversation.open");
+    });
+    const openFrame = lastSentFrame();
+    lastInstance().emit({
+      kind: "response",
+      id: openFrame.id,
+      ok: true,
+      result: {
+        conversation: CONVERSATION,
+        project: null,
+        pair: null,
+        messages: [],
+        tool_runs: [],
+        turns: [],
+        queue_items: [],
+        active_task: null,
+      },
+    });
+    await waitFor(() => {
+      expect(useMobileStore.getState().activeConversationId).toBe("c1");
+    });
+  }
+
+  function lastFrameOf(method: string): Record<string, unknown> {
+    const frames = lastInstance()
+      .sent.map((raw) => JSON.parse(raw) as Record<string, unknown>);
+    return frames.reverse().find((frame) => frame.method === method) as Record<string, unknown>;
+  }
+
+  it("V0.3.9 V02：store 未接线 summary/memory 时不渲染状态条，不显示伪造状态", async () => {
+    await openConversationOnce();
+    expect(screen.queryByTestId("context-status-strip")).toBeNull();
+  });
+
+  it("V0.3.9 V02：接入摘要记录后渲染压缩状态条，失败可展开原始错误", async () => {
+    useMobileStore.setState({
+      summaryByConversationId: {
+        c1: {
+          summary_id: "s1",
+          conversation_id: "c1",
+          status: "failed",
+          covers_from_message_id: "m1",
+          covers_to_message_id: "m80",
+          covers_message_count: 80,
+          content: null,
+          provider: "deepseek",
+          model: "deepseek-v4.1-flash",
+          error_code: "summary_timeout",
+          error: "provider timeout",
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        },
+      },
+    } as unknown as Partial<MobileState>);
+
+    await openConversationOnce();
+
+    expect(screen.getByTestId("summary-status-text")).toHaveTextContent("压缩失败");
+    fireEvent.click(screen.getByTestId("summary-error-toggle"));
+    expect(screen.getByTestId("summary-error-code")).toHaveTextContent("summary_timeout");
+    expect(screen.getByTestId("summary-error-text")).toHaveTextContent("provider timeout");
+  });
+
+  it("V0.3.9 V02：记忆零条是真实零值，与无数据区分", async () => {
+    useMobileStore.setState({
+      memoriesByConversationId: { c1: [] },
+    } as unknown as Partial<MobileState>);
+
+    await openConversationOnce();
+
+    expect(screen.getByTestId("context-status-strip")).toHaveAttribute("data-memory-count", "0");
+    expect(screen.getByTestId("memory-status-text")).toHaveTextContent("长期记忆暂无记录");
+  });
+
+  it("V0.3.9 V02：恢复失败如实展示原始错误（不合成成功）", async () => {
+    const regenerateSummary = vi
+      .fn()
+      .mockRejectedValue(new Error("summary_provider_error：provider 不可用"));
+    useMobileStore.setState({
+      summaryByConversationId: {
+        c1: {
+          summary_id: "s1",
+          conversation_id: "c1",
+          status: "failed",
+          covers_from_message_id: "m1",
+          covers_to_message_id: "m80",
+          covers_message_count: 80,
+          content: null,
+          provider: null,
+          model: null,
+          error_code: "summary_provider_error",
+          error: "provider 不可用",
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        },
+      },
+      regenerateSummary,
+    } as unknown as Partial<MobileState>);
+
+    await openConversationOnce();
+    fireEvent.click(screen.getByTestId("summary-regenerate"));
+
+    await waitFor(() => {
+      expect(regenerateSummary).toHaveBeenCalledWith("s1");
+      expect(screen.getByTestId("summary-regenerate-error")).toHaveTextContent(
+        "summary_provider_error：provider 不可用",
+      );
+    });
+  });
+
+  it("V0.3.9 V07：审批 resolve 真实错误在页内展示（不再静默吞掉）", async () => {
+    useMobileStore.setState({ approvals: [SAMPLE_APPROVAL] });
+    render(<ChatPage conversationId="c1" />);
+
+    fireEvent.click(screen.getByTestId("approval-approve"));
+    await vi.waitFor(() => {
+      expect(lastFrameOf("approval.resolve")).toBeDefined();
+    });
+    const resolveFrame = lastFrameOf("approval.resolve");
+    lastInstance().emit({
+      kind: "response",
+      id: resolveFrame.id,
+      ok: false,
+      error: { code: "approval_conflict", message: "审批已被其他设备处理" },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("approval-resolve-error")).toHaveTextContent(
+        "审批提交失败：approval_conflict：审批已被其他设备处理",
+      );
+    });
+    // 真实终态未知时不伪造已决卡片
+    expect(screen.queryByTestId("approval-status")).toBeNull();
+  });
+
+  it("V0.3.9 V07：approval_already_resolved 展示服务端真实终态原文", async () => {
+    useMobileStore.setState({ activeConversationId: "c1", approvals: [SAMPLE_APPROVAL] });
+    render(<ChatPage conversationId="c1" />);
+
+    fireEvent.click(screen.getByTestId("approval-approve"));
+    await vi.waitFor(() => {
+      expect(lastFrameOf("approval.resolve")).toBeDefined();
+    });
+    const resolveFrame = lastFrameOf("approval.resolve");
+    lastInstance().emit({
+      kind: "response",
+      id: resolveFrame.id,
+      ok: false,
+      error: {
+        code: "approval_already_resolved",
+        message: "审批已由 desktop 应答（deny）",
+        details: { decision: "deny", resolved_by: "desktop" },
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("approval-resolve-notice")).toHaveTextContent(
+        "审批已由服务端终态收敛：审批已由 desktop 应答（deny）",
+      );
+    });
+    expect(screen.queryByTestId("approval-resolve-error")).toBeNull();
+    expect(screen.getByTestId("approval-status")).toHaveTextContent("已拒绝");
+  });
+
+  it("V0.3.9 V07：朗读失败在页级可见并展示原始错误原文", async () => {
+    await openConversationOnce();
+
+    lastInstance().emit({
+      kind: "event",
+      event: "voice.mobile_tts_failed",
+      sequence: 20,
+      payload: {
+        conversation_id: "c1",
+        message_id: "m-tts-failed-1",
+        error_code: "pcm_overflow",
+        error: "播放待播队列超过内存上限：14400001 > 14400000 字节",
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("playback-error-bar")).toHaveTextContent(
+        "播放待播队列超过内存上限：14400001 > 14400000 字节",
+      );
+    });
+    // 事件载荷的 error_code 由 store 如实保留，页级错误条展示真实错误码。
+    expect(screen.getByTestId("playback-error-code")).toHaveTextContent("pcm_overflow");
+  });
+
+  it("V0.3.9 V07：store 提供 errorCode 后页级错误条展示真实错误码", async () => {
+    await openConversationOnce();
+    const voice = useMobileStore.getState().voice;
+    useMobileStore.setState({
+      voice: {
+        ...voice,
+        playback: {
+          messageId: "m-tts-failed-2",
+          state: "failed",
+          error: "播放待播队列超过内存上限",
+          errorCode: "pcm_overflow",
+        } as typeof voice.playback & { errorCode: string },
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("playback-error-code")).toHaveTextContent("pcm_overflow");
+    });
+    expect(screen.getByTestId("playback-error-text")).toHaveTextContent(
+      "播放待播队列超过内存上限",
+    );
+  });
+
+  it("V0.3.9 V07：voice.playback_interrupted 落地前展示抢占提示", async () => {
+    await openConversationOnce();
+    const voice = useMobileStore.getState().voice;
+    useMobileStore.setState({
+      voice: {
+        ...voice,
+        lastInterruption: {
+          message_id: "m-old",
+          reason: "新角色回复开始播放",
+          interrupted_at: "2026-01-01T00:00:00Z",
+        },
+      } as unknown as MobileState["voice"],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("playback-interrupted")).toHaveTextContent(
+        "已被新回复打断 / 已停止",
+      );
+      expect(screen.getByTestId("playback-interrupted-reason")).toHaveTextContent(
+        "新角色回复开始播放",
+      );
+    });
+  });
+
+  it("V0.3.9 V07：没有抢占事件时不显示提示（不伪造已停止）", async () => {
+    await openConversationOnce();
+    expect(screen.queryByTestId("playback-interrupted")).toBeNull();
+  });
+
+  it("V0.3.9 V08：visualViewport 键盘占位时把聊天容器压到可视高度", async () => {
+    const listeners: Array<() => void> = [];
+    const viewport = {
+      height: 800,
+      addEventListener: (_type: string, cb: () => void) => {
+        listeners.push(cb);
+      },
+      removeEventListener: (_type: string, cb: () => void) => {
+        const index = listeners.indexOf(cb);
+        if (index >= 0) listeners.splice(index, 1);
+      },
+    };
+    Object.defineProperty(window, "visualViewport", {
+      value: viewport,
+      configurable: true,
+      writable: true,
+    });
+
+    try {
+      render(<ChatPage conversationId="c1" />);
+      expect(screen.getByTestId("chat-page").style.height).toBe("");
+
+      // 键盘弹出：可视高度明显小于布局视口
+      viewport.height = 400;
+      listeners.forEach((cb) => cb());
+      await waitFor(() => {
+        expect(screen.getByTestId("chat-page").style.height).toBe("400px");
+      });
+
+      // 键盘收起：交回 CSS 的 dvh / vh 回退
+      viewport.height = 800;
+      listeners.forEach((cb) => cb());
+      await waitFor(() => {
+        expect(screen.getByTestId("chat-page").style.height).toBe("");
+      });
+    } finally {
+      delete (window as unknown as { visualViewport?: unknown }).visualViewport;
+    }
   });
 });

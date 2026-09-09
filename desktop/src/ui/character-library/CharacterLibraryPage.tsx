@@ -37,6 +37,8 @@ interface CharacterLibraryPageProps {
   onConfigureCardVoice?: (cardId: string) => void;
   /** V0.3.5：桌面后端，用于打开文件对话框。当前 AppShell 未注入，故为可选；注入后立即生效。 */
   backend?: DesktopBackend;
+  /** V0.3.9 V04：返回聊天回调（优先返回正在运行的聊天） */
+  onReturnToChat?: () => void;
 }
 
 export function CharacterLibraryPage({
@@ -44,6 +46,7 @@ export function CharacterLibraryPage({
   actions,
   onConfigureCardVoice,
   backend,
+  onReturnToChat,
 }: CharacterLibraryPageProps) {
   const [filters, setFilters] = useState<CharacterFilterState>({
     search: "",
@@ -77,7 +80,7 @@ export function CharacterLibraryPage({
     return vm.cards.find((c) => c.active && !c.archived);
   }, [vm.cards]);
 
-  const shouldVirtualize = filteredCards.length > 32;
+  const shouldVirtualize = filteredCards.length > 40;
 
   const virtualizer = useVirtualizer({
     count: filteredCards.length,
@@ -203,7 +206,10 @@ export function CharacterLibraryPage({
             <button
               type="button"
               className="char-btn char-btn-ghost"
-              onClick={() => actions.openChat()}
+              onClick={() => {
+                if (onReturnToChat) onReturnToChat();
+                else actions.openChat();
+              }}
             >
               返回聊天
             </button>

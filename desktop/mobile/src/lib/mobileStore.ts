@@ -1153,11 +1153,13 @@ export const useMobileStore = create<MobileState>((set, get) => {
         const failedPayload = event.payload as {
           message_id?: string;
           error?: string;
+          error_code?: string | null;
         };
         if (failedPayload.message_id) {
           const failedVoice = get().voice;
           const messageId = failedPayload.message_id;
           const error = failedPayload.error ?? "角色语音合成失败";
+          const errorCode = failedPayload.error_code ?? null;
           console.error("角色语音合成失败", messageId, error);
           if (stoppedOrTerminalMessages.has(messageId)) break;
           stoppedOrTerminalMessages.add(messageId);
@@ -1174,7 +1176,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
                     messageId,
                     state: "failed",
                     error,
-                    errorCode: "voice_synthesis_failed",
+                    errorCode,
                   })
                 : failedVoice.playback,
             },

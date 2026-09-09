@@ -70,3 +70,21 @@
 .power-banner-btn:active {
   opacity: 0.8;
 }
+
+/* V0.3.9 V08：窄屏（≤360px）下详情改为上下排列，「知道了」按钮全宽可点。 */
+@media (max-width: 360px) {
+  .power-banner {
+    padding: 10px 12px;
+  }
+  .power-detail-row {
+    flex-direction: column;
+    gap: 2px;
+  }
+  .power-detail-row dd {
+    text-align: left;
+  }
+  .power-banner-btn {
+    align-self: stretch;
+    width: 100%;
+  }
+}

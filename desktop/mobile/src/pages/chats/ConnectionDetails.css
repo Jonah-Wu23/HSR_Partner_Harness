@@ -1,0 +1,52 @@
+/* V0.3.9 V06：连接详情抽屉。默认收起，展开后与页面卡片同宽。 */
+
+.connection-details {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.connection-details-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--fg);
+  font-size: 14px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.connection-details-caret {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.connection-details-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 抽屉内嵌卡片去掉重复外边距，视觉上仍是一块。 */
+.connection-details-body .card {
+  padding: 12px;
+}
+
+.connection-details-body .card + .card {
+  margin-top: 0;
+}
+
+@media (max-width: 360px) {
+  .connection-details-toggle {
+    font-size: 13px;
+    padding: 8px;
+  }
+}

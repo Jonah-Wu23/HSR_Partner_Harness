@@ -26,6 +26,11 @@ export const MOCK_SCENARIO_NAMES = [
   "voice-listening",
   "voice-playing",
   "performance-500",
+  "message-failed",
+  "background-tasks",
+  "perf-many-conversations",
+  "perf-many-projects",
+  "perf-long-workbench",
   "light-theme",
   "dark-theme",
   "gate-default",
@@ -462,6 +467,201 @@ export function createMockScenario(name: MockScenarioName): MockScenario {
       ),
     );
     snapshot = baseSnapshot(projects, firstConversation.conversation_id, messages, []);
+  } else if (name === "message-failed") {
+    // V0.3.9 V01：消息真实终态离线样例——failed 带原始 error，cancelled 带 cancelled_reason。
+    messages = [
+      message("message-1", firstConversation.conversation_id, "user", "user.text", "帮我看看这个项目"),
+      {
+        ...message(
+          "message-2",
+          firstConversation.conversation_id,
+          "character",
+          "character.speech",
+          "好，我和你一起看。",
+        ),
+        status: "done",
+      },
+      {
+        ...message(
+          "message-3",
+          firstConversation.conversation_id,
+          "user",
+          "user.text",
+          "再帮我跑一次测试",
+        ),
+        status: "failed",
+        payload: { error: "dialogue provider 返回 500：internal server error" },
+      },
+      {
+        ...message(
+          "message-4",
+          firstConversation.conversation_id,
+          "character",
+          "character.speech",
+          "（这条回复被取消）",
+        ),
+        status: "cancelled",
+        payload: { cancelled_reason: "用户取消了任务" },
+      },
+      {
+        ...message(
+          "message-5",
+          firstConversation.conversation_id,
+          "user",
+          "user.text",
+          "这条还在排队",
+        ),
+        status: "queued",
+      },
+      {
+        ...message(
+          "message-6",
+          firstConversation.conversation_id,
+          "character",
+          "character.speech",
+          "（失败但服务端没有给出错误详情）",
+        ),
+        status: "failed",
+        payload: {},
+      },
+    ];
+    snapshot = baseSnapshot(projects, firstConversation.conversation_id, messages, []);
+  } else if (name === "background-tasks") {
+    // V0.3.9 V01：跨聊天后台任务与审批归属离线样例（两个项目、四个聊天）。
+    const convA = conversation("conv-1", "project-1", "奥赫玛的项目聊天");
+    const convB = conversation("conv-2", "project-1", "星穹项目：长世界书校对");
+    const convC = conversation("conv-3", "project-2", "流萤的甜点配方");
+    const convD = conversation("conv-4", "project-2", "三月七的照片归档");
+    projects = [
+      project("project-1", "星穹项目", "C:/Projects/astral", [convA, convB]),
+      project("project-2", "日常项目", "C:/Projects/daily", [convC, convD]),
+    ];
+    messages = [
+      message("msg-a-1", convA.conversation_id, "user", "user.text", "帮我看看这个项目"),
+      message("msg-a-2", convA.conversation_id, "character", "character.speech", "好，我和你一起看。"),
+      message("msg-c-1", convC.conversation_id, "user", "user.text", "流萤，今天想吃什么？"),
+      message("msg-c-2", convC.conversation_id, "character", "character.speech", "橡木蛋糕卷。"),
+    ];
+    snapshot = baseSnapshot(projects, convA.conversation_id, messages, []);
+    snapshot.active_tasks = [
+      {
+        project_id: "project-1",
+        conversation_id: convB.conversation_id,
+        task_id: "task-b",
+        engine_turn_id: "turn-b",
+      },
+      {
+        project_id: "project-2",
+        conversation_id: convC.conversation_id,
+        task_id: "task-c",
+        engine_turn_id: "turn-c",
+      },
+    ];
+    snapshot.active_task = snapshot.active_tasks[0];
+    snapshot.busy = true;
+    snapshot.approvals = [
+      {
+        approval_id: "approval-current",
+        conversation_id: convA.conversation_id,
+        operation: {
+          tool_kind: "shell",
+          command: "pytest -q",
+          paths: [],
+          patch_file_count: null,
+          summary: "当前聊天里的测试命令",
+        },
+        reason: "当前聊天需要审批",
+        task_id: "task-a",
+      },
+      {
+        approval_id: "approval-other-1",
+        conversation_id: convC.conversation_id,
+        operation: {
+          tool_kind: "file_write",
+          command: null,
+          paths: ["C:/Projects/daily/recipe.md"],
+          patch_file_count: 1,
+          summary: "写入甜点配方",
+        },
+        reason: "另一个聊天需要审批",
+        task_id: "task-c",
+      },
+      {
+        approval_id: "approval-other-2",
+        conversation_id: convC.conversation_id,
+        operation: {
+          tool_kind: "file_delete",
+          command: null,
+          paths: ["C:/Projects/daily/old.md"],
+          patch_file_count: null,
+          summary: "删除旧文件",
+        },
+        reason: "同一个聊天里的第二条待审批",
+        task_id: "task-c",
+      },
+    ];
+  } else if (name === "perf-many-conversations") {
+    // V0.3.9 V05：导航聊天列表负载样例（单项目 400 个聊天）。
+    const manyConversations = Array.from({ length: 400 }, (_, index) =>
+      conversation(
+        `conv-${index + 1}`,
+        "project-1",
+        `聊天 ${index + 1}：用于导航列表负载测试的较长标题`,
+      ),
+    );
+    projects = [
+      project("project-1", "大量聊天的项目", "C:/Projects/many-conversations", manyConversations),
+    ];
+    snapshot = baseSnapshot(projects, "conv-1", [], []);
+  } else if (name === "perf-many-projects") {
+    // V0.3.9 V05：项目轨道负载样例（200 个项目，每项目 2 个聊天）。
+    projects = Array.from({ length: 200 }, (_, index) => {
+      const projectId = `project-${index + 1}`;
+      return project(
+        projectId,
+        `项目 ${index + 1}：用于项目轨道负载测试`,
+        `C:/Projects/project-${index + 1}`,
+        [
+          conversation(`${projectId}-conversation-1`, projectId, "聊天 1"),
+          conversation(`${projectId}-conversation-2`, projectId, "聊天 2"),
+        ],
+      );
+    });
+    snapshot = baseSnapshot(projects, "project-1-conversation-1", [], []);
+  } else if (name === "perf-long-workbench") {
+    // V0.3.9 V05：工作台时间线负载样例（800 条助手消息 + 800 条工具记录）。
+    const characterMessages = Array.from({ length: 40 }, (_, index) =>
+      message(
+        `char-${index + 1}`,
+        firstConversation.conversation_id,
+        index % 2 === 0 ? "user" : "character",
+        index % 2 === 0 ? "user.text" : "character.speech",
+        `角色区消息 ${index + 1}`,
+      ),
+    );
+    const assistantMessages = Array.from({ length: 800 }, (_, index) => ({
+      ...message(
+        `assistant-${index + 1}`,
+        firstConversation.conversation_id,
+        "assistant",
+        "assistant.natural_language",
+        `助手工作台消息 ${index + 1}`,
+      ),
+      timeline_order: index * 2,
+    }));
+    tools = Array.from({ length: 800 }, (_, index) => ({
+      ...toolRun(firstConversation.conversation_id, "succeeded"),
+      tool_call_id: `tool-${index + 1}`,
+      engine_turn_id: `turn-${index + 1}`,
+      sequence: index,
+      timeline_order: index * 2 + 1,
+    }));
+    snapshot = baseSnapshot(
+      projects,
+      firstConversation.conversation_id,
+      [...characterMessages, ...assistantMessages],
+      tools,
+    );
   } else if (name === "light-theme" || name === "dark-theme") {
     snapshot = baseSnapshot(projects, firstConversation.conversation_id, defaultMessages, []);
   } else if (name === "gate-default") {

@@ -291,6 +291,36 @@ export function NotificationPreferences({
         </div>
       ) : null}
 
+      {/* V0.3.9 V08：平台能力矩阵。只写本版真实具备的能力，不宣称未实现的后台推送
+          与通知点击归属；通知点击的精确跳转列为真机待验。 */}
+      <div className="notif-platform" data-testid="notif-platform-limits">
+        <h3 className="notif-note-title">各平台真实能力</h3>
+        <ul className="notif-platform-list">
+          <li>
+            <span className="notif-platform-env">Android 壳</span>
+            <span className="hint">
+              可发系统通知（需系统授权），支持任务完成、委派结果、审批请求三类提醒；
+              壳会保留一条常驻通知维持长连接。
+            </span>
+          </li>
+          <li>
+            <span className="notif-platform-env">Android 浏览器 / iOS Safari / iOS PWA</span>
+            <span className="hint">
+              没有系统通知能力：本版未接入 Web Push，也没有 Service Worker 推送通道，
+              关闭页面或切到后台后收不到提醒；页面打开时仍能实时看到消息与审批。
+            </span>
+          </li>
+          <li>
+            <span className="notif-platform-env">通知点击</span>
+            <span className="hint">
+              本版没有真实的通知点击回调，点击通知不会精确跳到对应会话。当前实现是应用回到
+              前台时切到最近提醒过的会话（近似行为，仅在停留在列表页时生效）。精确跳转
+              列入真机待验。
+            </span>
+          </li>
+        </ul>
+      </div>
+
       {phase.stage === "unavailable" && phase.reason === "plugin_unavailable" ? (
         <p className="notif-unavailable" data-testid="notif-unavailable-plugin">
           当前壳内未能加载通知能力，通知偏好暂不可编辑。通知功能需要应用内置通知插件后才会生效。

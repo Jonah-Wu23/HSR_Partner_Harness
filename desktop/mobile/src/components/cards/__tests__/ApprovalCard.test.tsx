@@ -113,8 +113,78 @@ describe("ApprovalCard", () => {
     expect(screen.queryByTestId("approval-allow-conversation")).toBeNull();
   });
 
-  it("V0.3.5：未知 decision 值显示中性文案，不伪造批准方向", () => {
+  it("V0.3.9：decision 缺失时如实说明服务端未提供，不写中性「已处理」冒充终态", () => {
     render(<ApprovalCard approval={approval} status="resolved" decision="" resolvedBy="desktop" />);
-    expect(screen.getByTestId("approval-status")).toHaveTextContent(/已处理/);
+    expect(screen.getByTestId("approval-status")).toHaveTextContent(
+      "已决（服务端未提供 decision）",
+    );
+  });
+
+  it("V0.3.9：未知 decision 值展示服务端原文，不落到中性文案", () => {
+    render(
+      <ApprovalCard approval={approval} status="resolved" decision="deferred" resolvedBy="desktop" />,
+    );
+    expect(screen.getByTestId("approval-status")).toHaveTextContent("未知决策：deferred");
+  });
+
+  it("V0.3.9：timeout 终态展示（服务端超时，含 system 来源、actor、原因与错误码）", () => {
+    // 契约冻结 §9 离线样例
+    render(
+      <ApprovalCard
+        approval={approval}
+        status="resolved"
+        decision="timeout"
+        resolvedBy="system"
+        actor="system"
+        resolvedReason="等待审批超时"
+        errorCode="approval_timeout"
+        resolvedAt="2026-01-01T00:00:00Z"
+      />,
+    );
+    expect(screen.getByTestId("approval-status")).toHaveTextContent("已超时");
+    expect(screen.getByTestId("approval-status")).toHaveAttribute("data-decision", "timeout");
+    expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent(/由 系统 已超时/);
+    expect(screen.getByTestId("approval-resolved-actor")).toHaveTextContent("处理者：系统");
+    expect(screen.getByTestId("approval-resolved-reason")).toHaveTextContent("等待审批超时");
+    expect(screen.getByTestId("approval-resolved-error-code")).toHaveTextContent(
+      "approval_timeout",
+    );
+    expect(screen.getByTestId("approval-resolved-at")).toHaveTextContent(
+      "2026-01-01T00:00:00Z",
+    );
+  });
+
+  it("V0.3.9：resolved_by 缺失保持 null 展示，不伪造 desktop/remote", () => {
+    render(<ApprovalCard approval={approval} status="resolved" decision="allow" resolvedBy={null} />);
+    expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent(/来源未知/);
+    expect(screen.getByTestId("approval-resolved-by")).not.toHaveTextContent(/桌面端|手机端/);
+  });
+
+  it("V0.3.9：未知 resolved_by / actor 值展示原文", () => {
+    render(
+      <ApprovalCard
+        approval={approval}
+        status="resolved"
+        decision="deny"
+        resolvedBy="robot"
+        actor="robot"
+      />,
+    );
+    expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent("未知来源：robot");
+    expect(screen.getByTestId("approval-resolved-actor")).toHaveTextContent("未知处理者：robot");
+  });
+
+  it("V0.3.9：reviewer 来源与处理者映射", () => {
+    render(
+      <ApprovalCard
+        approval={approval}
+        status="resolved"
+        decision="allow_for_conversation"
+        resolvedBy="reviewer"
+        actor="reviewer"
+      />,
+    );
+    expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent(/由 审核者 已批准（本会话）/);
+    expect(screen.getByTestId("approval-resolved-actor")).toHaveTextContent("处理者：审核者");
   });
 });

@@ -12,6 +12,8 @@ import { Composer } from "./composer/Composer";
 import { QueueStrip } from "./status/QueueStrip";
 import { TechDetailsDrawer } from "./status/TechDetailsDrawer";
 import { ToastStack } from "./status/ToastStack";
+import { ContextStatusStripHost } from "./status/ContextStatusStripHost";
+import { DiagnosticsDrawerHost } from "./diagnostics/DiagnosticsDrawerHost";
 import { AccountGate } from "./gate/AccountGate";
 import { Onboarding } from "./gate/Onboarding";
 import { SettingsCenter, type SettingsPage } from "./settings/SettingsCenter";
@@ -99,6 +101,8 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
   const [modelTest, setModelTest] = useState<TestResult>({ state: "idle" });
   const [voicePreview, setVoicePreview] = useState<TestResult>({ state: "idle" });
   const connectionStatus = toConnectionStatus(vm.status);
+  // V0.3.9 V03：诊断抽屉显式开关（仅 TopBar 入口存在时出现）。
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
 
   const openSettings = () => {
     setSettingsOpen(true);
@@ -127,6 +131,31 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
     } catch (error) {
       setGateError(error instanceof Error ? error.message : String(error));
     }
+  };
+
+  const handleReturnToRunningChat = () => {
+    // V0.3.9 V04：回到运行中工作——有活动任务的聊天优先，其次最后活跃/当前聊天
+    let targetConvId: string | null = null;
+    let targetProjectId: string | null = null;
+    if (vm.navigation?.projects) {
+      for (const p of vm.navigation.projects) {
+        const runningConv = p.conversations?.find(
+          (c) => (c as unknown as { isRunning?: boolean }).isRunning,
+        );
+        if (runningConv) {
+          targetConvId = runningConv.conversation_id;
+          targetProjectId = p.project_id;
+          break;
+        }
+      }
+    }
+    if (targetConvId) {
+      if (targetProjectId && targetProjectId !== vm.navigation?.currentProjectId) {
+        void actions.selectProject(targetProjectId);
+      }
+      void actions.openConversationTab(targetConvId);
+    }
+    actions.openChat();
   };
 
   let body: React.ReactNode;
@@ -190,6 +219,12 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
     body = <StatePage title="暂无打开的项目" detail="等待项目数据" />;
   } else {
     const workspace = vm.workspace;
+    const totalRunningTasks =
+      vm.navigation?.projects.reduce(
+        (sum, p) => sum + (p.activeTaskCount || (p.isBusy ? 1 : 0)),
+        0,
+      ) ?? 0;
+
     body = (
       <>
         <TopBar
@@ -198,6 +233,7 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
           assistantBusy={workspace?.assistant.busy ?? false}
           connectionStatus={connectionStatus}
           onOpenTechDetails={() => setTechDetailsOpen(true)}
+          onOpenDiagnostics={() => setDiagnosticsOpen(true)}
           onOpenSettings={openSettings}
           actions={actions}
         />
@@ -221,9 +257,9 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
               </div>
             ) : null}
             {vm.mainView === "characters" ? (
-              <CharacterLibraryPage vm={vm.characterLibrary} actions={actions} onConfigureCardVoice={openSettingsToVoiceCard} backend={backend} />
+              <CharacterLibraryPage vm={vm.characterLibrary} actions={actions} onConfigureCardVoice={openSettingsToVoiceCard} backend={backend} onReturnToChat={handleReturnToRunningChat} />
             ) : vm.mainView === "characterCreate" ? (
-              <CharacterCreatePage vm={vm.characterCreate} actions={actions} onPickFile={backend ? (options) => backend.pickFile(options) : undefined} />
+              <CharacterCreatePage vm={vm.characterCreate} actions={actions} onPickFile={backend ? (options) => backend.pickFile(options) : undefined} onReturnToChat={handleReturnToRunningChat} />
             ) : workspace ? (
               <Workspace
                 workspace={workspace}
@@ -240,29 +276,56 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
                 </div>
               </div>
             )}
-            <ApprovalBar approval={vm.approval} actions={actions} />
-            {/* V0.2 M4：排队条——忙碌时发送的消息在此可见可操作（空队列不渲染） */}
-            <QueueStrip
-              items={vm.queueItems}
-              names={{
-                character: pair?.character.name ?? "角色",
-                assistant: pair?.assistant.name ?? "助手",
-              }}
-              onEdit={async (queueItemId) => {
-                const text = await actions.editQueueFromStrip(queueItemId);
-                if (text) setDraftSeed({ text, nonce: Date.now() });
-              }}
-              onWithdraw={(queueItemId) => void actions.withdrawQueueItem(queueItemId)}
-              onPrioritize={(queueItemId) => void actions.prioritizeQueueItem(queueItemId)}
-            />
-            <Composer
-              composer={vm.composer}
-              voice={vm.voice}
-              mode={workspace?.mode ?? "chat"}
-              actions={actions}
-              voiceMiniPlayer={vm.voiceMiniPlayer}
-              draftSeed={draftSeed}
-            />
+            {/* V0.3.9 V04：非聊天视图（角色库/创作页）隐藏发送区、排队条与审批条，保留返回运行中聊天入口 */}
+            {vm.mainView !== "chat" ? (
+              totalRunningTasks > 0 ? (
+                <div className="non-chat-running-banner" data-testid="non-chat-running-banner">
+                  <div className="non-chat-running-info">
+                    <span className="badge-busy-dot" aria-hidden />
+                    <span>后台有 {totalRunningTasks} 个任务正在运行中</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={handleReturnToRunningChat}
+                  >
+                    返回运行中聊天
+                  </button>
+                </div>
+              ) : null
+            ) : (
+              <>
+                {/* V0.3.9 V02：上下文状态条（压缩/记忆），输入区之上；无数据时不渲染 */}
+                <ContextStatusStripHost actions={actions} />
+                <ApprovalBar
+                  approval={vm.approval}
+                  actions={actions}
+                  currentConversationId={vm.navigation?.currentConversationId ?? workspace?.character.conversationId}
+                />
+                {/* V0.2 M4：排队条——忙碌时发送的消息在此可见可操作（空队列不渲染） */}
+                <QueueStrip
+                  items={vm.queueItems}
+                  names={{
+                    character: pair?.character.name ?? "角色",
+                    assistant: pair?.assistant.name ?? "助手",
+                  }}
+                  onEdit={async (queueItemId) => {
+                    const text = await actions.editQueueFromStrip(queueItemId);
+                    if (text) setDraftSeed({ text, nonce: Date.now() });
+                  }}
+                  onWithdraw={(queueItemId) => void actions.withdrawQueueItem(queueItemId)}
+                  onPrioritize={(queueItemId) => void actions.prioritizeQueueItem(queueItemId)}
+                />
+                <Composer
+                  composer={vm.composer}
+                  voice={vm.voice}
+                  mode={workspace?.mode ?? "chat"}
+                  actions={actions}
+                  voiceMiniPlayer={vm.voiceMiniPlayer}
+                  draftSeed={draftSeed}
+                />
+              </>
+            )}
           </main>
         </div>
         <TechDetailsDrawer
@@ -271,6 +334,12 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
           details={{ lastError: vm.error }}
           onClose={() => setTechDetailsOpen(false)}
           onReconnect={() => void actions.reconnect()}
+        />
+        {/* V0.3.9 V03：诊断抽屉（指标 + 提示词装配），TopBar 显式入口打开 */}
+        <DiagnosticsDrawerHost
+          open={diagnosticsOpen}
+          onClose={() => setDiagnosticsOpen(false)}
+          actions={actions}
         />
       </>
     );

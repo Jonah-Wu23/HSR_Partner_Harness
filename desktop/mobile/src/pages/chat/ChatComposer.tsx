@@ -1,4 +1,10 @@
-import { type FormEvent, type KeyboardEvent, useState } from "react";
+import {
+  type FormEvent,
+  type KeyboardEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { CloseIcon, SendIcon, SpinnerIcon } from "../../components/cards/icons";
 
 export type ChatComposerTarget = "character" | "assistant";
@@ -9,6 +15,24 @@ export interface ChatComposerProps {
   disabled?: boolean;
   /** 前置禁用原因（如对话模式下助手不可用），展示在输入区上方。 */
   disabledHint?: string | null;
+  /** V0.3.9 V08：输入框聚焦回调（页级把最新消息贴到底部，配合软键盘）。 */
+  onInputFocus?: () => void;
+}
+
+/** V0.3.9 V08：输入框自增高上限（超过后内部滚动）。 */
+export const COMPOSER_MAX_TEXTAREA_HEIGHT_PX = 160;
+
+/**
+ * V0.3.9 V08：输入框高度计算（纯函数，便于离线测试）。
+ * - 内容高度为 0（未布局，如 jsdom）时返回 null，调用方跳过设置，避免把高度写成 0；
+ * - 未超过上限时返回内容高度，超过后封顶并由 CSS overflow-y 承担内部滚动。
+ */
+export function computeTextareaHeight(
+  scrollHeight: number,
+  maxHeightPx: number = COMPOSER_MAX_TEXTAREA_HEIGHT_PX,
+): number | null {
+  if (!Number.isFinite(scrollHeight) || scrollHeight <= 0) return null;
+  return Math.min(scrollHeight, maxHeightPx);
 }
 
 const TARGET_META: Record<
@@ -40,11 +64,31 @@ export function ChatComposer({
   onSubmit,
   disabled = false,
   disabledHint = null,
+  onInputFocus,
 }: ChatComposerProps) {
   const meta = TARGET_META[target];
   const [text, setText] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // V0.3.9 V08：长文本自增高——先复位 auto 再按内容高度设置，超过上限交给
+  // CSS 内部滚动。清空输入时复位，避免残留高度。
+  useEffect(() => {
+    const node = textareaRef.current;
+    if (!node) return;
+    if (!text) {
+      node.style.height = "";
+      node.style.overflowY = "";
+      return;
+    }
+    node.style.height = "auto";
+    const next = computeTextareaHeight(node.scrollHeight);
+    if (next === null) return;
+    node.style.height = `${next}px`;
+    node.style.overflowY =
+      node.scrollHeight > COMPOSER_MAX_TEXTAREA_HEIGHT_PX ? "auto" : "hidden";
+  }, [text]);
 
   const handleSubmit = async (event?: FormEvent) => {
     event?.preventDefault();
@@ -100,9 +144,11 @@ export function ChatComposer({
           <textarea
             className="mobile-composer-textarea"
             data-testid="chat-input"
+            ref={textareaRef}
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={handleKeyDown}
+            onFocus={onInputFocus}
             placeholder={meta.placeholder}
             disabled={disabled || submitting}
             rows={1}
