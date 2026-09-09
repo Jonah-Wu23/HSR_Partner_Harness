@@ -95,6 +95,31 @@ describe("MessageList measure() 调用次数（jsdom 离线计数）", () => {
     console.log(
       `[measure] initial=${initial} streamingDeltaClears=${afterStreaming - initial} appendClears=${afterAppend - afterStreaming}`,
     );
-    expect(afterStreaming - initial).toBeLessThanOrEqual(0);
+    expect(afterStreaming - initial).toBe(0);
+    expect(afterAppend - afterStreaming).toBeGreaterThan(0);
+  });
+
+  it("切换会话时应当触发 measure() 重测清空缓存", () => {
+    const messages = Array.from({ length: 500 }, (_, index) =>
+      makeMessage(index, `消息 ${index}`),
+    );
+    const probe = countCacheClears();
+    try {
+      const { rerender } = render(
+        <MessageList timeline={timeline(messages)} pair={pair} emptyText="空" />,
+      );
+      const initial = probe.counter.clears;
+      rerender(
+        <MessageList
+          timeline={{ ...timeline(messages), conversationId: "conv-2" }}
+          pair={pair}
+          emptyText="空"
+        />,
+      );
+      const afterSwitch = probe.counter.clears;
+      expect(afterSwitch - initial).toBeGreaterThan(0);
+    } finally {
+      probe.restore();
+    }
   });
 });
