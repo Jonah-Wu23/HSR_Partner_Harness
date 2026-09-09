@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationRecord, DesktopSnapshot, Message, PairRecord } from "@shared/contracts/protocol";
 import {
-  appendTtsChunkBounded,
+  appendTtsChunk,
   mobileWsClient,
   resetVoiceTerminalStateForTests,
   TTS_MAX_BUFFERED_PCM_BYTES,
@@ -136,6 +136,11 @@ beforeEach(() => {
     resolvedApprovals: [],
     pair: null,
     activeTask: null,
+    activeTasks: [],
+    turnsByConversation: {},
+    summaries: [],
+    memories: [],
+    remoteControl: null,
     streamId: null,
     lastSequence: 0,
     bootstrapped: false,
@@ -143,10 +148,9 @@ beforeEach(() => {
     voice: {
       capture: { state: "idle", sessionId: null, error: null },
       transcript: null,
-      playback: { messageId: null, state: "idle", error: null },
+      playback: { messageId: null, state: "idle", error: null, errorCode: null },
       availability: { secureContext: false, micPermission: "unknown", supported: false },
       ttsChunks: {},
-      ttsDroppedChunks: {},
     },
   });
   useMobileStore.getState().start();
@@ -1187,28 +1191,43 @@ describe("mobileStore 会话操作", () => {
       return "A".repeat((bytes * 4) / 3);
     }
 
-    it("缓冲超上限时丢弃最旧分片并累计丢弃计数（可观测）", async () => {
+    it("缓冲超上限时整条播放进入 failed（pcm_overflow），不丢旧片段后继续播放", async () => {
       await pairAndBootstrap();
-      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       const cap = TTS_MAX_BUFFERED_PCM_BYTES;
 
       // 两片各 cap/2：都在限内。
       emitTtsChunk(11, { seq: 0, data: chunkData(cap / 2) });
       emitTtsChunk(12, { seq: 1, data: chunkData(cap / 2) });
       expect(useMobileStore.getState().voice.ttsChunks["m-cap"]).toHaveLength(2);
-      expect(useMobileStore.getState().voice.ttsDroppedChunks["m-cap"]).toBeUndefined();
 
-      // 第三片使总量超过上限：最旧的 seq0 被丢弃，计数与告警日志可见。
+      // 第三片使总量超过上限：整条失败、缓冲清空、真实失败码可见。
       emitTtsChunk(13, { seq: 2, data: chunkData(48) });
-      expect(
-        useMobileStore.getState().voice.ttsChunks["m-cap"]!.map((item) => item.seq),
-      ).toEqual([1, 2]);
-      expect(useMobileStore.getState().voice.ttsDroppedChunks["m-cap"]).toBe(1);
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("TTS 分片缓冲超限"));
-      warnSpy.mockRestore();
+      const voice = useMobileStore.getState().voice;
+      expect(voice.playback).toMatchObject({
+        messageId: "m-cap",
+        state: "failed",
+        errorCode: "pcm_overflow",
+      });
+      expect(voice.playback.error).toContain("超过上限");
+      expect(voice.ttsChunks["m-cap"]).toBeUndefined();
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("pcm_overflow"));
+      errorSpy.mockRestore();
+
+      // 迟到分片与迟到 end 都不得复活播放。
+      emitTtsChunk(14, { seq: 3, data: "ZAA=" });
+      expect(useMobileStore.getState().voice.playback.state).toBe("failed");
+      expect(useMobileStore.getState().voice.ttsChunks["m-cap"]).toBeUndefined();
+      lastInstance().emit({
+        kind: "event",
+        event: "voice.mobile_tts_end",
+        sequence: 15,
+        payload: { message_id: "m-cap" },
+      });
+      expect(useMobileStore.getState().voice.playback.state).toBe("failed");
     });
 
-    it("appendTtsChunkBounded：去重、按 seq 排序、超限丢最旧、单独超限分片保留", () => {
+    it("appendTtsChunk：去重、按 seq 排序、超限返回 overflow 且清空缓冲", () => {
       const mk = (seq: number, bytes: number): MobileTtsChunk => ({
         seq,
         mime: "audio/pcm;rate=24000",
@@ -1216,21 +1235,21 @@ describe("mobileStore 会话操作", () => {
         bytes,
       });
       // 乱序到达按 seq 排序。
-      const sorted = appendTtsChunkBounded([mk(1, 10)], mk(0, 10), 100);
+      const sorted = appendTtsChunk([mk(1, 10)], mk(0, 10), 100);
       expect(sorted.chunks.map((item) => item.seq)).toEqual([0, 1]);
-      expect(sorted.dropped).toBe(0);
+      expect(sorted.overflow).toBe(false);
       // 重复 seq 去重，不重复计入容量。
-      const deduped = appendTtsChunkBounded(sorted.chunks, mk(1, 10), 100);
+      const deduped = appendTtsChunk(sorted.chunks, mk(1, 10), 100);
       expect(deduped.chunks).toHaveLength(2);
-      expect(deduped.dropped).toBe(0);
-      // 超限连续丢最旧，至少保留最新一条。
-      const overflow = appendTtsChunkBounded([mk(0, 60), mk(1, 60)], mk(2, 60), 100);
-      expect(overflow.chunks.map((item) => item.seq)).toEqual([2]);
-      expect(overflow.dropped).toBe(2);
-      // 最新一条单独超限也保留（不出现空缓冲）。
-      const single = appendTtsChunkBounded([mk(0, 60)], mk(1, 200), 100);
-      expect(single.chunks.map((item) => item.seq)).toEqual([1]);
-      expect(single.dropped).toBe(1);
+      expect(deduped.overflow).toBe(false);
+      // 超限：不再丢旧片段后继续，而是整条失败（chunks 清空）。
+      const overflow = appendTtsChunk([mk(0, 60), mk(1, 60)], mk(2, 60), 100);
+      expect(overflow.chunks).toEqual([]);
+      expect(overflow.overflow).toBe(true);
+      // 单条即超限同样判定 overflow。
+      const single = appendTtsChunk([mk(0, 60)], mk(1, 200), 100);
+      expect(single.chunks).toEqual([]);
+      expect(single.overflow).toBe(true);
     });
 
     it("releaseTtsChunksUpTo 释放已移交引擎的分片，空条目随删", async () => {
@@ -1258,9 +1277,8 @@ describe("mobileStore 会话操作", () => {
         state: "failed",
         error: expect.stringContaining("voice.mobile_tts_end"),
       });
-      // 失败消息的分片与丢弃计数一并清理，不再驻留。
+      // 失败消息的分片一并清理，不再驻留。
       expect(useMobileStore.getState().voice.ttsChunks["m-cap"]).toBeUndefined();
-      expect(useMobileStore.getState().voice.ttsDroppedChunks["m-cap"]).toBeUndefined();
 
       lastInstance().emit({
         kind: "event",
@@ -1861,3 +1879,345 @@ describe("mobileStore 会话操作", () => {
       expect(lastSentFrame().params).toMatchObject({ message_id: "msg-old-2" });
     });
   });
+
+describe("mobileStore V0.3.9 契约消费（摘要/记忆/租约/回合/审批终态）", () => {
+  it("快照消费全量 active_tasks、回合、摘要、记忆与租约；缺字段即空/ null", async () => {
+    const pairPromise = useMobileStore.getState().pairDevice("654321", "我的小米");
+    await vi.waitFor(() => expect(lastSentFrame().method).toBe("remote.pair"));
+    const pairFrame = lastSentFrame();
+    lastInstance().emit({ kind: "response", id: pairFrame.id, ok: true, result: { token: "tok-9" } });
+    await vi.waitFor(() => expect(lastSentFrame().method).toBe("app.bootstrap"));
+    const bootstrapFrame = lastSentFrame();
+    lastInstance().emit({
+      kind: "response",
+      id: bootstrapFrame.id,
+      ok: true,
+      result: {
+        ...snapshotResult(10),
+        active_tasks: [
+          { project_id: "p1", conversation_id: "c1", task_id: "task-1", engine_turn_id: null },
+        ],
+        turns: [
+          {
+            turn_id: "turn-1",
+            account_id: "acc",
+            project_id: "p1",
+            conversation_id: "c1",
+            target: "character",
+            source_message_id: "m1",
+            status: "running",
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        summaries: [
+          {
+            summary_id: "s1",
+            conversation_id: "c1",
+            status: "completed",
+            covers_from_message_id: null,
+            covers_to_message_id: null,
+            covers_message_count: 80,
+            content: { text: "摘要" },
+            provider: "deepseek",
+            model: "deepseek-chat",
+            error_code: null,
+            error: null,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        memories: [
+          {
+            memory_id: "mem-1",
+            scope: {
+              account_id: "acc",
+              project_id: "p1",
+              pair_id: "pair-default",
+              character_ref: "builtin:phainon",
+              assistant_identity: "ancient_machine",
+            },
+            content: { text: "喜欢安静的训练场" },
+            status: "active",
+            updated_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        remote_control: {
+          state: "held",
+          device_key: "device-a",
+          expires_at: "2026-01-01T00:00:45Z",
+          grace_expires_at: null,
+          reason: null,
+        },
+      },
+    });
+    await pairPromise;
+
+    const state = useMobileStore.getState();
+    expect(state.activeTasks).toHaveLength(1);
+    expect(state.turnsByConversation["c1"]).toHaveLength(1);
+    expect(state.summaries[0]?.model).toBe("deepseek-chat");
+    expect(state.memories[0]?.scope.assistant_identity).toBe("ancient_machine");
+    expect(state.remoteControl).toEqual({
+      state: "held",
+      device_key: "device-a",
+      expires_at: "2026-01-01T00:00:45Z",
+      grace_expires_at: null,
+      reason: null,
+    });
+  });
+
+  it("turn.started/turn.status_changed 按 conversation_id 存放，不退化为单全局任务", async () => {
+    await pairAndBootstrap();
+    lastInstance().emit({
+      kind: "event",
+      event: "turn.started",
+      sequence: 11,
+      stream_id: "stream-current",
+      payload: {
+        turn: {
+          turn_id: "turn-1",
+          account_id: "acc",
+          project_id: "p1",
+          conversation_id: "c1",
+          target: "character",
+          source_message_id: "m1",
+          status: "running",
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        },
+      },
+    });
+    lastInstance().emit({
+      kind: "event",
+      event: "turn.status_changed",
+      sequence: 12,
+      stream_id: "stream-current",
+      payload: {
+        turn: {
+          turn_id: "turn-1",
+          account_id: "acc",
+          project_id: "p1",
+          conversation_id: "c1",
+          target: "character",
+          source_message_id: "m1",
+          status: "completed",
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:01:00Z",
+        },
+      },
+    });
+
+    const turns = useMobileStore.getState().turnsByConversation["c1"];
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.status).toBe("completed");
+  });
+
+  it("summary.failed 保留原始 error_code，不生成空摘要；memory.deleted 标记 deleted", async () => {
+    await pairAndBootstrap();
+    lastInstance().emit({
+      kind: "event",
+      event: "summary.failed",
+      sequence: 11,
+      stream_id: "stream-current",
+      payload: {
+        conversation_id: "c1",
+        summary_id: "s1",
+        status: "failed",
+        error_code: "summary_timeout",
+        error: "provider timeout",
+      },
+    });
+    const failed = useMobileStore.getState().summaries[0];
+    expect(failed?.status).toBe("failed");
+    expect(failed?.error_code).toBe("summary_timeout");
+    expect(failed?.error).toBe("provider timeout");
+    expect(failed?.content).toBeNull();
+
+    lastInstance().emit({
+      kind: "event",
+      event: "memory.updated",
+      sequence: 12,
+      stream_id: "stream-current",
+      payload: {
+        memory: {
+          memory_id: "mem-1",
+          scope: {
+            account_id: "acc",
+            project_id: "p1",
+            pair_id: "pair-default",
+            character_ref: "builtin:phainon",
+            assistant_identity: "ancient_machine",
+          },
+          content: { text: "记忆" },
+          status: "active",
+          updated_at: "2026-01-01T00:00:00Z",
+        },
+      },
+    });
+    lastInstance().emit({
+      kind: "event",
+      event: "memory.deleted",
+      sequence: 13,
+      stream_id: "stream-current",
+      payload: { memory_id: "mem-1" },
+    });
+    expect(useMobileStore.getState().memories[0]?.status).toBe("deleted");
+  });
+
+  it("remote.control_changed 非法载荷保持 null；remote.control_status 只读查询写入租约", async () => {
+    await pairAndBootstrap();
+    lastInstance().emit({
+      kind: "event",
+      event: "remote.control_changed",
+      sequence: 11,
+      stream_id: "stream-current",
+      payload: { state: "not-a-state" },
+    });
+    expect(useMobileStore.getState().remoteControl).toBeNull();
+
+    const query = useMobileStore.getState().refreshRemoteControl();
+    await vi.waitFor(() => expect(lastSentFrame().method).toBe("remote.control_status"));
+    const frame = lastSentFrame();
+    lastInstance().emit({
+      kind: "response",
+      id: frame.id,
+      ok: true,
+      result: {
+        remote_control: {
+          state: "grace",
+          device_key: "device-a",
+          expires_at: "2026-01-01T00:00:45Z",
+          grace_expires_at: "2026-01-01T00:01:00Z",
+          reason: "disconnected",
+        },
+      },
+    });
+    await query;
+    expect(useMobileStore.getState().remoteControl?.state).toBe("grace");
+  });
+
+  it("voice.playback_interrupted 后迟到分片不得复活播放", async () => {
+    await pairAndBootstrap();
+    lastInstance().emit({
+      kind: "event",
+      event: "voice.mobile_tts_chunk",
+      sequence: 11,
+      stream_id: "stream-current",
+      payload: { message_id: "m-int", mime: "audio/pcm;rate=24000", seq: 0, data: "ZAA=" },
+    });
+    expect(useMobileStore.getState().voice.playback.messageId).toBe("m-int");
+
+    lastInstance().emit({
+      kind: "event",
+      event: "voice.playback_interrupted",
+      sequence: 12,
+      stream_id: "stream-current",
+      payload: { conversation_id: "c1", message_id: "m-int", reason: "user_submit" },
+    });
+    lastInstance().emit({
+      kind: "event",
+      event: "voice.mobile_tts_chunk",
+      sequence: 13,
+      stream_id: "stream-current",
+      payload: { message_id: "m-int", mime: "audio/pcm;rate=24000", seq: 1, data: "ZAA=" },
+    });
+    const voice = useMobileStore.getState().voice;
+    expect(voice.ttsChunks["m-int"]).toBeUndefined();
+    expect(voice.playback.messageId).not.toBe("m-int");
+  });
+
+  it("approval.resolved 超时终态保留 timeout/system/error_code 与 resolved_at", async () => {
+    await pairAndBootstrap();
+    lastInstance().emit({
+      kind: "event",
+      event: "approval.requested",
+      sequence: 11,
+      stream_id: "stream-current",
+      payload: {
+        approval_id: "a1",
+        conversation_id: "c1",
+        task_id: "t1",
+        operation: {
+          tool_kind: "shell",
+          command: "ls",
+          paths: [],
+          patch_file_count: null,
+          summary: "列出目录",
+        },
+        reason: "需要确认",
+      },
+    });
+    expect(useMobileStore.getState().approvals).toHaveLength(1);
+
+    lastInstance().emit({
+      kind: "event",
+      event: "approval.resolved",
+      sequence: 12,
+      stream_id: "stream-current",
+      payload: {
+        approval_id: "a1",
+        conversation_id: "c1",
+        task_id: "t1",
+        decision: "timeout",
+        resolved_by: "system",
+        actor: "system",
+        reason: "等待审批超时",
+        resolved_at: "2026-01-01T00:00:00Z",
+        error_code: "approval_timeout",
+      },
+    });
+
+    const state = useMobileStore.getState();
+    expect(state.approvals).toHaveLength(0);
+    expect(state.resolvedApprovals[0]).toMatchObject({
+      approval_id: "a1",
+      decision: "timeout",
+      resolved_by: "system",
+      error_code: "approval_timeout",
+      resolved_at: "2026-01-01T00:00:00Z",
+    });
+  });
+
+  it("summary.get / memory.list 只读查询写入结果；响应缺数组时保持现状", async () => {
+    await pairAndBootstrap();
+    const summaryQuery = useMobileStore.getState().loadSummaries("c1");
+    await vi.waitFor(() => expect(lastSentFrame().method).toBe("summary.get"));
+    const summaryFrame = lastSentFrame();
+    lastInstance().emit({
+      kind: "response",
+      id: summaryFrame.id,
+      ok: true,
+      result: {
+        summaries: [
+          {
+            summary_id: "s9",
+            conversation_id: "c1",
+            status: "completed",
+            covers_from_message_id: "m1",
+            covers_to_message_id: "m80",
+            covers_message_count: 80,
+            content: { text: "摘要内容" },
+            provider: "deepseek",
+            model: "deepseek-chat",
+            error_code: null,
+            error: null,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+      },
+    });
+    await summaryQuery;
+    expect(useMobileStore.getState().summaries[0]?.summary_id).toBe("s9");
+
+    const memoryQuery = useMobileStore.getState().loadMemories("c1");
+    await vi.waitFor(() => expect(lastSentFrame().method).toBe("memory.list"));
+    const memoryFrame = lastSentFrame();
+    lastInstance().emit({ kind: "response", id: memoryFrame.id, ok: true, result: {} });
+    await memoryQuery;
+    // 缺数组时不合成空列表，也不清空既有结果。
+    expect(useMobileStore.getState().memories).toEqual([]);
+    expect(useMobileStore.getState().summaries[0]?.summary_id).toBe("s9");
+  });
+});

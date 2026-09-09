@@ -1,9 +1,28 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import type { DesktopEvent, DesktopSnapshot, PendingApproval, PowerStatusPayload, ToolRun } from "../contracts/protocol";
+import type {
+  ActiveTask,
+  ConversationOpenResult,
+  ConversationSummary,
+  DesktopEvent,
+  DesktopSnapshot,
+  PairMemory,
+  PendingApproval,
+  PowerStatusPayload,
+  RemoteControlState,
+  ToolRun,
+  TurnMetric,
+} from "../contracts/protocol";
 import { createMockScenario } from "../mocks/scenarios";
 import { presentAppShell } from "../presenters/presenters";
-import { desktopStore } from "./desktopStore";
+import {
+  desktopStore,
+  selectActiveMemories,
+  selectApprovalCountByConversation,
+  selectApprovalsForConversation,
+  selectLatestSummary,
+  type PromptAssemblyDiagnostics,
+} from "./desktopStore";
 
 describe("desktopStore event projection", () => {
   beforeEach(() => {
@@ -1394,5 +1413,439 @@ describe("desktopStore power slice（V0.3.7 U5）", () => {
     desktopStore.getState().applyEvents([powerEvent(1, unsupported)]);
 
     expect(desktopStore.getState().powerStatus).toEqual(unsupported);
+  });
+});
+
+describe("V0.3.9 契约消费（摘要/记忆/租约/指标/诊断/审批终态）", () => {
+  const baseSnapshot = (): DesktopSnapshot => createMockScenario("single-project").snapshot;
+
+  function summary(overrides: Partial<ConversationSummary> = {}): ConversationSummary {
+    return {
+      summary_id: "s1",
+      conversation_id: "conv-1",
+      status: "running",
+      covers_from_message_id: "message-1",
+      covers_to_message_id: "message-2",
+      covers_message_count: 2,
+      content: null,
+      provider: null,
+      model: null,
+      error_code: null,
+      error: null,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      ...overrides,
+    };
+  }
+
+  function memory(overrides: Partial<PairMemory> = {}): PairMemory {
+    return {
+      memory_id: "mem-1",
+      scope: {
+        account_id: "acc-1",
+        project_id: "project-1",
+        pair_id: "phainon_ancient_machine",
+        character_ref: "builtin:phainon",
+        assistant_identity: "ancient_machine",
+      },
+      content: { text: "用户喜欢安静的训练场" },
+      status: "active",
+      updated_at: "2026-01-01T00:00:00Z",
+      ...overrides,
+    };
+  }
+
+  function event(
+    name: DesktopEvent["event"],
+    payload: Record<string, unknown>,
+    sequence: number,
+  ): DesktopEvent {
+    return { kind: "event", event: name, sequence, payload };
+  }
+
+  beforeEach(() => {
+    desktopStore.setState({
+      toasts: [],
+      configSnapshot: null,
+      lastSequence: -1,
+      needsBootstrap: false,
+      eventBuffer: [],
+      streamId: null,
+      summariesByConversation: {},
+      memories: [],
+      remoteControl: null,
+      approvalsByConversation: {},
+      approvalOutcomesById: {},
+      turnMetrics: [],
+      metricsCursor: null,
+      metricsLoading: false,
+      metricsError: null,
+      promptAssembly: null,
+      promptAssemblyLoading: false,
+      promptAssemblyError: null,
+      promptAssemblyRevealed: false,
+      playbackInterruption: null,
+    });
+    desktopStore.getState().hydrate(baseSnapshot());
+  });
+
+  it("summary 事件按 summary_id 覆盖，failed 保留原始错误且不生成空摘要", () => {
+    desktopStore.getState().applyEvents([
+      event("summary.started", { ...summary(), status: "running" }, 1),
+    ]);
+    expect(selectLatestSummary(desktopStore.getState(), "conv-1")?.status).toBe("running");
+
+    desktopStore.getState().applyEvents([
+      event(
+        "summary.failed",
+        {
+          conversation_id: "conv-1",
+          summary_id: "s1",
+          status: "failed",
+          error_code: "summary_timeout",
+          error: "provider timeout",
+        },
+        2,
+      ),
+    ]);
+
+    const failed = selectLatestSummary(desktopStore.getState(), "conv-1");
+    expect(failed?.status).toBe("failed");
+    expect(failed?.error_code).toBe("summary_timeout");
+    expect(failed?.error).toBe("provider timeout");
+    // 契约 §9：失败后投影仍引用原消息区间，不被清空。
+    expect(failed?.covers_to_message_id).toBe("message-2");
+    expect(failed?.content).toBeNull();
+  });
+
+  it("summary.completed 写入模型内容，未被事件覆盖的字段保持 null", () => {
+    desktopStore.getState().applyEvents([
+      event(
+        "summary.completed",
+        {
+          summary_id: "s2",
+          conversation_id: "conv-1",
+          status: "completed",
+          content: { text: "角色与用户确认了训练计划" },
+          provider: "deepseek",
+          model: "deepseek-chat",
+          covers_message_count: 80,
+          created_at: "2026-01-02T00:00:00Z",
+          updated_at: "2026-01-02T00:00:00Z",
+        },
+        1,
+      ),
+    ]);
+
+    const completed = selectLatestSummary(desktopStore.getState(), "conv-1");
+    expect(completed?.status).toBe("completed");
+    expect(completed?.model).toBe("deepseek-chat");
+    expect(completed?.covers_from_message_id).toBeNull();
+  });
+
+  it("memory.updated 原样落库；memory.deleted 只带 id 时标记 deleted，未知 id 不造记录", () => {
+    desktopStore.getState().applyEvents([
+      event("memory.updated", { memory: memory() }, 1),
+      event("memory.updated", { memory: memory({ memory_id: "mem-2", status: "active" }) }, 2),
+      event("memory.deleted", { memory_id: "mem-2" }, 3),
+      event("memory.deleted", { memory_id: "mem-unknown" }, 4),
+    ]);
+
+    const state = desktopStore.getState();
+    expect(state.memories).toHaveLength(2);
+    expect(state.memories.find((item) => item.memory_id === "mem-2")?.status).toBe("deleted");
+    expect(state.memories.some((item) => item.memory_id === "mem-unknown")).toBe(false);
+    // 作用域由服务端下发，客户端不拼接。
+    expect(selectActiveMemories(state)[0]?.scope.assistant_identity).toBe("ancient_machine");
+  });
+
+  it("remote.control_changed 非法载荷保持 null，不伪造 free", () => {
+    const held: RemoteControlState = {
+      state: "held",
+      device_key: "device-a",
+      expires_at: "2026-01-01T00:00:45Z",
+      grace_expires_at: null,
+      reason: null,
+    };
+    desktopStore.getState().applyEvents([
+      event("remote.control_changed", { ...held } as unknown as Record<string, unknown>, 1),
+    ]);
+    expect(desktopStore.getState().remoteControl).toEqual(held);
+
+    desktopStore.getState().applyEvents([event("remote.control_changed", {}, 2)]);
+    expect(desktopStore.getState().remoteControl).toBeNull();
+
+    desktopStore.getState().applyEvents([
+      event("remote.control_changed", { state: "unknown-state" }, 3),
+    ]);
+    expect(desktopStore.getState().remoteControl).toBeNull();
+  });
+
+  it("approval.resolved 超时终态保留 timeout/system 与 error_code，缺失来源不伪造成 desktop", () => {
+    desktopStore.getState().applyEvents([
+      event(
+        "approval.requested",
+        {
+          approval_id: "a1",
+          conversation_id: "conv-1",
+          task_id: "t1",
+          operation: {
+            tool_kind: "file_write",
+            command: null,
+            paths: ["a.txt"],
+            patch_file_count: null,
+            summary: "写入文件",
+          },
+          reason: "需要确认",
+        },
+        1,
+      ),
+    ]);
+    expect(selectApprovalsForConversation(desktopStore.getState(), "conv-1")).toHaveLength(1);
+
+    desktopStore.getState().applyEvents([
+      event(
+        "approval.resolved",
+        {
+          approval_id: "a1",
+          conversation_id: "conv-1",
+          task_id: "t1",
+          decision: "timeout",
+          resolved_by: "system",
+          actor: "system",
+          reason: "等待审批超时",
+          resolved_at: "2026-01-01T00:00:00Z",
+          error_code: "approval_timeout",
+        },
+        2,
+      ),
+    ]);
+
+    const state = desktopStore.getState();
+    expect(selectApprovalsForConversation(state, "conv-1")).toHaveLength(0);
+    expect(state.approvalOutcomesById.a1).toEqual({
+      approval_id: "a1",
+      conversation_id: "conv-1",
+      task_id: "t1",
+      decision: "timeout",
+      resolved_by: "system",
+      actor: "system",
+      reason: "等待审批超时",
+      resolved_at: "2026-01-01T00:00:00Z",
+      error_code: "approval_timeout",
+    });
+
+    // 迟到点击的幂等终态：缺失来源字段保持 null，不得伪造 desktop。
+    desktopStore.getState().applyEvents([
+      event("approval.resolved", { approval_id: "a2", conversation_id: "conv-1", decision: "deny" }, 3),
+    ]);
+    expect(desktopStore.getState().approvalOutcomesById.a2).toEqual({
+      approval_id: "a2",
+      conversation_id: "conv-1",
+      task_id: null,
+      decision: "deny",
+      resolved_by: null,
+      actor: null,
+      reason: null,
+      resolved_at: "",
+      error_code: null,
+    });
+    expect(
+      desktopStore.getState().resolvedApprovals.some((item) => item.approval_id === "a2"),
+    ).toBe(false);
+  });
+
+  it("conversation.card_missing 作为真实失败进入 Toast，不静默吞掉", () => {
+    desktopStore.getState().applyEvents([
+      event("conversation.card_missing", { conversation_id: "conv-1", character_card_id: "card-x" }, 1),
+    ]);
+    const toast = desktopStore.getState().toasts.at(-1);
+    expect(toast?.kind).toBe("warning");
+    expect(toast?.text).toContain("card-x");
+  });
+
+  it("voice.playback_interrupted 保留 null 字段，不补默认来源", () => {
+    desktopStore.getState().applyEvents([
+      event("voice.playback_interrupted", { conversation_id: "conv-1" }, 1),
+    ]);
+    expect(desktopStore.getState().playbackInterruption).toEqual({
+      conversation_id: "conv-1",
+      message_id: null,
+      reason: null,
+      occurred_at: null,
+    });
+  });
+
+  it("hydrate 消费快照的 summaries/memories/remote_control，缺字段即空/ null", () => {
+    desktopStore.getState().hydrate({
+      ...baseSnapshot(),
+      summaries: [summary({ status: "completed" })],
+      memories: [memory()],
+      remote_control: {
+        state: "grace",
+        device_key: "device-a",
+        expires_at: "2026-01-01T00:00:45Z",
+        grace_expires_at: "2026-01-01T00:01:00Z",
+        reason: "disconnected",
+      },
+    });
+    const state = desktopStore.getState();
+    expect(selectLatestSummary(state, "conv-1")?.status).toBe("completed");
+    expect(state.memories).toHaveLength(1);
+    expect(state.remoteControl?.state).toBe("grace");
+
+    desktopStore.getState().hydrate(baseSnapshot());
+    expect(desktopStore.getState().summariesByConversation).toEqual({});
+    expect(desktopStore.getState().memories).toEqual([]);
+    expect(desktopStore.getState().remoteControl).toBeNull();
+  });
+
+  it("conversation.open 消费全量 active_tasks 与摘要/记忆/审批/租约", () => {
+    const snapshot = baseSnapshot();
+    const conversation = snapshot.projects[0].conversations[0];
+    const result: ConversationOpenResult & { active_tasks?: ActiveTask[] } = {
+      conversation,
+      project: snapshot.projects[0],
+      pair: snapshot.pair,
+      messages: snapshot.messages,
+      tool_runs: snapshot.tool_runs,
+      turns: snapshot.turns,
+      queue_items: [],
+      active_task: null,
+      approvals: [
+        {
+          approval_id: "open-a1",
+          conversation_id: conversation.conversation_id,
+          operation: {
+            tool_kind: "shell",
+            command: "ls",
+            paths: [],
+            patch_file_count: null,
+            summary: "列出目录",
+          },
+          reason: "需要确认",
+        },
+      ],
+      summaries: [summary({ conversation_id: conversation.conversation_id })],
+      memories: [memory()],
+      remote_control: {
+        state: "held",
+        device_key: "device-b",
+        expires_at: null,
+        grace_expires_at: null,
+        reason: null,
+      },
+      active_tasks: [
+        {
+          project_id: "project-1",
+          conversation_id: conversation.conversation_id,
+          task_id: "task-1",
+          engine_turn_id: null,
+        },
+      ],
+      sequence: 5,
+    };
+    desktopStore.getState().hydrateConversationView(result);
+
+    const state = desktopStore.getState();
+    expect(state.activeTasksByConversation[conversation.conversation_id]?.task_id).toBe("task-1");
+    expect(selectApprovalsForConversation(state, conversation.conversation_id)).toHaveLength(1);
+    expect(state.summariesByConversation[conversation.conversation_id]).toHaveLength(1);
+    expect(state.memories).toHaveLength(1);
+    expect(state.remoteControl?.device_key).toBe("device-b");
+  });
+
+  it("metrics 与诊断保留 null/0 差异，关闭诊断抽屉清除隐藏内容", () => {
+    const metric: TurnMetric = {
+      metric_id: "m1",
+      account_id: "acc-1",
+      project_id: "project-1",
+      conversation_id: "conv-1",
+      pair_id: "phainon_ancient_machine",
+      character_ref: "builtin:phainon",
+      turn_kind: "character_turn",
+      turn_id: "turn-1",
+      task_id: null,
+      engine_turn_id: null,
+      provider: null,
+      model: null,
+      engine_type: null,
+      reasoning_effort: null,
+      status: "completed",
+      started_at: "2026-01-01T00:00:00Z",
+      first_event_at: null,
+      completed_at: null,
+      duration_ms: null,
+      input_tokens: null,
+      output_tokens: null,
+      total_tokens: null,
+      tool_rounds: 0,
+      compression_count: 0,
+      approval_count: 0,
+      failure_type: null,
+      failure_message: null,
+      origin: "desktop",
+      remote_device_key: null,
+      remote_device_name: null,
+    };
+    desktopStore.getState().setMetricsPage({ metrics: [metric], cursor: null });
+    const stored = desktopStore.getState().turnMetrics[0];
+    expect(stored.input_tokens).toBeNull();
+    expect(stored.tool_rounds).toBe(0);
+
+    const diagnostics: PromptAssemblyDiagnostics = {
+      conversation_id: "conv-1",
+      modules: [
+        {
+          kind: "description",
+          source_field: "description",
+          title: "角色设定",
+          char_count: 12,
+          char_start: 0,
+          char_end: 12,
+          hash: "abc",
+          diagnostics: null,
+          hidden_content: "隐藏提示原文",
+        },
+      ],
+      summary_injected: true,
+      memory_injected: false,
+      diagnostics: { unexpanded_macros: [] },
+      hidden_content_included: true,
+    };
+    desktopStore.getState().setPromptAssembly(diagnostics);
+    expect(desktopStore.getState().promptAssemblyRevealed).toBe(true);
+    desktopStore.getState().closePromptAssembly();
+    expect(desktopStore.getState().promptAssembly).toBeNull();
+    expect(desktopStore.getState().promptAssemblyRevealed).toBe(false);
+
+    // 未请求隐藏内容时不展开。
+    desktopStore.getState().setPromptAssembly({ ...diagnostics, hidden_content_included: false });
+    expect(desktopStore.getState().promptAssemblyRevealed).toBe(false);
+  });
+
+  it("selectApprovalCountByConversation 只给计数，不泄露其他聊天内容", () => {
+    desktopStore.getState().applyEvents([
+      event(
+        "approval.requested",
+        {
+          approval_id: "a-other",
+          conversation_id: "other-conversation",
+          operation: {
+            tool_kind: "shell",
+            command: "ls",
+            paths: [],
+            patch_file_count: null,
+            summary: "列出目录",
+          },
+          reason: "需要确认",
+        },
+        1,
+      ),
+    ]);
+    expect(selectApprovalCountByConversation(desktopStore.getState())).toEqual({
+      "other-conversation": 1,
+    });
+    expect(selectApprovalsForConversation(desktopStore.getState(), "conv-1")).toEqual([]);
   });
 });
