@@ -651,7 +651,7 @@ export interface MemoryScope { account_id: string; project_id: string; pair_id: 
 export interface PairMemory { memory_id: string; scope: MemoryScope; content: Record<string, unknown>; status: "active" | "deleted"; updated_at: string; }
 
 export interface TurnMetric {
-  metric_id: string; account_id: string; project_id: string; conversation_id: string; pair_id: string; character_ref: string;
+  metric_id: string; account_id: string; project_id: string; conversation_id: string; pair_id: string; character_ref: string; assistant_identity: string;
   turn_kind: "character_turn" | "assistant_task"; turn_id: string; task_id: string | null; engine_turn_id: string | null;
   provider: string | null; model: string | null; engine_type: string | null; reasoning_effort: string | null;
   status: TurnStatus; started_at: string; first_event_at: string | null; completed_at: string | null; duration_ms: number | null;
