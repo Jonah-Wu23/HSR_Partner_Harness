@@ -26,6 +26,12 @@ $env:CC_aarch64_linux_android = $linker
 $env:CXX_aarch64_linux_android = Join-Path $ndkBin "aarch64-linux-android24-clang++.cmd"
 $env:AR_aarch64_linux_android = Join-Path $ndkBin "llvm-ar.exe"
 $env:TAURI_ANDROID_PROJECT_PATH = $androidRoot
+# tauri build.rs 在 TAURI_ANDROID_PROJECT_PATH 存在时强制要求 WRY 三变量，缺省由本脚本提供
+$wryOutDir = Join-Path $androidRoot "app/src/main/java/com/jonahwu/hsr_partner_harness/generated"
+New-Item -ItemType Directory -Path $wryOutDir -Force | Out-Null
+if (-not $env:WRY_ANDROID_PACKAGE) { $env:WRY_ANDROID_PACKAGE = "com.jonahwu.hsr_partner_harness" }
+if (-not $env:WRY_ANDROID_LIBRARY) { $env:WRY_ANDROID_LIBRARY = "hsr_partner_harness_lib" }
+if (-not $env:WRY_ANDROID_KOTLIN_FILES_OUT_DIR) { $env:WRY_ANDROID_KOTLIN_FILES_OUT_DIR = $wryOutDir }
 Push-Location $tauriRoot
 try {
     $cargoArgs = @("build", "--lib", "--target", "aarch64-linux-android", "--features", "tauri/custom-protocol", "--locked")
