@@ -1,0 +1,56 @@
+{
+  "batch": "batch-2026-09-10",
+  "case_id": "A13",
+  "title": "角色库主路径、393KB 长世界书导入导出与长字段操作",
+  "candidate_commit": "897193a2fb983cd39c8328e98f7e225963a1ee64",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "exe_sha256": "d068bbf86df17770caa82185f02f39a42d881775cdd3fdac8a66b91171d17897",
+    "sidecar_sha256": "34d8325bc2ea53993aa2dda235de8f7ca7acbbc16917f3db755fc14bef0eb04f"
+  },
+  "device": "Windows 11 10.0.26200 / Ryzen 7 7840H / 2560x1440 / 缩放150% / 本机桌面会话",
+  "network": "本机直连公网；局域网 sidecar --serve 0.0.0.0:8765（Tailscale 未配置）",
+  "preconditions": {
+    "fixture": "fix-c-worldbook-card.json（v3 卡承载 85 条世界书，正文 129,992 字节）"
+  },
+  "steps": [
+    "card.import_json 导入 fix-c，记录 card_id 与 CompatReport",
+    "card.get 核对条目数与字段长度",
+    "card.export_json 导出并做条目数与正文字节的导回比对",
+    "card.update 写入 242,332 字符长字段并回读比对",
+    "card.import_json（as_duplicate=true）与 card.list"
+  ],
+  "expected": "原有主路径可用；长字段可操作；导入导出往返一致",
+  "actual": "导入成功（card_id=ad95dd92f89d427f974e69d44b366901，state=imported，report 含 applied/errors/warnings/not_executed/preserved/normalized_from_root）；card.get 返回 data.character_book 85 条、正文 129,992 字节；导出文件 187,536 B，条目数一致（roundtrip_entries_equal=true）；长字段：creator_notes 写入 242,332 字符后回读逐字符一致，且世界书条目数不变（85）；重复导入生成「（副本）」独立 card_id；card.list 共 5 张卡",
+  "timestamps": {
+    "batch": "batch-2026-09-10",
+    "recorded_at": "2026-09-10T11:05:00Z"
+  },
+  "ids": {
+    "card_id": "ad95dd92f89d427f974e69d44b366901",
+    "duplicate_card_id": "25a31644b33547ce9f0ef5216edb51a6"
+  },
+  "evidence": [
+    "A13/01-settings-model-page.png",
+    "A13/02-character-library.png",
+    "A13/a13-longfield.json",
+    "A13/a13-run.json",
+    "A13/commands.ps1",
+    "A13/events.log",
+    "A13/exported-card.json",
+    "A13/http.log",
+    "A13/result.json",
+    "A13/sidecar.log",
+    "A13/ws-frames-longfield.log",
+    "A13/ws-frames.log"
+  ],
+  "severity": "—",
+  "frequency": "—",
+  "impact": "—",
+  "status": "通过",
+  "blocker": "",
+  "owner": "—",
+  "next_action": ""
+}

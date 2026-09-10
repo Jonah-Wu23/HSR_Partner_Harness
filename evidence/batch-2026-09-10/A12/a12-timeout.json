@@ -1,0 +1,73 @@
+{
+  "started_at": "2026-09-10T10:14:05.015Z",
+  "phase": "timeout-real-600s",
+  "conversation_id": "48bd0957-b73b-43ff-b68a-a6560d8abcfa",
+  "approval_requested": {
+    "approval_id": "6",
+    "conversation_id": "48bd0957-b73b-43ff-b68a-a6560d8abcfa",
+    "task_id": "2570a763-7bbd-4a15-9b5f-d693b758c372",
+    "operation": {
+      "tool_kind": "file_write",
+      "command": null,
+      "paths": [
+        "E:\\AI\\HSR-v039-acceptance\\project-alpha\\a12-timeout-2.md"
+      ],
+      "patch_file_count": null,
+      "summary": "write_file E:\\AI\\HSR-v039-acceptance\\project-alpha\\a12-timeout-2.md"
+    },
+    "reason": "write_file E:\\AI\\HSR-v039-acceptance\\project-alpha\\a12-timeout-2.md",
+    "at": "2026-09-10T10:14:07.176Z",
+    "timeout_constant_s": 600.0,
+    "configurable": false
+  },
+  "approval_resolved": {
+    "decision": "timeout",
+    "resolved_by": "system",
+    "actor": "system",
+    "reason": "等待审批超时",
+    "error_code": "approval_timeout",
+    "at": "2026-09-10T10:24:07.170Z",
+    "waited_s": 600.0
+  },
+  "late_decision": {
+    "accepted": false,
+    "code": "approval_already_resolved",
+    "message": "审批已由 system 应答（timeout），不能重复应答",
+    "details": {
+      "decision": "timeout",
+      "resolved_by": "system",
+      "actor": "system",
+      "reason": "等待审批超时",
+      "resolved_at": "2026-09-10T10:24:07.167895+00:00",
+      "error_code": "approval_timeout"
+    }
+  },
+  "conversation_after": {
+    "active_task": null,
+    "queue_items": [],
+    "messages": [
+      {
+        "source": "user",
+        "kind": "user.text",
+        "status": "failed",
+        "text": "请让神秘的古代机械在项目根目录新建文件 a12-timeout-2.md，内容写一行：S4-A12-超时挂机样本。写完后回报结果。"
+      },
+      {
+        "source": "assistant",
+        "kind": "assistant.natural_language",
+        "status": "done",
+        "text": ""
+      },
+      {
+        "source": "system",
+        "kind": "system.status",
+        "status": "done",
+        "text": "本次回复失败：审批超时未裁决（600s）：任务已按失败终止并释放，可重新发起"
+      }
+    ]
+  },
+  "pending_after": [],
+  "active_tasks_after": [],
+  "finished_at": "2026-09-10T10:24:22.239Z",
+  "sidecar_new_lines": 96
+}

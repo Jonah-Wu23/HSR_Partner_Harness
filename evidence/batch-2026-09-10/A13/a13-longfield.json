@@ -1,0 +1,11 @@
+{
+  "card_get_book_entries": 85,
+  "card_get_book_content_bytes": 129992,
+  "long_field": {
+    "written_chars": 242332,
+    "readback_chars": 242332,
+    "readback_matches": true
+  },
+  "book_after_update_entries": 85,
+  "at": "2026-09-10T10:34:34.817Z"
+}

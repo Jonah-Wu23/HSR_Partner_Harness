@@ -1,0 +1,152 @@
+{
+  "started_at": "2026-09-10T10:44:24.220Z",
+  "config_set": {
+    "ok": false,
+    "code": "provider_endpoint_mismatch",
+    "message": "dialogue.provider 与 Base URL 不一致；请同时选择同一供应商的配置"
+  },
+  "stored_config_after_set": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-flash",
+    "base_url": "https://api.deepseek.com",
+    "api_key_masked": "sk-2…c09a",
+    "reasoning_effort": "auto"
+  },
+  "test_connection": {
+    "ok": true,
+    "result": {
+      "ok": true,
+      "message": "连接正常（延迟 531 ms）"
+    }
+  },
+  "submit": {
+    "ok": true,
+    "result": {
+      "message_id": "262c6c77-af2b-45fb-a387-d201fa14066e",
+      "conversation_id": "bf308a83-bc03-4702-bff4-2473ca99656a",
+      "status": "received",
+      "target": "character",
+      "turn_id": "a1ee6cbd-9202-47fd-ba39-92b591364859"
+    }
+  },
+  "turn": {
+    "conversation_id": "bf308a83-bc03-4702-bff4-2473ca99656a",
+    "messages": [
+      {
+        "source": "user",
+        "kind": "user.text",
+        "status": "done",
+        "text": "A06 不可达端点回合：只回复一个词。"
+      }
+    ],
+    "turns": [
+      {
+        "turn_id": "a1ee6cbd-9202-47fd-ba39-92b591364859",
+        "account_id": "",
+        "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+        "conversation_id": "bf308a83-bc03-4702-bff4-2473ca99656a",
+        "target": "character",
+        "source_message_id": "262c6c77-af2b-45fb-a387-d201fa14066e",
+        "status": "running",
+        "created_at": "2026-09-10T10:44:24.821428Z",
+        "updated_at": "2026-09-10T10:44:24.822085+00:00"
+      }
+    ]
+  },
+  "restore": {
+    "ok": true,
+    "result": {
+      "config": {
+        "engine": "deepseek",
+        "dialogue": {
+          "provider": "deepseek",
+          "model": "deepseek-v4-flash",
+          "base_url": "https://api.deepseek.com",
+          "api_key_masked": "sk-2…c09a",
+          "reasoning_effort": "auto"
+        },
+        "voice": {
+          "enabled": "true",
+          "base_url": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1",
+          "api_key_masked": "",
+          "credential_source": "development_env",
+          "ws_url": "wss://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference",
+          "customization_endpoint": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/customization",
+          "asr_model": "qwen-audio-3.0-asr-flash-streaming",
+          "tts_model": "qwen-audio-3.0-tts-flash",
+          "asr_available": true,
+          "voices_source": "env_author",
+          "speakers": [
+            {
+              "speaker_id": "phainon",
+              "name": "白厄",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "firefly",
+              "name": "流萤",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "sam",
+              "name": "萨姆",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "march7",
+              "name": "三月七",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "fourth_mirror",
+              "name": "第四面镜",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "ancient_machine",
+              "name": "神秘的古代机械",
+              "method": "design",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            }
+          ],
+          "manifest_error": null,
+          "character_voice": "qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32",
+          "character_voice_name": "白厄",
+          "assistant_voice": "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19",
+          "assistant_voice_name": "神秘的古代机械",
+          "assistant_voice_enabled": "false",
+          "vad_enabled": ""
+        },
+        "codex": {
+          "status": "logged_out",
+          "account_label": null
+        }
+      }
+    }
+  },
+  "restored": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-flash",
+    "base_url": "https://api.deepseek.com",
+    "api_key_masked": "sk-2…c09a",
+    "reasoning_effort": "auto"
+  },
+  "finished_at": "2026-09-10T10:44:24.883Z"
+}

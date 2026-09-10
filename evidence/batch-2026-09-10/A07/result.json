@@ -1,0 +1,47 @@
+{
+  "batch": "batch-2026-09-10",
+  "case_id": "A07",
+  "title": "真实 Reasonix 委派、多轮工具与 Codex 事件",
+  "candidate_commit": "897193a2fb983cd39c8328e98f7e225963a1ee64",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "exe_sha256": "d068bbf86df17770caa82185f02f39a42d881775cdd3fdac8a66b91171d17897",
+    "sidecar_sha256": "34d8325bc2ea53993aa2dda235de8f7ca7acbbc16917f3db755fc14bef0eb04f"
+  },
+  "device": "Windows 11 10.0.26200 / Ryzen 7 7840H / 2560x1440 / 缩放150% / 本机桌面会话",
+  "network": "本机直连公网；局域网 sidecar --serve 0.0.0.0:8765（Tailscale 未配置）",
+  "preconditions": {
+    "engine": "账号引擎为 DeepSeek → 委派走 Reasonix（ACP）；EXE 内置 codex-cli 0.147.0 未启用"
+  },
+  "steps": [
+    "协作模式提交真实委派任务（含文件写入）",
+    "逐轮批准工具调用并跟踪原始请求与事件",
+    "委派结束后核对落盘结果、助手摘要与角色终局回复"
+  ],
+  "expected": "原始请求及事件可追踪；退出和失败直接暴露",
+  "actual": "真实链路完整：角色自然语言 → 结构化委派卡 → Reasonix 会话 → 4 轮工具调用（列目录 / 存在性与编码检查 / 写文件 / 回读校验）→ 4 次真实审批 → `acceptance-note.md` 按预期内容落盘（29 B，UTF-8 无 BOM，首字节 E7 9C 9F）→ 助手结构化结果摘要 → 角色终局回复；工具与审批事件可在工作台与落库记录逐条追踪。协议侧同类委派在 A01/A08 中复现（含审批归属与取消）。Codex 事件子项受阻：切换 provider 被候选如实拒绝（需 Responses 兼容后端），见 blockers.md B-03",
+  "timestamps": {
+    "batch": "batch-2026-09-10",
+    "recorded_at": "2026-09-10T11:05:00Z"
+  },
+  "ids": {
+    "conversation": "e5e91b6f-722a-4cd6-8557-989760491aee",
+    "task_id": "d55a166a-7c9c-4a20-bfe6-dd4f33d1c515"
+  },
+  "evidence": [
+    "A07/01-delegation-completed.png",
+    "A07/02-approval-pending.png",
+    "A07/db-delegation.txt",
+    "A07/notes.md",
+    "A07/result.json"
+  ],
+  "severity": "P2（V039-S4-009/008 待确认）",
+  "frequency": "—",
+  "impact": "—",
+  "status": "通过",
+  "blocker": "Codex 事件路径不可达（B-03）",
+  "owner": "Sidecar Python（引擎终态映射）",
+  "next_action": "确认 V039-S4-009 语义后复验"
+}

@@ -1,0 +1,113 @@
+{
+  "started_at": "2026-09-10T10:34:23.619Z",
+  "fixture": {
+    "path": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\evidence\\batch-2026-09-10\\fixtures\\fix-c-worldbook-card.json",
+    "sha256": "259789979aec19beb9faf37b97865e34f60822dd134b749e27e3c556a85b5b40",
+    "size": 164169,
+    "source_book": {
+      "entries": 85,
+      "content_bytes": 129992
+    }
+  },
+  "import": {
+    "card_id": "ad95dd92f89d427f974e69d44b366901",
+    "name": "匹诺康尼补充版（S4 长世界书夹具）",
+    "state": "imported",
+    "report": {
+      "applied": [
+        "name",
+        "description",
+        "personality",
+        "scenario",
+        "first_mes",
+        "mes_example",
+        "system_prompt",
+        "post_history_instructions",
+        "tags",
+        "creator",
+        "character_version",
+        "alternate_greetings",
+        "group_only_greetings",
+        "creator_notes",
+        "character_book"
+      ],
+      "preserved": [],
+      "not_executed": [],
+      "normalized_from_root": [],
+      "warnings": [],
+      "errors": []
+    },
+    "at": "2026-09-10T10:34:23.644Z"
+  },
+  "card_get": {
+    "name": "匹诺康尼补充版（S4 长世界书夹具）",
+    "book": {
+      "entries": 0,
+      "content_bytes": 0
+    },
+    "field_lengths": {
+      "description": 39,
+      "personality": 23,
+      "scenario": 10,
+      "creator_notes": 39,
+      "first_mes": 21
+    },
+    "keys": [
+      "alternate_greetings",
+      "character_version",
+      "creator",
+      "creator_notes",
+      "data",
+      "description",
+      "first_mes",
+      "group_only_greetings",
+      "mes_example",
+      "name",
+      "personality",
+      "post_history_instructions",
+      "scenario",
+      "spec",
+      "spec_version",
+      "system_prompt",
+      "tags"
+    ]
+  },
+  "export": {
+    "path": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\evidence\\batch-2026-09-10\\A13\\exported-card.json",
+    "sha256": "e614a1b342b98e4b978aeb13a4928bc707323defdf1e9c15e4bf3d8ffb646cc0",
+    "size": 187536,
+    "book": {
+      "entries": 85,
+      "content_bytes": 129992
+    },
+    "roundtrip_entries_equal": true
+  },
+  "long_field": {
+    "update_ok": false,
+    "update_error": {
+      "code": "invalid_params",
+      "message": "card.update 需要 card（角色卡 JSON 对象）"
+    },
+    "written_chars": 242332,
+    "readback_chars": 39,
+    "readback_matches": false
+  },
+  "duplicate_import": {
+    "card_id": "25a31644b33547ce9f0ef5216edb51a6",
+    "name": "匹诺康尼补充版（S4 长世界书夹具）（副本）",
+    "same_as_first": false
+  },
+  "card_list": {
+    "count": 5,
+    "names": [
+      "匹诺康尼补充版（S4 长世界书夹具）（副本）",
+      "匹诺康尼补充版（S4 长世界书夹具）",
+      "流萤",
+      "三月七",
+      "白厄"
+    ]
+  },
+  "imported_card_id": "ad95dd92f89d427f974e69d44b366901",
+  "finished_at": "2026-09-10T10:34:23.738Z",
+  "sidecar_new_lines": 0
+}

@@ -1,0 +1,63 @@
+{
+  "batch": "batch-2026-09-10",
+  "case_id": "A01",
+  "title": "协议级四会话并发、排队、取消与审批归属",
+  "candidate_commit": "897193a2fb983cd39c8328e98f7e225963a1ee64",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "exe_sha256": "d068bbf86df17770caa82185f02f39a42d881775cdd3fdac8a66b91171d17897",
+    "sidecar_sha256": "34d8325bc2ea53993aa2dda235de8f7ca7acbbc16917f3db755fc14bef0eb04f"
+  },
+  "device": "Windows 11 10.0.26200 / Ryzen 7 7840H / 2560x1440 / 缩放150% / 本机桌面会话",
+  "network": "本机直连公网；局域网 sidecar --serve 0.0.0.0:8765（Tailscale 未配置）",
+  "preconditions": {
+    "sidecar": "--real --serve 8765（token 由 UI 配对码经 remote.pair 换取）",
+    "conversations": "四个新会话：A01-conv-1/2/3/4，覆盖 3 个搭档（白厄×2、三月七、流萤）"
+  },
+  "steps": [
+    "四个独立 WS 会话（同一真实 token）同时 send chat.submit，记录各自发送时刻",
+    "分别等待四个会话终态，核对消息归属、pair_id、串线",
+    "同一会话内 0.187s 间隔连续提交两条，读取 queue_items 快照",
+    "协作会话提交真实委派 → 捕获 approval.requested 归属 → task.cancel → 核对回收"
+  ],
+  "expected": "四会话提交时间最大差值 <1 秒；事件/消息/终态归属正确且零串线；排队项按序派发；取消回收待审批且无副作用",
+  "actual": "提交时间最大差值 0.0s（同一事件循环内四路并发，见 submit_spread_s）；四会话归属全部正确，三条标题按各自 pair 生成（守望/镜子/萤火），无串线；第二条提交在 0.187s 后进入 queue_items（status=queued, position=0），随后按 A→B 顺序派发完成；取消会话在生产 approval_id=5 后 task.cancel：active_task 归零、该会话待审批从 approvals 快照移除",
+  "timestamps": {
+    "batch": "batch-2026-09-10",
+    "recorded_at": "2026-09-10T11:05:00Z"
+  },
+  "ids": {
+    "A01-conv-1": "2f9bea16-a862-4a41-9205-bf4dc20ee90e",
+    "A01-conv-2": "59c487e5-0b4e-4280-af24-1e3d1d00631b",
+    "A01-conv-3": "c87b576d-c182-47ab-9488-19915f2176f2",
+    "A01-conv-4": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+    "A01-cancel": "dc234571-06c5-4b60-8850-c0a2b03f0c78",
+    "approval_id": "2（并发裁决）/ 5（取消回收）"
+  },
+  "evidence": [
+    "A01/01-four-chats.png",
+    "A01/a01-cancel.json",
+    "A01/a01-run.json",
+    "A01/commands-cancel.ps1",
+    "A01/commands.ps1",
+    "A01/db-attribution.txt",
+    "A01/events-cancel.log",
+    "A01/events.log",
+    "A01/http-cancel.log",
+    "A01/http.log",
+    "A01/notes.md",
+    "A01/result.json",
+    "A01/sidecar-cancel.log",
+    "A01/ws-frames-cancel.log",
+    "A01/ws-frames.log"
+  ],
+  "severity": "—",
+  "frequency": "—",
+  "impact": "—",
+  "status": "通过",
+  "blocker": "",
+  "owner": "—",
+  "next_action": ""
+}

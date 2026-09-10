@@ -1,0 +1,209 @@
+{
+  "reconstructed": true,
+  "note": "原始进程在等待 approval.requested 期间被测试方中止，本文件由捕获的逐步 stdout 重建；取消阶段的完整证据见 a01-cancel.json（该阶段正常落盘）",
+  "steps": [
+    {
+      "step": "conversations",
+      "ts": "2026-09-10T06:08:50.678Z",
+      "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+      "conversations": {
+        "A01-conv-1": "2f9bea16-a862-4a41-9205-bf4dc20ee90e",
+        "A01-conv-2": "59c487e5-0b4e-4280-af24-1e3d1d00631b",
+        "A01-conv-3": "c87b576d-c182-47ab-9488-19915f2176f2",
+        "A01-conv-4": "2dee07bd-96e6-4962-a552-327f3b792e8f"
+      }
+    },
+    {
+      "step": "four_session_submit",
+      "ts": "2026-09-10T06:08:50.679Z",
+      "spread_seconds": 0.0,
+      "sends": [
+        {
+          "title": "A01-conv-1",
+          "conversation_id": "2f9bea16-a862-4a41-9205-bf4dc20ee90e",
+          "pair_id": "phainon_ancient_machine",
+          "request_id": "d9b3af439626416595b2d71b25f14751",
+          "sent_ts": "2026-09-10T06:08:50.679Z",
+          "spread_from_first_ms": 0.0
+        },
+        {
+          "title": "A01-conv-2",
+          "conversation_id": "59c487e5-0b4e-4280-af24-1e3d1d00631b",
+          "pair_id": "march7_fourth_mirror",
+          "request_id": "bc74352990894482aa090f7828ef6c54",
+          "sent_ts": "2026-09-10T06:08:50.679Z",
+          "spread_from_first_ms": 0.0
+        },
+        {
+          "title": "A01-conv-3",
+          "conversation_id": "c87b576d-c182-47ab-9488-19915f2176f2",
+          "pair_id": "firefly_sam",
+          "request_id": "9e15e2cd729a44038a9723cd0b3424dc",
+          "sent_ts": "2026-09-10T06:08:50.679Z",
+          "spread_from_first_ms": 0.0
+        },
+        {
+          "title": "A01-conv-4",
+          "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+          "pair_id": "phainon_ancient_machine",
+          "request_id": "0a5fa43394114647824a8c1157da1545",
+          "sent_ts": "2026-09-10T06:08:50.679Z",
+          "spread_from_first_ms": 0.0
+        }
+      ]
+    },
+    {
+      "step": "submit_acceptances",
+      "ts": "2026-09-10T06:09:50.849Z",
+      "acceptances": [
+        {
+          "title": "A01-conv-1",
+          "conversation_id": "2f9bea16-a862-4a41-9205-bf4dc20ee90e",
+          "pair_id": "phainon_ancient_machine",
+          "request_id": "d9b3af439626416595b2d71b25f14751",
+          "sent_ts": "2026-09-10T06:08:50.679Z",
+          "spread_from_first_ms": 0.0,
+          "accepted": true,
+          "message_id": "c14abc4e-4715-48f5-9fea-33c82e113c84"
+        },
+        {
+          "title": "A01-conv-2",
+          "conversation_id": "59c487e5-0b4e-4280-af24-1e3d1d00631b",
+          "pair_id": "march7_fourth_mirror",
+          "request_id": "bc74352990894482aa090f7828ef6c54",
+          "sent_ts": "2026-09-10T06:08:50.679Z",
+          "spread_from_first_ms": 0.0,
+          "accepted": true,
+          "message_id": "7b3aec50-eec9-47af-b570-db2c8d8e92df"
+        },
+        {
+          "title": "A01-conv-3",
+          "conversation_id": "c87b576d-c182-47ab-9488-19915f2176f2",
+          "pair_id": "firefly_sam",
+          "request_id": "9e15e2cd729a44038a9723cd0b3424dc",
+          "sent_ts": "2026-09-10T06:08:50.679Z",
+          "spread_from_first_ms": 0.0,
+          "accepted": true,
+          "message_id": "d626d34c-9e41-470f-b491-bfa5c86e1b78"
+        },
+        {
+          "title": "A01-conv-4",
+          "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+          "pair_id": "phainon_ancient_machine",
+          "request_id": "0a5fa43394114647824a8c1157da1545",
+          "sent_ts": "2026-09-10T06:08:50.679Z",
+          "spread_from_first_ms": 0.0,
+          "accepted": false,
+          "error": {
+            "code": "client_timeout"
+          }
+        }
+      ]
+    },
+    {
+      "step": "attribution",
+      "ts": "2026-09-10T06:09:50.878Z",
+      "attribution": {
+        "A01-conv-1": {
+          "conversation_id": "2f9bea16-a862-4a41-9205-bf4dc20ee90e",
+          "pair_id": "phainon_ancient_machine",
+          "user_texts": [
+            "A01-MARKER-CONV1 只回复一个词：壹"
+          ],
+          "character_texts": [
+            "壹"
+          ],
+          "other_markers_present": [],
+          "character_status": [
+            "done"
+          ]
+        },
+        "A01-conv-2": {
+          "conversation_id": "59c487e5-0b4e-4280-af24-1e3d1d00631b",
+          "pair_id": "march7_fourth_mirror",
+          "user_texts": [
+            "A01-MARKER-CONV2 只回复一个词：贰"
+          ],
+          "character_texts": [
+            "贰"
+          ],
+          "other_markers_present": [],
+          "character_status": [
+            "done"
+          ]
+        },
+        "A01-conv-3": {
+          "conversation_id": "c87b576d-c182-47ab-9488-19915f2176f2",
+          "pair_id": "firefly_sam",
+          "user_texts": [
+            "A01-MARKER-CONV3 只回复一个词：叁"
+          ],
+          "character_texts": [
+            "叁"
+          ],
+          "other_markers_present": [],
+          "character_status": [
+            "done"
+          ]
+        },
+        "A01-conv-4": {
+          "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+          "pair_id": "phainon_ancient_machine",
+          "user_texts": [
+            "A01-MARKER-CONV4 只回复一个词：肆"
+          ],
+          "character_texts": [
+            "肆"
+          ],
+          "other_markers_present": [],
+          "character_status": [
+            "done"
+          ]
+        }
+      }
+    },
+    {
+      "step": "queue_probe",
+      "ts": "2026-09-10T06:09:52.086Z",
+      "gap_seconds": 0.187,
+      "queue_items": [
+        {
+          "queue_item_id": "74681760-03c9-4728-998e-400f9fcefc83",
+          "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+          "conversation_id": "2f9bea16-a862-4a41-9205-bf4dc20ee90e",
+          "target": "character",
+          "text": "A01-QUEUE-B 只回复一个词：乙",
+          "intent": "followup",
+          "position": 0,
+          "status": "queued",
+          "created_at": "2026-09-10T06:09:51.084093+00:00",
+          "source_message_id": null
+        }
+      ],
+      "active_task": null,
+      "busy": false
+    },
+    {
+      "step": "queue_result",
+      "ts": "2026-09-10T06:09:54.119Z",
+      "user_texts": [
+        "A01-MARKER-CONV1 只回复一个词：壹",
+        "A01-QUEUE-A 只回复一个词：甲",
+        "A01-QUEUE-B 只回复一个词：乙"
+      ],
+      "character_texts": [
+        "壹",
+        "甲",
+        "乙"
+      ],
+      "order_ok": true,
+      "remaining_queue_items": []
+    },
+    {
+      "step": "cancel_task_submitted",
+      "ts": "2026-09-10T06:09:54.136Z",
+      "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+      "message_id": "282f83a5-2e6b-4037-8db5-a3b360e46f0d"
+    }
+  ]
+}

@@ -1,0 +1,1022 @@
+{
+  "reconstructed": true,
+  "note": "race 阶段原始进程写完阶段结果前被中止；本文件由 ws-frames-race-a/b.log 原始帧重建（未引入新事实）",
+  "phase": "concurrent-decision-race",
+  "approval_id": "2",
+  "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+  "session_a_frames": [
+    {
+      "ts": "2026-09-10T06:12:10.096Z",
+      "dir": "up",
+      "method": "app.bootstrap",
+      "params": {}
+    },
+    {
+      "ts": "2026-09-10T06:12:10.100Z",
+      "dir": "down",
+      "ok": true,
+      "result": {
+        "projects": [
+          {
+            "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+            "name": "project-alpha",
+            "root_path": "E:\\AI\\HSR-v039-acceptance\\project-alpha",
+            "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+            "approval_mode": "request_approval",
+            "reasoning_effort": "low",
+            "archived": false,
+            "created_at": "2026-09-10T04:56:21.469970+00:00",
+            "last_opened_at": "2026-09-10T06:08:50.661951+00:00",
+            "path_available": true,
+            "conversations": [
+              {
+                "conversation_id": "0e54c25f-e142-4513-bcab-29f88e0661df",
+                "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+                "pair_id": "phainon_ancient_machine",
+                "title": "A12-approval-timeout",
+                "last_mode": "collaboration",
+                "archived": false,
+                "created_at": "2026-09-10T06:07:04.216161+00:00",
+                "updated_at": "2026-09-10T06:11:49.925748+00:00",
+                "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+                "character_card_id": null
+              },
+              {
+                "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+                "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+                "pair_id": "phainon_ancient_machine",
+                "title": "A01-conv-4",
+                "last_mode": "collaboration",
+                "archived": false,
+                "created_at": "2026-09-10T06:08:50.658893+00:00",
+                "updated_at": "2026-09-10T06:09:55.680960+00:00",
+                "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+                "character_card_id": null
+              },
+              {
+                "conversation_id": "2f9bea16-a862-4a41-9205-bf4dc20ee90e",
+                "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+                "pair_id": "phainon_ancient_machine",
+                "title": "A01-conv-1",
+                "last_mode": "chat",
+                "archived": false,
+                "created_at": "2026-09-10T06:08:50.591146+00:00",
+                "updated_at": "2026-09-10T06:09:53.199876+00:00",
+                "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+                "character_card_id": null
+              },
+              {
+                "conversation_id": "59c487e5-0b4e-4280-af24-1e3d1d00631b",
+                "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+                "pair_id": "march7_fourth_mirror",
+                "title": "A01-conv-2",
+                "last_mode": "chat",
+                "archived": false,
+                "created_at": "2026-09-10T06:08:50.616364+00:00",
+                "updated_at": "2026-09-10T06:08:51.530937+00:00",
+                "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+                "character_card_id": null
+              },
+              {
+                "conversation_id": "c87b576d-c182-47ab-9488-19915f2176f2",
+                "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+                "pair_id": "firefly_sam",
+                "title": "A01-conv-3",
+                "last_mode": "chat",
+                "archived": false,
+                "created_at": "2026-09-10T06:08:50.636708+00:00",
+                "updated_at": "2026-09-10T06:08:51.484648+00:00",
+                "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+                "character_card_id": null
+              },
+              {
+                "conversation_id": "e5e91b6f-722a-4cd6-8557-989760491aee",
+                "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+                "pair_id": "march7_fourth_mirror",
+                "title": "镜子",
+                "last_mode": "collaboration",
+                "archived": false,
+                "created_at": "2026-09-10T05:00:29.463447+00:00",
+                "updated_at": "2026-09-10T05:08:05.076749+00:00",
+                "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+                "character_card_id": null
+              },
+              {
+                "conversation_id": "be2434fe-6ddd-452b-b5da-13ce5c6c11e9",
+                "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+                "pair_id": "phainon_ancient_machine",
+                "title": "守望",
+                "last_mode": "chat",
+                "archived": false,
+                "created_at": "2026-09-10T05:00:17.417249+00:00",
+                "updated_at": "2026-09-10T05:01:22.409703+00:00",
+                "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+                "character_card_id": null
+              },
+              {
+                "conversation_id": "61bc818e-cab6-45f6-9f35-c6c7fdb82d3d",
+                "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+                "pair_id": "phainon_ancient_machine",
+                "title": "关于你好，今天过得怎么样",
+                "last_mode": "chat",
+                "archived": false,
+                "created_at": "2026-09-10T04:56:21.472119+00:00",
+                "updated_at": "2026-09-10T05:01:09.573898+00:00",
+                "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+                "character_card_id": null
+              },
+              {
+                "conversation_id": "a0a39a5e-c342-4862-a6fb-2d818772097b",
+                "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+                "pair_id": "firefly_sam",
+                "title": "萤火",
+                "last_mode": "chat",
+                "archived": false,
+                "created_at": "2026-09-10T05:00:39.671514+00:00",
+                "updated_at": "2026-09-10T05:00:57.945719+00:00",
+                "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+                "character_card_id": null
+              }
+            ]
+          }
+        ],
+        "active_tasks": [
+          {
+            "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+            "conversation_id": "0e54c25f-e142-4513-bcab-29f88e0661df",
+            "task_id": "a1c3c542-db70-4573-a884-c6737db1ede9",
+            "engine_turn_id": "acp-a1c3c542-db70-4573-a884-c6737db1ede9",
+            "cancellation_requested": false
+          },
+          {
+            "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+            "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+            "task_id": "d55a166a-7c9c-4a20-bfe6-dd4f33d1c515",
+            "engine_turn_id": "acp-d55a166a-7c9c-4a20-bfe6-dd4f33d1c515",
+            "cancellation_requested": false
+          }
+        ],
+        "current_account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+        "current_account": {
+          "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+          "username": "验收账号",
+          "display_name": "验收账号",
+          "avatar": "",
+          "last_login_at": "2026-09-10T04:55:33.287974+00:00",
+          "onboarding_complete": true,
+          "theme": "dark"
+        },
+        "accounts": [
+          {
+            "account_id": "default-local",
+            "username": "default",
+            "display_name": "默认账号",
+            "avatar": "",
+            "last_login_at": null,
+            "onboarding_complete": false,
+            "theme": "dark",
+            "is_last_login": false
+          },
+          {
+            "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+            "username": "验收账号",
+            "display_name": "验收账号",
+            "avatar": "",
+            "last_login_at": "2026-09-10T04:55:33.287974+00:00",
+            "onboarding_complete": true,
+            "theme": "dark",
+            "is_last_login": true
+          }
+        ],
+        "current_project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+        "current_conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+        "current_project": {
+          "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+          "name": "project-alpha",
+          "root_path": "E:\\AI\\HSR-v039-acceptance\\project-alpha",
+          "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+          "approval_mode": "request_approval",
+          "reasoning_effort": "low",
+          "archived": false,
+          "created_at": "2026-09-10T04:56:21.469970+00:00",
+          "last_opened_at": "2026-09-10T06:08:50.661951+00:00",
+          "path_available": true
+        },
+        "current_conversation": {
+          "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+          "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+          "pair_id": "phainon_ancient_machine",
+          "title": "A01-conv-4",
+          "last_mode": "collaboration",
+          "archived": false,
+          "created_at": "2026-09-10T06:08:50.658893+00:00",
+          "updated_at": "2026-09-10T06:09:55.680960+00:00",
+          "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+          "character_card_id": null
+        },
+        "messages": [
+          {
+            "message_id": "6b86982f-b776-4bbc-9d57-ea8b702c022c",
+            "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+            "pair_id": "phainon_ancient_machine",
+            "engine_turn_id": null,
+            "source": "user",
+            "kind": "user.text",
+            "text": "A01-MARKER-CONV4 只回复一个词：肆",
+            "payload": {},
+            "tts_eligible": false,
+            "created_at": "2026-09-10T06:08:50.820296Z",
+            "target": "character",
+            "origin": "user",
+            "delegation_id": null,
+            "status": "done",
+            "task_id": null,
+            "timeline_order": null
+          },
+          {
+            "message_id": "speech:2dee07bd-96e6-4962-a552-327f3b792e8f:6b86982f-b776-4bbc-9d57-ea8b702c022c",
+            "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+            "pair_id": "phainon_ancient_machine",
+            "engine_turn_id": null,
+            "source": "character",
+            "kind": "character.speech",
+            "text": "肆",
+            "payload": {},
+            "tts_eligible": true,
+            "created_at": "2026-09-10T06:08:51.447779Z",
+            "target": "character",
+            "origin": "user",
+            "delegation_id": null,
+            "status": "done",
+            "task_id": null,
+            "timeline_order": null
+          },
+          {
+            "message_id": "282f83a5-2e6b-4037-8db5-a3b360e46f0d",
+            "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+            "pair_id": "phainon_ancient_machine",
+            "engine_turn_id": null,
+            "source": "user",
+            "kind": "user.text",
+            "text": "请让神秘的古代机械在项目根目录新建文件 a01-cancel.md，内容写一行：S4-A01-取消样本。写完回报。",
+            "payload": {},
+            "tts_eligible": false,
+            "created_at": "2026-09-10T06:09:54.128874Z",
+            "target": "assistant",
+            "origin": "user",
+            "delegation_id": null,
+            "status": "done",
+            "task_id": null,
+            "timeline_order": null
+          },
+          {
+            "message_id": "assistant:2dee07bd-96e6-4962-a552-327f3b792e8f:d55a166a-7c9c-4a20-bfe6-dd4f33d1c515:0",
+            "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+            "pair_id": "phainon_ancient_machine",
+            "engine_turn_id": "acp-d55a166a-7c9c-4a20-bfe6-dd4f33d1c515",
+            "source": "assistant",
+            "kind": "assistant.natural_language",
+            "text": "",
+            "payload": {
+              "reasoning": "用户要求新建文件 a01-cancel.md，内容一行：S4-A01-取消样本。\n\n这是一个简单任务。直接写入。\n\n风险低，直接执行。\n\n写完后回报。注意检查工作目录。\n\nLet me just write the file."
+            },
+            "tts_eligible": false,
+            "created_at": "2026-09-10T06:09:55.679919Z",
+            "target": "assistant",
+            "origin": "user",
+            "delegation_id": "d55a166a-7c9c-4a20-bfe6-dd4f33d1c515",
+            "status": "done",
+            "task_id": "d55a166a-7c9c-4a20-bfe6-dd4f33d1c515",
+            "timeline_order": 1
+          }
+        ],
+        "tool_runs": [],
+        "turns": [
+          {
+            "turn_id": "e28c203a-3b9a-4607-ad25-71f9a92e4602",
+            "account_id": "",
+            "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+            "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+            "target": "character",
+            "source_message_id": "6b86982f-b776-4bbc-9d57-ea8b702c022c",
+            "status": "completed",
+            "created_at": "2026-09-10T06:08:50.826010Z",
+            "updated_at": "2026-09-10T06:08:51.455067+00:00"
+          },
+          {
+            "turn_id": "ec107bae-841f-45b8-908d-0ed710c6f680",
+            "account_id": "",
+            "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+            "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+            "target": "assistant",
+            "source_message_id": "282f83a5-2e6b-4037-8db5-a3b360e46f0d",
+            "status": "running",
+            "created_at": "2026-09-10T06:09:54.134165Z",
+            "updated_at": "2026-09-10T06:09:54.134670+00:00"
+          }
+        ],
+        "queue_items": [],
+        "active_task": {
+          "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+          "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+          "task_id": "d55a166a-7c9c-4a20-bfe6-dd4f33d1c515",
+          "engine_turn_id": "acp-d55a166a-7c9c-4a20-bfe6-dd4f33d1c515",
+          "cancellation_requested": false
+        },
+        "busy": true,
+        "approvals": [
+          {
+            "approval_id": "2",
+            "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+            "task_id": "d55a166a-7c9c-4a20-bfe6-dd4f33d1c515",
+            "operation": {
+              "tool_kind": "file_write",
+              "command": null,
+              "paths": [
+                "E:\\AI\\HSR-v039-acceptance\\project-alpha\\a01-cancel.md"
+              ],
+              "patch_file_count": null,
+              "summary": "write_file E:\\AI\\HSR-v039-acceptance\\project-alpha\\a01-cancel.md"
+            },
+            "reason": "write_file E:\\AI\\HSR-v039-acceptance\\project-alpha\\a01-cancel.md"
+          },
+          {
+            "approval_id": "3",
+            "conversation_id": "0e54c25f-e142-4513-bcab-29f88e0661df",
+            "task_id": "a1c3c542-db70-4573-a884-c6737db1ede9",
+            "operation": {
+              "tool_kind": "shell",
+              "command": null,
+              "paths": [],
+              "patch_file_count": null,
+              "summary": "创建 a12-timeout.md 的写入被拒绝了，你希望怎么处理？"
+            },
+            "reason": "创建 a12-timeout.md 的写入被拒绝了，你希望怎么处理？"
+          }
+        ],
+        "remote_control": {
+          "state": "free",
+          "device_key": null,
+          "expires_at": null,
+          "grace_expires_at": null,
+          "reason": null
+        },
+        "voice": {
+          "supported": true,
+          "enabled": true,
+          "assistant_voice_enabled": false,
+          "vad": "idle",
+          "vad_enabled": false,
+          "ptt": false,
+          "tts": "idle",
+          "asr_partial": "",
+          "error": null,
+          "speech_queue_len": 0
+        },
+        "pair": {
+          "pair_id": "phainon_ancient_machine",
+          "character": {
+            "id": "phainon",
+            "name": "白厄",
+            "voice_id": "qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32"
+          },
+          "assistant": {
+            "id": "ancient_machine",
+            "name": "神秘的古代机械",
+            "voice_id": "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19"
+          },
+          "theme": {
+            "character_text": "#C7D4E3",
+            "character_primary": "#8AA4D4",
+            "character_deep": "#3A548C",
+            "character_active": "#296CE1",
+            "assistant_primary": "#B08D57",
+            "assistant_bright": "#C5A059",
+            "assistant_shadow": "#8C6B3F"
+          }
+        },
+        "pairs": [
+          {
+            "pair_id": "firefly_sam",
+            "character": {
+              "id": "firefly",
+              "name": "流萤",
+              "voice_id": "qwen-audio-3.0-tts-flash-firefly-233c61b0cb184b1e94fe5de4448df4ea"
+            },
+            "assistant": {
+              "id": "sam",
+              "name": "萨姆",
+              "voice_id": "qwen-audio-3.0-tts-flash-sam-576163dee3584951ae8847f7dd748b2e"
+            },
+            "theme": {
+              "character_text": "#D1FAE5",
+              "character_primary": "#52D1A3",
+              "character_deep": "#1B4738",
+              "character_active": "#22C58B",
+              "assistant_primary": "#E65A28",
+              "assistant_bright": "#FF844B",
+              "assistant_shadow": "#9C3210"
+            }
+          },
+          {
+            "pair_id": "march7_fourth_mirror",
+            "character": {
+              "id": "march7",
+              "name": "三月七",
+              "voice_id": "qwen-audio-3.0-tts-flash-march7-87efc5e56bf74146a396e03769653e0e"
+            },
+            "assistant": {
+              "id": "fourth_mirror",
+              "name": "第四面镜",
+              "voice_id": "qwen-audio-3.0-tts-flash-fourthmirr-53ec3a67726c4145a1d3a4288a354ff3"
+            },
+            "theme": {
+              "character_text": "#FFE4EC",
+              "character_primary": "#FF8DA1",
+              "character_deep": "#542031",
+              "character_active": "#F43F5E",
+              "assistant_primary": "#A78BFA",
+              "assistant_bright": "#C4B5FD",
+              "assistant_shadow": "#6D28D9"
+            }
+          },
+          {
+            "pair_id": "phainon_ancient_machine",
+            "character": {
+              "id": "phainon",
+              "name": "白厄",
+              "voice_id": "qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32"
+            },
+            "assistant": {
+              "id": "ancient_machine",
+              "name": "神秘的古代机械",
+              "voice_id": "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19"
+            },
+            "theme": {
+              "character_text": "#C7D4E3",
+              "character_primary": "#8AA4D4",
+              "character_deep": "#3A548C",
+              "character_active": "#296CE1",
+              "assistant_primary": "#B08D57",
+              "assistant_bright": "#C5A059",
+              "assistant_shadow": "#8C6B3F"
+            }
+          }
+        ],
+        "sequence": 194,
+        "stream_id": "1"
+      },
+      "error": null
+    },
+    {
+      "ts": "2026-09-10T06:12:10.105Z",
+      "dir": "up",
+      "method": "approval.resolve",
+      "params": {
+        "approval_id": "2",
+        "decision": "allow"
+      }
+    },
+    {
+      "ts": "2026-09-10T06:12:10.106Z",
+      "dir": "down",
+      "ok": true,
+      "result": {
+        "approval_id": "2",
+        "accepted": true,
+        "resolved_by": "remote",
+        "decision": "allow"
+      },
+      "error": null
+    },
+    {
+      "ts": "2026-09-10T06:12:10.118Z",
+      "dir": "up",
+      "method": "approval.resolve",
+      "params": {
+        "approval_id": "2",
+        "decision": "allow"
+      }
+    },
+    {
+      "ts": "2026-09-10T06:12:10.118Z",
+      "dir": "down",
+      "ok": false,
+      "result": null,
+      "error": {
+        "code": "approval_already_resolved",
+        "message": "审批已由 remote 应答（allow），不能重复应答",
+        "details": {
+          "decision": "allow",
+          "resolved_by": "remote",
+          "actor": "user",
+          "reason": "write_file E:\\AI\\HSR-v039-acceptance\\project-alpha\\a01-cancel.md",
+          "resolved_at": "2026-09-10T06:12:10.106348+00:00",
+          "error_code": null
+        }
+      }
+    },
+    {
+      "ts": "2026-09-10T06:12:10.119Z",
+      "dir": "up",
+      "method": "app.bootstrap",
+      "params": {}
+    },
+    {
+      "ts": "2026-09-10T06:12:10.124Z",
+      "dir": "down",
+      "ok": true,
+      "result": {
+        "projects": [
+          {
+            "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+            "name": "project-alpha",
+            "root_path": "E:\\AI\\HSR-v039-acceptance\\project-alpha",
+            "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+            "approval_mode": "request_approval",
+            "reasoning_effort": "low",
+            "archived": false,
+            "created_at": "2026-09-10T04:56:21.469970+00:00",
+            "last_opened_at": "2026-09-10T06:08:50.661951+00:00",
+            "path_available": true,
+            "conversations": [
+              {
+                "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+                "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+                "pair_id": "phainon_ancient_machine",
+                "title": "A01-conv-4",
+                "last_mode": "collaboration",
+                "archived": false,
+                "created_at": "2026-09-10T06:08:50.658893+00:00",
+                "updated_at": "2026-09-10T06:12:10.112228+00:00",
+                "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+                "character_card_id": null
+              },
+              {
+                "conversation_id": "0e54c25f-e142-4513-bcab-29f88e0661df",
+                "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+                "pair_id": "phainon_ancient_machine",
+                "title": "A12-approval-timeout",
+                "last_mode": "collaboration",
+                "archived": false,
+                "created_at": "2026-09-10T06:07:04.216161+00:00",
+                "updated_at": "2026-09-10T06:11:49.925748+00:00",
+                "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+                "character_card_id": null
+              },
+              {
+                "conversation_id": "2f9bea16-a862-4a41-9205-bf4dc20ee90e",
+                "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+                "pair_id": "phainon_ancient_machine",
+                "title": "A01-conv-1",
+                "last_mode": "chat",
+                "archived": false,
+                "created_at": "2026-09-10T06:08:50.591146+00:00",
+                "updated_at": "2026-09-10T06:09:53.199876+00:00",
+                "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+                "character_card_id": null
+              },
+              {
+                "conversation_id": "59c487e5-0b4e-4280-af24-1e3d1d00631b",
+                "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+                "pair_id": "march7_fourth_mirror",
+                "title": "A01-conv-2",
+                "last_mode": "chat",
+                "archived": false,
+                "created_at": "2026-09-10T06:08:50.616364+00:00",
+                "updated_at": "2026-09-10T06:08:51.530937+00:00",
+                "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+                "character_card_id": null
+              },
+              {
+                "conversation_id": "c87b576d-c182-47ab-9488-19915f2176f2",
+                "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+                "pair_id": "firefly_sam",
+                "title": "A01-conv-3",
+                "last_mode": "chat",
+                "archived": false,
+                "created_at": "2026-09-10T06:08:50.636708+00:00",
+                "updated_at": "2026-09-10T06:08:51.484648+00:00",
+                "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+                "character_card_id": null
+              },
+              {
+                "conversation_id": "e5e91b6f-722a-4cd6-8557-989760491aee",
+                "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+                "pair_id": "march7_fourth_mirror",
+                "title": "镜子",
+                "last_mode": "collaboration",
+                "archived": false,
+                "created_at": "2026-09-10T05:00:29.463447+00:00",
+                "updated_at": "2026-09-10T05:08:05.076749+00:00",
+                "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+                "character_card_id": null
+              },
+              {
+                "conversation_id": "be2434fe-6ddd-452b-b5da-13ce5c6c11e9",
+                "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+                "pair_id": "phainon_ancient_machine",
+                "title": "守望",
+                "last_mode": "chat",
+                "archived": false,
+                "created_at": "2026-09-10T05:00:17.417249+00:00",
+                "updated_at": "2026-09-10T05:01:22.409703+00:00",
+                "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+                "character_card_id": null
+              },
+              {
+                "conversation_id": "61bc818e-cab6-45f6-9f35-c6c7fdb82d3d",
+                "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+                "pair_id": "phainon_ancient_machine",
+                "title": "关于你好，今天过得怎么样",
+                "last_mode": "chat",
+                "archived": false,
+                "created_at": "2026-09-10T04:56:21.472119+00:00",
+                "updated_at": "2026-09-10T05:01:09.573898+00:00",
+                "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+                "character_card_id": null
+              },
+              {
+                "conversation_id": "a0a39a5e-c342-4862-a6fb-2d818772097b",
+                "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+                "pair_id": "firefly_sam",
+                "title": "萤火",
+                "last_mode": "chat",
+                "archived": false,
+                "created_at": "2026-09-10T05:00:39.671514+00:00",
+                "updated_at": "2026-09-10T05:00:57.945719+00:00",
+                "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+                "character_card_id": null
+              }
+            ]
+          }
+        ],
+        "active_tasks": [
+          {
+            "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+            "conversation_id": "0e54c25f-e142-4513-bcab-29f88e0661df",
+            "task_id": "a1c3c542-db70-4573-a884-c6737db1ede9",
+            "engine_turn_id": "acp-a1c3c542-db70-4573-a884-c6737db1ede9",
+            "cancellation_requested": false
+          },
+          {
+            "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+            "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+            "task_id": "d55a166a-7c9c-4a20-bfe6-dd4f33d1c515",
+            "engine_turn_id": "acp-d55a166a-7c9c-4a20-bfe6-dd4f33d1c515",
+            "cancellation_requested": false
+          }
+        ],
+        "current_account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+        "current_account": {
+          "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+          "username": "验收账号",
+          "display_name": "验收账号",
+          "avatar": "",
+          "last_login_at": "2026-09-10T04:55:33.287974+00:00",
+          "onboarding_complete": true,
+          "theme": "dark"
+        },
+        "accounts": [
+          {
+            "account_id": "default-local",
+            "username": "default",
+            "display_name": "默认账号",
+            "avatar": "",
+            "last_login_at": null,
+            "onboarding_complete": false,
+            "theme": "dark",
+            "is_last_login": false
+          },
+          {
+            "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+            "username": "验收账号",
+            "display_name": "验收账号",
+            "avatar": "",
+            "last_login_at": "2026-09-10T04:55:33.287974+00:00",
+            "onboarding_complete": true,
+            "theme": "dark",
+            "is_last_login": true
+          }
+        ],
+        "current_project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+        "current_conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+        "current_project": {
+          "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+          "name": "project-alpha",
+          "root_path": "E:\\AI\\HSR-v039-acceptance\\project-alpha",
+          "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+          "approval_mode": "request_approval",
+          "reasoning_effort": "low",
+          "archived": false,
+          "created_at": "2026-09-10T04:56:21.469970+00:00",
+          "last_opened_at": "2026-09-10T06:08:50.661951+00:00",
+          "path_available": true
+        },
+        "current_conversation": {
+          "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+          "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+          "pair_id": "phainon_ancient_machine",
+          "title": "A01-conv-4",
+          "last_mode": "collaboration",
+          "archived": false,
+          "created_at": "2026-09-10T06:08:50.658893+00:00",
+          "updated_at": "2026-09-10T06:12:10.112228+00:00",
+          "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+          "character_card_id": null
+        },
+        "messages": [
+          {
+            "message_id": "6b86982f-b776-4bbc-9d57-ea8b702c022c",
+            "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+            "pair_id": "phainon_ancient_machine",
+            "engine_turn_id": null,
+            "source": "user",
+            "kind": "user.text",
+            "text": "A01-MARKER-CONV4 只回复一个词：肆",
+            "payload": {},
+            "tts_eligible": false,
+            "created_at": "2026-09-10T06:08:50.820296Z",
+            "target": "character",
+            "origin": "user",
+            "delegation_id": null,
+            "status": "done",
+            "task_id": null,
+            "timeline_order": null
+          },
+          {
+            "message_id": "speech:2dee07bd-96e6-4962-a552-327f3b792e8f:6b86982f-b776-4bbc-9d57-ea8b702c022c",
+            "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+            "pair_id": "phainon_ancient_machine",
+            "engine_turn_id": null,
+            "source": "character",
+            "kind": "character.speech",
+            "text": "肆",
+            "payload": {},
+            "tts_eligible": true,
+            "created_at": "2026-09-10T06:08:51.447779Z",
+            "target": "character",
+            "origin": "user",
+            "delegation_id": null,
+            "status": "done",
+            "task_id": null,
+            "timeline_order": null
+          },
+          {
+            "message_id": "282f83a5-2e6b-4037-8db5-a3b360e46f0d",
+            "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+            "pair_id": "phainon_ancient_machine",
+            "engine_turn_id": null,
+            "source": "user",
+            "kind": "user.text",
+            "text": "请让神秘的古代机械在项目根目录新建文件 a01-cancel.md，内容写一行：S4-A01-取消样本。写完回报。",
+            "payload": {},
+            "tts_eligible": false,
+            "created_at": "2026-09-10T06:09:54.128874Z",
+            "target": "assistant",
+            "origin": "user",
+            "delegation_id": null,
+            "status": "done",
+            "task_id": null,
+            "timeline_order": null
+          },
+          {
+            "message_id": "assistant:2dee07bd-96e6-4962-a552-327f3b792e8f:d55a166a-7c9c-4a20-bfe6-dd4f33d1c515:0",
+            "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+            "pair_id": "phainon_ancient_machine",
+            "engine_turn_id": "acp-d55a166a-7c9c-4a20-bfe6-dd4f33d1c515",
+            "source": "assistant",
+            "kind": "assistant.natural_language",
+            "text": "",
+            "payload": {
+              "reasoning": "用户要求新建文件 a01-cancel.md，内容一行：S4-A01-取消样本。\n\n这是一个简单任务。直接写入。\n\n风险低，直接执行。\n\n写完后回报。注意检查工作目录。\n\nLet me just write the file."
+            },
+            "tts_eligible": false,
+            "created_at": "2026-09-10T06:09:55.679919Z",
+            "target": "assistant",
+            "origin": "user",
+            "delegation_id": "d55a166a-7c9c-4a20-bfe6-dd4f33d1c515",
+            "status": "done",
+            "task_id": "d55a166a-7c9c-4a20-bfe6-dd4f33d1c515",
+            "timeline_order": 1
+          },
+          {
+            "message_id": "8eadaf90-ad50-4f41-9d10-faa6a7a54b46",
+            "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+            "pair_id": "phainon_ancient_machine",
+            "engine_turn_id": "acp-d55a166a-7c9c-4a20-bfe6-dd4f33d1c515",
+            "source": "system",
+            "kind": "system.approval",
+            "text": "审批结果：允许",
+            "payload": {},
+            "tts_eligible": false,
+            "created_at": "2026-09-10T06:12:10.106348Z",
+            "target": null,
+            "origin": "system",
+            "delegation_id": null,
+            "status": "done",
+            "task_id": null,
+            "timeline_order": null
+          }
+        ],
+        "tool_runs": [],
+        "turns": [
+          {
+            "turn_id": "e28c203a-3b9a-4607-ad25-71f9a92e4602",
+            "account_id": "",
+            "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+            "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+            "target": "character",
+            "source_message_id": "6b86982f-b776-4bbc-9d57-ea8b702c022c",
+            "status": "completed",
+            "created_at": "2026-09-10T06:08:50.826010Z",
+            "updated_at": "2026-09-10T06:08:51.455067+00:00"
+          },
+          {
+            "turn_id": "ec107bae-841f-45b8-908d-0ed710c6f680",
+            "account_id": "",
+            "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+            "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+            "target": "assistant",
+            "source_message_id": "282f83a5-2e6b-4037-8db5-a3b360e46f0d",
+            "status": "running",
+            "created_at": "2026-09-10T06:09:54.134165Z",
+            "updated_at": "2026-09-10T06:09:54.134670+00:00"
+          }
+        ],
+        "queue_items": [],
+        "active_task": {
+          "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+          "conversation_id": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+          "task_id": "d55a166a-7c9c-4a20-bfe6-dd4f33d1c515",
+          "engine_turn_id": "acp-d55a166a-7c9c-4a20-bfe6-dd4f33d1c515",
+          "cancellation_requested": false
+        },
+        "busy": true,
+        "approvals": [
+          {
+            "approval_id": "3",
+            "conversation_id": "0e54c25f-e142-4513-bcab-29f88e0661df",
+            "task_id": "a1c3c542-db70-4573-a884-c6737db1ede9",
+            "operation": {
+              "tool_kind": "shell",
+              "command": null,
+              "paths": [],
+              "patch_file_count": null,
+              "summary": "创建 a12-timeout.md 的写入被拒绝了，你希望怎么处理？"
+            },
+            "reason": "创建 a12-timeout.md 的写入被拒绝了，你希望怎么处理？"
+          }
+        ],
+        "remote_control": {
+          "state": "free",
+          "device_key": null,
+          "expires_at": null,
+          "grace_expires_at": null,
+          "reason": null
+        },
+        "voice": {
+          "supported": true,
+          "enabled": true,
+          "assistant_voice_enabled": false,
+          "vad": "idle",
+          "vad_enabled": false,
+          "ptt": false,
+          "tts": "idle",
+          "asr_partial": "",
+          "error": null,
+          "speech_queue_len": 0
+        },
+        "pair": {
+          "pair_id": "phainon_ancient_machine",
+          "character": {
+            "id": "phainon",
+            "name": "白厄",
+            "voice_id": "qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32"
+          },
+          "assistant": {
+            "id": "ancient_machine",
+            "name": "神秘的古代机械",
+            "voice_id": "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19"
+          },
+          "theme": {
+            "character_text": "#C7D4E3",
+            "character_primary": "#8AA4D4",
+            "character_deep": "#3A548C",
+            "character_active": "#296CE1",
+            "assistant_primary": "#B08D57",
+            "assistant_bright": "#C5A059",
+            "assistant_shadow": "#8C6B3F"
+          }
+        },
+        "pairs": [
+          {
+            "pair_id": "firefly_sam",
+            "character": {
+              "id": "firefly",
+              "name": "流萤",
+              "voice_id": "qwen-audio-3.0-tts-flash-firefly-233c61b0cb184b1e94fe5de4448df4ea"
+            },
+            "assistant": {
+              "id": "sam",
+              "name": "萨姆",
+              "voice_id": "qwen-audio-3.0-tts-flash-sam-576163dee3584951ae8847f7dd748b2e"
+            },
+            "theme": {
+              "character_text": "#D1FAE5",
+              "character_primary": "#52D1A3",
+              "character_deep": "#1B4738",
+              "character_active": "#22C58B",
+              "assistant_primary": "#E65A28",
+              "assistant_bright": "#FF844B",
+              "assistant_shadow": "#9C3210"
+            }
+          },
+          {
+            "pair_id": "march7_fourth_mirror",
+            "character": {
+              "id": "march7",
+              "name": "三月七",
+              "voice_id": "qwen-audio-3.0-tts-flash-march7-87efc5e56bf74146a396e03769653e0e"
+            },
+            "assistant": {
+              "id": "fourth_mirror",
+              "name": "第四面镜",
+              "voice_id": "qwen-audio-3.0-tts-flash-fourthmirr-53ec3a67726c4145a1d3a4288a354ff3"
+            },
+            "theme": {
+              "character_text": "#FFE4EC",
+              "character_primary": "#FF8DA1",
+              "character_deep": "#542031",
+              "character_active": "#F43F5E",
+              "assistant_primary": "#A78BFA",
+              "assistant_bright": "#C4B5FD",
+              "assistant_shadow": "#6D28D9"
+            }
+          },
+          {
+            "pair_id": "phainon_ancient_machine",
+            "character": {
+              "id": "phainon",
+              "name": "白厄",
+              "voice_id": "qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32"
+            },
+            "assistant": {
+              "id": "ancient_machine",
+              "name": "神秘的古代机械",
+              "voice_id": "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19"
+            },
+            "theme": {
+              "character_text": "#C7D4E3",
+              "character_primary": "#8AA4D4",
+              "character_deep": "#3A548C",
+              "character_active": "#296CE1",
+              "assistant_primary": "#B08D57",
+              "assistant_bright": "#C5A059",
+              "assistant_shadow": "#8C6B3F"
+            }
+          }
+        ],
+        "sequence": 196,
+        "stream_id": "1"
+      },
+      "error": null
+    }
+  ],
+  "session_b_frames": [
+    {
+      "ts": "2026-09-10T06:12:10.105Z",
+      "dir": "up",
+      "method": "approval.resolve",
+      "params": {
+        "approval_id": "2",
+        "decision": "deny"
+      }
+    },
+    {
+      "ts": "2026-09-10T06:12:10.117Z",
+      "dir": "down",
+      "ok": false,
+      "result": null,
+      "error": {
+        "code": "approval_already_resolved",
+        "message": "审批已由 remote 应答（allow），不能重复应答",
+        "details": {
+          "decision": "allow",
+          "resolved_by": "remote",
+          "actor": "user",
+          "reason": "write_file E:\\AI\\HSR-v039-acceptance\\project-alpha\\a01-cancel.md",
+          "resolved_at": "2026-09-10T06:12:10.106348+00:00",
+          "error_code": null
+        }
+      }
+    }
+  ],
+  "conclusion": {
+    "winner": "allow（resolved_by=remote）",
+    "loser_code": "approval_already_resolved",
+    "loser_details_carry_winner_terminal_state": true,
+    "replay_rejected": true,
+    "pending_removed_after": true
+  }
+}

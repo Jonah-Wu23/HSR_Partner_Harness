@@ -1,0 +1,90 @@
+{
+  "started_at": "2026-09-10T10:47:10.672Z",
+  "sleep_minutes": 3,
+  "conversation_id": "7b783bef-3886-4407-8132-61ba7c7f9b25",
+  "pre_sleep_state": {
+    "at": "2026-09-10T10:47:10.749Z",
+    "current_conversation_id": "7b783bef-3886-4407-8132-61ba7c7f9b25",
+    "active_tasks": [],
+    "approvals": 0,
+    "voice": {
+      "supported": true,
+      "enabled": true,
+      "assistant_voice_enabled": false,
+      "vad": "idle",
+      "vad_enabled": false,
+      "ptt": false,
+      "tts": "idle",
+      "asr_partial": "",
+      "error": "语音合成失败：{\"header\":{\"task_id\":\"be9f27c2889e45a59cd3748804740498\",\"event\":\"task-failed\",\"error_code\":\"Throttling.RateQuota\",\"error_message\":\"Requests rate limit exceeded, please try again later.\"},\"payload\":{}}",
+      "speech_queue_len": 0
+    },
+    "messages": []
+  },
+  "pre_sleep_processes": "[{\"ProcessId\":25152,\"Name\":\"hsr-partner-harness.exe\",\"CreationDate\":\"\\/Date(1789017195036)\\/\"},{\"ProcessId\":13984,\"Name\":\"pair-harness-sidecar.exe\",\"CreationDate\":\"\\/Date(1789017195622)\\/\"}]",
+  "wake_task_register": {
+    "rc": 0,
+    "stdout": "S4-A14-Wake",
+    "stderr": ""
+  },
+  "suspend_command": {
+    "rc": 0,
+    "stdout": "suspend-requested",
+    "stderr": ""
+  },
+  "resumed_at": "2026-09-10T10:50:32.624Z",
+  "post_wake_processes": "[{\"ProcessId\":25152,\"Name\":\"hsr-partner-harness.exe\",\"CreationDate\":\"\\/Date(1789017195036)\\/\"},{\"ProcessId\":13984,\"Name\":\"pair-harness-sidecar.exe\",\"CreationDate\":\"\\/Date(1789017195622)\\/\"}]",
+  "post_wake_state": {
+    "at": "2026-09-10T10:50:33.065Z",
+    "current_conversation_id": "7b783bef-3886-4407-8132-61ba7c7f9b25",
+    "active_tasks": [],
+    "approvals": 0,
+    "voice": {
+      "supported": true,
+      "enabled": false,
+      "assistant_voice_enabled": false,
+      "vad": "idle",
+      "vad_enabled": false,
+      "ptt": false,
+      "tts": "idle",
+      "asr_partial": "",
+      "error": "语音合成失败：{\"header\":{\"task_id\":\"be9f27c2889e45a59cd3748804740498\",\"event\":\"task-failed\",\"error_code\":\"Throttling.RateQuota\",\"error_message\":\"Requests rate limit exceeded, please try again later.\"},\"payload\":{}}",
+      "speech_queue_len": 0
+    },
+    "messages": []
+  },
+  "post_wake_submit": {
+    "ok": true,
+    "message_id": "06e217c4-5f58-4981-b8d7-e0b211cecbee"
+  },
+  "post_wake_turn": {
+    "messages": [
+      {
+        "source": "user",
+        "kind": "user.text",
+        "status": "done",
+        "text": "A14-SLEEP-RESUME 只回复一个词：醒"
+      }
+    ],
+    "turns": [
+      {
+        "turn_id": "80757dfc-1437-4419-9e68-f6ac45f406d7",
+        "account_id": "",
+        "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+        "conversation_id": "7b783bef-3886-4407-8132-61ba7c7f9b25",
+        "target": "character",
+        "source_message_id": "06e217c4-5f58-4981-b8d7-e0b211cecbee",
+        "status": "running",
+        "created_at": "2026-09-10T10:50:33.083020Z",
+        "updated_at": "2026-09-10T10:50:33.083020+00:00"
+      }
+    ]
+  },
+  "wake_task_cleanup": {
+    "rc": 0,
+    "stdout": "0",
+    "stderr": ""
+  },
+  "finished_at": "2026-09-10T10:50:34.911Z",
+  "sidecar_new_lines": 0
+}

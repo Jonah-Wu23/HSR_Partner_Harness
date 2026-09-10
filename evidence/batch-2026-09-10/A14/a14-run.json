@@ -1,0 +1,83 @@
+{
+  "started_at": "2026-09-10T10:15:07.955Z",
+  "steps": {
+    "wrong_token": {
+      "accepted": false,
+      "code": "unauthorized",
+      "message": "invalid_token"
+    },
+    "missing_token": {
+      "accepted": false,
+      "code": "unauthorized",
+      "message": "missing_token"
+    },
+    "revoke": {
+      "paired": true,
+      "live_call_ok": true,
+      "token_sha_hint": "91c76fa0551dbd12",
+      "devices_before": [
+        {
+          "device_name": "s4-probe-01",
+          "issued_at": "2026-09-10T06:05:28.902273+00:00",
+          "last_used_at": "2026-09-10T10:15:07.998908+00:00",
+          "revoked": false
+        },
+        {
+          "device_name": "s4-a14-revoke",
+          "issued_at": "2026-09-10T10:15:07.987235+00:00",
+          "last_used_at": "2026-09-10T10:15:07.992699+00:00",
+          "revoked": false
+        }
+      ],
+      "revoke_result": {
+        "device_name": "s4-a14-revoke",
+        "revoked_tokens": 1
+      },
+      "connection_close": {
+        "type": "257",
+        "extra": null,
+        "data": null
+      },
+      "after_revoke_call": {
+        "accepted": false,
+        "code": "unauthorized",
+        "message": "revoked_token"
+      },
+      "devices_after": [
+        {
+          "device_name": "s4-probe-01",
+          "issued_at": "2026-09-10T06:05:28.902273+00:00",
+          "last_used_at": "2026-09-10T10:15:08.007860+00:00",
+          "revoked": false
+        },
+        {
+          "device_name": "s4-a14-revoke",
+          "issued_at": "2026-09-10T10:15:07.987235+00:00",
+          "last_used_at": "2026-09-10T10:15:07.992699+00:00",
+          "revoked": true
+        }
+      ]
+    },
+    "network_cut": {
+      "conversation_id": "ff5a2fd2-79a9-4896-a63c-b4e284dcbb50",
+      "messages_before": 0,
+      "in_flight_request": {
+        "accepted": true
+      },
+      "messages_after": 1,
+      "texts_after": [
+        "A14-NETCUT 只回复一个词：链"
+      ],
+      "duplicate_markers": 1,
+      "new_turn": {
+        "texts": [
+          "A14-NETCUT 只回复一个词：链"
+        ],
+        "character_final": [],
+        "active_task": null
+      }
+    }
+  },
+  "finished_at": "2026-09-10T10:15:08.398Z",
+  "sidecar_new_lines": 3
+}

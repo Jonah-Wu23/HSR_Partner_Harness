@@ -1,0 +1,57 @@
+{
+  "batch": "batch-2026-09-10",
+  "case_id": "A12",
+  "title": "审批并发裁决、重放拒绝与真实 600 秒超时",
+  "candidate_commit": "897193a2fb983cd39c8328e98f7e225963a1ee64",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "exe_sha256": "d068bbf86df17770caa82185f02f39a42d881775cdd3fdac8a66b91171d17897",
+    "sidecar_sha256": "34d8325bc2ea53993aa2dda235de8f7ca7acbbc16917f3db755fc14bef0eb04f"
+  },
+  "device": "Windows 11 10.0.26200 / Ryzen 7 7840H / 2560x1440 / 缩放150% / 本机桌面会话",
+  "network": "本机直连公网；局域网 sidecar --serve 0.0.0.0:8765（Tailscale 未配置）",
+  "preconditions": {
+    "approval_timeout": "APPROVAL_TIMEOUT_S = 600.0 硬编码（application_service.py:335），无可配置入口，故按真实 600 秒验证"
+  },
+  "steps": [
+    "对同一待审批从两个独立连接几乎同时发出 allow 与 deny",
+    "核对生效方与后到方返回值，并重放同一动作",
+    "核对待审批是否双端移除与副作用次数",
+    "另起审批不做任何裁决，挂机等待真实超时，再验证迟到裁决"
+  ],
+  "expected": "首个终态获胜、后到者拿到真实终态；重放被拒；双端移除待审批；超时由服务端产生且迟到裁决被拒",
+  "actual": "并发裁决：allow 与 deny 在同一毫秒发出，allow 生效（resolved_by=remote），deny 收到 approval_already_resolved 且 details 携带生效方真实终态（decision=allow/resolved_at 等）；重放同一 allow 再次收到 approval_already_resolved（幂等，副作用仅一次）；生效后 approvals 快照不再包含该审批（双端移除）；真实超时：approval_id=6 于 2026-09-10T10:14:07.176Z 锚定，10:24:07.170Z 收到 approval.resolved，decision=timeout、resolved_by=system、actor=system、reason=等待审批超时、error_code=approval_timeout，实测等待 600.0 秒；迟到裁决被拒并携带真实终态",
+  "timestamps": {
+    "batch": "batch-2026-09-10",
+    "recorded_at": "2026-09-10T11:05:00Z"
+  },
+  "ids": {
+    "approval_race": "2",
+    "approval_timeout": "6",
+    "race_conversation": "2dee07bd-96e6-4962-a552-327f3b792e8f",
+    "timeout_conversation": "48bd0957-b73b-43ff-b68a-a6560d8abcfa"
+  },
+  "evidence": [
+    "A12/a12-run.json",
+    "A12/a12-timeout.json",
+    "A12/commands-timeout.ps1",
+    "A12/events-timeout.log",
+    "A12/events-timeout2.log",
+    "A12/http.log",
+    "A12/result.json",
+    "A12/sidecar-timeout2.log",
+    "A12/ws-frames-race-a.log",
+    "A12/ws-frames-race-b.log",
+    "A12/ws-frames-timeout.log",
+    "A12/ws-frames-timeout2.log"
+  ],
+  "severity": "—",
+  "frequency": "—",
+  "impact": "—",
+  "status": "通过",
+  "blocker": "",
+  "owner": "—",
+  "next_action": ""
+}

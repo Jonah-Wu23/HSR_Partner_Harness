@@ -1,0 +1,52 @@
+{
+  "started_at": "2026-09-10T10:59:44.694Z",
+  "phase": "post-modern-standby-resume",
+  "power_events": "[{\"TimeCreated\":\"\\/Date(1789037963328)\\/\",\"Id\":507},{\"TimeCreated\":\"\\/Date(1789037670259)\\/\",\"Id\":506}]",
+  "uptime_minutes": "1877.8",
+  "processes_after_wake": "[{\"ProcessId\":25152,\"Name\":\"hsr-partner-harness.exe\",\"CreationDate\":\"\\/Date(1789017195036)\\/\"},{\"ProcessId\":13984,\"Name\":\"pair-harness-sidecar.exe\",\"CreationDate\":\"\\/Date(1789017195622)\\/\"}]",
+  "wake_task_cleanup": {
+    "rc": 0,
+    "stdout": "0",
+    "stderr": ""
+  },
+  "state_after_wake": {
+    "current_conversation_id": "7b783bef-3886-4407-8132-61ba7c7f9b25",
+    "active_tasks": [],
+    "approvals": [],
+    "voice": {
+      "enabled": false,
+      "tts": "idle",
+      "vad": "idle"
+    }
+  },
+  "conversation_id": "895d6750-f608-4c3b-bf0c-7c05ba851db4",
+  "submit": {
+    "message_id": "3df5963d-88fd-4a5f-b780-32349d2d0739"
+  },
+  "turn_after_wake": {
+    "messages": [
+      {
+        "s": "user",
+        "k": "user.text",
+        "st": "done",
+        "tts": false,
+        "t": "A14-STANDBY-RESUME 只回复一个词：醒"
+      },
+      {
+        "s": "character",
+        "k": "character.speech",
+        "st": "done",
+        "tts": true,
+        "t": "醒"
+      }
+    ],
+    "turns": [
+      {
+        "turn_id": "5ff91a80-8f15-4a33-bcb1-16f0f949d798",
+        "status": "completed"
+      }
+    ]
+  },
+  "finished_at": "2026-09-10T10:59:50.082Z",
+  "sidecar_new_lines": 0
+}

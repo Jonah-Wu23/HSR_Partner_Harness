@@ -1,0 +1,51 @@
+{
+  "batch": "batch-2026-09-10",
+  "case_id": "A03",
+  "title": "长期记忆入口侦查与隔离性",
+  "candidate_commit": "897193a2fb983cd39c8328e98f7e225963a1ee64",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "exe_sha256": "d068bbf86df17770caa82185f02f39a42d881775cdd3fdac8a66b91171d17897",
+    "sidecar_sha256": "34d8325bc2ea53993aa2dda235de8f7ca7acbbc16917f3db755fc14bef0eb04f"
+  },
+  "device": "Windows 11 10.0.26200 / Ryzen 7 7840H / 2560x1440 / 缩放150% / 本机桌面会话",
+  "network": "本机直连公网；局域网 sidecar --serve 0.0.0.0:8765（Tailscale 未配置）",
+  "preconditions": {
+    "scope_keys": "account_id/project_id/pair_id/character_ref/assistant_identity 五分量",
+    "note": "按补充测试 §7：缺入口判失败"
+  },
+  "steps": [
+    "UI 路由/DOM 侦查：桌面端是否存在记忆增删改入口",
+    "Rust 命令侦查：src-tauri 是否暴露记忆命令",
+    "sidecar API 侦查：谁调用 upsert_memory（写入路径）",
+    "协议枚举与调用：memory.list（缺分量/完整分量/同 pair 换 assistant_identity/换项目/按会话）、memory.update/delete（未知 id）"
+  ],
+  "expected": "存在可操作的记忆增删改入口或协议写入路径；五分量作用域隔离；同 pair 更换助手身份不读旧记忆；增删改实际生效",
+  "actual": "写入路径缺失：upsert_memory 在全库仅一处定义（storage/sqlite_store.py:1796），调用点零处；界面无入口：services/actions.ts 与 contracts/actions.ts 无记忆命令动作，desktop/src/ui 与 desktop/src/app 内零处调用 memory.list/update/delete；src-tauri 无记忆命令；协议侧本身正确：缺分量报 memory_invalid（MemoryScope 五分量必填），三种完整作用域与按会话解析均返回 [] 且可正常序列化，update/delete 对未知 id 报 memory_not_found。因此「0 条生效」恒为真，隔离性无真实数据可验",
+  "timestamps": {
+    "batch": "batch-2026-09-10",
+    "recorded_at": "2026-09-10T11:05:00Z"
+  },
+  "ids": {
+    "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+    "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+    "pair_id": "phainon_ancient_machine"
+  },
+  "evidence": [
+    "A03/a03-run.json",
+    "A03/ws-frames.log",
+    "A03/events.log",
+    "A03/sidecar.log",
+    "A03/commands.ps1",
+    "A03/http.log"
+  ],
+  "severity": "P1",
+  "frequency": "必现",
+  "impact": "长期记忆功能整体不可达（无写入、无入口、隔离性无法验证）",
+  "status": "失败",
+  "blocker": "",
+  "owner": "Sidecar Python（写入路径）/ 前端（入口）",
+  "next_action": "修复 V039-S4-003 后，用真实对话产出记忆再复验隔离矩阵"
+}

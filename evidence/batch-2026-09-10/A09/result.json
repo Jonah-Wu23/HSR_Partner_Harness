@@ -1,0 +1,53 @@
+{
+  "batch": "batch-2026-09-10",
+  "case_id": "A09",
+  "title": "真实 TTS 播放中的抢占",
+  "candidate_commit": "897193a2fb983cd39c8328e98f7e225963a1ee64",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "exe_sha256": "d068bbf86df17770caa82185f02f39a42d881775cdd3fdac8a66b91171d17897",
+    "sidecar_sha256": "34d8325bc2ea53993aa2dda235de8f7ca7acbbc16917f3db755fc14bef0eb04f"
+  },
+  "device": "Windows 11 10.0.26200 / Ryzen 7 7840H / 2560x1440 / 缩放150% / 本机桌面会话",
+  "network": "本机直连公网；局域网 sidecar --serve 0.0.0.0:8765（Tailscale 未配置）",
+  "preconditions": {
+    "voice": "语音开启（本用例执行时）；长回复由真实模型生成，约 520 字 ≈ 100 秒朗读"
+  },
+  "steps": [
+    "领取远程播放控制权并尝试 voice.preview 长文本",
+    "改为真实长回复路径：提交要求五百字以上的消息 → 角色长回复 → 观察 tts=playing",
+    "播放中提交新消息（桌面发送抢占）→ 记录 voice 状态与事件",
+    "播放停止后等待 8 秒，核对是否被迟到分片复活",
+    "显式 voice.tts_stop"
+  ],
+  "expected": "旧播放、队列与在途合成停止；迟到 PCM 不复活播放；partial delta 不直接朗读",
+  "actual": "voice.preview 被拒（remote_playback_active，见 V039-S4-016）；改用真实长回复：520 字回复触发真实合成，voice.tts 观测为 playing；播放中提交新消息后：3 秒时 tts=synthesizing（旧播放已让位给新合成）、8 秒后 tts=idle、最终 tts=idle 且 speech_queue_len=0，未观察到迟到分片复活播放；朗读边界：user tts_eligible=false、character 最终消息 tts_eligible=true；voice.state_changed 事件捕获到播放态迁移",
+  "timestamps": {
+    "batch": "batch-2026-09-10",
+    "recorded_at": "2026-09-10T11:05:00Z"
+  },
+  "ids": {
+    "A09-preemption": "225c5885-7492-4853-a1c2-d51e7ef0870e",
+    "A09-long": "（见 a09-long.json conversation_id）"
+  },
+  "evidence": [
+    "A09/a09-run.json",
+    "A09/a09-long.json",
+    "A09/ws-frames.log",
+    "A09/ws-frames-long.log",
+    "A09/events.log",
+    "A09/events-long.log",
+    "A09/sidecar-long.log",
+    "A09/commands.ps1",
+    "A09/http.log"
+  ],
+  "severity": "P3",
+  "frequency": "远程控制态必现",
+  "impact": "远程端无法用 preview 触发长播放；抢占用例只能走回复路径",
+  "status": "受阻",
+  "blocker": "远程持有播放控制权时 preview 被拒（提示与状态矛盾）；上游限流风险",
+  "owner": "Sidecar Python（播放控制守卫文案/语义）",
+  "next_action": "修正守卫语义后按桌面播放路径复验 created/首 delta 两类抢占"
+}
