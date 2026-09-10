@@ -1,0 +1,220 @@
+submitted 1/80 last=False
+submitted 21/80 last=False
+submitted 41/80 last=False
+submitted 61/80 last=False
+submitted 80/80 last=True
+{
+  "started_at": "2026-09-10T13:20:27.364Z",
+  "ids": {
+    "project_id": "bf0fd819-2809-43b4-9f44-88c1086eca7c",
+    "conversation_id": "8dbee377-71fc-4e33-b257-0a394e8e7f39"
+  },
+  "summary_phase": {
+    "fixture": "fix-b2-count-only.json",
+    "fixture_messages": 80,
+    "fixture_total_bytes": 77246,
+    "plan": "前 79 条提交后 task.cancel；第 80 条走真实模型完整回合",
+    "submits": [
+      {
+        "index": 0,
+        "real_turn": false,
+        "message_id": "61a90c93-7d35-42c4-b81c-1c09741a9649",
+        "cancelled": true
+      },
+      {
+        "index": 1,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 2,
+        "real_turn": false,
+        "message_id": "d29d2be6-6062-40c6-9e7c-41f76d3d5c62",
+        "cancelled": true
+      },
+      {
+        "index": 3,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 4,
+        "real_turn": false,
+        "message_id": "dca1f4f6-d03a-42e3-95e4-4d5f9b1780aa",
+        "cancelled": true
+      },
+      {
+        "index": 5,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 6,
+        "real_turn": false,
+        "message_id": "f195fcf3-18a2-45cd-8982-0b2ee1279d9a",
+        "cancelled": true
+      },
+      {
+        "index": 7,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 8,
+        "real_turn": false,
+        "message_id": "4e63b9af-ad10-458e-91e1-11e254300a2a",
+        "cancelled": true
+      },
+      {
+        "index": 9,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 10,
+        "real_turn": false,
+        "message_id": "53c41d80-2cee-4860-9c69-d66fc88be720",
+        "cancelled": true
+      },
+      {
+        "index": 11,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 12,
+        "real_turn": false,
+        "message_id": "9dd67e11-152b-4e4c-ac86-8f9084da29d1",
+        "cancelled": true
+      },
+      {
+        "index": 13,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 14,
+        "real_turn": false,
+        "message_id": "8df953fd-48b5-4a34-ae32-cf2918e7d326",
+        "cancelled": true
+      },
+      {
+        "index": 15,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 16,
+        "real_turn": false,
+        "message_id": "ee944e7c-d365-451f-91ae-0e5b7f502911",
+        "cancelled": true
+      },
+      {
+        "index": 17,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 18,
+        "real_turn": false,
+        "message_id": "033a5f7c-2dd3-4dd4-abe7-3f8dcb4b35b9",
+        "cancelled": true
+      },
+      {
+        "index": 19,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 20,
+        "real_turn": false,
+        "message_id": "56bb7a94-d4e1-4936-8f29-a6de71512e84",
+        "cancelled": true
+      },
+      {
+        "index": 21,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 22,
+        "real_turn": false,
+        "message_id": "5251c64f-e575-4c23-8cfa-b962828ff023",
+        "cancelled": true
+      },
+      {
+        "index": 23,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 24,
+        "real_turn": false,
+        "message_id": "73538876-a982-4db4-88b8-ea8c76529788",
+        "cancelled": true
+      },
+      {
+        "index": 25,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 26,
+        "real_turn": false,
+        "message_id": "e21cf4c4-7941-49f9-b3a7-06aa533ab966",
+        "cancelled": true
+      },
+      {
+        "index": 27,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 28,
+        "real_turn": false,
+        "message_id": "0eba889a-4cd7-43e7-b938-b4d4e716c157",
+        "cancelled": true
+      },
+      {
+        "index": 29,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 30,
+        "real_turn": false,
+        "message_id": "1e90d88a-74b0-4ac8-94f7-5e6b8e3f2506",
+        "cancelled": true
+      },
+      {
+        "index": 31,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 32,
+        "real_turn": false,
+        "message_id": "b4475b2c-d5ab-4cf4-a5e8-d2702140de71",
+        "cancelled": true
+      },
+      {
+        "index": 33,
+        "real_turn": false,
+        "message_id": null,
+        "ca

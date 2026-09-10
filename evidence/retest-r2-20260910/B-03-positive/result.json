@@ -1,0 +1,42 @@
+{
+  "batch": "retest-r2-20260910",
+  "case_id": "B-03-positive",
+  "title": "B-03 正向：Chat Completions 端点真实委派全链路",
+  "candidate_commit": "工作树快照 @ cc4077c + S4-R2 uncommitted fixes",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "exe_sha256": "2f58c825c80a1870fafde556c34405fa449f220843aefc095e5e034e7b7d828f",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "sidecar_sha256": "356c8ce5180ffbd901b890e6ef9bfd43b21bb28b71f3f5489213ec367c75f178",
+    "apk": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\gen\\android\\app\\build\\outputs\\apk\\arm64\\debug\\app-arm64-debug.apk",
+    "apk_sha256": "cb23957c99cb2a2cffea30cf719a772208cd77bf3ee5a19c0d672397dff1bf88"
+  },
+  "device": "Windows 11 10.0.26200 / 2560x1440 / 缩放150% / 本地桌面会话",
+  "network": "本机直连公网（无 Tailscale）；手机端经局域网 10.81.0.0/16",
+  "preconditions": {},
+  "steps": [],
+  "expected": "角色 NL→结构化委派→多轮工具→真实审批→文件落盘→助手摘要→角色终局；终态错误 0 条",
+  "actual": "10 条 tool_runs 全部 succeeded；5 次真实审批全部 allow；文件 r2-b03-chain.md 落盘 57 B 且内容一致；时间线 4 类来源 / 5 类 kind；failed 消息 0 条、失败提示 0 条、无残留 active_task / queue_items。",
+  "timestamps": {
+    "started_at": "2026-09-10T14:16:45.665Z",
+    "finished_at": "2026-09-10T14:16:45.922Z",
+    "recorded_at": "2026-09-10T15:05:00Z"
+  },
+  "ids": {},
+  "evidence": [
+    "chain-run.json",
+    "ws-frames.log",
+    "events.log",
+    "sidecar.log",
+    "sidecar-info.log",
+    "batch-manifest.json"
+  ],
+  "severity": "",
+  "frequency": "必现",
+  "impact": "Chat Completions 唯一供应商能力",
+  "status": "通过",
+  "blocker": "",
+  "owner": "",
+  "next_action": "无"
+}

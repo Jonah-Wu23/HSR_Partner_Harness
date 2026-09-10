@@ -28,7 +28,7 @@
 HSR Partner Harness 把角色扮演对话与本地 AI 编程整合进同一个 Windows 工作台。它不是纯聊天应用，也不是纯编程工具，而是同一条会话里的两条工作轨：
 
 - **角色负责对话**：白厄、流萤、三月七等搭档各有界面主题与专属复刻音色；自然语言回复可自动朗读，工具记录保持静音。
-- **助手负责执行**：勾选“交给助手”，或让角色直接发起委派；Codex / DeepSeek-Reasonix 在绑定的本地项目目录中真实读写文件、执行命令，过程与结果以结构化卡片回传到同一条时间线。
+- **助手负责执行**：勾选“交给助手”，或让角色直接发起委派；助手复用角色对话的 OpenAI 兼容端点配置（Chat Completions），经打包的 DeepSeek-Reasonix 在绑定的本地项目目录中真实读写文件、执行命令，过程与结果以结构化卡片回传到同一条时间线。
 - **本地优先，自带 Key**：模型与语音（DashScope）均使用你自己的账号配置；本项目不代存密钥，不提供付费中转。
 - **零门槛试用**：安装后无需任何 Key，预览模式即可体验完整界面交互。
 
@@ -108,7 +108,7 @@ Windows x64 · 开源 Apache-2.0 · 非官方同人创作，角色名称与世�
 
 ## 模型接入
 
-OpenAI 配置通过内置 Codex app-server 执行任务。DeepSeek 配置通过 DeepSeek-Reasonix ACP 执行任务，角色模型与助手模型共用当前供应商设置。
+编程助手复用角色对话所用的供应商配置（OpenAI 兼容的 Chat Completions 端点），经打包的 DeepSeek-Reasonix ACP 执行任务，没有独立的助手登录。角色模型与助手模型共用当前供应商设置。
 
 推理档位与 API effort 的对应关系如下：
 
@@ -137,13 +137,12 @@ Windows x64 安装包发布于 [GitHub Releases](https://github.com/Jonah-Wu23/H
 | `PAIR_HARNESS_DIALOGUE_BASE_URL` | 对话模型的 OpenAI 兼容地址。 |
 | `PAIR_HARNESS_DIALOGUE_API_KEY` | 对话模型密钥。 |
 | `PAIR_HARNESS_DIALOGUE_MODEL` | 对话模型名称。 |
-| `PAIR_HARNESS_CODEX_BIN` | Codex 可执行文件路径。 |
 | `DASHSCOPE_API_KEY` | DashScope 语音密钥。 |
 | `PAIR_HARNESS_DASHSCOPE_HOST` | DashScope 工作空间域名。 |
 
 参考音频和声音设计提示词随项目资源分发，音色生成结果按本地账号保存。用户只需在语音设置页填写自己的 DashScope API Key 与服务地址；API Key 只显示掩码，不写入 README 或事件日志。
 
-通过环境变量 `PAIR_HARNESS_REAL=1` 启用真实模式，`PAIR_HARNESS_DEMO=1` 启用预览模式。
+启动模式：**默认即真实模式**，不需要任何环境变量或 `.env`。演示模式只在显式请求时启用（`PAIR_HARNESS_DEMO=1`，或桌面端以 `--demo` 启动）；`PAIR_HARNESS_REAL=1` 用于显式声明真实模式。两个变量指向不同模式时按配置冲突直接报错，不做二选一的猜测。未配置 Key 也能完成首次引导——在引导内填写并测试账号级密钥即可，真实模式不要求仓库内存在 `.env`。
 
 ## 从源码运行
 
@@ -159,10 +158,9 @@ npm run build:sidecar
 npm run tauri:dev
 ```
 
-发布构建会将 Windows 原生 Codex app-server 与 DeepSeek-Reasonix 打包入安装程序。构建环境可全局安装依赖，也可通过 `PAIR_HARNESS_CODEX_NATIVE_ROOT` 与 `PAIR_HARNESS_REASONIX_NATIVE_ROOT` 指定路径。
+发布构建会将 Windows 原生 DeepSeek-Reasonix 打包入安装程序。构建环境可全局安装该运行时，也可通过 `PAIR_HARNESS_REASONIX_NATIVE_ROOT` 指定路径。
 
 ```powershell
-npm install -g @openai/codex
 npm install -g reasonix
 Set-Location desktop
 npm run tauri:build
@@ -182,7 +180,7 @@ NSIS 安装包生成于 `desktop/src-tauri/target/release/bundle/nsis/`。编译
 | Rust | `cargo test`，`7 passed` |
 | 前端生产构建 | Vite build 通过 |
 | DeepSeek 真实链路 | 2 项测试通过 |
-| Codex app-server | 文件检查任务完成，收到 `turn.completed` 事件 |
+| Codex app-server | 文件检查任务完成，收到 `turn.completed` 事件（v0.3.1 基线记录；Codex 运行时已按 B-03 剥离，当前版本不再包含） |
 
 常用验证命令：
 
@@ -228,7 +226,7 @@ Python Sidecar 管理业务状态，桌面端通过 JSONL 协议与其通信。�
 
 `src/pair_harness/config/providers.py` 的供应商识别方式与推理档位语义参考 [DeepSeek-Reasonix](https://github.com/esengine/deepseek-reasonix)。原项目采用 MIT License，完整声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-编程助手通过本机 [OpenAI Codex](https://github.com/openai/codex) app-server 执行文件操作与命令。
+编程助手复用角色对话的 OpenAI 兼容端点配置（Chat Completions），通过打包的 DeepSeek-Reasonix ACP 执行文件操作与命令；原先内置的 [OpenAI Codex](https://github.com/openai/codex) app-server 已按产品决策 B-03 剥离，当前版本不再包含该运行时。
 
 代码采用 [Apache License 2.0](LICENSE)，版权所有 © 2026 Zonghe Wu。
 

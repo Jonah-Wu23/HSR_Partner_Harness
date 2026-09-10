@@ -1,0 +1,110 @@
+{
+  "batch": "retest-20260910",
+  "frozen_at": "2026-09-10T21:00:05+0800",
+  "candidate": {
+    "head_commit": "cc4077ce019063945e70b1b023291c992d2b37c2",
+    "branch": "feat/v0.3.9-logic",
+    "worktree_diff_sha256": "ddee191bb8524f5fb2862fde2fca997cb28939d2ff0955d551e5c5c1e3e08012",
+    "worktree_diff_bytes": 385038,
+    "staged_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "untracked_files": [
+      "desktop/src/services/actions.memory.test.ts",
+      "desktop/src/services/actions.remote.test.ts",
+      "desktop/src/ui/__tests__/AccountGate.test.tsx",
+      "desktop/src/ui/memory/MemoryContentEditor.tsx",
+      "desktop/src/ui/memory/MemoryPanel.tsx",
+      "desktop/src/ui/memory/__tests__/MemoryPanel.test.tsx",
+      "desktop/src/ui/settings/__tests__/MemoryPage.test.tsx",
+      "desktop/src/ui/status/DemoModeNotice.tsx",
+      "desktop/src/ui/status/__tests__/DemoModeNotice.test.tsx",
+      "evidence/retest-20260910/00-precheck/commands.ps1",
+      "evidence/retest-20260910/00-precheck/probe.json",
+      "evidence/retest-20260910/00-precheck/reset-script-decode-probe.txt",
+      "evidence/retest-20260910/00-precheck/v039-s4-010-recheck.md",
+      "evidence/retest-20260910/V039-S4-004/pairing-code-screen.png",
+      "evidence/retest-20260910/fixtures/fix-a-single-msg.txt",
+      "evidence/retest-20260910/fixtures/fix-b-chunks.json",
+      "evidence/retest-20260910/fixtures/fix-b2-count-only.json",
+      "evidence/retest-20260910/fixtures/fix-c-worldbook-card.json",
+      "evidence/retest-20260910/fixtures/fixtures-manifest.json",
+      "evidence/retest-20260910/tools/launch_sidecar.py",
+      "evidence/retest-20260910/tools/make_fixtures.py",
+      "evidence/retest-20260910/tools/make_manifest.py",
+      "evidence/retest-20260910/tools/make_results.py",
+      "evidence/retest-20260910/tools/net_sandbox.py",
+      "evidence/retest-20260910/tools/ph_client.py",
+      "evidence/retest-20260910/tools/probe.py",
+      "evidence/retest-20260910/tools/r1common.py",
+      "evidence/retest-20260910/tools/run_001_protocol.py",
+      "evidence/retest-20260910/tools/run_003_memory.py",
+      "evidence/retest-20260910/tools/run_014_015_config.py",
+      "evidence/retest-20260910/tools/run_a01.py",
+      "evidence/retest-20260910/tools/run_a01_cancel.py",
+      "evidence/retest-20260910/tools/run_a02.py",
+      "evidence/retest-20260910/tools/run_a03.py",
+      "evidence/retest-20260910/tools/run_a06.py",
+      "evidence/retest-20260910/tools/run_a08.py",
+      "evidence/retest-20260910/tools/run_a09.py",
+      "evidence/retest-20260910/tools/run_a12.py",
+      "evidence/retest-20260910/tools/run_a12_timeout.py",
+      "evidence/retest-20260910/tools/run_a12_timeout2.py",
+      "evidence/retest-20260910/tools/run_a13.py",
+      "evidence/retest-20260910/tools/run_a14.py",
+      "evidence/retest-20260910/tools/run_a14_inflight.py",
+      "evidence/retest-20260910/tools/run_a14_sleep.py",
+      "evidence/retest-20260910/tools/s4common.py",
+      "tests/unit/test_v039_s4_application_fixes.py",
+      "tests/unit/test_v039_s4_startup_mode.py",
+      "tests/unit/test_v039_s4_voice_tts.py"
+    ],
+    "committed": false,
+    "note": "复测候选为工作树快照（未提交 git）：HEAD cc4077c + 工作树未提交修复。冻结依据为下列产物 SHA256 与 diff 指纹；批次内不得替换或重建任何产物。"
+  },
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "artifacts": {
+    "exe": {
+      "path": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+      "sha256": "2ce327a197ae91385560e9b037ffb7acaea5ce83cd66d4beedf84babf6482cf8",
+      "size": 11227136,
+      "mtime": "2026-09-10T20:54:03+0800"
+    },
+    "sidecar": {
+      "path": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+      "sha256": "52366696c30e83dad5f19bce1a0d520a5c035e13b0c0b37f0b1bc549d32e82b6",
+      "size": 11308823
+    },
+    "sidecar_base_library": {
+      "sha256": "519fce91b779e9a6b6b0ec562762d681418523bcb78996d95cb804df5630ec91"
+    },
+    "desktop_dist_index": {
+      "path": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\dist\\index.html",
+      "sha256": "34931c6ecbc2af2f40537eea1c1e4425e2508f0a15a383e3db36e78bd6450f37"
+    },
+    "mobile_dist_index": {
+      "path": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\resources\\mobile-dist\\index.html",
+      "sha256": "1eb7cc6a457207bad6cbb44d7c09436c36f493a3056d62c11d157b0b396c1d60"
+    }
+  },
+  "fixtures": {
+    "fix-a-single-msg.txt": {
+      "sha256": "b5846ccdf7ff578474d3b92b818cddbb84972f5c56911a0b0c923213cb7e0629",
+      "size": 402315
+    },
+    "fix-b-chunks.json": {
+      "sha256": "949294013b4b87bf9793a42dc84817974947eb38c2d95c7fdb9743d8648e3f9e",
+      "size": 1703158
+    },
+    "fix-b2-count-only.json": {
+      "sha256": "9941d72a4dea94ec541be12514c2cd8be83a11dc0023d45f056b3514a97cff19",
+      "size": 82387
+    },
+    "fix-c-worldbook-card.json": {
+      "sha256": "259789979aec19beb9faf37b97865e34f60822dd134b749e27e3c556a85b5b40",
+      "size": 164169
+    },
+    "fixtures-manifest.json": {
+      "sha256": "a8f475ef5dda3ecbf465a4880077c3e97b7457db8e00e2378620fe7d8dcc8dca",
+      "size": 2447
+    }
+  }
+}

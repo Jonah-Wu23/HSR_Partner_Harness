@@ -1,0 +1,17 @@
+{
+  "batch": "retest-20260910",
+  "case_id": "V039-S4-008",
+  "candidate_commit": "工作树快照 @ cc4077c + uncommitted fixes",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "device": "Windows 11 10.0.26200 / 2560x1440 / 缩放150%",
+  "network": "本机直连公网；B-01 期间经本机沙盒代理",
+  "timestamps": {},
+  "ids": {},
+  "evidence": [],
+  "status": "通过",
+  "severity": "",
+  "frequency": "",
+  "impact": "",
+  "actual": "B-05 委派回合导出完整消息载荷：21 条消息中有 8 条 assistant.natural_language 的 text 为空，这 8 条全部携带 payload.reasoning（长度 809 / 214 / 5 / 40 字符等），即 reasoning-only 的思考段，不是「无内容气泡」。本条从「待确认」关闭，不计为缺陷。",
+  "next_action": "无"
+}

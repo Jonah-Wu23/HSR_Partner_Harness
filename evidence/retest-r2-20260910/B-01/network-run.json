@@ -1,0 +1,259 @@
+{
+  "started_at": "2026-09-10T14:18:54.870Z",
+  "conversation_id": "3083cf76-9f71-41a0-b089-9e594aefde9d",
+  "proxy_env": {
+    "HTTPS_PROXY": "http://127.0.0.1:8767",
+    "NO_PROXY": "127.0.0.1,localhost",
+    "note": "候选 EXE 及其 Sidecar 在启动时继承该环境（复测计划 §4.1）"
+  },
+  "forward_baseline": {
+    "label": "forward 基线",
+    "conversation_id": "2e1e94bc-7972-40fe-9e91-9819ab69a6e8",
+    "sandbox_action": "SET forward",
+    "control_reply": "OK forward connections=0 tunnels=0",
+    "cut_reply": null,
+    "submit": {
+      "ok": true,
+      "result": {
+        "message_id": "3e5c297f-9b4b-4561-97e9-a57de7eba951",
+        "conversation_id": "2e1e94bc-7972-40fe-9e91-9819ab69a6e8",
+        "status": "received",
+        "target": "character",
+        "turn_id": "c2acbb7a-4dd2-415d-9375-42a6bb6ddb1d"
+      }
+    },
+    "elapsed_seconds": 1.62,
+    "turn": {
+      "message_count": 2,
+      "messages": [
+        {
+          "source": "user",
+          "kind": "user.text",
+          "status": "done",
+          "text": "复测 B-01：请只回复两个字：通路。"
+        },
+        {
+          "source": "character",
+          "kind": "character.speech",
+          "status": "done",
+          "text": "通路。"
+        }
+      ],
+      "failure_notice": null
+    },
+    "sandbox_events": [
+      {
+        "event": "mode_changed",
+        "mode": "forward",
+        "request": null,
+        "error": null
+      },
+      {
+        "event": "client_request",
+        "mode": "forward",
+        "request": "CONNECT api.deepseek.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "tunnel_established",
+        "mode": "forward",
+        "request": "CONNECT api.deepseek.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "client_request",
+        "mode": "forward",
+        "request": "CONNECT llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "tunnel_established",
+        "mode": "forward",
+        "request": "CONNECT llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com:443 HTTP/1.1",
+        "error": null
+      }
+    ]
+  },
+  "reject": {
+    "label": "连接被拒",
+    "conversation_id": "d9ddc911-4d3a-49cd-b585-3075ff6ced50",
+    "sandbox_action": "SET reject",
+    "control_reply": "OK reject connections=2 tunnels=2",
+    "cut_reply": null,
+    "submit": {
+      "ok": true,
+      "result": {
+        "message_id": "a3d828dd-f3cc-46ac-bfe4-c0b833edf807",
+        "conversation_id": "d9ddc911-4d3a-49cd-b585-3075ff6ced50",
+        "status": "received",
+        "target": "character",
+        "turn_id": "86649287-24c3-4100-bb06-96f3810069f7"
+      }
+    },
+    "elapsed_seconds": 3.05,
+    "turn": {
+      "message_count": 2,
+      "messages": [
+        {
+          "source": "user",
+          "kind": "user.text",
+          "status": "failed",
+          "text": "复测 B-01：请只回复两个字：拒绝。"
+        },
+        {
+          "source": "system",
+          "kind": "system.status",
+          "status": "done",
+          "text": "本次回复失败：All connection attempts failed"
+        }
+      ],
+      "failure_notice": "本次回复失败：All connection attempts failed"
+    },
+    "sandbox_events": [
+      {
+        "event": "listen_stopped",
+        "mode": "forward",
+        "request": null,
+        "error": null
+      },
+      {
+        "event": "mode_changed",
+        "mode": "reject",
+        "request": null,
+        "error": null
+      }
+    ]
+  },
+  "cut": {
+    "label": "传输中断",
+    "conversation_id": "a12f0781-ff77-4d01-b2b3-e99f6582f15c",
+    "sandbox_action": "SET cut_soon 256",
+    "control_reply": "OK cut_soon connections=2 tunnels=2",
+    "cut_reply": null,
+    "submit": {
+      "ok": true,
+      "result": {
+        "message_id": "1df8b17a-ef1d-42ff-b058-dd82edc56829",
+        "conversation_id": "a12f0781-ff77-4d01-b2b3-e99f6582f15c",
+        "status": "received",
+        "target": "character",
+        "turn_id": "59e56cc1-073b-4f22-9510-7d1b6c551084"
+      }
+    },
+    "elapsed_seconds": 1.55,
+    "turn": {
+      "message_count": 2,
+      "messages": [
+        {
+          "source": "user",
+          "kind": "user.text",
+          "status": "failed",
+          "text": "复测 B-01：请只回复两个字：中断。"
+        },
+        {
+          "source": "system",
+          "kind": "system.status",
+          "status": "done",
+          "text": "本次回复失败：ConnectError"
+        }
+      ],
+      "failure_notice": "本次回复失败：ConnectError"
+    },
+    "sandbox_events": [
+      {
+        "event": "mode_changed",
+        "mode": "cut_soon",
+        "request": null,
+        "error": null
+      },
+      {
+        "event": "client_request",
+        "mode": "cut_soon",
+        "request": "CONNECT api.deepseek.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "tunnel_established",
+        "mode": "cut_soon",
+        "request": "CONNECT api.deepseek.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "auto_cut_fired",
+        "mode": "cut_soon",
+        "request": null,
+        "error": null
+      },
+      {
+        "event": "mode_changed",
+        "mode": "forward",
+        "request": null,
+        "error": null
+      },
+      {
+        "event": "auto_cut_timeout_fired",
+        "mode": "forward",
+        "request": null,
+        "error": null
+      }
+    ]
+  },
+  "hang": {
+    "label": "请求悬挂",
+    "conversation_id": "615f444e-9bd3-4d9f-85cd-6527e47643d7",
+    "sandbox_action": "SET hang",
+    "control_reply": "OK hang connections=3 tunnels=3",
+    "cut_reply": null,
+    "submit": {
+      "ok": true,
+      "result": {
+        "message_id": "3f31d65e-2e0f-4ad1-bb5c-9e16978c762c",
+        "conversation_id": "615f444e-9bd3-4d9f-85cd-6527e47643d7",
+        "status": "received",
+        "target": "character",
+        "turn_id": "e3baad0b-f586-48f1-a351-2d3702408faf"
+      }
+    },
+    "elapsed_seconds": 30.34,
+    "turn": {
+      "message_count": 2,
+      "messages": [
+        {
+          "source": "user",
+          "kind": "user.text",
+          "status": "failed",
+          "text": "复测 B-01：请只回复两个字：悬挂。"
+        },
+        {
+          "source": "system",
+          "kind": "system.status",
+          "status": "done",
+          "text": "本次回复失败：ReadTimeout"
+        }
+      ],
+      "failure_notice": "本次回复失败：ReadTimeout"
+    },
+    "sandbox_events": [
+      {
+        "event": "mode_changed",
+        "mode": "hang",
+        "request": null,
+        "error": null
+      },
+      {
+        "event": "client_request",
+        "mode": "hang",
+        "request": "CONNECT api.deepseek.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "hang_accepted",
+        "mode": "hang",
+        "request": "CONNECT api.deepseek.com:443 HTTP/1.1",
+        "error": null
+      }
+    ]
+  },
+  "finished_at": "2026-09-10T14:19:31.608Z",
+  "sidecar_new_lines": 117
+}

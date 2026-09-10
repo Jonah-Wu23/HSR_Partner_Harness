@@ -1,0 +1,1108 @@
+{
+  "started_at": "2026-09-10T14:14:52.628Z",
+  "part_a": {
+    "repo_grep": {
+      "_require_responses_backend": {
+        "cmd": "git grep -n -I -F _require_responses_backend -- src desktop/src desktop/mobile/src desktop/scripts config assets",
+        "rc": 1,
+        "stdout": "",
+        "stderr": ""
+      },
+      "Responses API 后端": {
+        "cmd": "git grep -n -I -F Responses API 后端 -- src desktop/src desktop/mobile/src desktop/scripts config assets",
+        "rc": 1,
+        "stdout": "",
+        "stderr": ""
+      },
+      "codex 引擎要求 Responses": {
+        "cmd": "git grep -n -I -F codex 引擎要求 Responses -- src desktop/src desktop/mobile/src desktop/scripts config assets",
+        "rc": 1,
+        "stdout": "",
+        "stderr": ""
+      },
+      "OpenAI OAuth": {
+        "cmd": "git grep -n -I -F OpenAI OAuth -- src desktop/src desktop/mobile/src desktop/scripts config assets",
+        "rc": 0,
+        "stdout": "src/pair_harness/adapters/codex/dialogue.py:3:OpenAI OAuth 的凭据由 Codex 自己管理，因此角色对话也走同一条\nsrc/pair_harness/desktop_backend/application_service.py:398:# 只有 reasonix acp 一条路径。Codex/Responses 装配与 OpenAI OAuth 登录已从产品\nsrc/pair_harness/desktop_backend/application_service.py:408:    \"\"\"不受支持的供应商（当前只有历史 OpenAI OAuth）→ 可定位原因；支持则 None。\"\"\"\nsrc/pair_harness/desktop_backend/application_service.py:415:            \"兼容端点（OpenAI OAuth / Codex 登录已移除）。请在设置里重新选择\"\nsrc/pair_harness/desktop_backend/application_service.py:422:    \"OpenAI OAuth / Codex 登录已从产品移除：产品只支持 OpenAI Chat \"\nsrc/pair_harness/desktop_backend/application_service.py:5615:                # 旧值（OpenAI OAuth）如实标注不受支持，调用点据此拒绝并引导重配。\nsrc/pair_harness/desktop_backend/application_service.py:5772:        # B-03：OpenAI OAuth 登录已移除，这里不再按本地登录态给出「连接正常」。\nsrc/pair_harness/desktop_backend/application_service.py:5792:        \"\"\"B-03：OpenAI OAuth（Codex/Responses 登录）已从产品移除。\nsrc/pair_harness/desktop_backend/application_service.py:5932:        # 历史 openai_oauth 配置同样按它自己保存的端点构建（OpenAI OAuth\n",
+        "stderr": ""
+      }
+    },
+    "repo_grep_hits": {
+      "_require_responses_backend": [],
+      "Responses API 后端": [],
+      "codex 引擎要求 Responses": [],
+      "OpenAI OAuth": [
+        "src/pair_harness/adapters/codex/dialogue.py:3:OpenAI OAuth 的凭据由 Codex 自己管理，因此角色对话也走同一条",
+        "src/pair_harness/desktop_backend/application_service.py:398:# 只有 reasonix acp 一条路径。Codex/Responses 装配与 OpenAI OAuth 登录已从产品",
+        "src/pair_harness/desktop_backend/application_service.py:408:    \"\"\"不受支持的供应商（当前只有历史 OpenAI OAuth）→ 可定位原因；支持则 None。\"\"\"",
+        "src/pair_harness/desktop_backend/application_service.py:415:            \"兼容端点（OpenAI OAuth / Codex 登录已移除）。请在设置里重新选择\"",
+        "src/pair_harness/desktop_backend/application_service.py:422:    \"OpenAI OAuth / Codex 登录已从产品移除：产品只支持 OpenAI Chat \"",
+        "src/pair_harness/desktop_backend/application_service.py:5615:                # 旧值（OpenAI OAuth）如实标注不受支持，调用点据此拒绝并引导重配。",
+        "src/pair_harness/desktop_backend/application_service.py:5772:        # B-03：OpenAI OAuth 登录已移除，这里不再按本地登录态给出「连接正常」。",
+        "src/pair_harness/desktop_backend/application_service.py:5792:        \"\"\"B-03：OpenAI OAuth（Codex/Responses 登录）已从产品移除。",
+        "src/pair_harness/desktop_backend/application_service.py:5932:        # 历史 openai_oauth 配置同样按它自己保存的端点构建（OpenAI OAuth"
+      ]
+    },
+    "artifact_scan": {
+      "desktop\\dist\\assets\\index-TsoU6c2T.js": {
+        "_require_responses_backend": 0,
+        "Responses API 后端": 0,
+        "codex 引擎要求 Responses": 0,
+        "OpenAI OAuth": 0
+      },
+      "desktop\\dist\\assets\\webview-D0q242Fi.js": {
+        "_require_responses_backend": 0,
+        "Responses API 后端": 0,
+        "codex 引擎要求 Responses": 0,
+        "OpenAI OAuth": 0
+      },
+      "desktop\\dist\\index.html": {
+        "_require_responses_backend": 0,
+        "Responses API 后端": 0,
+        "codex 引擎要求 Responses": 0,
+        "OpenAI OAuth": 0
+      },
+      "desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe": {
+        "_require_responses_backend": 0,
+        "Responses API 后端": 0,
+        "codex 引擎要求 Responses": 0,
+        "OpenAI OAuth": 0
+      },
+      "desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe": {
+        "_require_responses_backend": 0,
+        "Responses API 后端": 0,
+        "codex 引擎要求 Responses": 0,
+        "OpenAI OAuth": 0
+      }
+    },
+    "artifact_files": 5,
+    "hits_total": 9
+  },
+  "part_b": {
+    "account_before": "default-local",
+    "config_before": {
+      "ok": true,
+      "result": {
+        "engine": "reasonix",
+        "dialogue": {
+          "provider": "deepseek",
+          "provider_supported": true,
+          "provider_unavailable": null,
+          "model": "deepseek-v4-flash",
+          "base_url": "https://api.deepseek.com",
+          "api_key_masked": "sk-2…c09a",
+          "reasoning_effort": "auto"
+        },
+        "voice": {
+          "enabled": "true",
+          "base_url": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1",
+          "api_key_masked": "",
+          "credential_source": "development_env",
+          "ws_url": "wss://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference",
+          "customization_endpoint": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/customization",
+          "asr_model": "qwen-audio-3.0-asr-flash-streaming",
+          "tts_model": "qwen-audio-3.0-tts-flash",
+          "asr_available": true,
+          "voices_source": "env_author",
+          "speakers": [
+            {
+              "speaker_id": "phainon",
+              "name": "白厄",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "firefly",
+              "name": "流萤",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "sam",
+              "name": "萨姆",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "march7",
+              "name": "三月七",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "fourth_mirror",
+              "name": "第四面镜",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "ancient_machine",
+              "name": "神秘的古代机械",
+              "method": "design",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            }
+          ],
+          "manifest_error": null,
+          "character_voice": "qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32",
+          "character_voice_name": "白厄",
+          "assistant_voice": "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19",
+          "assistant_voice_name": "神秘的古代机械",
+          "assistant_voice_enabled": "false",
+          "vad_enabled": ""
+        },
+        "codex": {
+          "status": "logged_out",
+          "account_label": null
+        }
+      }
+    },
+    "probe_account": {
+      "account_id": null,
+      "register": {
+        "ok": true,
+        "result": {
+          "account": {
+            "account_id": "5b2fb4e9-c764-4293-9245-d03a2493de94",
+            "username": "r2-codex-probe",
+            "display_name": "r2-codex-probe",
+            "avatar": "",
+            "last_login_at": "2026-09-10T14:14:53.077717+00:00",
+            "onboarding_complete": false,
+            "theme": "dark"
+          },
+          "accounts": [
+            {
+              "account_id": "default-local",
+              "username": "default",
+              "display_name": "默认账号",
+              "avatar": "",
+              "last_login_at": "2026-09-10T14:12:03.334040+00:00",
+              "onboarding_complete": false,
+              "theme": "dark",
+              "is_last_login": false
+            },
+            {
+              "account_id": "5b2fb4e9-c764-4293-9245-d03a2493de94",
+              "username": "r2-codex-probe",
+              "display_name": "r2-codex-probe",
+              "avatar": "",
+              "last_login_at": "2026-09-10T14:14:53.077717+00:00",
+              "onboarding_complete": false,
+              "theme": "dark",
+              "is_last_login": true
+            }
+          ]
+        }
+      },
+      "switch": {
+        "ok": false,
+        "code": "invalid_params",
+        "message": "缺少非空参数：account_id",
+        "details": null
+      }
+    },
+    "switch_to_generic_endpoint": {
+      "config_set": {
+        "ok": false,
+        "code": "provider_endpoint_mismatch",
+        "message": "dialogue.provider 与 Base URL 不一致；请同时选择同一供应商的配置",
+        "details": null
+      },
+      "config_after": {
+        "ok": true,
+        "result": {
+          "engine": "reasonix",
+          "dialogue": {
+            "provider": "deepseek",
+            "provider_supported": true,
+            "provider_unavailable": null,
+            "model": "deepseek-v4-flash",
+            "base_url": "https://api.deepseek.com",
+            "api_key_masked": "sk-2…c09a",
+            "reasoning_effort": "auto"
+          },
+          "voice": {
+            "enabled": "false",
+            "base_url": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1",
+            "api_key_masked": "",
+            "credential_source": "development_env",
+            "ws_url": "wss://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference",
+            "customization_endpoint": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/customization",
+            "asr_model": "qwen-audio-3.0-asr-flash-streaming",
+            "tts_model": "qwen-audio-3.0-tts-flash",
+            "asr_available": true,
+            "voices_source": "env_author",
+            "speakers": [
+              {
+                "speaker_id": "phainon",
+                "name": "白厄",
+                "method": "clone",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              },
+              {
+                "speaker_id": "firefly",
+                "name": "流萤",
+                "method": "clone",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              },
+              {
+                "speaker_id": "sam",
+                "name": "萨姆",
+                "method": "clone",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              },
+              {
+                "speaker_id": "march7",
+                "name": "三月七",
+                "method": "clone",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              },
+              {
+                "speaker_id": "fourth_mirror",
+                "name": "第四面镜",
+                "method": "clone",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              },
+              {
+                "speaker_id": "ancient_machine",
+                "name": "神秘的古代机械",
+                "method": "design",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              }
+            ],
+            "manifest_error": null,
+            "character_voice": "qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32",
+            "character_voice_name": "白厄",
+            "assistant_voice": "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19",
+            "assistant_voice_name": "神秘的古代机械",
+            "assistant_voice_enabled": "false",
+            "vad_enabled": ""
+          },
+          "codex": {
+            "status": "logged_out",
+            "account_label": null
+          }
+        }
+      }
+    },
+    "switch_to_unreachable_endpoint": {
+      "config_set": {
+        "ok": true,
+        "result": {
+          "config": {
+            "engine": "reasonix",
+            "dialogue": {
+              "provider": "openai_compatible",
+              "provider_supported": true,
+              "provider_unavailable": null,
+              "model": "r2-none",
+              "base_url": "https://127.0.0.1:1/v1",
+              "api_key_masked": "sk-r…0000",
+              "reasoning_effort": "auto"
+            },
+            "voice": {
+              "enabled": "false",
+              "base_url": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1",
+              "api_key_masked": "",
+              "credential_source": "development_env",
+              "ws_url": "wss://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference",
+              "customization_endpoint": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/customization",
+              "asr_model": "qwen-audio-3.0-asr-flash-streaming",
+              "tts_model": "qwen-audio-3.0-tts-flash",
+              "asr_available": true,
+              "voices_source": "env_author",
+              "speakers": [
+                {
+                  "speaker_id": "phainon",
+                  "name": "白厄",
+                  "method": "clone",
+                  "voice_id": "",
+                  "state": "not_generated",
+                  "error": null
+                },
+                {
+                  "speaker_id": "firefly",
+                  "name": "流萤",
+                  "method": "clone",
+                  "voice_id": "",
+                  "state": "not_generated",
+                  "error": null
+                },
+                {
+                  "speaker_id": "sam",
+                  "name": "萨姆",
+                  "method": "clone",
+                  "voice_id": "",
+                  "state": "not_generated",
+                  "error": null
+                },
+                {
+                  "speaker_id": "march7",
+                  "name": "三月七",
+                  "method": "clone",
+                  "voice_id": "",
+                  "state": "not_generated",
+                  "error": null
+                },
+                {
+                  "speaker_id": "fourth_mirror",
+                  "name": "第四面镜",
+                  "method": "clone",
+                  "voice_id": "",
+                  "state": "not_generated",
+                  "error": null
+                },
+                {
+                  "speaker_id": "ancient_machine",
+                  "name": "神秘的古代机械",
+                  "method": "design",
+                  "voice_id": "",
+                  "state": "not_generated",
+                  "error": null
+                }
+              ],
+              "manifest_error": null,
+              "character_voice": "qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32",
+              "character_voice_name": "白厄",
+              "assistant_voice": "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19",
+              "assistant_voice_name": "神秘的古代机械",
+              "assistant_voice_enabled": "false",
+              "vad_enabled": ""
+            },
+            "codex": {
+              "status": "logged_out",
+              "account_label": null
+            }
+          }
+        }
+      },
+      "config_after": {
+        "ok": true,
+        "result": {
+          "engine": "reasonix",
+          "dialogue": {
+            "provider": "openai_compatible",
+            "provider_supported": true,
+            "provider_unavailable": null,
+            "model": "r2-none",
+            "base_url": "https://127.0.0.1:1/v1",
+            "api_key_masked": "sk-r…0000",
+            "reasoning_effort": "auto"
+          },
+          "voice": {
+            "enabled": "false",
+            "base_url": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1",
+            "api_key_masked": "",
+            "credential_source": "development_env",
+            "ws_url": "wss://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference",
+            "customization_endpoint": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/customization",
+            "asr_model": "qwen-audio-3.0-asr-flash-streaming",
+            "tts_model": "qwen-audio-3.0-tts-flash",
+            "asr_available": true,
+            "voices_source": "env_author",
+            "speakers": [
+              {
+                "speaker_id": "phainon",
+                "name": "白厄",
+                "method": "clone",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              },
+              {
+                "speaker_id": "firefly",
+                "name": "流萤",
+                "method": "clone",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              },
+              {
+                "speaker_id": "sam",
+                "name": "萨姆",
+                "method": "clone",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              },
+              {
+                "speaker_id": "march7",
+                "name": "三月七",
+                "method": "clone",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              },
+              {
+                "speaker_id": "fourth_mirror",
+                "name": "第四面镜",
+                "method": "clone",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              },
+              {
+                "speaker_id": "ancient_machine",
+                "name": "神秘的古代机械",
+                "method": "design",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              }
+            ],
+            "manifest_error": null,
+            "character_voice": "qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32",
+            "character_voice_name": "白厄",
+            "assistant_voice": "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19",
+            "assistant_voice_name": "神秘的古代机械",
+            "assistant_voice_enabled": "false",
+            "vad_enabled": ""
+          },
+          "codex": {
+            "status": "logged_out",
+            "account_label": null
+          }
+        }
+      }
+    },
+    "legacy_engine_write": {
+      "config_set": {
+        "ok": false,
+        "code": "invalid_engine",
+        "message": "engine=codex 已不受支持：产品只有 reasonix（reasonix acp）一条编程助手引擎路径；供应商请用 dialogue.provider + dialogue.base_url 选择。",
+        "details": null
+      },
+      "config_after": {
+        "ok": true,
+        "result": {
+          "engine": "reasonix",
+          "dialogue": {
+            "provider": "openai_compatible",
+            "provider_supported": true,
+            "provider_unavailable": null,
+            "model": "r2-none",
+            "base_url": "https://127.0.0.1:1/v1",
+            "api_key_masked": "sk-r…0000",
+            "reasoning_effort": "auto"
+          },
+          "voice": {
+            "enabled": "false",
+            "base_url": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1",
+            "api_key_masked": "",
+            "credential_source": "development_env",
+            "ws_url": "wss://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference",
+            "customization_endpoint": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/customization",
+            "asr_model": "qwen-audio-3.0-asr-flash-streaming",
+            "tts_model": "qwen-audio-3.0-tts-flash",
+            "asr_available": true,
+            "voices_source": "env_author",
+            "speakers": [
+              {
+                "speaker_id": "phainon",
+                "name": "白厄",
+                "method": "clone",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              },
+              {
+                "speaker_id": "firefly",
+                "name": "流萤",
+                "method": "clone",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              },
+              {
+                "speaker_id": "sam",
+                "name": "萨姆",
+                "method": "clone",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              },
+              {
+                "speaker_id": "march7",
+                "name": "三月七",
+                "method": "clone",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              },
+              {
+                "speaker_id": "fourth_mirror",
+                "name": "第四面镜",
+                "method": "clone",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              },
+              {
+                "speaker_id": "ancient_machine",
+                "name": "神秘的古代机械",
+                "method": "design",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              }
+            ],
+            "manifest_error": null,
+            "character_voice": "qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32",
+            "character_voice_name": "白厄",
+            "assistant_voice": "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19",
+            "assistant_voice_name": "神秘的古代机械",
+            "assistant_voice_enabled": "false",
+            "vad_enabled": ""
+          },
+          "codex": {
+            "status": "logged_out",
+            "account_label": null
+          }
+        }
+      }
+    },
+    "legacy_provider_write": {
+      "config_set": {
+        "ok": false,
+        "code": "provider_unavailable",
+        "message": "供应商 openai_oauth 已不受支持：产品只支持 OpenAI Chat Completions 兼容端点（OpenAI OAuth / Codex 登录已移除）。请在设置里重新选择供应商并保存 Base URL、模型与 API Key。",
+        "details": null
+      }
+    },
+    "codex_login_entries": {
+      "oauth_start": {
+        "ok": false,
+        "code": "codex_login_removed",
+        "message": "OpenAI OAuth / Codex 登录已从产品移除：产品只支持 OpenAI Chat Completions 兼容端点。请在设置里选择供应商并保存 Base URL、模型与 API Key（对话与编程助手共用同一份端点配置）。",
+        "details": null
+      },
+      "api_login": {
+        "ok": false,
+        "code": "codex_login_removed",
+        "message": "OpenAI OAuth / Codex 登录已从产品移除：产品只支持 OpenAI Chat Completions 兼容端点。请在设置里选择供应商并保存 Base URL、模型与 API Key（对话与编程助手共用同一份端点配置）。",
+        "details": null
+      },
+      "oauth_status": {
+        "ok": true,
+        "result": {
+          "status": "logged_out",
+          "account_label": null,
+          "account_id": "5b2fb4e9-c764-4293-9245-d03a2493de94"
+        }
+      }
+    },
+    "test_connection": {
+      "ok": true,
+      "result": {
+        "provider": "openai_compatible",
+        "base_url": "https://127.0.0.1:1/v1",
+        "model": "r2-none",
+        "ok": false,
+        "message": "连接失败："
+      }
+    },
+    "account_restore": {
+      "ok": true,
+      "result": {
+        "account": {
+          "account_id": "default-local",
+          "username": "default",
+          "display_name": "默认账号",
+          "avatar": "",
+          "last_login_at": "2026-09-10T14:12:03.334040+00:00",
+          "onboarding_complete": false,
+          "theme": "dark"
+        },
+        "accounts": [
+          {
+            "account_id": "default-local",
+            "username": "default",
+            "display_name": "默认账号",
+            "avatar": "",
+            "last_login_at": "2026-09-10T14:12:03.334040+00:00",
+            "onboarding_complete": false,
+            "theme": "dark",
+            "is_last_login": true
+          },
+          {
+            "account_id": "5b2fb4e9-c764-4293-9245-d03a2493de94",
+            "username": "r2-codex-probe",
+            "display_name": "r2-codex-probe",
+            "avatar": "",
+            "last_login_at": "2026-09-10T14:14:53.077717+00:00",
+            "onboarding_complete": false,
+            "theme": "dark",
+            "is_last_login": false
+          }
+        ]
+      }
+    },
+    "account_after": "default-local",
+    "config_restored": {
+      "ok": true,
+      "result": {
+        "engine": "reasonix",
+        "dialogue": {
+          "provider": "deepseek",
+          "provider_supported": true,
+          "provider_unavailable": null,
+          "model": "deepseek-v4-flash",
+          "base_url": "https://api.deepseek.com",
+          "api_key_masked": "sk-2…c09a",
+          "reasoning_effort": "auto"
+        },
+        "voice": {
+          "enabled": "true",
+          "base_url": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1",
+          "api_key_masked": "",
+          "credential_source": "development_env",
+          "ws_url": "wss://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference",
+          "customization_endpoint": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/customization",
+          "asr_model": "qwen-audio-3.0-asr-flash-streaming",
+          "tts_model": "qwen-audio-3.0-tts-flash",
+          "asr_available": true,
+          "voices_source": "env_author",
+          "speakers": [
+            {
+              "speaker_id": "phainon",
+              "name": "白厄",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "firefly",
+              "name": "流萤",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "sam",
+              "name": "萨姆",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "march7",
+              "name": "三月七",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "fourth_mirror",
+              "name": "第四面镜",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "ancient_machine",
+              "name": "神秘的古代机械",
+              "method": "design",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            }
+          ],
+          "manifest_error": null,
+          "character_voice": "qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32",
+          "character_voice_name": "白厄",
+          "assistant_voice": "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19",
+          "assistant_voice_name": "神秘的古代机械",
+          "assistant_voice_enabled": "false",
+          "vad_enabled": ""
+        },
+        "codex": {
+          "status": "logged_out",
+          "account_label": null
+        }
+      }
+    }
+  },
+  "part_c": {
+    "schema_boot_ready": true,
+    "schema_boot_pid": 33692,
+    "seeded": {
+      "database": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\.tmp\\r2-legacy-root\\PairHarness\\pair_harness.db",
+      "rows_written": 5,
+      "stored": [
+        {
+          "key": "dialogue.api_key",
+          "value": "sk-r2-legacy-oauth-000000"
+        },
+        {
+          "key": "dialogue.base_url",
+          "value": "https://api.openai.com/v1"
+        },
+        {
+          "key": "dialogue.model",
+          "value": "gpt-5.6-sol"
+        },
+        {
+          "key": "dialogue.provider",
+          "value": "openai_oauth"
+        },
+        {
+          "key": "engine",
+          "value": "codex"
+        }
+      ]
+    },
+    "legacy_boot_pid": 7944,
+    "legacy_ready": true,
+    "legacy_process_alive": "2",
+    "legacy_events": [
+      {
+        "event": "error.reported",
+        "sequence": 0,
+        "payload": {
+          "code": "provider_unavailable",
+          "message": "供应商 openai_oauth 已不受支持：产品只支持 OpenAI Chat Completions 兼容端点（OpenAI OAuth / Codex 登录已移除）。请在设置里重新选择供应商并保存 Base URL、模型与 API Key。",
+          "severity": "recoverable",
+          "fatal": false,
+          "source": "sidecar"
+        }
+      },
+      {
+        "event": "error.reported",
+        "sequence": 1,
+        "payload": {
+          "code": "engine_removed",
+          "message": "账号配置里保存的 engine=codex 已不再生效：编程助手统一走 reasonix（reasonix acp）。实际使用的端点仍取决于 dialogue.provider / dialogue.base_url；重新保存一次供应商配置即可更新该字段。",
+          "severity": "recoverable",
+          "fatal": false,
+          "source": "sidecar"
+        }
+      }
+    ],
+    "legacy_event_codes": [
+      "engine_removed",
+      "provider_unavailable"
+    ],
+    "issue_code_response": {
+      "code": "105119",
+      "ttl_seconds": 300,
+      "serve_address": {
+        "host": "10.81.102.166",
+        "port": 8766
+      }
+    },
+    "pairing_code": "105119",
+    "pair_error": "",
+    "legacy_config_get": {
+      "ok": true,
+      "result": {
+        "engine": "reasonix",
+        "dialogue": {
+          "provider": "openai_oauth",
+          "provider_supported": false,
+          "provider_unavailable": {
+            "code": "provider_unavailable",
+            "message": "供应商 openai_oauth 已不受支持：产品只支持 OpenAI Chat Completions 兼容端点（OpenAI OAuth / Codex 登录已移除）。请在设置里重新选择供应商并保存 Base URL、模型与 API Key。"
+          },
+          "model": "gpt-5.6-sol",
+          "base_url": "https://api.openai.com/v1",
+          "api_key_masked": "sk-r…0000",
+          "reasoning_effort": "auto"
+        },
+        "voice": {
+          "enabled": "true",
+          "base_url": "https://dashscope.aliyuncs.com/api/v1",
+          "api_key_masked": "",
+          "credential_source": "development_env",
+          "ws_url": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+          "customization_endpoint": "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization",
+          "asr_model": "qwen-audio-3.0-asr-flash-streaming",
+          "tts_model": "qwen-audio-3.0-tts-flash",
+          "asr_available": true,
+          "voices_source": "env_author",
+          "speakers": [
+            {
+              "speaker_id": "phainon",
+              "name": "白厄",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "firefly",
+              "name": "流萤",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "sam",
+              "name": "萨姆",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "march7",
+              "name": "三月七",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "fourth_mirror",
+              "name": "第四面镜",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "ancient_machine",
+              "name": "神秘的古代机械",
+              "method": "design",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            }
+          ],
+          "manifest_error": null,
+          "character_voice": "qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32",
+          "character_voice_name": "白厄",
+          "assistant_voice": "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19",
+          "assistant_voice_name": "神秘的古代机械",
+          "assistant_voice_enabled": "false",
+          "vad_enabled": ""
+        },
+        "codex": {
+          "status": "logged_out",
+          "account_label": null
+        }
+      }
+    },
+    "legacy_test_connection": {
+      "ok": true,
+      "result": {
+        "provider": "openai_oauth",
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-5.6-sol",
+        "provider_supported": false,
+        "ok": false,
+        "message": "供应商 openai_oauth 已不受支持：产品只支持 OpenAI Chat Completions 兼容端点（OpenAI OAuth / Codex 登录已移除）。请在设置里重新选择供应商并保存 Base URL、模型与 API Key。"
+      }
+    },
+    "explicit_reselect": {
+      "ok": true,
+      "result": {
+        "config": {
+          "engine": "reasonix",
+          "dialogue": {
+            "provider": "deepseek",
+            "provider_supported": true,
+            "provider_unavailable": null,
+            "model": "deepseek-v4-flash",
+            "base_url": "https://api.deepseek.com",
+            "api_key_masked": "sk-r…0000",
+            "reasoning_effort": "auto"
+          },
+          "voice": {
+            "enabled": "true",
+            "base_url": "https://dashscope.aliyuncs.com/api/v1",
+            "api_key_masked": "",
+            "credential_source": "development_env",
+            "ws_url": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+            "customization_endpoint": "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization",
+            "asr_model": "qwen-audio-3.0-asr-flash-streaming",
+            "tts_model": "qwen-audio-3.0-tts-flash",
+            "asr_available": true,
+            "voices_source": "env_author",
+            "speakers": [
+              {
+                "speaker_id": "phainon",
+                "name": "白厄",
+                "method": "clone",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              },
+              {
+                "speaker_id": "firefly",
+                "name": "流萤",
+                "method": "clone",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              },
+              {
+                "speaker_id": "sam",
+                "name": "萨姆",
+                "method": "clone",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              },
+              {
+                "speaker_id": "march7",
+                "name": "三月七",
+                "method": "clone",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              },
+              {
+                "speaker_id": "fourth_mirror",
+                "name": "第四面镜",
+                "method": "clone",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              },
+              {
+                "speaker_id": "ancient_machine",
+                "name": "神秘的古代机械",
+                "method": "design",
+                "voice_id": "",
+                "state": "not_generated",
+                "error": null
+              }
+            ],
+            "manifest_error": null,
+            "character_voice": "qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32",
+            "character_voice_name": "白厄",
+            "assistant_voice": "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19",
+            "assistant_voice_name": "神秘的古代机械",
+            "assistant_voice_enabled": "false",
+            "vad_enabled": ""
+          },
+          "codex": {
+            "status": "logged_out",
+            "account_label": null
+          }
+        }
+      }
+    },
+    "config_after_reselect": {
+      "ok": true,
+      "result": {
+        "engine": "reasonix",
+        "dialogue": {
+          "provider": "deepseek",
+          "provider_supported": true,
+          "provider_unavailable": null,
+          "model": "deepseek-v4-flash",
+          "base_url": "https://api.deepseek.com",
+          "api_key_masked": "sk-r…0000",
+          "reasoning_effort": "auto"
+        },
+        "voice": {
+          "enabled": "true",
+          "base_url": "https://dashscope.aliyuncs.com/api/v1",
+          "api_key_masked": "",
+          "credential_source": "development_env",
+          "ws_url": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+          "customization_endpoint": "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization",
+          "asr_model": "qwen-audio-3.0-asr-flash-streaming",
+          "tts_model": "qwen-audio-3.0-tts-flash",
+          "asr_available": true,
+          "voices_source": "env_author",
+          "speakers": [
+            {
+              "speaker_id": "phainon",
+              "name": "白厄",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "firefly",
+              "name": "流萤",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "sam",
+              "name": "萨姆",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "march7",
+              "name": "三月七",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "fourth_mirror",
+              "name": "第四面镜",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "ancient_machine",
+              "name": "神秘的古代机械",
+              "method": "design",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            }
+          ],
+          "manifest_error": null,
+          "character_voice": "qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32",
+          "character_voice_name": "白厄",
+          "assistant_voice": "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19",
+          "assistant_voice_name": "神秘的古代机械",
+          "assistant_voice_enabled": "false",
+          "vad_enabled": ""
+        },
+        "codex": {
+          "status": "logged_out",
+          "account_label": null
+        }
+      }
+    },
+    "legacy_frames_total": 9
+  },
+  "finished_at": "2026-09-10T14:15:19.153Z",
+  "sidecar_new_lines": 2
+}

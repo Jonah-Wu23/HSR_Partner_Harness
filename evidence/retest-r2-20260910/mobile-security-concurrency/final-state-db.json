@@ -1,0 +1,83 @@
+{
+  "source": "sqlite3 pair_harness.db（权威落库）",
+  "why": "run_mobile_matrix.py 的收敛循环只检查 active_task/queue_items，提交后首个轮询即判 settled 并提前退出，因此 mobile-matrix-run.json 的 final 段只含用户消息；本文件是同一批四会话的真实终态。",
+  "submit_spread_seconds": 0.0,
+  "conversations": {
+    "R2-mobile-conc-1": {
+      "conversation_id": "1df32ef7-f30d-4605-b0d5-4c0e507d433e",
+      "messages": [
+        {
+          "source": "user",
+          "kind": "user.text",
+          "created_at": "2026-09-10T14:35:00.729305+00:00",
+          "status": "done",
+          "text": "复测移动并发：会话 1，请只回复两个字：收到。"
+        },
+        {
+          "source": "character",
+          "kind": "character.speech",
+          "created_at": "2026-09-10T14:35:01.212535+00:00",
+          "status": "done",
+          "text": "收到。"
+        }
+      ]
+    },
+    "R2-mobile-conc-2": {
+      "conversation_id": "7e6a5061-3045-45c6-a60b-ff967b7f4623",
+      "messages": [
+        {
+          "source": "user",
+          "kind": "user.text",
+          "created_at": "2026-09-10T14:35:00.745395+00:00",
+          "status": "done",
+          "text": "复测移动并发：会话 2，请只回复两个字：收到。"
+        },
+        {
+          "source": "character",
+          "kind": "character.speech",
+          "created_at": "2026-09-10T14:35:01.628266+00:00",
+          "status": "done",
+          "text": "收到。"
+        }
+      ]
+    },
+    "R2-mobile-conc-3": {
+      "conversation_id": "588c8fdd-369e-4a04-bb31-260ec83fe586",
+      "messages": [
+        {
+          "source": "user",
+          "kind": "user.text",
+          "created_at": "2026-09-10T14:35:00.772342+00:00",
+          "status": "done",
+          "text": "复测移动并发：会话 3，请只回复两个字：收到。"
+        },
+        {
+          "source": "character",
+          "kind": "character.speech",
+          "created_at": "2026-09-10T14:35:02.099390+00:00",
+          "status": "done",
+          "text": "收到。"
+        }
+      ]
+    },
+    "R2-mobile-conc-4": {
+      "conversation_id": "22cb4a59-cd13-4829-8296-cad038d4ebf0",
+      "messages": [
+        {
+          "source": "user",
+          "kind": "user.text",
+          "created_at": "2026-09-10T14:35:00.753231+00:00",
+          "status": "done",
+          "text": "复测移动并发：会话 4，请只回复两个字：收到。"
+        },
+        {
+          "source": "character",
+          "kind": "character.speech",
+          "created_at": "2026-09-10T14:35:01.261365+00:00",
+          "status": "done",
+          "text": "收到。"
+        }
+      ]
+    }
+  }
+}

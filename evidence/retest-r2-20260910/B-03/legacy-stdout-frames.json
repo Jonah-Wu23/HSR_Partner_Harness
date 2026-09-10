@@ -1,0 +1,141 @@
+[
+  {
+    "kind": "event",
+    "event": "error.reported",
+    "stream_id": "local",
+    "sequence": 0,
+    "payload": {
+      "code": "provider_unavailable",
+      "message": "供应商 openai_oauth 已不受支持：产品只支持 OpenAI Chat Completions 兼容端点（OpenAI OAuth / Codex 登录已移除）。请在设置里重新选择供应商并保存 Base URL、模型与 API Key。",
+      "severity": "recoverable",
+      "fatal": false,
+      "source": "sidecar"
+    }
+  },
+  {
+    "kind": "event",
+    "event": "error.reported",
+    "stream_id": "local",
+    "sequence": 1,
+    "payload": {
+      "code": "engine_removed",
+      "message": "账号配置里保存的 engine=codex 已不再生效：编程助手统一走 reasonix（reasonix acp）。实际使用的端点仍取决于 dialogue.provider / dialogue.base_url；重新保存一次供应商配置即可更新该字段。",
+      "severity": "recoverable",
+      "fatal": false,
+      "source": "sidecar"
+    }
+  },
+  {
+    "kind": "event",
+    "event": "voice.state_changed",
+    "stream_id": "local",
+    "sequence": 2,
+    "payload": {
+      "voice": {
+        "supported": false,
+        "enabled": false,
+        "assistant_voice_enabled": false,
+        "vad": "ready",
+        "vad_enabled": false,
+        "ptt": false,
+        "tts": "idle",
+        "asr_partial": "",
+        "error": null,
+        "speech_queue_len": 0
+      }
+    }
+  },
+  {
+    "kind": "event",
+    "event": "voice.state_changed",
+    "stream_id": "local",
+    "sequence": 3,
+    "payload": {
+      "voice": {
+        "supported": true,
+        "enabled": false,
+        "assistant_voice_enabled": false,
+        "vad": "ready",
+        "vad_enabled": false,
+        "ptt": false,
+        "tts": "idle",
+        "asr_partial": "",
+        "error": null,
+        "speech_queue_len": 0
+      }
+    }
+  },
+  {
+    "kind": "event",
+    "event": "backend.ready",
+    "stream_id": "local",
+    "sequence": 4,
+    "payload": {
+      "pid": 3252,
+      "demo": false,
+      "mode_source": "explicit_real"
+    }
+  },
+  {
+    "kind": "event",
+    "event": "voice.state_changed",
+    "stream_id": "local",
+    "sequence": 5,
+    "payload": {
+      "voice": {
+        "supported": true,
+        "enabled": true,
+        "assistant_voice_enabled": false,
+        "vad": "idle",
+        "vad_enabled": false,
+        "ptt": false,
+        "tts": "idle",
+        "asr_partial": "",
+        "error": null,
+        "speech_queue_len": 0
+      }
+    }
+  },
+  {
+    "kind": "event",
+    "event": "serve.started",
+    "stream_id": "local",
+    "sequence": 6,
+    "payload": {
+      "host": "10.81.102.166",
+      "port": 8766
+    }
+  },
+  {
+    "kind": "event",
+    "event": "power.status_changed",
+    "stream_id": "local",
+    "sequence": 7,
+    "payload": {
+      "supported": true,
+      "platform": "win32",
+      "plan_name": "平衡",
+      "ac_sleep_timeout_seconds": 1800,
+      "dc_sleep_timeout_seconds": 180,
+      "remote_serve_enabled": true,
+      "threshold_seconds": 900,
+      "at_risk": true,
+      "reason": "DC 睡眠超时 180 秒低于阈值 900 秒",
+      "checked_at": "2026-09-10T22:15:01+08:00",
+      "warnings": []
+    }
+  },
+  {
+    "kind": "response",
+    "id": "r2-issue-code",
+    "ok": true,
+    "result": {
+      "code": "105119",
+      "ttl_seconds": 300,
+      "serve_address": {
+        "host": "10.81.102.166",
+        "port": 8766
+      }
+    }
+  }
+]

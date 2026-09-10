@@ -1,0 +1,23 @@
+{
+  "batch": "retest-20260910",
+  "case_id": "V039-S4-010",
+  "title": "首次运行清理脚本：sidecar stderr 日志清理未生效（复测批次额外发现）",
+  "candidate_commit": "工作树快照 @ cc4077c + uncommitted fixes",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "device": "Windows 11 10.0.26200",
+  "network": "本机",
+  "preconditions": "复核修复批次对 tauri-with-first-run-reset.ps1 的日志清理改动是否真在打包路径生效",
+  "expected": "打包（npm run tauri -- build --no-bundle）后，上一批次的 sidecar.stderr.log 及其滚动副本被清空，本批次日志从干净起点开始。",
+  "actual": "打包后 %LOCALAPPDATA%\\PairHarness 与 WebView Local/Session Storage 均已清除（三条 Cleared 输出），但 %APPDATA%\\com.jonahwu.hsr-partner-harness\\sidecar.stderr.log 原样残留（上一批次 72,790 B）。复现：-ResetOnly 稳定抛「无法将参数绑定到参数\"Path\"，因为该参数是空值」（ParameterArgumentValidationErrorNullNotAllowed，Reset-FirstRunState 第 70/71 行）。根因：脚本为 UTF-8 无 BOM + LF + 中文注释；Windows PowerShell 5.1 按 CP936 解码时吞掉 2 个换行（116 行 → 114 行），中文注释与下一行 `$logRoot = ...` 合并，$logRoot 恒为 null，第 72 行 Split-Path -Parent 收到 null 即抛错，日志删除代码从未执行。受控变量实验：加 BOM 成功、中文替换为 ASCII 成功、保持无 BOM + 中文则稳定失败。该失败在打包流程里静默（构建仍 exit 0）。",
+  "evidence": [
+    "v039-s4-010-recheck.md",
+    "reset-script-decode-probe.txt"
+  ],
+  "status": "失败",
+  "severity": "P3",
+  "frequency": "必现",
+  "impact": "跨批次 sidecar 日志混入下一批次证据，直接威胁复测计划 §3.3 要求的全量日志取证（019 归因与 018 抢占路径的唯一证据源）",
+  "blocker": "",
+  "owner": "逻辑轨",
+  "next_action": "把脚本保存为 UTF-8 with BOM，或把中文注释改为 ASCII/英文，并让该失败使打包非零退出"
+}

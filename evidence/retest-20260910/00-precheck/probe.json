@@ -1,0 +1,270 @@
+{
+  "started_at": "2026-09-10T12:59:52.717Z",
+  "has_token": true,
+  "backend": null,
+  "backend_info": null,
+  "current_account_id": "default-local",
+  "projects": [
+    {
+      "project_id": "944a4277-8736-4a04-a1c8-9df58d277399",
+      "name": "HSR-Partner-Harness-v0.3.9-logic",
+      "root_path": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic",
+      "archived": false
+    }
+  ],
+  "conversations": [],
+  "pairs": [
+    {
+      "pair_id": "firefly_sam",
+      "character": {
+        "id": "firefly",
+        "name": "流萤",
+        "voice_id": "qwen-audio-3.0-tts-flash-firefly-233c61b0cb184b1e94fe5de4448df4ea"
+      },
+      "assistant": {
+        "id": "sam",
+        "name": "萨姆",
+        "voice_id": "qwen-audio-3.0-tts-flash-sam-576163dee3584951ae8847f7dd748b2e"
+      },
+      "theme": {
+        "character_text": "#D1FAE5",
+        "character_primary": "#52D1A3",
+        "character_deep": "#1B4738",
+        "character_active": "#22C58B",
+        "assistant_primary": "#E65A28",
+        "assistant_bright": "#FF844B",
+        "assistant_shadow": "#9C3210"
+      }
+    },
+    {
+      "pair_id": "march7_fourth_mirror",
+      "character": {
+        "id": "march7",
+        "name": "三月七",
+        "voice_id": "qwen-audio-3.0-tts-flash-march7-87efc5e56bf74146a396e03769653e0e"
+      },
+      "assistant": {
+        "id": "fourth_mirror",
+        "name": "第四面镜",
+        "voice_id": "qwen-audio-3.0-tts-flash-fourthmirr-53ec3a67726c4145a1d3a4288a354ff3"
+      },
+      "theme": {
+        "character_text": "#FFE4EC",
+        "character_primary": "#FF8DA1",
+        "character_deep": "#542031",
+        "character_active": "#F43F5E",
+        "assistant_primary": "#A78BFA",
+        "assistant_bright": "#C4B5FD",
+        "assistant_shadow": "#6D28D9"
+      }
+    },
+    {
+      "pair_id": "phainon_ancient_machine",
+      "character": {
+        "id": "phainon",
+        "name": "白厄",
+        "voice_id": "qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32"
+      },
+      "assistant": {
+        "id": "ancient_machine",
+        "name": "神秘的古代机械",
+        "voice_id": "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19"
+      },
+      "theme": {
+        "character_text": "#C7D4E3",
+        "character_primary": "#8AA4D4",
+        "character_deep": "#3A548C",
+        "character_active": "#296CE1",
+        "assistant_primary": "#B08D57",
+        "assistant_bright": "#C5A059",
+        "assistant_shadow": "#8C6B3F"
+      }
+    }
+  ],
+  "accounts": [
+    {
+      "account_id": "default-local",
+      "username": "default",
+      "display_name": "默认账号",
+      "avatar": "",
+      "last_login_at": "2026-09-10T12:59:17.315358+00:00",
+      "onboarding_complete": false,
+      "theme": "dark",
+      "is_last_login": true
+    }
+  ],
+  "voice": {
+    "supported": true,
+    "enabled": true,
+    "assistant_voice_enabled": false,
+    "vad": "idle",
+    "vad_enabled": false,
+    "ptt": false,
+    "tts": "idle",
+    "asr_partial": "",
+    "error": null,
+    "speech_queue_len": 0
+  },
+  "bootstrap_top_level_keys": [
+    "accounts",
+    "active_task",
+    "active_tasks",
+    "approvals",
+    "busy",
+    "current_account",
+    "current_account_id",
+    "current_conversation",
+    "current_conversation_id",
+    "current_project",
+    "current_project_id",
+    "messages",
+    "pair",
+    "pairs",
+    "projects",
+    "queue_items",
+    "remote_control",
+    "remote_serve",
+    "sequence",
+    "stream_id",
+    "tool_runs",
+    "turns",
+    "voice"
+  ],
+  "cards": {
+    "cards": [
+      {
+        "card_id": "builtin:firefly",
+        "name": "流萤",
+        "state": "saved",
+        "source": "builtin",
+        "updated_at": "",
+        "has_avatar": false,
+        "voice_state": "voice_unconfigured",
+        "active": false,
+        "read_only": true
+      },
+      {
+        "card_id": "builtin:march7",
+        "name": "三月七",
+        "state": "saved",
+        "source": "builtin",
+        "updated_at": "",
+        "has_avatar": false,
+        "voice_state": "voice_unconfigured",
+        "active": false,
+        "read_only": true
+      },
+      {
+        "card_id": "builtin:phainon",
+        "name": "白厄",
+        "state": "saved",
+        "source": "builtin",
+        "updated_at": "",
+        "has_avatar": false,
+        "voice_state": "voice_unconfigured",
+        "active": false,
+        "read_only": true
+      }
+    ]
+  },
+  "config": {
+    "engine": "deepseek",
+    "dialogue": {
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "base_url": "https://api.deepseek.com",
+      "api_key_masked": "sk-2…c09a",
+      "reasoning_effort": "auto"
+    },
+    "voice": {
+      "enabled": "true",
+      "base_url": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1",
+      "api_key_masked": "",
+      "credential_source": "development_env",
+      "ws_url": "wss://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference",
+      "customization_endpoint": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/customization",
+      "asr_model": "qwen-audio-3.0-asr-flash-streaming",
+      "tts_model": "qwen-audio-3.0-tts-flash",
+      "asr_available": true,
+      "voices_source": "env_author",
+      "speakers": [
+        {
+          "speaker_id": "phainon",
+          "name": "白厄",
+          "method": "clone",
+          "voice_id": "",
+          "state": "not_generated",
+          "error": null
+        },
+        {
+          "speaker_id": "firefly",
+          "name": "流萤",
+          "method": "clone",
+          "voice_id": "",
+          "state": "not_generated",
+          "error": null
+        },
+        {
+          "speaker_id": "sam",
+          "name": "萨姆",
+          "method": "clone",
+          "voice_id": "",
+          "state": "not_generated",
+          "error": null
+        },
+        {
+          "speaker_id": "march7",
+          "name": "三月七",
+          "method": "clone",
+          "voice_id": "",
+          "state": "not_generated",
+          "error": null
+        },
+        {
+          "speaker_id": "fourth_mirror",
+          "name": "第四面镜",
+          "method": "clone",
+          "voice_id": "",
+          "state": "not_generated",
+          "error": null
+        },
+        {
+          "speaker_id": "ancient_machine",
+          "name": "神秘的古代机械",
+          "method": "design",
+          "voice_id": "",
+          "state": "not_generated",
+          "error": null
+        }
+      ],
+      "manifest_error": null,
+      "character_voice": "qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32",
+      "character_voice_name": "白厄",
+      "assistant_voice": "qwen-audio-3.0-tts-flash-vd-ancientmac-a26ce26e55414e219fe00360e24b4f19",
+      "assistant_voice_name": "神秘的古代机械",
+      "assistant_voice_enabled": "false",
+      "vad_enabled": ""
+    },
+    "codex": {
+      "status": "logged_out",
+      "account_label": null
+    }
+  },
+  "processes": [
+    {
+      "ProcessId": 27360,
+      "Name": "hsr-partner-harness.exe",
+      "CreationDate": "/Date(1789045132466)/",
+      "CommandLine": "\"E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe\" "
+    },
+    {
+      "ProcessId": 21484,
+      "Name": "pair-harness-sidecar.exe",
+      "CreationDate": "/Date(1789045132905)/",
+      "CommandLine": "\"\\\\?\\E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe\" --real --serve 8765 --project C:\\Users\\JonahWu\\AppData\\Roaming\\com.jonahwu.hsr-partner-harness\\projects\\initial-project"
+    }
+  ],
+  "ok": true,
+  "finished_at": "2026-09-10T12:59:53.182Z",
+  "sidecar_new_lines": 2
+}

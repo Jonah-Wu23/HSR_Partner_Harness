@@ -24,8 +24,8 @@ GitHub Actions runs Python tests, frontend tests and builds, plus Rust formattin
 | Focus | What it means |
 | --- | --- |
 | One session, two work tracks | Chat mode keeps the character conversation focused. Collaboration mode opens the assistant workspace while the conversation stays available. |
-| Unified model provider | If onboarding or settings selects OpenAI OAuth/API, both the character and the ancient machine use GPT. If it selects DeepSeek, both use DeepSeek. |
-| Visible task control | OpenAI configuration runs through Codex app-server; DeepSeek configuration runs through the bundled DeepSeek-Reasonix ACP. Tool activity appears as structured cards. |
+| Unified model provider | Onboarding and settings offer DeepSeek and a generic OpenAI-compatible endpoint. Whichever you pick is shared by the character and the ancient machine, and there is no separate coding login. |
+| Visible task control | Coding runs through the bundled DeepSeek-Reasonix ACP, reusing the OpenAI-compatible Chat Completions endpoint configured for the dialogue model. Tool activity appears as structured cards. |
 | Local project binding | Each project maps to a local folder, while the Python sidecar owns session state and SQLite stores local data. |
 
 | Composer level | API effort |
@@ -43,10 +43,8 @@ flowchart LR
     A[Character chat] --> B{Collaboration mode}
     B --> C[Structured task]
     C --> D{Selected provider}
-    D -->|OpenAI OAuth/API| E[Codex app-server]
-    D -->|DeepSeek| F[DeepSeek-Reasonix ACP]
-    E --> G[Files and commands]
-    F --> G
+    D -->|DeepSeek or OpenAI-compatible| F[DeepSeek-Reasonix ACP]
+    F --> G[Files and commands]
     G --> H[Structured result]
     H --> A
 ```
@@ -57,7 +55,7 @@ See the [product website](https://jonah-wu23.github.io/HSR_Partner_Harness/) for
 
 The Windows x64 installer is published on [GitHub Releases](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases). First-time installation may trigger a Windows SmartScreen warning.
 
-The app includes a demo mode for the interface and interaction experience. Add model settings to run live models. OpenAI uses the bundled Codex; DeepSeek uses the bundled DeepSeek-Reasonix runtime.
+The app includes a demo mode for the interface and interaction experience. Add model settings to run live models. Live coding uses the bundled DeepSeek-Reasonix runtime and reuses the endpoint you configured for dialogue.
 
 ## Features
 
@@ -67,7 +65,7 @@ The app includes a demo mode for the interface and interaction experience. Add m
 | Collaboration mode | The character chat and the assistant workspace share the screen, and you can keep talking while a task runs. |
 | Projects | Each project maps to a local folder. The name defaults to the folder name, and you can change it any time. |
 | Chat titles | A new conversation shows "新聊天" first. After the first complete reply, the assistant generates a title from the content, and manual renames take priority. |
-| Coding | OpenAI configuration uses Codex app-server; DeepSeek configuration uses DeepSeek-Reasonix ACP. Tool work shows up as cards. |
+| Coding | The assistant reuses the OpenAI-compatible endpoint configured for dialogue and runs through the bundled DeepSeek-Reasonix ACP. Tool work shows up as cards. |
 | Reasoning levels | The selected provider is shared by the character and the ancient machine. Composer maps five interface levels to provider effort values. |
 | Approvals | Each project can save an approval policy for tool execution. |
 | Voice | Voice runs on DashScope ASR and TTS. Character replies can be read aloud, while tool records stay silent. |
@@ -109,16 +107,15 @@ Voice settings use your own DashScope account: save the service base URL and API
 
 ## Live mode
 
-When running from source, OpenAI live coding depends on [OpenAI Codex](https://github.com/openai/codex), while DeepSeek live coding uses the `reasonix` executable. Check the runtime you plan to use:
+When running from source, live coding uses the `reasonix` executable from the DeepSeek-Reasonix runtime. Check the runtime you plan to use:
 
 ```powershell
-codex --version
-# reasonix --version
+reasonix --version
 ```
 
 Then copy [.env.example](.env.example) and fill in the model settings. Running from source reads `.env` in the repository root, while the installed application reads `%LOCALAPPDATA%\PairHarness\.env`. To keep the config somewhere else, set `PAIR_HARNESS_ENV_FILE` to that path.
 
-When a config file is found, the app starts in live mode by default. `PAIR_HARNESS_REAL=1` forces live mode, and `PAIR_HARNESS_DEMO=1` forces demo mode.
+The app starts in live mode by default — no `.env` and no environment variable are required, and you can finish first-run onboarding without any key in place (the onboarding flow saves and tests an account-level key). Demo mode is only entered when explicitly requested, via `PAIR_HARNESS_DEMO=1` or by launching the desktop app with `--demo`; `PAIR_HARNESS_REAL=1` explicitly declares live mode. If the two variables point at different modes the startup fails with a configuration conflict instead of guessing.
 
 The dialogue model works with DeepSeek and OpenAI-compatible endpoints. The variables are:
 
@@ -127,7 +124,6 @@ The dialogue model works with DeepSeek and OpenAI-compatible endpoints. The vari
 | `PAIR_HARNESS_DIALOGUE_BASE_URL` | OpenAI-compatible endpoint for the dialogue model. |
 | `PAIR_HARNESS_DIALOGUE_API_KEY` | Dialogue model API key. |
 | `PAIR_HARNESS_DIALOGUE_MODEL` | Dialogue model name. |
-| `PAIR_HARNESS_CODEX_BIN` | Override for the Codex executable. Installed builds use the bundled Codex by default. |
 | `DASHSCOPE_API_KEY` | DashScope API key for voice. |
 | `PAIR_HARNESS_DASHSCOPE_HOST` | DashScope workspace host. |
 
@@ -147,12 +143,10 @@ npm run build:sidecar
 npm run tauri:dev
 ```
 
-Release builds copy the native Windows Codex app-server and DeepSeek-Reasonix runtime into the
-installer. The build machine needs `@openai/codex` and `reasonix` installed, or the
-`PAIR_HARNESS_CODEX_NATIVE_ROOT` and `PAIR_HARNESS_REASONIX_NATIVE_ROOT` variables set:
+Release builds copy the native Windows DeepSeek-Reasonix runtime into the installer. The build
+machine needs `reasonix` installed, or the `PAIR_HARNESS_REASONIX_NATIVE_ROOT` variable set:
 
 ```powershell
-npm install -g @openai/codex
 npm install -g reasonix
 Set-Location desktop
 npm run tauri:build
@@ -215,8 +209,10 @@ This project is inspired by [Herta](https://github.com/PersonaCLI/Herta).
 
 The provider detection and reasoning-effort semantics in `src/pair_harness/config/providers.py` are rewritten from [DeepSeek-Reasonix](https://github.com/esengine/deepseek-reasonix), which uses the MIT License. The full notice is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-The coding assistant connects to [OpenAI Codex](https://github.com/openai/codex) through the
-local Codex app-server, which handles files and commands.
+The coding assistant reuses the OpenAI-compatible endpoint configured for the dialogue model
+(Chat Completions) and handles files and commands through the bundled DeepSeek-Reasonix ACP. The
+previously bundled [OpenAI Codex](https://github.com/openai/codex) app-server was removed under
+product decision B-03 and is not part of current builds.
 
 ## License
 

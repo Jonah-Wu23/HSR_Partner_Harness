@@ -1,0 +1,44 @@
+{
+  "batch": "retest-r2-20260910",
+  "case_id": "mobile-security-concurrency",
+  "title": "移动平台矩阵：安全与并发维度（Android 壳 + Android 浏览器）",
+  "candidate_commit": "工作树快照 @ cc4077c + S4-R2 uncommitted fixes",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "exe_sha256": "2f58c825c80a1870fafde556c34405fa449f220843aefc095e5e034e7b7d828f",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "sidecar_sha256": "356c8ce5180ffbd901b890e6ef9bfd43b21bb28b71f3f5489213ec367c75f178",
+    "apk": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\gen\\android\\app\\build\\outputs\\apk\\arm64\\debug\\app-arm64-debug.apk",
+    "apk_sha256": "cb23957c99cb2a2cffea30cf719a772208cd77bf3ee5a19c0d672397dff1bf88"
+  },
+  "device": "Xiaomi 24129PN74C（Android 16 / SDK 36 / arm64-v8a）/ 1200x2670 / 520dpi / 约 369dp 宽",
+  "network": "局域网 10.81.0.0/16；手机 10.81.140.245 ↔ PC 10.81.102.166:8765（HTTP，非 HTTPS）",
+  "preconditions": {},
+  "steps": [],
+  "expected": "非法请求被拒且不执行命令；多客户端四会话并发提交归属正确、零串线",
+  "actual": "未鉴权→missing_token；错误 token→invalid_token；两者携带的 chat.submit 均被拒且未执行命令。撤销我的手机（2 个 token）后已建立连接被断开，后续→revoked_token。并发：移动端（局域网地址）与桌面端（回环）双连接对 4 会话并发提交，发送时刻差值 0.0 s，四会话各自只收到自己的回复（收到。），零串线。",
+  "timestamps": {
+    "started_at": "2026-09-10T14:35:01.076Z",
+    "finished_at": "2026-09-10T14:35:01.330Z",
+    "recorded_at": "2026-09-10T15:05:00Z"
+  },
+  "ids": {},
+  "evidence": [
+    "mobile-matrix-run.json",
+    "ws-anon.log",
+    "ws-badtoken.log",
+    "ws-mobile.log",
+    "ws-desktop.log",
+    "events-mobile.log",
+    "events-desktop.log",
+    "batch-manifest.json"
+  ],
+  "severity": "",
+  "frequency": "必现",
+  "impact": "移动端安全与并发（Android 壳 + 局域网通道）",
+  "status": "通过",
+  "blocker": "",
+  "owner": "",
+  "next_action": "无"
+}

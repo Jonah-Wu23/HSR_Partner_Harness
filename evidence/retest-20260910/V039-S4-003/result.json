@@ -1,0 +1,41 @@
+{
+  "batch": "retest-20260910",
+  "case_id": "V039-S4-003",
+  "title": "长期记忆写入、作用域、增删改与入口复验",
+  "candidate_commit": "工作树快照 @ cc4077c + uncommitted fixes",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "exe_sha256": "2ce327a197ae91385560e9b037ffb7acaea5ce83cd66d4beedf84babf6482cf8",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "sidecar_sha256": "52366696c30e83dad5f19bce1a0d520a5c035e13b0c0b37f0b1bc549d32e82b6"
+  },
+  "device": "Windows 11 10.0.26200 / 2560x1440 / 缩放150% / 本地桌面会话",
+  "network": "本机直连公网（无 Tailscale）",
+  "preconditions": {
+    "candidate": "工作树快照（含 memory.create / MemoryDraft / memory_enabled 修复）",
+    "data": "首次运行清理后的干净数据库（本用例自建项目与会话）"
+  },
+  "steps": [],
+  "expected": "",
+  "actual": "memory.create 落库并广播 memory.updated；重复写入同一内容幂等（同 memory_id）；同 pair 跨聊天可见、不同 pair 隔离（firefly_sam 读到 0 条）；update/delete 实际生效；非法输入分别报 memory_invalid（缺 conversation_id / content 非对象 / 空对象）与 conversation_not_found；设置页「长期记忆」入口存在且列出五分量作用域与增删改控件。「日常聊天（无项目）」在当前账号下无法构造（协议回落到当前项目），如实记录。",
+  "timestamps": {
+    "started_at": "2026-09-10T13:01:11.908Z",
+    "finished_at": "2026-09-10T13:01:12.179Z"
+  },
+  "ids": {},
+  "evidence": [
+    "memory-run.json",
+    "ws-frames.log",
+    "events.log",
+    "sidecar.log",
+    "sidecar-info.log"
+  ],
+  "severity": "",
+  "frequency": "",
+  "impact": "",
+  "status": "通过",
+  "blocker": "",
+  "owner": "",
+  "next_action": "无"
+}

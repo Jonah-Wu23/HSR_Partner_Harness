@@ -1,0 +1,46 @@
+{
+  "sandbox_pid": 32724,
+  "modes": {
+    "forward": {
+      "control": "OK forward connections=10 tunnels=10",
+      "probe": {
+        "outcome": "response",
+        "status": 401,
+        "elapsed": 0.515
+      }
+    },
+    "reject": {
+      "control": "OK reject connections=11 tunnels=11",
+      "probe": {
+        "outcome": "ConnectError",
+        "message": "All connection attempts failed",
+        "elapsed": 2.047
+      }
+    },
+    "hang": {
+      "control": "OK hang connections=11 tunnels=11",
+      "probe": {
+        "outcome": "ReadTimeout",
+        "message": "",
+        "elapsed": 6.031
+      }
+    },
+    "cut": {
+      "control": "OK forward connections=13 tunnels=12",
+      "probe": {
+        "tunnel_header": "HTTP/1.1 200 Connection Established",
+        "outcome": "connection_closed_after_cut",
+        "bytes_read": 0
+      }
+    },
+    "dns_failure": {
+      "note": "不经代理，直接请求 RFC6761 保留域（沙盒不参与）",
+      "probe": {
+        "outcome": "ConnectError",
+        "message": "[Errno 11001] getaddrinfo failed",
+        "elapsed": 0.046
+      }
+    }
+  },
+  "stats": "OK forward connections=13 tunnels=12"
+}

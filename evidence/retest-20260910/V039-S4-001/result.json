@@ -1,0 +1,38 @@
+{
+  "batch": "retest-20260910",
+  "case_id": "V039-S4-001",
+  "title": "只读查询载荷序列化（metrics/summary/memory）复验",
+  "candidate_commit": "工作树快照 @ cc4077c + uncommitted fixes",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "exe_sha256": "2ce327a197ae91385560e9b037ffb7acaea5ce83cd66d4beedf84babf6482cf8",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "sidecar_sha256": "52366696c30e83dad5f19bce1a0d520a5c035e13b0c0b37f0b1bc549d32e82b6"
+  },
+  "device": "Windows 11 10.0.26200 / 2560x1440 / 缩放150% / 本地桌面会话",
+  "network": "本机直连公网（无 Tailscale）",
+  "preconditions": {},
+  "steps": [],
+  "expected": "",
+  "actual": "metrics.query 读回 30 条记录、summary.get 读回 1 条 completed 摘要、memory.list 读回 2 条，全部时间戳为 ISO 8601 文本；空会话 summary.get 正常返回空数组。上一批次的「一旦存在摘要记录即 30 秒超时」未复现。",
+  "timestamps": {
+    "started_at": "2026-09-10T13:20:27.362Z",
+    "finished_at": "2026-09-10T13:25:24.810Z"
+  },
+  "ids": {},
+  "evidence": [
+    "protocol-run.json",
+    "ws-frames.log",
+    "events.log",
+    "sidecar.log",
+    "sidecar-info.log"
+  ],
+  "severity": "",
+  "frequency": "",
+  "impact": "",
+  "status": "通过",
+  "blocker": "",
+  "owner": "",
+  "next_action": "无"
+}

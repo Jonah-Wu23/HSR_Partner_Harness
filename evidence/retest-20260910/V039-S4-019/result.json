@@ -1,0 +1,38 @@
+{
+  "batch": "retest-20260910",
+  "case_id": "V039-S4-019",
+  "title": "空输出与重试的 INFO 级可数归因复验",
+  "candidate_commit": "工作树快照 @ cc4077c + uncommitted fixes",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "exe_sha256": "2ce327a197ae91385560e9b037ffb7acaea5ce83cd66d4beedf84babf6482cf8",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "sidecar_sha256": "52366696c30e83dad5f19bce1a0d520a5c035e13b0c0b37f0b1bc549d32e82b6"
+  },
+  "device": "Windows 11 10.0.26200 / 2560x1440 / 缩放150% / 本地桌面会话",
+  "network": "本机直连公网（无 Tailscale）",
+  "preconditions": {},
+  "steps": [],
+  "expected": "",
+  "actual": "在 PAIR_HARNESS_LOG_LEVEL=INFO 的未过滤日志中，261 行归因链完整可数：不可用告警 82 条（含 category 与原始片段/字符数）、重试决策 82 条（「重试真实模型：category=empty，attempt=0→1，原始输出字符数=114，放宽 response_format=True」）、最终来源 97 条（「首次请求」16 条、「空输出重试第 N 次」81 条），可区分重试后成功与直接失败。「不再重试」路径本轮未构造（需重试同样失败），如实记录。",
+  "timestamps": {
+    "started_at": "2026-09-10T13:26:24.513Z",
+    "finished_at": "2026-09-10T13:26:27.866Z"
+  },
+  "ids": {},
+  "evidence": [
+    "attribution-run.json",
+    "ws-frames.log",
+    "events.log",
+    "sidecar.log",
+    "sidecar-info.log"
+  ],
+  "severity": "",
+  "frequency": "",
+  "impact": "",
+  "status": "通过",
+  "blocker": "",
+  "owner": "",
+  "next_action": "无"
+}

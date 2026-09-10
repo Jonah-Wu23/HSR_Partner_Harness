@@ -1,0 +1,222 @@
+{
+  "started_at": "2026-09-10T13:01:11.925Z",
+  "account_id": "default-local",
+  "project_create": {
+    "ok": true,
+    "code": null,
+    "message": null,
+    "projects": [
+      {
+        "project_id": "bf0fd819-2809-43b4-9f44-88c1086eca7c",
+        "name": "retest-project",
+        "root_path": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\.tmp\\retest-project"
+      },
+      {
+        "project_id": "944a4277-8736-4a04-a1c8-9df58d277399",
+        "name": "HSR-Partner-Harness-v0.3.9-logic",
+        "root_path": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic"
+      }
+    ],
+    "conversations": []
+  },
+  "project_id": "bf0fd819-2809-43b4-9f44-88c1086eca7c",
+  "conversation_1": "0337f84d-cf95-46a1-ab7d-b648eff7a7cb",
+  "conversation_create_1": {
+    "ok": true,
+    "code": null,
+    "message": null
+  },
+  "conversation_2": "f2652bec-0297-4046-968e-b2375fb2c8b2",
+  "memory_create": {
+    "ok": true,
+    "code": null,
+    "message": null,
+    "result": {
+      "memory": {
+        "memory_id": "188a2fdc-3223-4711-80fa-ec7e0de3e3d2",
+        "account_id": "default-local",
+        "project_id": "bf0fd819-2809-43b4-9f44-88c1086eca7c",
+        "pair_id": "phainon_ancient_machine",
+        "character_ref": "builtin:phainon",
+        "assistant_identity": "ancient_machine",
+        "status": "active",
+        "updated_at": "2026-09-10T13:01:12.019433+00:00",
+        "content": {
+          "fact": "复测批次写入的记忆 A",
+          "source": "r1-memory"
+        },
+        "conversation_id": "0337f84d-cf95-46a1-ab7d-b648eff7a7cb"
+      }
+    }
+  },
+  "memory_updated_event": {
+    "received": true,
+    "payload": {
+      "memory_id": "188a2fdc-3223-4711-80fa-ec7e0de3e3d2",
+      "account_id": "default-local",
+      "project_id": "bf0fd819-2809-43b4-9f44-88c1086eca7c",
+      "pair_id": "phainon_ancient_machine",
+      "character_ref": "builtin:phainon",
+      "assistant_identity": "ancient_machine",
+      "status": "active",
+      "updated_at": "2026-09-10T13:01:12.019433+00:00",
+      "content": {
+        "fact": "复测批次写入的记忆 A",
+        "source": "r1-memory"
+      },
+      "conversation_id": "0337f84d-cf95-46a1-ab7d-b648eff7a7cb"
+    }
+  },
+  "memory_create_repeat": {
+    "ok": true,
+    "code": null,
+    "memory_id": "188a2fdc-3223-4711-80fa-ec7e0de3e3d2",
+    "same_id_as_first": true
+  },
+  "scope_cross_chat": {
+    "chat2_ok": true,
+    "chat2_count": 2,
+    "contains_first": true,
+    "scopes": [
+      {
+        "project_id": "bf0fd819-2809-43b4-9f44-88c1086eca7c",
+        "pair_id": "phainon_ancient_machine",
+        "character_ref": "builtin:phainon",
+        "assistant_identity": "ancient_machine"
+      },
+      {
+        "project_id": "bf0fd819-2809-43b4-9f44-88c1086eca7c",
+        "pair_id": "phainon_ancient_machine",
+        "character_ref": "builtin:phainon",
+        "assistant_identity": "ancient_machine"
+      }
+    ]
+  },
+  "scope_other_pair": {
+    "conversation_id": "b7bd6342-9c47-42c5-b28f-7342cb223df1",
+    "ok": true,
+    "code": null,
+    "message": null,
+    "count": 0
+  },
+  "invalid_inputs": {
+    "no_conversation": {
+      "ok": false,
+      "code": "memory_invalid",
+      "message": "memory.create 需要 conversation_id",
+      "details": null
+    },
+    "content_not_object": {
+      "ok": false,
+      "code": "memory_invalid",
+      "message": "记忆内容必须是 JSON 对象",
+      "details": null
+    },
+    "content_empty_object": {
+      "ok": false,
+      "code": "memory_invalid",
+      "message": "记忆内容不得为空对象",
+      "details": null
+    },
+    "unknown_conversation": {
+      "ok": false,
+      "code": "conversation_not_found",
+      "message": "会话不存在：00000000-0000-0000-0000-000000000000",
+      "details": null
+    }
+  },
+  "memory_update": {
+    "ok": true,
+    "code": null,
+    "result": {
+      "memory": {
+        "memory_id": "188a2fdc-3223-4711-80fa-ec7e0de3e3d2",
+        "account_id": "default-local",
+        "project_id": "bf0fd819-2809-43b4-9f44-88c1086eca7c",
+        "pair_id": "phainon_ancient_machine",
+        "character_ref": "builtin:phainon",
+        "assistant_identity": "ancient_machine",
+        "status": "active",
+        "updated_at": "2026-09-10T13:01:12.101997+00:00",
+        "content": {
+          "fact": "复测批次改写后的记忆 A",
+          "source": "r1-memory"
+        },
+        "conversation_id": "0337f84d-cf95-46a1-ab7d-b648eff7a7cb"
+      }
+    }
+  },
+  "memory_update_visible": true,
+  "memory_delete": {
+    "ok": true,
+    "code": null,
+    "result": {
+      "memory": {
+        "memory_id": "188a2fdc-3223-4711-80fa-ec7e0de3e3d2",
+        "account_id": "default-local",
+        "project_id": "bf0fd819-2809-43b4-9f44-88c1086eca7c",
+        "pair_id": "phainon_ancient_machine",
+        "character_ref": "builtin:phainon",
+        "assistant_identity": "ancient_machine",
+        "status": "deleted",
+        "updated_at": "2026-09-10T13:01:12.113262+00:00",
+        "content": {
+          "fact": "复测批次改写后的记忆 A",
+          "source": "r1-memory"
+        },
+        "conversation_id": "0337f84d-cf95-46a1-ab7d-b648eff7a7cb"
+      }
+    }
+  },
+  "memory_delete_visible": [
+    "188a2fdc-3223-4711-80fa-ec7e0de3e3d2",
+    "15596636-63db-4964-85b4-939a8389c03f"
+  ],
+  "no_project_conversation": {
+    "attempted": "conversation.create 不带 project_id（并显式传 null）",
+    "constructed": "d0a96b7f-02e5-4dd3-988a-4ab4984020d0",
+    "note": "当前账号有 current_project_id，协议回落到该项目，未能构造无项目会话",
+    "memory_create": {
+      "ok": true,
+      "result": {
+        "memory": {
+          "memory_id": "1ff47976-9186-4985-b557-60a5a21e18c8",
+          "account_id": "default-local",
+          "project_id": "bf0fd819-2809-43b4-9f44-88c1086eca7c",
+          "pair_id": "firefly_sam",
+          "character_ref": "builtin:firefly",
+          "assistant_identity": "sam",
+          "status": "active",
+          "updated_at": "2026-09-10T13:01:12.154606+00:00",
+          "content": {
+            "a": 1
+          },
+          "conversation_id": "d0a96b7f-02e5-4dd3-988a-4ab4984020d0"
+        }
+      }
+    },
+    "memory_list": {
+      "ok": true,
+      "result": {
+        "memories": [
+          {
+            "memory_id": "1ff47976-9186-4985-b557-60a5a21e18c8",
+            "account_id": "default-local",
+            "project_id": "bf0fd819-2809-43b4-9f44-88c1086eca7c",
+            "pair_id": "firefly_sam",
+            "character_ref": "builtin:firefly",
+            "assistant_identity": "sam",
+            "status": "active",
+            "updated_at": "2026-09-10T13:01:12.154606+00:00",
+            "content": {
+              "a": 1
+            },
+            "conversation_id": "d0a96b7f-02e5-4dd3-988a-4ab4984020d0"
+          }
+        ]
+      }
+    }
+  },
+  "finished_at": "2026-09-10T13:01:12.163Z",
+  "sidecar_new_lines": 2
+}

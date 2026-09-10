@@ -1,0 +1,59 @@
+{
+  "batch": "retest-r2-20260910",
+  "case_id": "V039-R1-001",
+  "title": "打包首启清理与失败传播真机复验（V039-S4-010 复核项的第二次重验）",
+  "candidate_commit": "工作树快照 @ cc4077c + S4-R2 uncommitted fixes",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "exe_sha256": "2f58c825…（完整值见 batch-manifest.json）",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "sidecar_sha256": "356c8ce5…（完整值见 batch-manifest.json）"
+  },
+  "device": "Windows 11 10.0.26200 / 2560x1440 / 缩放150% / 本地桌面会话",
+  "network": "不涉及网络（打包与本地清理路径）",
+  "preconditions": {
+    "log_before": {
+      "path": "C:\\Users\\JonahWu\\AppData\\Roaming\\com.jonahwu.hsr-partner-harness\\sidecar.stderr.log",
+      "sha256": "ae83bbe787944ea75b9de397682cea1da873e06e795e2f3880d8d05126c695e6",
+      "bytes": 219247,
+      "last_write": "2026-09-10T21:33:07.6519930+08:00",
+      "note": "上一批次（retest-20260910）的残留日志，正是本用例的验证靶点"
+    },
+    "reset_targets": [
+      "%LOCALAPPDATA%\\PairHarness",
+      "%LOCALAPPDATA%\\com.jonahwu.hsr-partner-harness\\EBWebView\\Default\\Local Storage",
+      "%LOCALAPPDATA%\\com.jonahwu.hsr-partner-harness\\EBWebView\\Default\\Session Storage",
+      "%APPDATA%\\com.jonahwu.hsr-partner-harness\\sidecar.stderr.log 及其滚动副本（sidecar.stderr.log*）"
+    ]
+  },
+  "steps": [
+    "记录清理前 sidecar.stderr.log 的大小与 SHA256（before-reset.json）",
+    "cd desktop && npm run tauri -- build --no-bundle（经 desktop/scripts/tauri-with-first-run-reset.ps1 包装；构建成功后自动执行首次运行清理）",
+    "核对包装脚本退出码与打包日志中的 Cleared 行",
+    "核对清理后 sidecar.stderr.log 与 sidecar.stderr.log* 是否存在（after-reset.json）",
+    "在候选运行中执行 npm run reset:first-run，核对退出码与错误输出（failure-path.log）"
+  ],
+  "expected": "打包流程的首次运行清理必须清除 sidecar.stderr.log 及其滚动副本；清理失败必须以非零退出码传播，不得静默通过",
+  "actual": "构建与清理均 exit 0，打包日志出现 `Cleared: ...\\com.jonahwu.hsr-partner-harness\\sidecar.stderr.log`。清理后核对：日志目录仍在、projects 子目录保留，而 sidecar.stderr.log **不存在**，`sidecar.stderr.log*` 匹配 0 个文件（before-reset.json 为 219,247 B / SHA256 ae83bbe7…，after-reset.json 为 log_file_exists=false / remaining=[]）。失败传播真机成立：候选运行中执行 `npm run reset:first-run` 得到 `RESET_EXIT=1`，输出 `tauri-with-first-run-reset: HSR Partner Harness is still running. Close the exe before resetting first-run state.` 并附脚本行号，经 npm run 如实传播（failure-path.log）。",
+  "timestamps": {
+    "started_at": "2026-09-10T14:05:00Z",
+    "finished_at": "2026-09-10T14:11:00Z",
+    "recorded_at": "2026-09-10T15:05:00Z"
+  },
+  "ids": {},
+  "evidence": [
+    "before-reset.json",
+    "after-reset.json",
+    "failure-path.log",
+    ".tmp/r2-tauri-build.log（构建与 Cleared 行）",
+    "batch-manifest.json"
+  ],
+  "severity": "",
+  "frequency": "必现",
+  "impact": "打包首启清理与失败传播（V039-S4-010 / V039-R1-001）",
+  "status": "通过",
+  "blocker": "",
+  "owner": "桌面端打包脚本",
+  "next_action": "无（S4-R1 的失败状态已改写为通过）"
+}

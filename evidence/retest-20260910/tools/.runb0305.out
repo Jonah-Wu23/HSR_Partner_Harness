@@ -1,0 +1,265 @@
+approved 1
+approved 2
+approved 3
+approved 4
+approved 5
+approved 6
+{
+  "card_id": "74c4967e79654da38bc21c13069277a6",
+  "conversation_id": "d990cf7b-3dd5-43f6-8e4f-281fb745c130",
+  "approvals": [
+    {
+      "approval_id": "1",
+      "command": null,
+      "resolve": {
+        "ok": true,
+        "result": {
+          "approval_id": "1",
+          "accepted": true,
+          "resolved_by": "remote",
+          "decision": "allow"
+        }
+      }
+    },
+    {
+      "approval_id": "2",
+      "command": null,
+      "resolve": {
+        "ok": true,
+        "result": {
+          "approval_id": "2",
+          "accepted": true,
+          "resolved_by": "remote",
+          "decision": "allow"
+        }
+      }
+    },
+    {
+      "approval_id": "3",
+      "command": null,
+      "resolve": {
+        "ok": true,
+        "result": {
+          "approval_id": "3",
+          "accepted": true,
+          "resolved_by": "remote",
+          "decision": "allow"
+        }
+      }
+    },
+    {
+      "approval_id": "4",
+      "command": null,
+      "resolve": {
+        "ok": true,
+        "result": {
+          "approval_id": "4",
+          "accepted": true,
+          "resolved_by": "remote",
+          "decision": "allow"
+        }
+      }
+    },
+    {
+      "approval_id": "5",
+      "command": null,
+      "resolve": {
+        "ok": true,
+        "result": {
+          "approval_id": "5",
+          "accepted": true,
+          "resolved_by": "remote",
+          "decision": "allow"
+        }
+      }
+    },
+    {
+      "approval_id": "6",
+      "command": null,
+      "resolve": {
+        "ok": true,
+        "result": {
+          "approval_id": "6",
+          "accepted": true,
+          "resolved_by": "remote",
+          "decision": "allow"
+        }
+      }
+    }
+  ],
+  "mixed_timeline": {
+    "kinds": [
+      "assistant.natural_language",
+      "character.speech",
+      "system.approval",
+      "system.status",
+      "user.text"
+    ],
+    "sources": [
+      "assistant",
+      "character",
+      "system",
+      "user"
+    ],
+    "kind_count": 5,
+    "message_count": 21,
+    "tool_runs": [
+      {
+        "tool_call_id": "call_00_RQf3vf4CvFlYFUoqSYDL7933",
+        "status": "succeeded",
+        "tool_name": null
+      },
+      {
+        "tool_call_id": "call_00_p8BrzzfpoNckd2F5CAfZ7189",
+        "status": "succeeded",
+        "tool_name": null
+      },
+      {
+        "tool_call_id": "call_00_wXbKKuubEz6BToE3hHht3452",
+        "status": "succeeded",
+        "tool_name": null
+      },
+      {
+        "tool_call_id": "call_00_MYYQDlhbReRSwyC1H0E93165",
+        "status": "succeeded",
+        "tool_name": null
+      },
+      {
+        "tool_call_id": "call_00_6ad9uUbMpxi5XsYrvOjH1617",
+        "status": "succeeded",
+        "tool_name": null
+      },
+      {
+        "tool_call_id": "call_00_Zdfr9HFoSln3P7N6tz4S7768",
+        "status": "succeeded",
+        "tool_name": null
+      },
+      {
+        "tool_call_id": "call_00_sNDJmqilrh09jOVBBk3J1320",
+        "status": "succeeded",
+        "tool_name": null
+      },
+      {
+        "tool_call_id": "call_00_8WeqrqTkj2kjhSX6ZxlZ9167",
+        "status": "succeeded",
+        "tool_name": null
+      }
+    ],
+    "tool_run_count": 8,
+    "messages": [
+      {
+        "source": "character",
+        "kind": "character.speech",
+        "status": "done",
+        "chars": 21,
+        "text": "（夹具角色，仅用于导入导出与长字段用例。）"
+      },
+      {
+        "source": "user",
+        "kind": "user.text",
+        "status": "done",
+        "chars": 88,
+        "text": "请让助手在项目根目录创建文件 r1-b05-delegation.md，内容写一行：S4-R1 B-05 混合时间线：由助手在真实委派中创建。。创建后回读校验并把结果告诉角色。"
+      },
+      {
+        "source": "assistant",
+        "kind": "assistant.natural_language",
+        "status": "done",
+        "chars": 0,
+        "text": ""
+      },
+      {
+        "source": "assistant",
+        "kind": "assistant.natural_language",
+        "status": "done",
+        "chars": 0,
+        "text": ""
+      },
+      {
+        "source": "system",
+        "kind": "system.approval",
+        "status": "done",
+        "chars": 7,
+        "text": "审批结果：允许"
+      },
+      {
+        "source": "assistant",
+        "kind": "assistant.natural_language",
+        "status": "done",
+        "chars": 0,
+        "text": ""
+      },
+      {
+        "source": "assistant",
+        "kind": "assistant.natural_language",
+        "status": "done",
+        "chars": 0,
+        "text": ""
+      },
+      {
+        "source": "system",
+        "kind": "system.approval",
+        "status": "done",
+        "chars": 7,
+        "text": "审批结果：允许"
+      },
+      {
+        "source": "assistant",
+        "kind": "assistant.natural_language",
+        "status": "done",
+        "chars": 0,
+        "text": ""
+      },
+      {
+        "source": "system",
+        "kind": "system.approval",
+        "status": "done",
+        "chars": 7,
+        "text": "审批结果：允许"
+      },
+      {
+        "source": "assistant",
+        "kind": "assistant.natural_language",
+        "status": "done",
+        "chars": 470,
+        "text": "已完成，回读校验通过。\n\n**执行内容**\n\n- 创建文件：`E:/AI/HSR-Partner-Harness-v0.3.9-logic/.tmp/retest-project/r1-b05-delegation.md`（项目根目录）\n-"
+      },
+      {
+        "source": "character",
+        "kind": "character.speech",
+        "status": "done",
+        "chars": 52,
+        "text": "状态是失败的，可回读校验写的是全部通过。这两条对不上，我不能把它当成办完了。重试一次，这次只认最终状态。"
+      },
+      {
+        "source": "assistant",
+        "kind": "assistant.natural_language",
+        "status": "done",
+        "chars": 0,
+        "text": ""
+      },
+      {
+        "source": "system",
+        "kind": "system.approval",
+        "status": "done",
+        "chars": 7,
+        "text": "审批结果：允许"
+      },
+      {
+        "source": "assistant",
+        "kind": "assistant.natural_language",
+        "status": "done",
+        "chars": 0,
+        "text": ""
+      },
+      {
+        "source": "system",
+        "kind": "system.approval",
+        "status": "done",
+        "chars": 7,
+        "text": "审批结果：允许"
+      },
+      {
+        "source": "assistant",
+        "kind": "assistant.natural_language",
+   

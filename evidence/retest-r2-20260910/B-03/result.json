@@ -1,0 +1,45 @@
+{
+  "batch": "retest-r2-20260910",
+  "case_id": "B-03",
+  "title": "B-03 仅 Chat Completions 可用（负向三条 + 历史账号形态）",
+  "candidate_commit": "工作树快照 @ cc4077c + S4-R2 uncommitted fixes",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "exe_sha256": "2f58c825c80a1870fafde556c34405fa449f220843aefc095e5e034e7b7d828f",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "sidecar_sha256": "356c8ce5180ffbd901b890e6ef9bfd43b21bb28b71f3f5489213ec367c75f178",
+    "apk": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\gen\\android\\app\\build\\outputs\\apk\\arm64\\debug\\app-arm64-debug.apk",
+    "apk_sha256": "cb23957c99cb2a2cffea30cf719a772208cd77bf3ee5a19c0d672397dff1bf88"
+  },
+  "device": "Windows 11 10.0.26200 / 2560x1440 / 缩放150% / 本地桌面会话",
+  "network": "本机直连公网（无 Tailscale）；手机端经局域网 10.81.0.0/16",
+  "preconditions": {},
+  "steps": [],
+  "expected": "负向三条成立；历史账号形态启动不退出并如实标注；正向真实委派全链路无终态错误",
+  "actual": "负向：仓库+打包产物对 _require_responses_backend / Responses API 后端 / codex 引擎要求 Responses 零命中；任意 http(s) 端点写入 ok=true；engine=codex→invalid_engine；openai_oauth→provider_unavailable；codex.oauth_start/api_login→codex_login_removed；服务商下拉仅剩 DeepSeek / OpenAI 兼容 API。历史账号：启动不退出，两条非致命 error.reported（provider_unavailable / engine_removed，recoverable / fatal=false），config.get 回 provider_supported=false 且未改写保存值，显式改选后恢复。",
+  "timestamps": {
+    "started_at": "2026-09-10T14:15:19.414Z",
+    "finished_at": "2026-09-10T14:15:19.650Z",
+    "recorded_at": "2026-09-10T15:05:00Z"
+  },
+  "ids": {},
+  "evidence": [
+    "b03-run.json",
+    "legacy-stdout-frames.json",
+    "ws-frames-live.log",
+    "events-live.log",
+    "ws-frames-legacy.log",
+    "events-legacy.log",
+    "sidecar.log",
+    "sidecar-info.log",
+    "batch-manifest.json"
+  ],
+  "severity": "",
+  "frequency": "必现",
+  "impact": "产品决策 B-03 的三条剥离要求",
+  "status": "通过",
+  "blocker": "",
+  "owner": "",
+  "next_action": "无（S4-R1 的失败状态已改写为通过）"
+}

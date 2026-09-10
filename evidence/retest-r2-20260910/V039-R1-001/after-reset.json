@@ -1,0 +1,10 @@
+{
+    "log_dir_exists":  true,
+    "log_file_exists":  false,
+    "remaining":  [
+
+                  ],
+    "dir_listing":  [
+                        "projects"
+                    ]
+}
