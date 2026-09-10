@@ -289,7 +289,15 @@ def test_isolated_cleanup_clears_webview_state_and_sidecar_logs(sandbox: _Sandbo
         sandbox.local_app_data / APP_IDENTIFIER / "EBWebView" / "Default" / "Local Storage"
     ).exists()
     assert sandbox.remaining_logs() == []
-    assert f"Cleared: {sandbox.log_root / LOG_NAME}" in result.stdout
+    # PowerShell 会把 8.3 短名（CI 上 %TEMP% 是 C:\Users\RUNNER~1\...）规范成长名，
+    # 因此按规范化后的路径比对，而不是按字符串直接比对。
+    expected_log = sandbox.root.resolve() / "appdata" / APP_IDENTIFIER / LOG_NAME
+    cleared = {
+        Path(line.split("Cleared:", 1)[1].strip()).resolve()
+        for line in result.stdout.splitlines()
+        if line.startswith("Cleared:")
+    }
+    assert expected_log in cleared, result.stdout
     assert sandbox.build_was_called() is False
 
 
