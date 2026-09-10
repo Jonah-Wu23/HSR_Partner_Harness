@@ -23,7 +23,6 @@ import type { AccountListItem } from "../ui/gate/types";
 import type {
   AccountPageView,
   CharacterModelPageView,
-  CodingAssistantPageView,
   TestResult,
   VoicePageView,
 } from "../ui/settings/types";
@@ -183,7 +182,6 @@ export interface AccountGateViewModel {
 /** V0.2 M4：设置中心四个页 + 测试结果（modelTest/voicePreview 初值 idle）。 */
 export interface SettingsViewModel {
   account: AccountPageView;
-  coding: CodingAssistantPageView;
   model: CharacterModelPageView;
   voice: VoicePageView;
   /** V0.3.5：语音页「角色音色」区数据（卡列表 + 账号语音配置完备性）。 */
@@ -286,8 +284,15 @@ export interface RemotePairingViewModel {
   loading: boolean;
   error: string | null;
   /** V0.3.4：Sidecar --serve 实际监听地址（serve.started 事件上报），
-      二维码按它生成；null 表示远程服务未就绪（serve 未启动/启动失败）。 */
+      二维码按它生成；null 表示没有可用的局域网接入地址（未上报 / 上报为 null）。 */
   serveAddress: { host: string; port: number } | null;
+  /** V039-S4-004：serve.started 上报的监听端口（host 为 null 时端口依然真实）。 */
+  servePort?: number | null;
+  /** V039-S4-004：服务已监听但无可用局域网地址时，服务端给出的真实原因码
+      （如 no_lan_address）；未上报该字段即 null，不本地推断。 */
+  serveUnavailableReason?: string | null;
+  /** V039-S4-004：error.reported(serve_start_failed) 的真实报文（启动失败原因）。 */
+  serveFailure?: string | null;
 }
 
 export interface AppShellViewModel {

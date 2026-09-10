@@ -161,7 +161,8 @@ async def test_lease_expiry_reclaims_and_restores_desktop(service) -> None:
 
     assert not service.has_active_remote_controller()
     assert service._control_leases == {}
-    service._require_desktop_playback_control()  # 不再抛 remote_playback_active
+    # V039-S4-016：守卫改按调用方身份判定，桌面调用方在无租约时放行。
+    service._require_playback_control(origin="desktop")
 
     events = service.event_log.payloads("remote.control_changed")
     assert [item["reason"] for item in events] == ["claimed", "expired"]

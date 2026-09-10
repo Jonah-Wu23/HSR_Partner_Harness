@@ -8,6 +8,7 @@ import type {
   ConversationRecord,
   ConversationSummary,
   DesktopSnapshot,
+  MemoryWirePayload,
   Message,
   PairMemory,
   QueueItem,
@@ -19,6 +20,7 @@ import type {
   ToolRun,
   Turn,
 } from "@shared/contracts/protocol";
+import { pairMemoryFromPayload } from "@shared/contracts/protocol";
 import type { MobileConnectionState, WireEvent } from "./wsClient";
 import {
   clearCredentials,
@@ -193,7 +195,8 @@ export interface MobileState {
   /** V0.3.5：手机语音相关 actions。 */
   startVoiceCapture: (conversationId: string) => Promise<{ session_id: string }>;
   sendAudioChunk: (seq: number, base64: string) => Promise<void>;
-  stopVoiceCapture: () => Promise<void>;
+  /** 停止语音采集；传入 sessionId 时以它覆盖 store 里的会话（用于补发停止）。 */
+  stopVoiceCapture: (sessionId?: string) => Promise<void>;
   stopVoicePlayback: (messageId: string) => Promise<void>;
   /** V0.3.5：本地 TTS 队列自然播放到末尾后复位 playback 状态。 */
   finishVoicePlayback: (messageId: string) => void;
@@ -283,6 +286,43 @@ function normalizeRemoteControl(value: unknown): RemoteControlState | null {
   };
 }
 
+/**
+ * V0.3.9 §2：memory.* 线缆载荷 → 前端记录。
+ *
+ * 后端 `_memory_payload`（memory.list 条目与 memory.updated / memory.deleted
+ * 事件共用）下发的是**扁平五分量**，线缆上没有嵌套 scope 对象（见
+ * protocol.MemoryWirePayload）。scope 一律由共享的 `pairMemoryFromPayload`
+ * 派生，客户端不拼接、不改写作用域；直接强转 PairMemory 会得到 scope undefined。
+ *
+ * 形状不符（缺 memory_id / status 不在枚举内）返回 null，由调用方如实报错，
+ * 不伪造记录、也不把协议违规当成空数据成功。
+ */
+function decodeMemoryPayload(raw: unknown): PairMemory | null {
+  if (!raw || typeof raw !== "object") return null;
+  const payload = raw as Partial<MemoryWirePayload>;
+  if (typeof payload.memory_id !== "string" || payload.memory_id === "") return null;
+  if (payload.status !== "active" && payload.status !== "deleted") return null;
+  return pairMemoryFromPayload(payload as MemoryWirePayload);
+}
+
+/** 载荷里非空的 memory_id（含形状不符时只剩 id 的形态）；没有则空串。 */
+function memoryIdFromPayload(raw: unknown): string {
+  if (!raw || typeof raw !== "object") return "";
+  const memoryId = (raw as { memory_id?: unknown }).memory_id;
+  return typeof memoryId === "string" ? memoryId : "";
+}
+
+/** 线缆载荷必须能解码；解不开即协议违规，抛错而不静默丢弃。 */
+function requireMemoryPayload(raw: unknown, source: string): PairMemory {
+  const memory = decodeMemoryPayload(raw);
+  if (!memory) {
+    throw new Error(
+      `${source} 载荷形状不符：需要扁平分量的记忆记录（memory_id + status + 作用域五分量），收到 ${JSON.stringify(raw)}`,
+    );
+  }
+  return memory;
+}
+
 function applySnapshot(
   set: (partial: Partial<MobileState>) => void,
   snapshot: DesktopSnapshot,
@@ -352,6 +392,9 @@ function applySnapshot(
     activeTasks,
     turnsByConversation,
     // V0.3.9 §2/§6：摘要、记忆与租约随快照替换；缺字段即空/ null，不沿用旧值。
+    // 记忆：后端 bootstrap 不下发 memories 字段（application_service.bootstrap
+    // 只回 messages/tool_runs/turns/queue_items/active_task），此处不涉及线缆解码；
+    // 记忆的真实水合入口是 memory.list 与 memory.updated / memory.deleted。
     summaries: snapshot.summaries ?? [],
     summariesByConversation: snapshotSummaries(snapshot.summaries),
     memories: snapshot.memories ?? [],
@@ -609,6 +652,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
             [activeConversationId]: conversation.turns ?? [],
           },
           // V0.3.9 §2/§6：只读装载显式下发时才覆盖摘要/记忆/租约。
+          // 记忆：conversation.open 返回体同样不带 memories，缺字段保留现状。
           summaries: conversation.summaries ?? (get().summariesByConversation[activeConversationId] ?? []),
           summariesByConversation: conversation.summaries
             ? { ...get().summariesByConversation, [activeConversationId]: conversation.summaries }
@@ -814,36 +858,41 @@ export const useMobileStore = create<MobileState>((set, get) => {
       }
       case "memory.updated": {
         // V0.3.9 §2：记忆内容由模型负责，store 只按 memory_id 存原始记录。
-        const payload = event.payload as { memory?: PairMemory } & Partial<PairMemory>;
-        const memory = payload.memory ?? (payload.memory_id ? (payload as PairMemory) : null);
-        if (memory?.memory_id) {
+        // 线缆载荷是扁平五分量，经 decodeMemoryPayload 派生 scope；
+        // 形状不符即协议违规，直接抛出，不静默丢弃也不伪造记录。
+        const memory = requireMemoryPayload(event.payload, "memory.updated");
+        set({
+          memories: [
+            ...get().memories.filter((item) => item.memory_id !== memory.memory_id),
+            memory,
+          ],
+        });
+        break;
+      }
+      case "memory.deleted": {
+        // V0.3.9 §2：删除必须真实落状态——线缆恒为完整载荷（status=deleted），
+        // 按记录替换；只带 id 时把已知记录标记为 deleted，未知 id 不凭空造记录。
+        const memory = decodeMemoryPayload(event.payload);
+        if (memory) {
           set({
             memories: [
               ...get().memories.filter((item) => item.memory_id !== memory.memory_id),
               memory,
             ],
           });
+          break;
         }
-        break;
-      }
-      case "memory.deleted": {
-        const payload = event.payload as { memory?: PairMemory } & Partial<PairMemory>;
-        const memory = payload.memory;
-        const memoryId = memory?.memory_id ?? payload.memory_id ?? "";
-        if (memory && memoryId) {
-          set({
-            memories: [
-              ...get().memories.filter((item) => item.memory_id !== memoryId),
-              memory,
-            ],
-          });
-        } else if (memoryId) {
-          set({
-            memories: get().memories.map((item) =>
-              item.memory_id === memoryId ? { ...item, status: "deleted" } : item,
-            ),
-          });
+        const memoryId = memoryIdFromPayload(event.payload);
+        if (!memoryId) {
+          throw new Error(
+            `memory.deleted 载荷形状不符：既不是完整记忆记录也没有 memory_id，收到 ${JSON.stringify(event.payload)}`,
+          );
         }
+        set({
+          memories: get().memories.map((item) =>
+            item.memory_id === memoryId ? { ...item, status: "deleted" } : item,
+          ),
+        });
         break;
       }
       case "remote.control_changed": {
@@ -1037,7 +1086,11 @@ export const useMobileStore = create<MobileState>((set, get) => {
               capture: {
                 state: payload.is_final ? "idle" : get().voice.capture.state,
                 sessionId: payload.is_final ? null : get().voice.capture.sessionId,
-                error: null,
+                // V0.3.9 G1 收尾：error 原样保留。生产时序里 is_final 事件先于 stop
+                // 响应到达，写死 null 会把上行分片失败（voice_audio_seq_gap 等）留下的
+                // 错误清掉，让 F4 的保留只在「事件丢失」兜底路径生效。
+                // 错误由下一次成功启动的 starting 态清空（见 startVoiceCapture）。
+                error: get().voice.capture.error,
               },
             },
           });
@@ -1448,6 +1501,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
         summariesByConversation: result.summaries
           ? { ...get().summariesByConversation, [conversationId]: result.summaries }
           : get().summariesByConversation,
+        // 记忆：conversation.open 返回体不带 memories，缺字段保留现状。
         memories: result.memories ?? get().memories,
         remoteControl:
           result.remote_control === undefined
@@ -1646,7 +1700,16 @@ export const useMobileStore = create<MobileState>((set, get) => {
       if (voice.capture.state !== "idle") {
         // 前置条件违反如实抛错：此前静默 return undefined，叠加接口的 `| void`，
         // 导致 useVoiceCapture 每次启动都必抛「服务端未返回语音会话 ID」。
-        throw new Error("语音采集正在进行中");
+        // V0.3.9 P1 加固：抛错前把原因写进 capture.error。调用方（useVoiceCapture）
+        // 会吞掉这次异常，只靠 throw 的话界面既无错误也无反馈，等于静默丢弃按压。
+        const message = "语音采集正在进行中";
+        set({
+          voice: {
+            ...voice,
+            capture: { ...voice.capture, error: message },
+          },
+        });
+        throw new Error(message);
       }
       set({
         voice: {
@@ -1701,28 +1764,74 @@ export const useMobileStore = create<MobileState>((set, get) => {
       }
     },
 
-    async stopVoiceCapture() {
-      const sessionId = get().voice.capture.sessionId;
+    async stopVoiceCapture(explicitSessionId?: string) {
+      // 显式 sessionId 会覆盖 store 里的值：启动在途被取消时，会话可能刚建立、
+      // 也可能已被别的启动改写，补发停止必须打向本次启动拿到的那一个。
+      const sessionId = explicitSessionId ?? get().voice.capture.sessionId;
       if (!sessionId) return;
-      set({
-        voice: {
-          ...get().voice,
-          capture: { state: "stopping", sessionId, error: null },
-        },
-      });
-      try {
-        await client.request<{ session_id: string; transcript: string; conversation_id: string }>(
-          "voice.mobile_ptt_stop",
-          { session_id: sessionId },
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+      // V0.3.9 G1：服务端 end_session 先回调 is_final 事件、后返回 stop 响应
+      // （mobile_audio.py:221），这个窗口里 store 已被事件置 idle/sessionId=null，
+      // 用户可能已经建起新会话。旧会话的迟到响应若无条件写 capture，就会把新会话的
+      // 前端状态抹成 idle/null：新会话的服务端会话还开着，上行分片却因 sessionId=null
+      // 抛错，没人再持有它的 session_id，泄漏到 watchdog（120s）。
+      // 因此每次写 capture 前都确认目标会话仍是当前会话；不一致只发请求、不写状态。
+      const stillCurrent = () => get().voice.capture.sessionId === sessionId;
+      if (stillCurrent()) {
         set({
           voice: {
             ...get().voice,
-            capture: { state: "idle", sessionId: null, error: message },
+            // error 原样保留：上行分片失败（如 voice_audio_seq_gap）留下的错误
+            // 必须留到用户看见，停止动作本身不构成「错误已消解」的证据。
+            capture: { ...get().voice.capture, state: "stopping", sessionId },
           },
         });
+      }
+      try {
+        const result = await client.request<{
+          session_id: string;
+          transcript: string;
+          conversation_id: string;
+        }>("voice.mobile_ptt_stop", { session_id: sessionId });
+        // V0.3.9 P1：停止成功即复位，不再只依赖服务端 voice.mobile_transcript
+        // (is_final) 事件复位。事件丢失或 session_id 不匹配会让 capture 永久停在
+        // "stopping"，之后所有启动都被拦截。服务端停响应本身携带最终转写全文，
+        // 直接落库即与事件路径等价（事件路径保留，幂等冗余）。
+        if (stillCurrent()) {
+          set({
+            voice: {
+              ...get().voice,
+              // error 同样保留（见上）：停止成功只说明会话结束了，
+              // 不代表本次采集过程中出现过的上行失败没发生过。
+              capture: { state: "idle", sessionId: null, error: get().voice.capture.error },
+              transcript: {
+                sessionId,
+                text: result.transcript,
+                isFinal: true,
+              },
+            },
+          });
+        }
+        // 身份不一致：新会话已接管，本次响应只说明旧会话确实关掉了，
+        // 不复位、也不把旧会话的转写盖到新会话的界面上。
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (stillCurrent()) {
+          set({
+            voice: {
+              ...get().voice,
+              capture: { state: "idle", sessionId: null, error: message },
+            },
+          });
+        } else {
+          // 新会话已接管：失败必须可见（Let It Fail），但只落 error，
+          // 不动新会话的 state/sessionId。
+          set({
+            voice: {
+              ...get().voice,
+              capture: { ...get().voice.capture, error: message },
+            },
+          });
+        }
         throw error;
       }
     },
@@ -1873,14 +1982,21 @@ export const useMobileStore = create<MobileState>((set, get) => {
 
     async loadMemories(conversationId) {
       // V0.3.9 §2：记忆只读查询；作用域由服务端解析，客户端只传 conversation_id。
+      // 返回体是扁平五分量数组（protocol.MemoryWirePayload），逐条经共享解码器
+      // 派生 scope。缺 memories 数组或条目形状不符即协议违规：如实抛错，
+      // 既不合成空列表当成功，也不清空既有记录。
       const target = conversationId ?? get().activeConversationId;
       if (!target) return;
-      const result = await client.request<{ memories?: PairMemory[] }>("memory.list", {
+      const result = await client.request<{ memories?: unknown }>("memory.list", {
         conversation_id: target,
       });
-      if (Array.isArray(result?.memories)) {
-        set({ memories: result.memories });
+      if (!Array.isArray(result?.memories)) {
+        throw new Error(
+          `memory.list 返回体缺 memories 数组，无法按线缆形状解码：${JSON.stringify(result)}`,
+        );
       }
+      const memories = result.memories.map((raw) => requireMemoryPayload(raw, "memory.list"));
+      set({ memories });
     },
 
     async refreshVoiceAvailability() {

@@ -36,7 +36,6 @@ async def main() -> None:
     print(f"reasonix executable: {executable}")
     auth = CodexAuthService(Path(os.getenv("TEMP", "/tmp")) / "ph-acp-test", "default-local")
     engine = build_coding_engine(
-        engine_choice="deepseek",
         codex_auth=auth,
         model=os.getenv("PAIR_HARNESS_DIALOGUE_MODEL"),
         base_url=os.getenv("PAIR_HARNESS_DIALOGUE_BASE_URL"),

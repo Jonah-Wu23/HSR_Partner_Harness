@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
+import time
 import types
 from collections.abc import Callable
 
@@ -224,8 +226,10 @@ class FakeTtsSynthesizer:
     """模拟 dashscope.audio.tts_v2.SpeechSynthesizer 的 streaming_call 模式。"""
 
     instances: list["FakeTtsSynthesizer"] = []
+    start_times: list[float] = []  # 每次 streaming_call 的单调时刻
     auto_complete: bool = True  # streaming_call 时立即回调音频 + complete
     error_on_call: str | None = None  # 非 None 时 streaming_call 触发 on_error
+    error_after_data: str | None = None  # 非 None 时先回调 1 个 PCM 再 on_error
     block_complete: bool = False
     complete_started: threading.Event | None = None
     complete_release: threading.Event | None = None
@@ -242,8 +246,15 @@ class FakeTtsSynthesizer:
 
     def streaming_call(self, text: str) -> None:
         self.texts.append(text)
+        type(self).start_times.append(time.monotonic())
         if type(self).error_on_call is not None:
             self.callback.on_error(types.SimpleNamespace(message=type(self).error_on_call))
+            return
+        if type(self).error_after_data is not None:
+            self.callback.on_data(b"\x00" * 640)
+            self.callback.on_error(
+                types.SimpleNamespace(message=type(self).error_after_data)
+            )
             return
         if type(self).auto_complete:
             self.callback.on_data(b"\x00" * 640)
@@ -267,8 +278,10 @@ def fake_tts_sdk(monkeypatch: pytest.MonkeyPatch) -> type[FakeTtsSynthesizer]:
     import dashscope.audio.tts_v2  # noqa: F401 - 确保模块已加载
 
     FakeTtsSynthesizer.instances.clear()
+    FakeTtsSynthesizer.start_times.clear()
     FakeTtsSynthesizer.auto_complete = True
     FakeTtsSynthesizer.error_on_call = None
+    FakeTtsSynthesizer.error_after_data = None
     FakeTtsSynthesizer.block_complete = False
     FakeTtsSynthesizer.complete_started = None
     FakeTtsSynthesizer.complete_release = None
@@ -279,6 +292,11 @@ def fake_tts_sdk(monkeypatch: pytest.MonkeyPatch) -> type[FakeTtsSynthesizer]:
         types.SimpleNamespace(PCM_24000HZ_MONO_16BIT="pcm_24000"),
     )
     monkeypatch.setattr(dashscope.audio.tts_v2, "ResultCallback", object)
+    # 起始节流（V039-S4-012）默认关闭：单测逐条合成，不引入真实等待；
+    # 同时清掉进程级节流状态，避免用例之间互相影响。
+    monkeypatch.setattr(qwen_tts, "_TTS_MIN_START_INTERVAL_S", 0.0)
+    monkeypatch.setattr(qwen_tts, "_TTS_FAILURE_BACKOFF_BASE_S", 0.0)
+    qwen_tts._PACER.reset()
     return FakeTtsSynthesizer
 
 
@@ -383,3 +401,181 @@ async def test_tts_api_key_applied(fake_tts_sdk, monkeypatch: pytest.MonkeyPatch
     synthesizer = QwenSpeechSynthesizer(api_key="tts-key")
     [c async for c in synthesizer.synthesize(_tts_request())]
     assert dashscope.api_key == "tts-key"
+
+
+# ---------------------------------------------------------------------------
+# TTS：起始节流与收尾（V039-S4-012）
+# ---------------------------------------------------------------------------
+
+
+def test_synthesis_pacer_backoff_grows_4_8_16_then_success_resets(monkeypatch) -> None:
+    """连续失败按 4/8/16s 增长（真实常量），未被“部分成功”提前压回 4s。"""
+    monkeypatch.setattr(qwen_tts, "_TTS_MIN_START_INTERVAL_S", 1.0)
+    monkeypatch.setattr(qwen_tts, "_TTS_FAILURE_BACKOFF_BASE_S", 4.0)
+    monkeypatch.setattr(qwen_tts, "_TTS_MAX_START_INTERVAL_S", 30.0)
+    pacer = qwen_tts._SynthesisPacer()
+    assert pacer.interval_s == 1.0
+    assert pacer.wait_s() <= 0.0  # 初始不等待
+    attempt = pacer.mark_started()
+    pacer.note_failure(attempt)
+    assert pacer.interval_s == 4.0
+    pacer.note_failure(attempt)
+    assert pacer.interval_s == 8.0
+    pacer.note_failure(attempt)
+    assert pacer.interval_s == 16.0
+    pacer.note_success(attempt)
+    assert pacer.failure_streak == 0
+    assert pacer.interval_s == 1.0
+
+
+def test_stale_success_does_not_clear_newer_failure(monkeypatch) -> None:
+    """复核确证1：旧尝试的迟到成功不得清掉较新失败的退避（按尝试时序归账）。"""
+    monkeypatch.setattr(qwen_tts, "_TTS_MIN_START_INTERVAL_S", 1.0)
+    monkeypatch.setattr(qwen_tts, "_TTS_FAILURE_BACKOFF_BASE_S", 4.0)
+    monkeypatch.setattr(qwen_tts, "_TTS_MAX_START_INTERVAL_S", 30.0)
+    pacer = qwen_tts._SynthesisPacer()
+    older = pacer.mark_started()
+    newer = pacer.mark_started()
+    pacer.note_failure(newer)
+    assert pacer.interval_s == 4.0
+    pacer.note_success(older)  # 更早尝试的成功：不算数
+    assert pacer.failure_streak == 1
+    assert pacer.interval_s == 4.0
+    pacer.note_success(newer)
+    assert pacer.failure_streak == 0
+    assert pacer.interval_s == 1.0
+
+
+async def test_synthesize_spaces_consecutive_starts(fake_tts_sdk, monkeypatch) -> None:
+    """相邻两次合成起始遵守进程级最小间隔。"""
+    monkeypatch.setattr(qwen_tts, "_TTS_MIN_START_INTERVAL_S", 0.3)
+    qwen_tts._PACER.reset()
+    synthesizer = QwenSpeechSynthesizer()
+    [chunk async for chunk in synthesizer.synthesize(_tts_request())]
+    [chunk async for chunk in synthesizer.synthesize(_tts_request())]
+    starts = FakeTtsSynthesizer.start_times
+    assert len(starts) == 2
+    assert starts[1] - starts[0] >= 0.25
+
+
+async def test_partial_pcm_then_failure_keeps_growing_backoff(
+    fake_tts_sdk, monkeypatch
+) -> None:
+    """复核确证1：出过部分 PCM 仍算失败，连续三轮退避逐轮翻倍。
+
+    真实常量下这三轮对应 4s → 8s → 16s；这里用等比例缩小的时间常量跑真实
+    合成路径，断言逐轮翻倍而不是停在第一档。
+    """
+    monkeypatch.setattr(qwen_tts, "_TTS_MIN_START_INTERVAL_S", 0.0)
+    monkeypatch.setattr(qwen_tts, "_TTS_FAILURE_BACKOFF_BASE_S", 0.06)
+    qwen_tts._PACER.reset()
+    FakeTtsSynthesizer.error_after_data = "Throttling.RateQuota"
+    synthesizer = QwenSpeechSynthesizer()
+    intervals: list[float] = []
+    for _ in range(3):
+        chunks = []
+        with pytest.raises(QwenTtsError, match="Throttling.RateQuota"):
+            async for chunk in synthesizer.synthesize(_tts_request()):
+                chunks.append(chunk)
+        assert chunks and chunks[0].pcm  # 失败之前确实产出了 PCM
+        intervals.append(round(qwen_tts._PACER.interval_s, 4))
+    assert intervals == [0.06, 0.12, 0.24], intervals
+    assert qwen_tts._PACER.failure_streak == 3
+
+
+async def test_complete_success_clears_backoff(fake_tts_sdk, monkeypatch) -> None:
+    """复核确证1：只有完整成功（上游 complete 终态）才清退避。"""
+    monkeypatch.setattr(qwen_tts, "_TTS_MIN_START_INTERVAL_S", 0.0)
+    monkeypatch.setattr(qwen_tts, "_TTS_FAILURE_BACKOFF_BASE_S", 0.2)
+    qwen_tts._PACER.reset()
+    FakeTtsSynthesizer.error_after_data = "Throttling.RateQuota"
+    synthesizer = QwenSpeechSynthesizer()
+    with pytest.raises(QwenTtsError, match="Throttling.RateQuota"):
+        [chunk async for chunk in synthesizer.synthesize(_tts_request())]
+    assert qwen_tts._PACER.interval_s == pytest.approx(0.2)
+
+    FakeTtsSynthesizer.error_after_data = None  # 下一轮走完整成功
+    chunks = [chunk async for chunk in synthesizer.synthesize(_tts_request())]
+    assert chunks[-1].final is True
+    assert qwen_tts._PACER.failure_streak == 0
+    assert qwen_tts._PACER.interval_s == 0.0
+
+
+async def test_failed_synthesis_delays_next_start_then_success_clears_it(
+    fake_tts_sdk, monkeypatch
+) -> None:
+    """一次失败后下一次起始退避；随后成功的合成清掉退避。"""
+    monkeypatch.setattr(qwen_tts, "_TTS_MIN_START_INTERVAL_S", 0.0)
+    monkeypatch.setattr(qwen_tts, "_TTS_FAILURE_BACKOFF_BASE_S", 0.3)
+    qwen_tts._PACER.reset()
+    FakeTtsSynthesizer.error_on_call = "Throttling.RateQuota"
+    synthesizer = QwenSpeechSynthesizer()
+    with pytest.raises(QwenTtsError, match="Throttling.RateQuota"):
+        [chunk async for chunk in synthesizer.synthesize(_tts_request())]
+    assert qwen_tts._PACER.failure_streak == 1
+
+    FakeTtsSynthesizer.error_on_call = None
+    started_at = time.monotonic()
+    [chunk async for chunk in synthesizer.synthesize(_tts_request())]
+    assert FakeTtsSynthesizer.start_times[-1] - started_at >= 0.25
+    assert qwen_tts._PACER.failure_streak == 0
+
+
+async def test_adapter_aclose_stops_inflight_synthesis(
+    fake_tts_sdk, monkeypatch
+) -> None:
+    """适配器自身的 aclose 中止在途合成（应用层收尾路径已按此调用）。"""
+    monkeypatch.setattr(qwen_tts, "_CANCEL_WINDOW_S", 5.0)
+    FakeTtsSynthesizer.auto_complete = False  # 服务端不回包，卡在取消窗口内
+    synthesizer = QwenSpeechSynthesizer()
+    agen = synthesizer.synthesize(_tts_request())
+    anext_task = asyncio.create_task(agen.__anext__())
+    for _ in range(200):
+        if FakeTtsSynthesizer.instances and FakeTtsSynthesizer.instances[0].texts:
+            break
+        await asyncio.sleep(0.01)
+    assert FakeTtsSynthesizer.instances[0].texts == ["你好"]
+
+    await synthesizer.aclose()
+    fake = FakeTtsSynthesizer.instances[0]
+    assert fake.cancelled is True
+    assert fake.completed is False
+
+    anext_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await anext_task
+    await synthesizer.aclose()  # 幂等：无在途合成时是 no-op
+
+
+async def test_normal_completion_does_not_warn_about_thread(
+    fake_tts_sdk, caplog
+) -> None:
+    """正常收尾不再逐次告警（0.5s 内未结束是 SDK 收尾的常规情形）。"""
+    with caplog.at_level(logging.WARNING, logger=qwen_tts.logger.name):
+        synthesizer = QwenSpeechSynthesizer()
+        [chunk async for chunk in synthesizer.synthesize(_tts_request())]
+        await asyncio.sleep(0.05)
+    assert "TTS 合成线程" not in caplog.text
+
+
+async def test_stuck_synthesis_thread_is_reported(
+    fake_tts_sdk, monkeypatch, caplog
+) -> None:
+    """线程确实卡死时仍必须告警：只降噪，不掩盖真实泄漏。"""
+    started = threading.Event()
+    release = threading.Event()
+    FakeTtsSynthesizer.block_complete = True
+    FakeTtsSynthesizer.complete_started = started
+    FakeTtsSynthesizer.complete_release = release
+    monkeypatch.setattr(qwen_tts, "_CLOSE_WAIT_S", 0.05)
+    monkeypatch.setattr(qwen_tts, "_TTS_THREAD_REAP_WARN_S", 0.05)
+
+    with caplog.at_level(logging.WARNING, logger=qwen_tts.logger.name):
+        synthesizer = QwenSpeechSynthesizer()
+        [chunk async for chunk in synthesizer.synthesize(_tts_request())]
+        for _ in range(100):
+            if "TTS 合成线程" in caplog.text:
+                break
+            await asyncio.sleep(0.02)
+    release.set()
+    assert "TTS 合成线程" in caplog.text

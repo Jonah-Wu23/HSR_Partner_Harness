@@ -2,6 +2,7 @@ import type { HarnessActions } from "../contracts/actions";
 import type { PairRecord } from "../contracts/protocol";
 import type { ConnectionViewStatus } from "./status/types";
 import { ConnectionPill } from "./status/ConnectionPill";
+import { DemoModeNotice } from "./status/DemoModeNotice";
 import { SettingIcon, StopIcon } from "../assets/icons/icons";
 import { getPairAvatars } from "../assets/pairs/avatars";
 
@@ -35,6 +36,8 @@ export function TopBar({
   return (
     <header className="app-topbar">
       <ConnectionPill status={connectionStatus} onOpenDetails={onOpenTechDetails} />
+      {/* V039-S4-002：演示模式与连接状态并列标注，不合并成同一个结论 */}
+      <DemoModeNotice />
 
       <div className="topbar-brand">
         <span className="topbar-title">HSR Partner Harness</span>

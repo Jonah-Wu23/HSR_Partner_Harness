@@ -12,7 +12,7 @@ from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDia
 from pair_harness.adapters.reviewer import DialogueModelReviewer
 from pair_harness.app_paths import AppPaths
 from pair_harness.config.pairs import load_pair_config, load_prompt
-from pair_harness.config.providers import detect_provider, load_reasoning_preset
+from pair_harness.config.providers import load_reasoning_preset
 from pair_harness.core.contracts import ApprovalDecision, ApprovalMode, MessageSource, ProjectRef
 from pair_harness.core.orchestrator import ConversationOrchestrator
 from pair_harness.settings import Settings
@@ -46,7 +46,7 @@ def load_dotenv(path: Path) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Pair Harness local demo")
     parser.add_argument("--demo", action="store_true", help="run predictable local adapters")
-    parser.add_argument("--real", action="store_true", help="run live dialogue API + codex app-server")
+    parser.add_argument("--real", action="store_true", help="run live dialogue API + reasonix acp")
     parser.add_argument("--pair", default="phainon_ancient_machine", help="pair id (--real)")
     parser.add_argument("--project", default=".", help="project folder")
     parser.add_argument("--message", default="请让古代机械创建 hello.txt，内容为 hello")
@@ -115,11 +115,11 @@ async def run_real(
 ) -> int:
     """B1：真实后端单轮冒烟。
 
-    - 角色和古代机械共用同一供应商配置：DeepSeek 走 DeepSeek，OpenAI
-      配置走 GPT/Codex；
-    - 编程引擎由 ``PAIR_HARNESS_DIALOGUE_BASE_URL`` 识别并构建；
-    - 状态库持久化：同一 ``--conversation`` 二次运行恢复旧聊天与编程线程
-      （thread/resume），新会话 id 另开新线程（不继承旧会话）；
+    - 角色和古代机械共用同一供应商配置（任意 OpenAI Chat Completions 兼容端点）；
+    - 编程引擎统一为 reasonix acp，端点经 ``PAIR_HARNESS_DIALOGUE_BASE_URL``
+      写入账号私有的 Reasonix 配置；
+    - 状态库持久化：同一 ``--conversation`` 二次运行恢复旧聊天与 ACP 会话
+      （session/resume），新会话 id 另开会话（不继承旧会话）；
     - 审批策略按 ``_engine_policy`` 映射（§14.6），三种模式逐一可验。
     """
     project_path = project_path.resolve()
@@ -168,13 +168,7 @@ async def run_real(
         temperature=1.0,
     )
     engine = build_coding_engine(
-        engine_choice=(
-            "deepseek"
-            if detect_provider(settings.dialogue_base_url).value == "deepseek"
-            else "codex"
-        ),
         codex_auth=CodexAuthService(paths.database.parent, "default-local"),
-        codex_bin=settings.codex_bin,
         model=settings.dialogue_model,
         base_url=settings.dialogue_base_url,
         api_key=settings.dialogue_api_key,

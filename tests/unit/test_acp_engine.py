@@ -19,9 +19,12 @@ from pair_harness.core.contracts import (
     CharacterTurn,
     EngineEventType,
     EngineSessionRef,
+    MessageOrigin,
     MessageSource,
+    MessageStatus,
     ProjectRef,
     TaskRequest,
+    TaskRequestDraft,
 )
 from pair_harness.core.orchestrator import ConversationOrchestrator
 from tests.fakes import FixedDialogueModel
@@ -320,26 +323,6 @@ class LegacyShapedServer(FakeAcpServer):
         return await super().handle_request(method, params)
 
 
-class MissingStopReasonServer(FakeAcpServer):
-    """真实 ACP 成功响应的兼容形状：session/prompt 只返回 sessionId。"""
-
-    async def handle_request(self, method: str, params: dict) -> dict:
-        result = await super().handle_request(method, params)
-        if method == "session/prompt":
-            result.pop("stopReason", None)
-        return result
-
-
-class ErrorStopReasonAfterSuccessServer(FakeAcpServer):
-    """Reasonix v1.24.2 的真实形状：成功事件后返回 stopReason=error。"""
-
-    async def handle_request(self, method: str, params: dict) -> dict:
-        result = await super().handle_request(method, params)
-        if method == "session/prompt":
-            result["stopReason"] = "error"
-        return result
-
-
 @pytest.mark.asyncio
 async def test_run_turn_accepts_snake_case_fields_and_rejected_status(
     engine_and_server,
@@ -370,81 +353,162 @@ async def test_run_turn_accepts_snake_case_fields_and_rejected_status(
     assert events[-1].type == EngineEventType.TURN_COMPLETED
 
 
-class CancelledStopReasonAfterSuccessServer(FakeAcpServer):
-    """Reasonix 在成功工具与助手正文后返回 stopReason=cancelled。"""
+class ScriptedStopReasonServer(FakeAcpServer):
+    """按脚本改写 session/prompt 响应：指定 stopReason、去掉它或注入 error。
+
+    基类脚本已经推送助手正文与一次成功工具回执，因此这些用例都发生在
+    「工具与正文均已成功」的前提下——正是 V039-S4-009 的场景。
+    drop_stop_reason 造的是违反 ACP v1 必填字段要求的响应，用于确认协议
+    违规不会被当成成功。
+    """
+
+    def __init__(
+        self,
+        transport: FakeTransport,
+        *,
+        stop_reason: str | None = None,
+        drop_stop_reason: bool = False,
+        result_error: str | None = None,
+    ) -> None:
+        super().__init__(transport)
+        self.stop_reason = stop_reason
+        self.drop_stop_reason = drop_stop_reason
+        self.result_error = result_error
 
     async def handle_request(self, method: str, params: dict) -> dict:
         result = await super().handle_request(method, params)
-        if method == "session/prompt":
-            result["stopReason"] = "cancelled"
+        if method != "session/prompt":
+            return result
+        if self.drop_stop_reason:
+            result.pop("stopReason", None)
+        elif self.stop_reason is not None:
+            result["stopReason"] = self.stop_reason
+        if self.result_error is not None:
+            result["error"] = self.result_error
         return result
 
 
+async def _run_scripted_turn(engine, transport, server) -> list:
+    transport.server = server
+    ref = await engine.open_session(
+        ProjectRef(project_id="p1", name="项目", root_path="C:/project")
+    )
+    return [
+        event
+        async for event in engine.run_turn(
+            ref,
+            TaskRequest(conversation_id="c1", origin_message_id="m1", instructions="检查项目文件"),
+        )
+    ]
+
+
 @pytest.mark.asyncio
-async def test_run_turn_keeps_completed_status_for_cancelled_after_success(
+async def test_run_turn_reports_failed_for_error_stop_reason_after_successful_tools(
     engine_and_server,
 ) -> None:
-    """工具与正文均成功后 stopReason=cancelled：状态保持完成，附真实 stop_reason 警告。
+    """V039-S4-009：工具与正文全部成功后 stopReason=error，终态仍必须是 failed。
 
-    已有 recoverable 逻辑只覆盖 error/fail；V0.3.3 把「工具与正文均已成功」
-    的 cancelled 也纳入，避免角色把已完成的任务转述成「取消」。
+    工具执行成功不能反证引擎终态成功；旧实现据此把协议终态改写成
+    completed，界面因此显示与引擎终态相反的「已完成」。
     """
     engine, transport, _server = engine_and_server
-    transport.server = CancelledStopReasonAfterSuccessServer(transport)
-    ref = await engine.open_session(
-        ProjectRef(project_id="p1", name="项目", root_path="C:/project")
+    events = await _run_scripted_turn(
+        engine, transport, ScriptedStopReasonServer(transport, stop_reason="error")
     )
-    events = [
-        event
-        async for event in engine.run_turn(
-            ref,
-            TaskRequest(conversation_id="c1", origin_message_id="m1", instructions="检查项目文件"),
-        )
-    ]
+    assert events[-1].type == EngineEventType.TURN_FAILED
+    assert events[-1].payload["stop_reason"] == "error"
+    assert events[-1].payload["error"] == "error"
+    assert "warning" not in events[-1].payload
+    # 助手正文与工具回执照常送达——失败只体现在终态，不吞掉真实内容
+    assert any(event.type == EngineEventType.ASSISTANT_FINAL for event in events)
+    finished = [e for e in events if e.type == EngineEventType.TOOL_FINISHED]
+    assert finished and finished[0].payload["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_run_turn_reports_cancelled_for_cancelled_stop_reason_after_success(
+    engine_and_server,
+) -> None:
+    """stopReason=cancelled 是协议终态，既不是 failed 也不伪装成 completed。"""
+    engine, transport, _server = engine_and_server
+    events = await _run_scripted_turn(
+        engine, transport, ScriptedStopReasonServer(transport, stop_reason="cancelled")
+    )
     assert events[-1].type == EngineEventType.TURN_COMPLETED
+    assert events[-1].payload["status"] == "cancelled"
     assert events[-1].payload["stop_reason"] == "cancelled"
-    assert events[-1].payload["warning"] == "cancelled"
+    assert "error" not in events[-1].payload
 
 
 @pytest.mark.asyncio
-async def test_run_turn_recovers_error_stop_reason_after_successful_tools(
+async def test_run_turn_reports_failed_for_unsuccessful_stop_reason(
     engine_and_server,
 ) -> None:
-    """成功工具与助手终稿齐全时保留终态警告，但任务仍为 completed。"""
+    """max_turn_requests 等非成功终态如实上报失败，并带上协议原始取值。"""
     engine, transport, _server = engine_and_server
-    transport.server = ErrorStopReasonAfterSuccessServer(transport)
-    ref = await engine.open_session(
-        ProjectRef(project_id="p1", name="项目", root_path="C:/project")
+    events = await _run_scripted_turn(
+        engine, transport, ScriptedStopReasonServer(transport, stop_reason="max_turn_requests")
     )
-    events = [
-        event
-        async for event in engine.run_turn(
-            ref,
-            TaskRequest(conversation_id="c1", origin_message_id="m1", instructions="检查项目文件"),
-        )
-    ]
-    assert events[-1].type == EngineEventType.TURN_COMPLETED
-    assert events[-1].payload["warning"] == "error"
+    assert events[-1].type == EngineEventType.TURN_FAILED
+    assert events[-1].payload["stop_reason"] == "max_turn_requests"
+    assert events[-1].payload["error"] == "max_turn_requests"
 
 
 @pytest.mark.asyncio
-async def test_run_turn_treats_missing_stop_reason_without_error_as_completed(
+async def test_run_turn_reports_failed_for_unknown_stop_reason(engine_and_server) -> None:
+    """协议漂移：未知 stopReason 不得被猜测成成功，原始取值进入失败回执。"""
+    engine, transport, _server = engine_and_server
+    events = await _run_scripted_turn(
+        engine, transport, ScriptedStopReasonServer(transport, stop_reason="some_new_reason")
+    )
+    assert events[-1].type == EngineEventType.TURN_FAILED
+    assert events[-1].payload["error"] == "some_new_reason"
+
+
+@pytest.mark.asyncio
+async def test_run_turn_reports_failed_for_result_error_field(engine_and_server) -> None:
+    """成功 stopReason 但结果里带真实 error 字段时，按失败上报并保留原文。"""
+    engine, transport, _server = engine_and_server
+    events = await _run_scripted_turn(
+        engine,
+        transport,
+        ScriptedStopReasonServer(
+            transport, stop_reason="end_turn", result_error="provider 502 bad gateway"
+        ),
+    )
+    assert events[-1].type == EngineEventType.TURN_FAILED
+    assert events[-1].payload["error"] == "provider 502 bad gateway"
+
+
+@pytest.mark.asyncio
+async def test_run_turn_reports_failed_for_missing_stop_reason(
     engine_and_server,
 ) -> None:
-    """ACP 成功响应缺省 stopReason 时不应把已完成回合标成失败。"""
+    """stopReason 缺失是协议违规，不是成功。
+
+    ACP v1 的 PromptResponse.stopReason 是必填字段，prompt-turn §4 明确
+    要求 Agent 必须以 StopReason 响应 session/prompt；只带 sessionId 的是
+    session/new 的响应形状。此前按「兼容形状」放行为 completed 的分支已删除。
+    """
     engine, transport, _server = engine_and_server
-    transport.server = MissingStopReasonServer(transport)
-    ref = await engine.open_session(
-        ProjectRef(project_id="p1", name="项目", root_path="C:/project")
+    events = await _run_scripted_turn(
+        engine, transport, ScriptedStopReasonServer(transport, drop_stop_reason=True)
     )
-    events = [
-        event
-        async for event in engine.run_turn(
-            ref,
-            TaskRequest(conversation_id="c1", origin_message_id="m1", instructions="检查项目文件"),
-        )
-    ]
-    assert events[-1].type == EngineEventType.TURN_COMPLETED
+    assert events[-1].type == EngineEventType.TURN_FAILED
+    assert events[-1].payload["stop_reason"] == ""
+    assert "stopReason" in events[-1].payload["error"]
+
+
+@pytest.mark.asyncio
+async def test_run_turn_reports_failed_for_blank_stop_reason(engine_and_server) -> None:
+    """stopReason 为空串同样是协议违规；失败原因不得留空。"""
+    engine, transport, _server = engine_and_server
+    events = await _run_scripted_turn(
+        engine, transport, ScriptedStopReasonServer(transport, stop_reason="   ")
+    )
+    assert events[-1].type == EngineEventType.TURN_FAILED
+    assert events[-1].payload["error"].strip() != ""
+    assert "stopReason" in events[-1].payload["error"]
 
 
 @pytest.mark.asyncio
@@ -739,3 +803,47 @@ async def test_sandbox_denial_break_does_not_leak_session_subscription() -> None
     assert second.receipt is not None
     assert second.receipt.status == "failed"
     assert any("路径越界" in err for err in second.receipt.errors)
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_delegation_card_failed_for_error_stop_reason_after_successful_tools() -> None:
+    """V039-S4-009 端到端：成功工具后的 stopReason=error 落成失败回执与失败委派卡。
+
+    委派卡的终态来自 ExecutionReceipt.status；旧实现按「工具与正文均已成功」
+    把它改写成 completed，用户在卡片上看到与引擎终态相反的「已完成」。
+    """
+    transport = FakeTransport()
+    transport.server = ScriptedStopReasonServer(transport, stop_reason="error")
+    engine = AcpCodingEngine(transport)
+    orchestrator = ConversationOrchestrator(
+        pair_id="phainon_ancient_machine",
+        project=ProjectRef(project_id="p", name="p", root_path="C:/project"),
+        dialogue_model=FixedDialogueModel(
+            CharacterTurn(
+                speech="交给古代机械。",
+                delegation=TaskRequestDraft(instructions="检查项目文件"),
+            ),
+            CharacterTurn(speech="结果出来了。", delegation=None),
+        ),
+        coding_engine=engine,
+        store=None,
+        approval_mode=ApprovalMode.FULL_AUTO,
+    )
+    outcome = await orchestrator.handle_character_input(
+        conversation_id="c", text="帮我看看项目文件"
+    )
+    assert outcome.receipt is not None
+    assert outcome.receipt.status == "failed"
+    # 失败原因就是协议终态本身，没有别的失败来源
+    assert tuple(outcome.receipt.errors) == ("error",)
+    # 工具本身成功——失败只来自协议终态，不能被工具成功掩盖
+    finished = [
+        event for event in outcome.engine_events
+        if event.type == EngineEventType.TOOL_FINISHED
+    ]
+    assert finished and finished[0].payload["status"] == "succeeded"
+    cards = [
+        message for message in outcome.messages
+        if message.origin == MessageOrigin.CHARACTER_DELEGATION
+    ]
+    assert cards and cards[0].status == MessageStatus.FAILED

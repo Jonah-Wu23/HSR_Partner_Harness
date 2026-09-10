@@ -98,6 +98,55 @@ describe("RemotePairingPanel (V0.3.3 远程设备配对面板)", () => {
     expect(screen.getByTestId("pairing-code")).toHaveTextContent("839201");
   });
 
+  it("V039-S4-004：serve 已监听但无局域网地址时按真实状态说明，不再断言「未启动或启动失败」", () => {
+    const props = createMockPanelProps({
+      code: "839201",
+      issuedAtEpochMs: Date.now(),
+      ttlSeconds: 300,
+      serveAddress: null,
+      servePort: 8765,
+      serveUnavailableReason: "no_lan_address",
+    });
+
+    render(<RemotePairingPanel {...props} />);
+
+    const alert = screen.getByTestId("pairing-qr-unavailable");
+    expect(alert).toHaveTextContent("远程服务已在监听端口 8765");
+    expect(alert).toHaveTextContent("未探测到局域网地址");
+    expect(alert).not.toHaveTextContent("未启动或启动失败");
+  });
+
+  it("V039-S4-004：serve 启动失败时原样转述后端报文", () => {
+    const props = createMockPanelProps({
+      code: "839201",
+      issuedAtEpochMs: Date.now(),
+      ttlSeconds: 300,
+      serveAddress: null,
+      serveFailure: "远程服务启动失败（端口 8765）：[WinError 10048] 地址已在使用",
+    });
+
+    render(<RemotePairingPanel {...props} />);
+
+    expect(screen.getByTestId("pairing-qr-unavailable")).toHaveTextContent(
+      "远程服务启动失败（端口 8765）：[WinError 10048] 地址已在使用",
+    );
+  });
+
+  it("V039-S4-004：完全未收到上报时如实说明未收到地址，不编造原因", () => {
+    const props = createMockPanelProps({
+      code: "839201",
+      issuedAtEpochMs: Date.now(),
+      ttlSeconds: 300,
+      serveAddress: null,
+    });
+
+    render(<RemotePairingPanel {...props} />);
+
+    const alert = screen.getByTestId("pairing-qr-unavailable");
+    expect(alert).toHaveTextContent("尚未收到 Sidecar 上报的远程服务地址");
+    expect(alert).not.toHaveTextContent("启动失败");
+  });
+
   it("倒计时递减并在过期后展示「已过期，请重新生成」，过期码不再可用", () => {
     vi.useFakeTimers();
     const baseTime = 1700000000000;

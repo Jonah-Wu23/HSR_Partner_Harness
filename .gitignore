@@ -33,6 +33,8 @@ output/
 desktop/mobile/connection-check.log
 desktop/src-tauri/gen/android/buildSrc/.kotlin/
 desktop/src-tauri/gen/android/app/src/main/assets/
+# 运行时的本地账号与端点配置（含密钥），不入库
+accounts/
 
 docs/promo/
 .dsh_better_edit/

@@ -141,6 +141,11 @@ export function MetricsPanel({
   onLoad,
   onLoadMore,
 }: MetricsPanelProps) {
+  // metrics 为 null/undefined = 尚未读取，[] = 服务端返回的真实零条。
+  const read = metrics !== null && metrics !== undefined;
+  const rows = metrics ?? [];
+  const failed = state === "failed";
+  const hasRows = rows.length > 0;
   return (
     <section className="diag-panel" aria-label="指标">
       <div className="diag-panel-head">
@@ -163,27 +168,43 @@ export function MetricsPanel({
         </p>
       ) : null}
 
-      {state === "loading" && !metrics ? (
+      {state === "loading" && !hasRows ? (
         <p className="diag-panel-hint" role="status">
           正在读取指标…
         </p>
       ) : null}
 
-      {metrics === null || metrics === undefined ? (
-        state === "loading" ? null : (
+      {/* 结论行：失败时不得给出「0 条」这类成功语义；读取中也不提前下结论。 */}
+      {failed ? (
+        hasRows ? (
+          <p className="diag-panel-hint" role="status" data-testid="diag-metrics-stale">
+            本次读取失败，以下 {rows.length} 条是上一次成功读取的结果。
+          </p>
+        ) : (
           <p className="diag-panel-hint" role="status" data-testid="diag-metrics-nodata">
-            {state === "failed" ? "指标未读取到，错误见上方。" : "无数据：尚未读取指标。"}
+            指标未读取到，错误见上方。
           </p>
         )
-      ) : metrics.length === 0 ? (
-        <p className="diag-panel-hint" role="status" data-testid="diag-metrics-empty">
-          查询返回 0 条指标记录。
-        </p>
-      ) : (
-        <>
-          <p className="diag-panel-hint" role="status" data-testid="diag-metrics-count">
-            共 {metrics.length} 条指标记录。
+      ) : !read ? (
+        state === "loading" ? null : (
+          <p className="diag-panel-hint" role="status" data-testid="diag-metrics-nodata">
+            无数据：尚未读取指标。
           </p>
+        )
+      ) : !hasRows ? (
+        state === "loading" ? null : (
+          <p className="diag-panel-hint" role="status" data-testid="diag-metrics-empty">
+            查询返回 0 条指标记录。
+          </p>
+        )
+      ) : (
+        <p className="diag-panel-hint" role="status" data-testid="diag-metrics-count">
+          共 {rows.length} 条指标记录。
+        </p>
+      )}
+
+      {hasRows ? (
+        <>
           <div className="diag-table-wrap">
             <table className="diag-table">
               <thead>
@@ -201,7 +222,7 @@ export function MetricsPanel({
                 </tr>
               </thead>
               <tbody>
-                {metrics.map((metric) => (
+                {rows.map((metric) => (
                   <MetricRow key={metric.metric_id} metric={metric} />
                 ))}
               </tbody>
@@ -217,7 +238,7 @@ export function MetricsPanel({
             )
           ) : null}
         </>
-      )}
+      ) : null}
     </section>
   );
 }

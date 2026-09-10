@@ -1,4 +1,4 @@
-import type { ApprovalMode, ReasoningEffort } from "./protocol";
+import type { ApprovalMode, PairMemory, ReasoningEffort } from "./protocol";
 
 /** chat.submit 的真实返回：快速接受时 status=received，忙碌入队时 queued=true。 */
 export interface SubmitMessageResult {
@@ -7,11 +7,6 @@ export interface SubmitMessageResult {
   status?: string;
   queued?: boolean;
   turn_id?: string;
-}
-
-export interface CodexOAuthStatus {
-  status: string;
-  account_label?: string | null;
 }
 
 export interface HarnessActions {
@@ -80,11 +75,6 @@ export interface HarnessActions {
   testConnection(): Promise<string>;
   /** 本地 Toast 关闭（不经过后端）。 */
   dismissToast(id: string): void;
-  codexOauthStart(): Promise<void>;
-  /** 查询 Codex OAuth 登录状态（供首次引导/设置页轮询）。 */
-  codexOauthStatus(): Promise<CodexOAuthStatus>;
-  codexApiLogin(apiKey: string): Promise<void>;
-  codexLogout(): Promise<void>;
   /** 试听音色：text 试听文本，voiceId 缺省/非当前有效音色时用角色音色；
       V0.3.2 M6 音色来自当前账号生成结果（或开发机作者 Key）。 */
   voicePreview(text: string, voiceId?: string): Promise<void>;
@@ -183,6 +173,31 @@ export interface HarnessActions {
     conversation_id?: string;
     includeHidden?: boolean;
   }): Promise<import("./view-models").PromptAssemblyView>;
+  /* —— V0.3.9 §2 长期记忆（memory.* 命令）—— */
+  /** 读取指定会话（缺省为本窗口当前聊天）作用域内的记忆。
+      作用域由服务端按会话权威解析（account/project/pair/character_ref/assistant_identity），
+      客户端只传 conversation_id，不拼接五元组。 */
+  listMemories?(opts?: {
+    conversationId?: string | null;
+    status?: "active" | "deleted";
+  }): Promise<PairMemory[]>;
+  /** 在指定会话的权威作用域内新增一条记忆（memory.create）。
+      content 是 JSON 对象，语义归模型/用户，代码不改写、不筛选。 */
+  createMemory?(
+    content: Record<string, unknown>,
+    opts?: { conversationId?: string | null },
+  ): Promise<PairMemory>;
+  /** 改写一条记忆的内容（memory.update）；作用域同样由服务端解析，越作用域真实报错。 */
+  updateMemory?(
+    memoryId: string,
+    content: Record<string, unknown>,
+    opts?: { conversationId?: string | null },
+  ): Promise<PairMemory>;
+  /** 软删除一条记忆（memory.delete）；返回服务端落库后的记录。 */
+  deleteMemory?(
+    memoryId: string,
+    opts?: { conversationId?: string | null },
+  ): Promise<PairMemory>;
 }
 
 /** voice.provision 的真实返回：completed 或 partial_failed + 每项结果。 */

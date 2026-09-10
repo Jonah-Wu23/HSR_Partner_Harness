@@ -1,3 +1,4 @@
+import { DemoModeNotice } from "./DemoModeNotice";
 import type { ConnectionDetails, ConnectionViewStatus } from "./types";
 
 interface TechDetailsDrawerProps {
@@ -49,6 +50,8 @@ export function TechDetailsDrawer({
             <dt>本地服务（Sidecar）</dt>
             <dd>{details.sidecarStatus ?? "未知"}</dd>
           </div>
+          {/* V039-S4-002：Sidecar 自报的运行模式（未上报时不显示，不替它下结论） */}
+          <DemoModeNotice variant="detail" />
           {details.lastError ? (
             <div className="tech-drawer-row">
               <dt>最近错误</dt>

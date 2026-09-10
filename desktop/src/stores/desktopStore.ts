@@ -12,6 +12,7 @@ import type {
   ConversationSummary,
   DesktopEvent,
   DesktopSnapshot,
+  MemoryWirePayload,
   Message,
   PairMemory,
   PairRecord,
@@ -32,8 +33,13 @@ import type {
   MainView,
   RemotePairingViewModel,
 } from "../contracts/view-models";
+// 线缆解码是运行期函数（不是类型）：memory.* 的扁平载荷在这里转成前端记录。
+import { pairMemoryFromPayload } from "../contracts/protocol";
 
 export type DesktopStatus = "booting" | "ready" | "disconnected" | "error";
+
+/** error.reported 中描述「本地服务已断开」的协议错误码；toast id 以它为前缀。 */
+const DISCONNECT_TOAST_PREFIX = "backend_disconnected:";
 
 /** V0.2 M4：Toast 队列项——store 层用协议无关的最小结构，
     与 ui/status/types.ts 的 ToastItem 形状一致，由 presenters 透传。 */
@@ -74,6 +80,27 @@ export interface PromptAssemblyDiagnostics {
   diagnostics?: Record<string, unknown> | string[] | null;
   hidden_content_included: boolean;
   generated_at?: string | null;
+}
+
+/** V039-S4-002：Sidecar 自报的运行模式信息（backend.ready 载荷）。 */
+export interface BackendInfo {
+  pid: number | null;
+  /** Sidecar 自报是否运行在演示模式；null 表示未上报（不等于「真实模式」）。 */
+  demo: boolean | null;
+  /** 模式判定来源（V039-S4-002 定型）：explicit_real | explicit_demo | default_real；
+      未上报为 null，未知取值原样保留，不归一化也不改写。 */
+  modeSource: string | null;
+}
+
+/** V0.3.9 §2：设置中心「长期记忆」页的读取状态（真实 memory.list 结果，非推导值）。 */
+export interface MemoryPanelState {
+  /** 本次读取针对的会话（作用域由服务端按该会话解析）；null 表示尚未读取。 */
+  conversationId: string | null;
+  loading: boolean;
+  /** memory.list 的真实失败原文；成功读取后清除。 */
+  error: string | null;
+  /** 至少完成过一次真实 memory.list（区分「未读取」与「真实零条」）。 */
+  loaded: boolean;
 }
 
 /** V0.3.9 契约 §6：语音抢占反馈（voice.playback_interrupted）。 */
@@ -153,6 +180,10 @@ export interface DesktopState {
   memories: PairMemory[];
   /** V0.3.9 §2：按聊天存放的长期记忆记录。 */
   memoriesByConversation: Record<string, PairMemory[]>;
+  /** V0.3.9 §2：记忆页读取状态（memory.list 的真实结果与失败原文）。 */
+  memoryPanel: MemoryPanelState;
+  /** V039-S4-002：Sidecar 自报的运行模式（显式演示模式必须有可见标识）。 */
+  backendInfo: BackendInfo | null;
   /** V0.3.9 §2：摘要触发详情，键为 conversation_id -> summary_id。 */
   summaryTriggersByConversation: Record<string, Record<string, import("../contracts/view-models").SummaryTriggerInfo>>;
   /** V0.3.9 §2：真实存在的恢复目标。 */
@@ -180,6 +211,7 @@ export interface DesktopState {
   setMemories(memories: PairMemory[]): void;
   setMemoriesForConversation(conversationId: string, memories: PairMemory[]): void;
   upsertMemory(memory: PairMemory, conversationId?: string): void;
+  setMemoryPanel(patch: Partial<MemoryPanelState>): void;
   setSummaryTriggers(conversationId: string, triggers: Record<string, import("../contracts/view-models").SummaryTriggerInfo>): void;
   setSummaryRegenerateTarget(target: import("../contracts/view-models").SummaryRegenerateTarget | null): void;
   regenerateSummary(summaryIdOrTarget: string | { summary_id: string; conversation_id?: string; reason?: "failed_record" | "user_request" }): Promise<void>;
@@ -223,6 +255,8 @@ export interface DesktopState {
   setCharacterLibrary(partial: Partial<CharacterLibraryViewModel>): void;
   setCharacterCreate(partial: Partial<CharacterCreateViewModel>): void;
   setRemotePairing(partial: Partial<RemotePairingViewModel>): void;
+  /** V039-S4-004：合并 serve 地址载荷（serve.started 事件与 remote.issue_code 返回同形）。 */
+  setServeAddress(payload: unknown): void;
   hydrate(snapshot: DesktopSnapshot): void;
   applyEvents(events: DesktopEvent[]): void;
   /** V0.3.2 M5：装载 conversation.open 的只读结果并打开对应标签（不改全局当前聊天）。 */
@@ -293,6 +327,8 @@ export type DesktopRenderState = Pick<
   | "summariesByConversation"
   | "memories"
   | "memoriesByConversation"
+  | "memoryPanel"
+  | "backendInfo"
   | "summaryTriggersByConversation"
   | "summaryRegenerateTarget"
   | "remoteControl"
@@ -362,6 +398,7 @@ function createInitialState(): Omit<
   | "setCharacterLibrary"
   | "setCharacterCreate"
   | "setRemotePairing"
+  | "setServeAddress"
   | "setPowerStatus"
   | "setPowerError"
   | "setPowerQueryInFlight"
@@ -371,6 +408,7 @@ function createInitialState(): Omit<
   | "setMemories"
   | "setMemoriesForConversation"
   | "upsertMemory"
+  | "setMemoryPanel"
   | "setSummaryTriggers"
   | "setSummaryRegenerateTarget"
   | "regenerateSummary"
@@ -441,6 +479,9 @@ function createInitialState(): Omit<
       loading: false,
       error: null,
       serveAddress: null,
+      servePort: null,
+      serveUnavailableReason: null,
+      serveFailure: null,
     },
     powerStatus: null,
     powerError: null,
@@ -449,6 +490,8 @@ function createInitialState(): Omit<
     summariesByConversation: {},
     memories: [],
     memoriesByConversation: {},
+    memoryPanel: { conversationId: null, loading: false, error: null, loaded: false },
+    backendInfo: null,
     summaryTriggersByConversation: {},
     summaryRegenerateTarget: null,
     remoteControl: null,
@@ -848,6 +891,18 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
   return { ...hydrated, ...refreshWindowTask(hydrated) };
 }
 
+/**
+ * memory.updated / memory.deleted 事件载荷 → 前端记录。
+ *
+ * 完整记录携带 status（服务端 `_memory_payload` 恒为完整载荷）时按线缆解码；
+ * 只带 memory_id 的载荷返回 null，由调用方按 id 处理既有记录（不凭空造记录）。
+ */
+function memoryRecordFromEventPayload(raw: MemoryWirePayload | undefined): PairMemory | null {
+  if (!raw || typeof raw.memory_id !== "string" || !raw.memory_id) return null;
+  if (raw.status !== "active" && raw.status !== "deleted") return null;
+  return pairMemoryFromPayload(raw);
+}
+
 function applyErrorReported(state: DesktopState, event: DesktopEvent): DesktopState {
   // V0.2 错误分级（问题 9）：fatal 接管整屏；recoverable/info 保留已加载
   // 内容，入 Toast 队列（同 code+message 去重，最多 5 条）。
@@ -861,9 +916,18 @@ function applyErrorReported(state: DesktopState, event: DesktopEvent): DesktopSt
     };
   }
   const text = String(payload.message ?? "");
+  // V039-S4-007：Rust 的 publish_disconnected 在同一次调用里先发
+  // connection.status{disconnected}，再发这条 error.reported（lib.rs:520-548）。
+  // 两路描述同一个事实；只要这条错误上屏，连接就确实已经断开，因此连接状态
+  // 也如实落到 disconnected，避免药丸显示「已连接」而与通知互相矛盾。
+  const disconnected = payload.code === "backend_disconnected";
   return {
     ...state,
+    ...(disconnected
+      ? { status: "disconnected" as DesktopStatus, needsBootstrap: false }
+      : {}),
     error: text,
+    remotePairing: remotePairingWithServeFailure(state.remotePairing, payload.code, text),
     toasts: pushToast(state.toasts, {
       id: `${payload.code ?? "error"}:${text}`,
       kind: severity === "info" ? "info" : "warning",
@@ -873,14 +937,84 @@ function applyErrorReported(state: DesktopState, event: DesktopEvent): DesktopSt
   };
 }
 
+/** V039-S4-002：backend.ready 的运行模式字段；整批缺失时保持上一次的真实值。 */
+function readBackendInfo(payload: unknown, previous: BackendInfo | null): BackendInfo | null {
+  const raw = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+  const pid = typeof raw.pid === "number" ? raw.pid : null;
+  const demo = typeof raw.demo === "boolean" ? raw.demo : null;
+  const modeSource =
+    typeof raw.mode_source === "string" && raw.mode_source ? raw.mode_source : null;
+  if (pid === null && demo === null && modeSource === null) return previous;
+  return { pid, demo, modeSource };
+}
+
+/**
+ * V039-S4-004：合并 serve 地址载荷（serve.started 事件与 remote.issue_code 的
+ * serve_address 同形：{host: string|null, port: number, reason?: "no_lan_address"}）。
+ *
+ * 缺 port 属协议违规，保持原值不本地猜测；host 为 null 表示服务已监听但没有可用的
+ * 局域网地址，此时清空地址并保留真实端口与原因码。
+ */
+function remotePairingWithServeAddress(
+  remotePairing: DesktopState["remotePairing"],
+  payload: unknown,
+): DesktopState["remotePairing"] {
+  const raw = (payload && typeof payload === "object" ? payload : null) as
+    | { host?: unknown; port?: unknown; reason?: unknown }
+    | null;
+  if (!raw) return remotePairing;
+  if (typeof raw.port !== "number") {
+    // 缺 port 是协议违规：地址此刻不可知，不得继续展示上一次的二维码成功态。
+    return {
+      ...remotePairing,
+      serveAddress: null,
+      serveUnavailableReason: null,
+      serveFailure: "远程服务地址报文不符合协议：缺少 port",
+    };
+  }
+  const host = typeof raw.host === "string" && raw.host ? raw.host : null;
+  const reason = typeof raw.reason === "string" && raw.reason ? raw.reason : null;
+  return {
+    ...remotePairing,
+    serveAddress: host ? { host, port: raw.port } : null,
+    servePort: raw.port,
+    serveUnavailableReason: host ? null : reason,
+    // 服务已启动：上一次「启动失败」的报文条件已结束。
+    serveFailure: null,
+  };
+}
+
+/** V039-S4-004：远程服务启动失败的真实报文进远程设备页（二维码不可用的真实原因）。 */
+function remotePairingWithServeFailure(
+  remotePairing: DesktopState["remotePairing"],
+  code: string | undefined,
+  text: string,
+): DesktopState["remotePairing"] {
+  if (code !== "serve_start_failed") return remotePairing;
+  return { ...remotePairing, serveFailure: text };
+}
+
+/** 连接恢复后撤回描述「已断开/正在重连」的瞬时通知：该条件已经结束。
+    只按协议错误码匹配（backend_disconnected），不解析、不猜测通知文案。 */
+function retractDisconnectNotices(state: DesktopState): DesktopState {
+  const toasts = state.toasts.filter((toast) => !toast.id.startsWith(DISCONNECT_TOAST_PREFIX));
+  if (toasts.length === state.toasts.length) return state;
+  const retracted = state.toasts.filter((toast) => toast.id.startsWith(DISCONNECT_TOAST_PREFIX));
+  const errorWasDisconnect = retracted.some((toast) => toast.text === state.error);
+  return { ...state, toasts, error: errorWasDisconnect ? null : state.error };
+}
+
 function applyConnectionStatus(state: DesktopState, event: DesktopEvent): DesktopState {
   const streamId = normalizeStreamId(event.stream_id);
   const status = String(event.payload.status ?? "");
   // connected 总是权威：新代次到达时用它切换 streamId。
   // disconnected 只接受当前代次；旧 reader 迟到的 disconnected 不能覆盖新连接。
   if (status === "connected") {
+    // V039-S4-007：恢复即事实——「正在重连…」这类瞬时通知随恢复撤回，
+    // 不再与「已连接」同屏矛盾（toast 无 TTL，必须显式撤回）。
+    const recovered = retractDisconnectNotices(state);
     return {
-      ...state,
+      ...recovered,
       streamId: streamId ?? state.streamId,
       status: "booting",
       needsBootstrap: true,
@@ -993,6 +1127,9 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
     case "backend.ready":
       // M5.4：backend.ready 是新的 stream bootstrap 起点；等 state.snapshot
       // 水合前先暂存业务事件，AppController 看到 needsBootstrap 会重新拉快照。
+      // V039-S4-002：同时保留 Sidecar 自报的运行模式与来源，未上报的字段保持
+      // null（未知），绝不默认成「真实模式」。
+      next.backendInfo = readBackendInfo(event.payload, state.backendInfo);
       next.status = "booting";
       next.needsBootstrap = true;
       next.eventBuffer = [];
@@ -1529,14 +1666,13 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
     case "memory.updated": {
       // V0.3.9 §2：记忆内容由模型负责；store 只按 memory_id 存原始记录，
       // 不按关键词筛选、不静默截断。作用域由服务端下发，客户端不自行拼接。
-      const payload = event.payload as { memory?: PairMemory; conversation_id?: string } & Partial<PairMemory>;
-      const memory = payload.memory ?? (payload.memory_id ? (payload as PairMemory) : null);
-      const conversationId =
-        payload.conversation_id ??
-        (payload.memory as { scope?: { conversation_id?: string } } | undefined)?.scope?.conversation_id ??
-        next.activeConversationId ??
-        "";
-      if (memory && memory.memory_id) {
+      // 线缆载荷是扁平五分量（见 protocol.MemoryWirePayload），这里只做形状解码。
+      const payload = event.payload as unknown as MemoryWirePayload & {
+        memory?: MemoryWirePayload;
+      };
+      const memory = memoryRecordFromEventPayload(payload.memory ?? payload);
+      const conversationId = memory?.conversation_id ?? next.activeConversationId ?? "";
+      if (memory) {
         next.memories = [
           ...next.memories.filter((item) => item.memory_id !== memory.memory_id),
           memory,
@@ -1558,10 +1694,13 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
       // V0.3.9 §2：删除必须真实持久化——事件带完整记录时按记录落库，
       // 只带 id 时把已知记录标记为 deleted（状态枚举 active|deleted），
       // 未知 id 不凭空造记录。
-      const payload = event.payload as { memory?: PairMemory; conversation_id?: string } & Partial<PairMemory>;
-      const memory = payload.memory;
-      const memoryId = memory?.memory_id ?? payload.memory_id ?? "";
-      const conversationId = payload.conversation_id ?? next.activeConversationId ?? "";
+      const payload = event.payload as unknown as MemoryWirePayload & {
+        memory?: MemoryWirePayload;
+      };
+      const memory = memoryRecordFromEventPayload(payload.memory ?? payload);
+      const memoryId =
+        memory?.memory_id ?? (typeof payload.memory_id === "string" ? payload.memory_id : "");
+      const conversationId = memory?.conversation_id ?? next.activeConversationId ?? "";
       if (memory && memoryId) {
         next.memories = [
           ...next.memories.filter((item) => item.memory_id !== memoryId),
@@ -1656,14 +1795,10 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
       break;
     }
     case "serve.started": {
-      // V0.3.4 缺陷 6：Sidecar --serve 上报真实监听地址，二维码按它生成。
-      const payload = event.payload as { host?: unknown; port?: unknown };
-      if (typeof payload.host === "string" && typeof payload.port === "number") {
-        next.remotePairing = {
-          ...next.remotePairing,
-          serveAddress: { host: payload.host, port: payload.port },
-        };
-      }
+      // V0.3.4 缺陷 6 / V039-S4-004：Sidecar --serve 上报真实监听地址，二维码按它生成。
+      // host 为 null 表示服务确实已在监听、但未探测到可用的局域网地址；原因随
+      // reason 一并下发（如 no_lan_address），前端不再自行编造不可达地址或原因。
+      next.remotePairing = remotePairingWithServeAddress(next.remotePairing, event.payload);
       break;
     }
     case "power.status_changed": {
@@ -1730,7 +1865,11 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
             loading: false,
             error: null,
             serveAddress: null,
+            servePort: null,
+            serveUnavailableReason: null,
+            serveFailure: null,
           };
+          next.memoryPanel = { conversationId: null, loading: false, error: null, loaded: false };
           // 设置页重新打开后从新账号 config.get 和 remote.list_devices 水合。
           next.configSnapshot = null;
         }
@@ -2033,6 +2172,11 @@ export const desktopStore = createStore<DesktopState>((set, get) => ({
   setRemotePairing(patch) {
     set((state) => ({ remotePairing: { ...state.remotePairing, ...patch } }));
   },
+  setServeAddress(payload) {
+    set((state) => ({
+      remotePairing: remotePairingWithServeAddress(state.remotePairing, payload),
+    }));
+  },
   setPowerStatus(payload) {
     set((state) => ({
       powerStatus: payload,
@@ -2079,6 +2223,9 @@ export const desktopStore = createStore<DesktopState>((set, get) => ({
         [conversationId]: memories,
       },
     }));
+  },
+  setMemoryPanel(patch) {
+    set((state) => ({ memoryPanel: { ...state.memoryPanel, ...patch } }));
   },
   upsertMemory(memory, conversationId) {
     set((state) => {
@@ -2269,6 +2416,10 @@ export const selectLatestSummary = (
 export const selectActiveMemories = (state: DesktopState): PairMemory[] =>
   state.memories.filter((item) => item.status === "active");
 
+/** V039-S4-002：Sidecar 自报的演示模式；null 表示未上报，调用方不得当 false 处理。 */
+export const selectBackendDemoMode = (state: DesktopState): boolean | null =>
+  state.backendInfo?.demo ?? null;
+
 /** V0.3.2 M5：本窗口当前聊天只由活动标签决定；无标签时返回 null。 */
 export const selectWindowConversationId = (state: DesktopState): string | null =>
   state.activeConversationId;
@@ -2322,6 +2473,8 @@ export const selectDesktopRenderState = (state: DesktopState): DesktopRenderStat
   summariesByConversation: state.summariesByConversation,
   memories: state.memories,
   memoriesByConversation: state.memoriesByConversation,
+  memoryPanel: state.memoryPanel,
+  backendInfo: state.backendInfo,
   summaryTriggersByConversation: state.summaryTriggersByConversation,
   summaryRegenerateTarget: state.summaryRegenerateTarget,
   remoteControl: state.remoteControl,

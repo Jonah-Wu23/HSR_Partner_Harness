@@ -213,14 +213,6 @@ export class MockDesktopBackend implements DesktopBackend {
         return this.configSet(command.params) as T;
       case "config.test_connection":
         return { ok: true, message: "连接正常（延迟 12 ms）" } as T;
-      case "codex.oauth_start":
-        return { status: "waiting", note: "mock 登录" } as T;
-      case "codex.oauth_status":
-        return { status: "logged_in", account_label: "mock@openai" } as T;
-      case "codex.logout":
-        return { status: "logged_out" } as T;
-      case "codex.api_login":
-        return { status: "logged_in", account_label: "OpenAI API Key" } as T;
       case "voice.preview":
         return { voice: this.scenario.snapshot.voice } as T;
       case "voice.provision":
@@ -1281,7 +1273,9 @@ export class MockDesktopBackend implements DesktopBackend {
 
   private configGet(): {
     engine: string;
-    dialogue: Record<string, string>;
+    // dialogue 里除字符串外还有 provider_supported(boolean) 与
+    // provider_unavailable(object|null)，与真实 config.get 载荷一致。
+    dialogue: Record<string, unknown>;
     voice: Record<string, string>;
     codex: Record<string, string | null>;
   } {
@@ -1293,6 +1287,8 @@ export class MockDesktopBackend implements DesktopBackend {
         base_url: "https://api.deepseek.com",
         api_key_masked: "sk-d…1234",
         reasoning_effort: "auto",
+        provider_supported: true,
+        provider_unavailable: null,
       },
       voice: {
         enabled: "true",

@@ -648,7 +648,9 @@
   font-weight: 600;
   cursor: pointer;
   user-select: none;
-  touch-action: manipulation;
+  /* V0.3.9 P1：按住说话靠 pointer 事件维持采集时长，浏览器不得把手势抢去
+     滚动 / 缩放，否则长按过程中会被 pointercancel 提前打断。 */
+  touch-action: none;
 }
 
 .mobile-voice-hold-btn:active {

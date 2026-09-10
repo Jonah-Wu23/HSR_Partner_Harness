@@ -15,7 +15,6 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from pair_harness.adapters.codex.auth import CodexAuthService
-from pair_harness.adapters.codex.engine import CodexAppServerEngine
 from pair_harness.adapters.demo import ScriptedCodingEngine, ScriptedDialogueModel
 from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDialogueModel
 from pair_harness.adapters.reviewer import DialogueModelReviewer
@@ -80,6 +79,7 @@ from pair_harness.core.contracts import (
 from pair_harness.storage.records import (
     ConversationSummary as StorageSummary,
     MemoryScope as StorageMemoryScope,
+    PairMemory as StorageMemory,
     TurnMetric,
     TurnMetricQuery,
 )
@@ -191,6 +191,37 @@ def _diagnostics_label(value: Any) -> str:
     return str(value)
 
 
+def _failure_reason(exc: BaseException) -> str:
+    """失败原因文本（V039-S4-015 回合路径 / V039-R2-001 探测路径）。
+
+    只拼装真实可得的信息：异常自述优先；自述为空时回落到类型名与结构化
+    code/category。异常自述为空（例如无参异常、只带结构化字段的异常，
+    或自述为空串的 httpx.ConnectError）时原先会产出「本次回复失败：」
+    「连接失败：」这样的空壳提示，用户无从定位；这里不编造任何未观测到
+    的原因。
+    """
+    text = str(exc).strip()
+    if text:
+        return text
+    parts = [type(exc).__name__]
+    for attribute in ("code", "category"):
+        value = getattr(exc, attribute, None)
+        if isinstance(value, str) and value.strip():
+            parts.append(f"{attribute}={value.strip()}")
+    return " | ".join(parts)
+
+
+def _assembly_empty_label(reason: str, card_id: str | None) -> str:
+    """装配诊断为空的真实原因（V039-S4-011：区分未绑定与空装配）。"""
+    if reason == "character_card_unbound":
+        return "未绑定角色卡：会话未选择角色卡，无装配模块"
+    if reason == "character_card_archived":
+        return f"角色卡已归档：{card_id}，无装配模块"
+    if reason == "character_card_missing":
+        return f"角色卡不存在：{card_id}，无装配模块"
+    return "已绑定角色卡但装配结果为空：无模块进入提示词"
+
+
 def _speaker_label(message: Any) -> str:
     """消息展示标签（摘要输入用；只用于上下文呈现，不做语义改写）。"""
     source = getattr(message, "source", None)
@@ -252,6 +283,17 @@ def _running_summary_record(
 
 
 
+def _iso_timestamp(value: Any) -> Any:
+    """storage 记录的时间戳 → 协议载荷文本。
+
+    契约 §5：只读查询必须可序列化；记录层持有 datetime，协议层统一为
+    ISO 8601 文本（与其余载荷一致）。未观测字段保持 null，不伪造时间。
+    """
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
 def _summary_payload(summary: Any) -> dict:
     """storage 层摘要记录 → 协议载荷（content 为 JSON 文本，解析回对象）。"""
     content = getattr(summary, "content", "") or ""
@@ -275,8 +317,8 @@ def _summary_payload(summary: Any) -> dict:
         "model": summary.model,
         "error_code": summary.error_code,
         "error": summary.error,
-        "created_at": summary.created_at,
-        "updated_at": summary.updated_at,
+        "created_at": _iso_timestamp(summary.created_at),
+        "updated_at": _iso_timestamp(summary.updated_at),
     }
 
 
@@ -307,7 +349,7 @@ def _memory_payload(memory: Any, *, conversation_id: str | None = None) -> dict:
         "character_ref": scope.character_ref,
         "assistant_identity": scope.assistant_identity,
         "status": getattr(memory, "status", None),
-        "updated_at": memory.updated_at,
+        "updated_at": _iso_timestamp(memory.updated_at),
         "content": _json_load(memory.content),
     }
     if conversation_id is not None:
@@ -347,6 +389,60 @@ CONTROL_LEASE_SWEEP_INTERVAL_S = 5.0
 # V0.3.8 T4（契约 §14.1）：回合终态集合（协议无 interrupted）。到达任一
 # 终态后队列立即派发下一条；排队项不回退 queued，避免失败项无限自动重试。
 _TURN_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+
+# V039-S4-016：共享起播守卫的三个方法——调用方身份（desktop/remote）参与判定。
+_PLAYBACK_START_METHODS = frozenset(
+    {"voice.tts_play", "voice.preview", "voice.card_preview"}
+)
+
+# B-03（V0.3.9）：产品只支持 OpenAI Chat Completions 兼容端点，编程助手引擎
+# 只有 reasonix acp 一条路径。Codex/Responses 装配与 OpenAI OAuth 登录已从产品
+# 路径移除；历史账号里可能仍保存着旧选择，读取一律如实报出并标注不受支持，
+# 不静默改写成别的供应商、也不把请求发到不对应的端点。
+PROGRAM_ENGINE = "reasonix"
+SUPPORTED_DIALOGUE_PROVIDERS = frozenset({"deepseek", "openai_compatible"})
+PROVIDER_UNAVAILABLE_CODE = "provider_unavailable"
+CODEX_LOGIN_REMOVED_CODE = "codex_login_removed"
+
+
+def _provider_unavailable(provider: str) -> dict[str, str] | None:
+    """不受支持的供应商（当前只有历史 OpenAI OAuth）→ 可定位原因；支持则 None。"""
+    if provider in SUPPORTED_DIALOGUE_PROVIDERS:
+        return None
+    return {
+        "code": PROVIDER_UNAVAILABLE_CODE,
+        "message": (
+            f"供应商 {provider} 已不受支持：产品只支持 OpenAI Chat Completions "
+            "兼容端点（OpenAI OAuth / Codex 登录已移除）。请在设置里重新选择"
+            "供应商并保存 Base URL、模型与 API Key。"
+        ),
+    }
+
+
+CODEX_LOGIN_REMOVED_MESSAGE = (
+    "OpenAI OAuth / Codex 登录已从产品移除：产品只支持 OpenAI Chat "
+    "Completions 兼容端点。请在设置里选择供应商并保存 Base URL、模型与 "
+    "API Key（对话与编程助手共用同一份端点配置）。"
+)
+
+
+def _legacy_engine_notice(stored_engine: str) -> dict[str, str] | None:
+    """历史账号里保存的 engine 值（如 PAIR_HARNESS_ENGINE/旧 config.set 写入）。
+
+    该值不再决定装配：引擎由 dialogue.provider 推导且只有 reasonix acp。
+    这里给出可定位提示，不静默改写用户已保存的配置。
+    """
+    if not stored_engine or stored_engine.casefold() == PROGRAM_ENGINE:
+        return None
+    return {
+        "code": "engine_removed",
+        "message": (
+            f"账号配置里保存的 engine={stored_engine} 已不再生效：编程助手"
+            f"统一走 {PROGRAM_ENGINE}（reasonix acp）。实际使用的端点仍取决于"
+            " dialogue.provider / dialogue.base_url；重新保存一次供应商配置即可"
+            "更新该字段。"
+        ),
+    }
 
 
 class ServiceError(RuntimeError):
@@ -758,6 +854,11 @@ class DesktopApplicationService:
         self._summary_tasks: set[asyncio.Task[None]] = set()
         # 自动压缩防重入：会话级在途标记（任务完成后清除）。
         self._auto_summary_in_flight: set[str] = set()
+        # V039-S4-004：--serve 监听成功后由启动路径写入的局域网接入地址。
+        # 三种形态：未监听 None；有地址 {host, port}；已监听但无局域网地址
+        # {host: null, port, reason}（端口始终保留）。默认 None 表示尚未
+        # 监听；随 bootstrap 下发，避免只依赖一次性的 serve.started 事件。
+        self.remote_serve_address: dict[str, Any] | None = None
         # V0.2：后台回合任务集合（快速接受后立即返回，回合在后台推进）
         self._turn_tasks: set[asyncio.Task[None]] = set()
         # 角色对话不占用全局 coding busy 状态；用会话级任务记录阻止同一
@@ -794,6 +895,9 @@ class DesktopApplicationService:
             # V0.2 M4：待播队列条数（VoiceMiniPlayer 的 queuedCount 数据源）
             "speech_queue_len": 0,
         }
+        # V039-S4-012：error 字段的来源（tts / voice）。状态恢复时只清除
+        # 已不再成立的那一类错误，不把仍然成立的识别错误一并抹掉。
+        self._voice_error_scope: str | None = None
 
         self.orchestrator.on_message = self._on_message
         self.orchestrator.on_message_status_changed = self._on_message_status_changed
@@ -1054,6 +1158,8 @@ class DesktopApplicationService:
             "active_tasks": to_jsonable(active_tasks),
             "approvals": self.approval_broker.snapshot(),
             "remote_control": self._control_lease_payload(),
+            # V039-S4-004：远程接入地址随快照恢复（事件丢一次也不丢状态）。
+            "remote_serve": self.remote_serve_address,
             "voice": self._voice_snapshot(),
             "pair": self._pair_payload(self.pair_config),
             "pairs": [self._pair_payload(pair) for pair in self.pair_catalog],
@@ -1508,6 +1614,10 @@ class DesktopApplicationService:
     def _on_tts_state(self, state: str) -> None:
         # V0.2 M2-4：tts 状态机独立于 vad——idle/synthesizing/playing/skipping/failed
         self._voice_state["tts"] = state
+        if state in ("playing", "idle"):
+            # V039-S4-012：合成与播放真实恢复时清除旧的合成错误，界面不再
+            # 长期展示与当前状态矛盾的旧限流报文。
+            self._clear_voice_error(scope="tts")
         self._emit_voice_changed()
 
     def _on_voice_interrupted(
@@ -1542,7 +1652,24 @@ class DesktopApplicationService:
 
     def _on_voice_error(self, message: str) -> None:
         self._voice_state["error"] = message
+        # 来源判定用状态机而非文案关键词：合成失败必先置 tts=failed。
+        self._voice_error_scope = (
+            "tts" if self._voice_state.get("tts") == "failed" else "voice"
+        )
         self._emit_voice_changed()
+
+    def _clear_voice_error(self, *, scope: str | None = None) -> None:
+        """清除已不再成立的语音错误（V039-S4-012）。
+
+        ``scope`` 限定来源：合成恢复只清除合成错误，识别错误保持原样。
+        返回是否真的清除了内容，便于调用方决定是否广播。
+        """
+        if self._voice_state.get("error") is None:
+            return
+        if scope is not None and self._voice_error_scope != scope:
+            return
+        self._voice_state["error"] = None
+        self._voice_error_scope = None
 
     # ------------------------------------------------------------------ 命令路由
 
@@ -1633,6 +1760,7 @@ class DesktopApplicationService:
             "diagnostics.prompt_assembly": self._diagnostics_prompt_assembly,
             "summary.regenerate": self._summary_regenerate,
             "summary.get": self._summary_get,
+            "memory.create": self._memory_create,
             "memory.list": self._memory_list,
             "memory.update": self._memory_update,
             "memory.delete": self._memory_delete,
@@ -1663,6 +1791,13 @@ class DesktopApplicationService:
                 command.params, device_key=command.remote_device_key
             )
         handler = handlers[command.method]
+        if command.method in _PLAYBACK_START_METHODS:
+            # V039-S4-016：起播守卫按调用方身份判定，身份只能来自传输层。
+            return await handler(
+                command.params,
+                origin=command.origin,
+                device_key=command.remote_device_key,
+            )
         return await handler(command.params)
 
     async def _app_bootstrap(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -1765,8 +1900,8 @@ class DesktopApplicationService:
             self.store.update_project_reasoning_effort(project_id, effort)
             # M5.2：项目级 reasoning_effort 只作用于编程助手；角色模型的
             # dialogue.reasoning_effort 是独立账号配置键，不能在这里覆盖。
-            if isinstance(self.orchestrator.coding_engine, CodexAppServerEngine):
-                self.orchestrator.coding_engine.configure_reasoning(effort)
+            # B-03：编程助手只有 reasonix acp，深度档位在运行时构建时写成
+            # 账号级 dialogue.reasoning_effort，此处不再有引擎级实时改写。
         if root_changed and project_id == self.current_project_id:
             # 重建运行时上下文（项目目录变化）但不回推整份快照；旧 session
             # 引用必须失效，下一次任务在新目录新开 session。
@@ -2347,6 +2482,10 @@ class DesktopApplicationService:
                     user_message=user_message,
                     context=exec_context,
                 )
+                # V039-S4-003：角色本轮声明的长期记忆由服务侧按会话作用域落库。
+                self._persist_memory_drafts(
+                    conversation_id, tuple(outcome.memory_drafts)
+                )
             if outcome.receipt is not None and outcome.receipt.status != "completed":
                 result = outcome.receipt.status
                 terminal_status = outcome.receipt.status
@@ -2365,14 +2504,17 @@ class DesktopApplicationService:
             logger.exception("后台回合失败：%s", conversation_id)
             result = "failed"
             terminal_status = "failed"
+            # V039-S4-015：可见提示、消息失败原因与日志必须携带同一份真实
+            # 原因，异常自述为空时回落到类型名，不产出空壳提示。
+            reason = _failure_reason(exc)
             self.orchestrator.mark_message_failed(
-                conversation_id, user_message.message_id, str(exc)
+                conversation_id, user_message.message_id, reason
             )
             self.orchestrator.mark_processing_delegations_failed(
-                conversation_id, str(exc)
+                conversation_id, reason
             )
             self.orchestrator.report_system_status(
-                conversation_id, f"本次回复失败：{exc}"
+                conversation_id, f"本次回复失败：{reason}"
             )
         finally:
             # 成功、失败、取消都补发收尾事件。正常消息已经落库时这是
@@ -2696,9 +2838,15 @@ class DesktopApplicationService:
             raise ServiceError("队列项不属于当前账号", code="queue_account_mismatch")
         return item
 
-    async def _voice_tts_play(self, params: Mapping[str, Any]) -> dict[str, Any]:
+    async def _voice_tts_play(
+        self,
+        params: Mapping[str, Any],
+        *,
+        origin: str = "desktop",
+        device_key: str | None = None,
+    ) -> dict[str, Any]:
         """逐条朗读：按 message_id 从会话取消息文本，重新合成入队（可重播）。"""
-        self._require_desktop_playback_control()
+        self._require_playback_control(origin=origin, device_key=device_key)
         if self.voice_runtime is None:
             raise ServiceError("语音运行时未启用", code="voice_unavailable")
         conversation_id = str(
@@ -2720,7 +2868,7 @@ class DesktopApplicationService:
                 "助手语音已禁用，不可朗读助手消息",
                 code="assistant_tts_disabled",
             )
-        self._require_desktop_playback_control()
+        self._require_playback_control(origin=origin, device_key=device_key)
         self.voice_runtime.replay_message(message)
         return {"voice": self._voice_snapshot()}
 
@@ -2731,14 +2879,20 @@ class DesktopApplicationService:
         await self.voice_runtime.skip_playing_async()
         return {"voice": self._voice_snapshot()}
 
-    async def _voice_preview(self, params: Mapping[str, Any]) -> dict[str, Any]:
+    async def _voice_preview(
+        self,
+        params: Mapping[str, Any],
+        *,
+        origin: str = "desktop",
+        device_key: str | None = None,
+    ) -> dict[str, Any]:
         """语音试听：按指定文本合成入队；voice_id 缺省取当前有效角色音色。
 
         V0.3.2 M6：账号 BYOK 模式允许试听当前账号已生成的全部 manifest
         音色；开发机作者音色仍只允许当前搭档。显式传入未知 ID 时如实
         报错，不能静默替换成角色音色。voice_id 缺省时使用当前角色音色。
         """
-        self._require_desktop_playback_control()
+        self._require_playback_control(origin=origin, device_key=device_key)
         if self.voice_runtime is None:
             raise ServiceError("语音运行时未启用", code="voice_unavailable")
         text = self._required_string(params, "text")
@@ -3768,8 +3922,14 @@ class DesktopApplicationService:
             "state": CharacterVoiceState.UNCONFIGURED.value,
         }
 
-    async def _voice_card_preview(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        self._require_desktop_playback_control()
+    async def _voice_card_preview(
+        self,
+        params: Mapping[str, Any],
+        *,
+        origin: str = "desktop",
+        device_key: str | None = None,
+    ) -> dict[str, Any]:
+        self._require_playback_control(origin=origin, device_key=device_key)
         card_id = self._required_string(params, "card_id")
         if self.voice_runtime is None:
             raise ServiceError("语音运行时未启用", code="voice_unavailable")
@@ -4215,9 +4375,14 @@ class DesktopApplicationService:
             name=f"mobile-tts:{message.message_id}",
         )
         self._mobile_tts_tasks[message.message_id] = task
-        task.add_done_callback(
-            lambda _t: self._mobile_tts_tasks.pop(message.message_id, None)
-        )
+
+        def _forget_task(finished: asyncio.Task[None]) -> None:
+            # 按任务身份清理：同一 message_id 若已被更新的任务接管，不得把
+            # 新任务从表里删掉（旧任务的回调晚于新任务注册时会发生）。
+            if self._mobile_tts_tasks.get(message.message_id) is finished:
+                self._mobile_tts_tasks.pop(message.message_id, None)
+
+        task.add_done_callback(_forget_task)
 
     def _resolve_mobile_tts_voice_id(
         self, conversation_id: str, card_id: str | None
@@ -4299,10 +4464,12 @@ class DesktopApplicationService:
         synthesizer = QwenSpeechSynthesizer(
             api_key=api_key, ws_url=settings.resolved_ws_url
         )
-        self._mobile_tts.begin(message.message_id, message.conversation_id)
         end_payload: dict[str, Any] | None = None
         chunk_count = 0
         try:
+            # begin 放进 try：重复 message_id 等错误必须走同一收尾路径并如实
+            # 上报（否则任务带着无人观察的异常结束，移动端只会一直等）。
+            self._mobile_tts.begin(message.message_id, message.conversation_id)
             async for chunk in synthesizer.synthesize(
                 SpeechRequest(
                     text=message.text,
@@ -4338,8 +4505,16 @@ class DesktopApplicationService:
         finally:
             try:
                 await synthesizer.aclose()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001 - 关闭失败不得覆盖原始结果
+                # 关闭失败如实进日志：此处不重抛，避免把已经发生的真实失败
+                # （或已完成的合成）替换成收尾异常，但绝不静默吞掉。
+                logger.warning(
+                    "mobile-tts: 关闭合成器失败 %s：%s: %s",
+                    message.message_id,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
         if end_payload is not None:
             self._publish_remote_only("voice.mobile_tts_end", end_payload)
 
@@ -4373,7 +4548,13 @@ class DesktopApplicationService:
         del params
         code = self.pairing_service.issue_code()
         self._persist_pairing_state()
-        return {"code": code, "ttl_seconds": 300}
+        # V039-S4-004：配对码与真实接入地址一起返回；未监听时为 None，
+        # 调用方据此区分「尚未监听」与「已监听但无局域网地址」。
+        return {
+            "code": code,
+            "ttl_seconds": 300,
+            "serve_address": self.remote_serve_address,
+        }
 
     async def _remote_pair(self, params: Mapping[str, Any]) -> dict[str, Any]:
         code = str(params.get("code") or "")
@@ -4430,12 +4611,30 @@ class DesktopApplicationService:
             raise ServiceError("远程控制需要已鉴权设备身份", code="remote_identity_required")
         return command.remote_device_key
 
-    def _require_desktop_playback_control(self) -> None:
-        if self.has_active_remote_controller():
+    def _require_playback_control(
+        self, *, origin: str = "desktop", device_key: str | None = None
+    ) -> None:
+        """起始播放/试听的调用方身份判定（V039-S4-016）。
+
+        租约有效期内只有持有者可以起播：桌面调用方被拒（不得抢占远程），
+        其他远程设备被拒并点名「另一台远程设备」，租约持有者自身放行——
+        原实现只看租约是否存在，把「桌面不得抢占远程」实现成了「任何人
+        不得播放」，持权端能停不能起。
+        """
+        self._sweep_control_leases()
+        if not self._control_leases:
+            return
+        if origin == "remote" and device_key and device_key in self._control_leases:
+            return
+        if origin == "remote":
             raise ServiceError(
-                "手机正在控制语音，请先在手机退出远程控制或撤销该设备",
+                "另一台远程设备正在控制语音，请先在该设备退出远程控制或撤销该设备",
                 code="remote_playback_active",
             )
+        raise ServiceError(
+            "远程设备正在控制语音，请先在远程设备退出远程控制或撤销该设备",
+            code="remote_playback_active",
+        )
 
     async def _remote_claim_control(
         self,
@@ -4529,7 +4728,9 @@ class DesktopApplicationService:
             raise ServiceError(str(exc), code="invalid_metrics_query") from exc
         page = self.store.query_turn_metrics(query)
         return {
-            "metrics": [metric.model_dump() for metric in page.items],
+            # V039-S4-001：记录层持有 datetime，协议层按 JSON 模式导出
+            # （缺失保持 null、真实零保持 0），不做兜底改写。
+            "metrics": [metric.model_dump(mode="json") for metric in page.items],
             "next_cursor": page.next_cursor,
         }
 
@@ -4640,9 +4841,9 @@ class DesktopApplicationService:
                 raise SummaryError(
                     "摘要生成未返回 JSON 对象", code=SUMMARY_PROVIDER_ERROR
                 )
-            config = self._load_account_config()
-            provider = self.dialogue_provider_name(config)
-            model = config.get("dialogue.model") or ""
+            # V039-S4-013：标注实际生效的供应商与模型（与角色对话共用
+            # _dialogue_runtime_settings 的解析口径），未配置时如实为 null。
+            provider, model = self._effective_dialogue_identity()
             # 幂等语义（契约 §2）：regenerate 更新原 summary_id 行——
             # storage 的 upsert 以 (conversation_id, covers_from, covers_to)
             # 为键；失败记录的区间在落库时已保存，此处沿用不换区间。
@@ -4653,8 +4854,8 @@ class DesktopApplicationService:
                 covers_to_message_id=covers_to,
                 covers_message_count=covers_count,
                 content=_summary_content_text(raw),
-                provider=provider or None,
-                model=model or None,
+                provider=provider,
+                model=model,
                 status="completed",
             )
             validate_summary_coverage(messages, summary)
@@ -4835,8 +5036,19 @@ class DesktopApplicationService:
             raise SummaryError(
                 "摘要生成未返回 JSON 对象", code=SUMMARY_PROVIDER_ERROR
             )
+        provider, model = self._effective_dialogue_identity()
+        return raw, provider, model
+
+    def _effective_dialogue_identity(self) -> tuple[str | None, str | None]:
+        """实际生效的 (供应商, 模型)；摘要与记忆记录据此标注来源（V039-S4-013）。
+
+        与角色对话共用 _dialogue_runtime_settings 的解析口径：配置缺省时
+        取供应商默认模型，与环境变量口径一致，避免记录与实际调用分叉；
+        确实解析不出时如实返回 null，不猜测。
+        """
         config = self._load_account_config()
-        return raw, self.dialogue_provider_name(config) or None, config.get("dialogue.model") or None
+        provider, _base_url, _api_key, model = self._dialogue_runtime_settings(config)
+        return provider or None, model or None
 
     async def _broadcast_summary_failed(
         self, conversation: Any, previous: Any, *, error_code: str, error: str
@@ -4958,6 +5170,110 @@ class DesktopApplicationService:
             ]
         }
 
+    async def _memory_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """memory.create：显式新增一条长期记忆（V039-S4-003）。
+
+        作用域以会话权威解析（五分量），不接受客户端拼接；日常聊天（无项目）
+        没有记忆作用域，按真实错误拒绝。content 由调用方负责，代码不改写。
+        """
+        conversation_id = _optional_text(params, "conversation_id")
+        if not conversation_id:
+            raise ServiceError("memory.create 需要 conversation_id", code=MEMORY_INVALID)
+        scope = self._conversation_scope(conversation_id)
+        content = params.get("content")
+        if not isinstance(content, Mapping):
+            raise ServiceError("记忆内容必须是 JSON 对象", code=MEMORY_INVALID)
+        if not content:
+            # 与 MemoryDraft.content（min_length=1）同一契约：空对象不是可
+            # 处理的记忆，不接受后再让调用方拿到一条空条目。
+            raise ServiceError("记忆内容不得为空对象", code=MEMORY_INVALID)
+        stored = self._store_memory(
+            conversation_id=conversation_id,
+            scope=scope,
+            content=dict(content),
+        )
+        return {"memory": _memory_payload(stored, conversation_id=conversation_id)}
+
+    def _store_memory(
+        self,
+        *,
+        conversation_id: str,
+        scope: StorageMemoryScope,
+        content: Mapping[str, Any],
+    ) -> Any:
+        """写一条长期记忆并广播 memory.updated（显式创建与模型产出共用）。"""
+        provider, model = self._effective_dialogue_identity()
+        stored = self.store.upsert_memory(
+            StorageMemory(
+                account_id=scope.account_id,
+                project_id=scope.project_id,
+                pair_id=scope.pair_id,
+                character_ref=scope.character_ref,
+                assistant_identity=scope.assistant_identity,
+                conversation_id=conversation_id,
+                content=_json_text(dict(content)),
+                provider=provider,
+                model=model,
+            )
+        )
+        self.emitter.emit(
+            "memory.updated",
+            _memory_payload(stored, conversation_id=conversation_id),
+        )
+        return stored
+
+    def _report_memory_not_stored(
+        self,
+        conversation_id: str,
+        drafts: tuple[Any, ...],
+        reason: str,
+        *,
+        code: str,
+    ) -> None:
+        """本轮记忆未落库的如实暴露（日志 + diagnostic.warning，绝不只是丢弃）。"""
+        logger.warning(
+            "长期记忆未落库（conversation=%s，条数=%s）：%s",
+            conversation_id,
+            len(drafts),
+            reason,
+        )
+        self._emit_diagnostic_warning(
+            {
+                "source": "memory",
+                "conversation_id": conversation_id,
+                "count": len(drafts),
+                "message": f"本轮 {len(drafts)} 条长期记忆未落库：{reason}",
+                "code": code,
+            }
+        )
+
+    def _persist_memory_drafts(
+        self, conversation_id: str, drafts: tuple[Any, ...]
+    ) -> None:
+        """落库角色本轮声明的长期记忆条目（V039-S4-003）。
+
+        运行时协议只在有项目（有记忆作用域）时提供 memory 字段，因此无项目
+        会话收到条目即协议越界：本轮消息与终态不受影响，但绝不静默丢弃——
+        记日志并广播 diagnostic.warning，让「模型写了却没落库」可见。
+        """
+        if not drafts:
+            return
+        # 先整体校验再逐条写入：任何一条不可用时整批不落库，绝不部分写入。
+        if any(not dict(draft.content) for draft in drafts):
+            self._report_memory_not_stored(conversation_id, drafts, "记忆内容不得为空对象", code=MEMORY_INVALID)
+            return
+        try:
+            scope = self._conversation_scope(conversation_id)
+        except ServiceError as exc:
+            self._report_memory_not_stored(conversation_id, drafts, str(exc), code=exc.code)
+            return
+        for draft in drafts:
+            self._store_memory(
+                conversation_id=conversation_id,
+                scope=scope,
+                content=draft.content,
+            )
+
     async def _memory_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         """memory.list：按作用域读取记忆（显式只读；默认 active）。"""
         conversation_id = _optional_text(params, "conversation_id")
@@ -5064,14 +5380,23 @@ class DesktopApplicationService:
         modules: list[dict[str, Any]] = []
         diagnostics: list[str] = []
         generated_at = utc_now().isoformat()
-        if card_id and not self.card_repository.is_archived(card_id):
+        # V039-S4-011：空模块结果必须能自证原因，调用方与界面据此区分
+        # 「未绑定卡」「卡已删除/归档」「绑定卡但装配为空」三种情况。
+        reason: str | None = None
+        if not card_id:
+            reason = "character_card_unbound"
+        elif self.card_repository.is_archived(card_id):
+            reason = "character_card_archived"
+        else:
             try:
                 recent = self._recent_scan_messages(conversation_id)
                 assembled = self._resolve_character_prompt(
                     conversation_id, recent_messages=recent
                 )
             except KeyError:
+                # 仓储里查不到卡：如实报缺失，不伪装成「装配为空」。
                 assembled = None
+                reason = "character_card_missing"
             if assembled is not None:
                 for module in assembled.modules:
                     modules.append(
@@ -5087,9 +5412,15 @@ class DesktopApplicationService:
                     )
                 for key, value in assembled.diagnostics.items():
                     diagnostics.append(f"{key}: {_diagnostics_label(value)}")
+            # 绑定卡且未归档，却没产出任何模块：如实标为「装配为空」。
+            if not modules and reason is None:
+                reason = "assembly_empty"
+        if not modules and reason is not None:
+            diagnostics.append(_assembly_empty_label(reason, card_id))
         return {
             "conversation_id": conversation_id,
             "modules": modules,
+            "reason": reason,
             "diagnostics": diagnostics,
             "generated_at": generated_at,
         }
@@ -5274,11 +5605,17 @@ class DesktopApplicationService:
                 else "not_configured"
             )
         )
+        unavailable = _provider_unavailable(provider)
         return {
-            # engine 由统一的 dialogue.provider 推导，不能与角色模型配置分叉。
+            # B-03：引擎由 dialogue.provider 推导且只有 reasonix acp 一条路径，
+            # 前端不需要（也不应）再发送 engine。
             "engine": self._engine_for_provider(provider),
             "dialogue": {
+                # 存储值原样回显，不静默迁移用户已保存的供应商选择。
                 "provider": provider,
+                # 旧值（OpenAI OAuth）如实标注不受支持，调用点据此拒绝并引导重配。
+                "provider_supported": unavailable is None,
+                "provider_unavailable": unavailable,
                 "model": dialogue_model_name,
                 "base_url": dialogue_base,
                 "api_key_masked": self._masked(dialogue_key),
@@ -5376,6 +5713,8 @@ class DesktopApplicationService:
                 self._voice_state["enabled"] = (
                     account_config.get("voice.enabled") not in ("false", "0")
                 )
+                # V039-S4-012：语音开关变化后，旧错误不再描述当前状态。
+                self._clear_voice_error()
             if "assistant_voice_enabled" in updates:
                 self._voice_state["assistant_voice_enabled"] = (
                     account_config.get("assistant_voice_enabled") in ("true", "1")
@@ -5404,71 +5743,90 @@ class DesktopApplicationService:
             return {"config": await self._config_get({})}
 
     async def _config_test_connection(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        """探测对话服务连接：短请求验证 base_url/model/api_key。"""
+        """探测对话服务连接：短请求验证 base_url/model/api_key。
+
+        V039-S4-014：结论必须可归属到具体目标——一律回传实际探测的
+        provider/base_url/model（来自当前生效配置）。被拒绝的候选写入从未
+        生效，此处的「连接正常」因此不能被读成对该端点的认可。
+        """
         del params
+        # V039-S4-002：显式 --demo 运行时没有真实对话后端，任何「连接正常」
+        # 结论都是误导。此处如实失败，不让首次引导把演示模式读成配置可用。
+        if self._demo:
+            return {
+                "ok": False,
+                "provider": "demo",
+                "base_url": "",
+                "model": "",
+                "message": (
+                    "当前是演示模式（--demo）：不进行真实连接测试，"
+                    "账号配置在此模式下不生效。请以真实模式重启后再测试。"
+                ),
+            }
         config = self._load_account_config()
         provider, base_url, api_key, model = self._dialogue_runtime_settings(config)
-        if provider == "openai_oauth":
-            status = self.codex_auth.status().get("status")
-            if status == "logged_in":
-                return {"ok": True, "message": "连接正常（OpenAI OAuth）"}
-            return {"ok": False, "message": "请先完成 OpenAI OAuth 登录"}
+        target = {
+            "provider": provider,
+            "base_url": base_url,
+            "model": model,
+        }
+        # B-03：OpenAI OAuth 登录已移除，这里不再按本地登录态给出「连接正常」。
+        # 旧值直接按可定位原因拒绝，不做任何网络探测。
+        unavailable = _provider_unavailable(provider)
+        if unavailable is not None:
+            return {
+                **target,
+                "provider_supported": False,
+                "ok": False,
+                "message": unavailable["message"],
+            }
         if not (base_url and api_key and model):
-            return {"ok": False, "message": "缺少对话服务配置（Base URL / API Key / 模型）"}
-        return await self._probe_dialogue_connection(base_url, api_key, model)
+            return {
+                **target,
+                "ok": False,
+                "message": "缺少对话服务配置（Base URL / API Key / 模型）",
+            }
+        probe = await self._probe_dialogue_connection(base_url, api_key, model)
+        return {**target, **probe}
 
     async def _codex_oauth_start(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """B-03：OpenAI OAuth（Codex/Responses 登录）已从产品移除。
+
+        不写任何配置、不启动浏览器进程、不触碰 Codex 登录态——直接以可定位
+        错误拒绝，不留「点了没结果」的入口。
+        """
         del params
-        # OAuth 是统一供应商切换的一部分：先把角色和古代机械都切到
-        # OpenAI/GPT，并清掉上一家供应商的 Key，再启动浏览器登录。
-        updates = {
-            "engine": "codex",
-            "dialogue.provider": "openai_oauth",
-            "dialogue.base_url": "https://api.openai.com/v1",
-            "dialogue.model": "gpt-5.6-sol",
-        }
-        async with self._account_switch_lock:
-            await self._save_config_updates_locked(updates)
-
-            if self._demo:
-                result = self.codex_auth.start_login()
-            else:
-                from .engine_factory import resolve_codex_executable
-
-                result = self.codex_auth.start_login(
-                    resolve_codex_executable(os.getenv("PAIR_HARNESS_BUNDLED_CODEX_BIN"))
-                )
-            return {**result, "config": await self._config_get({})}
+        raise ServiceError(
+            CODEX_LOGIN_REMOVED_MESSAGE, code=CODEX_LOGIN_REMOVED_CODE
+        )
 
     async def _codex_oauth_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """只读历史 Codex 登录态（产品不再据此决定任何行为）。
+
+        B-03 后产品不使用 Codex 登录态：这里只把磁盘上的遗留状态如实读出，
+        供界面/诊断识别旧数据，不启动登录、不声明可用。
+        """
         del params
         status = self.codex_auth.status()
         status["account_id"] = self.current_account_id
         return status
 
     async def _codex_logout(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """清理历史 Codex 登录数据（本地文件，无网络、不涉及登录流程）。"""
         del params
         return self.codex_auth.logout()
 
     async def _codex_api_login(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        api_key = self._required_string(params, "api_key")
-        try:
-            result = self.codex_auth.api_login(api_key)
-        except ValueError as exc:
-            raise ServiceError(str(exc), code="invalid_api_key") from exc
-        # OpenAI API Key 是统一供应商选择：角色和古代机械都切到
-        # OpenAI-compatible + gpt-5.6-sol，不能只给 Codex 登录态。
-        async with self._account_switch_lock:
-            await self._save_config_updates_locked(
-                {
-                    "engine": "codex",
-                    "dialogue.provider": "openai_compatible",
-                    "dialogue.base_url": "https://api.openai.com/v1",
-                    "dialogue.model": "gpt-5.6-sol",
-                    "dialogue.api_key": api_key,
-                }
-            )
-            return result
+        """B-03：Codex API Key 登录入口已移除。
+
+        该方法过去会写入 Codex 登录态并顺手覆盖 dialogue.base_url/model，
+        会让用户自定义的兼容端点配置被改写成 OpenAI 官方端点。现在一律
+        拒绝，OpenAI 兼容端点请经 config.set 保存。
+        """
+        del params
+        raise ServiceError(
+            CODEX_LOGIN_REMOVED_MESSAGE, code=CODEX_LOGIN_REMOVED_CODE
+        )
 
     # ---- M3 辅助 ----
 
@@ -5496,11 +5854,24 @@ class DesktopApplicationService:
         updates = self._canonicalize_provider_updates(dict(updates))
         current = self._load_account_config()
         candidate_config = {**current, **updates}
-        candidate = (
-            None
-            if self._demo
-            else self._build_runtime_candidate(candidate_config)
-        )
+        if self._demo:
+            candidate = None
+        else:
+            try:
+                candidate = self._build_runtime_candidate(candidate_config)
+            except ServiceError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                # V039-S4-014：候选运行时构建失败就是配置被拒绝（例如引擎
+                # 与端点不兼容）。必须回结构化错误码并原样保留底层报文，
+                # 不得落成 internal_error 让调用方无从判断写入是否生效。
+                logger.error(
+                    "配置候选被拒绝，未写入任何配置：%s", exc, exc_info=True
+                )
+                raise ServiceError(
+                    f"{type(exc).__name__}: {exc}",
+                    code="config_rejected",
+                ) from exc
         secret_keys = {"dialogue.api_key", "voice.api_key"}
         config_updates = {
             key: value for key, value in updates.items() if key not in secret_keys
@@ -5551,23 +5922,19 @@ class DesktopApplicationService:
                 "reviewer": self.orchestrator.reviewer,
             }
         account_id = account_id or self.current_account_id
+        # B-03：CodexAuthService 在这里只提供账号目录（Reasonix 配置写入点）。
         auth = CodexAuthService(self.store.database.parent, account_id)
         provider, dialogue_base, dialogue_key, dialogue_model_name = (
             self._dialogue_runtime_settings(config)
         )
-        engine_choice = self._engine_for_provider(provider)
         self._validate_provider_endpoint(provider, dialogue_base)
         reasoning_effort = config.get("dialogue.reasoning_effort") or "auto"
-        if provider == "openai_oauth" and dialogue_model_name:
-            from .engine_factory import build_codex_dialogue_model
-
-            dialogue_model = build_codex_dialogue_model(
-                codex_auth=auth,
-                model=dialogue_model_name,
-                codex_bin=os.getenv("PAIR_HARNESS_BUNDLED_CODEX_BIN"),
-                reasoning_effort=reasoning_effort,
-            )
-        elif dialogue_base and dialogue_model_name:
+        # B-03：角色与助手都只走 OpenAI Chat Completions 兼容路径。
+        # 历史 openai_oauth 配置同样按它自己保存的端点构建（OpenAI OAuth
+        # 凭据不是 API Key，因此没有可用凭据）——请求会在真实调用上如实失败，
+        # 而不是启动期退出让用户进不了设置页；config.get / test_connection
+        # 会明确标注该供应商不受支持。
+        if dialogue_base and dialogue_model_name:
             preset = load_reasoning_preset(dialogue_base, dialogue_model_name)
             dialogue_model = OpenAICompatibleDialogueModel(
                 base_url=dialogue_base,
@@ -5591,10 +5958,8 @@ class DesktopApplicationService:
                 code="missing_dialogue_config",
             )
         coding_engine = build_coding_engine(
-            engine_choice=engine_choice,
             codex_auth=auth,
-            codex_bin=os.getenv("PAIR_HARNESS_BUNDLED_CODEX_BIN"),
-            model=dialogue_model_name or "gpt-5.6-sol",
+            model=dialogue_model_name,
             base_url=dialogue_base,
             api_key=dialogue_key,
             reasoning_effort=reasoning_effort,
@@ -5690,7 +6055,29 @@ class DesktopApplicationService:
 
     @staticmethod
     def _engine_for_provider(provider: str) -> str:
-        return "deepseek" if provider == "deepseek" else "codex"
+        """B-03：产品只有一条编程助手引擎路径（reasonix acp）。
+
+        engine 始终由 dialogue.provider 推导，且任何受支持的 Chat
+        Completions 兼容端点都装配同一个 ACP 引擎；端点差异体现在写入
+        Reasonix 配置的 base_url/model/api_key，不体现在引擎类型上。
+        """
+        del provider
+        return PROGRAM_ENGINE
+
+    def _legacy_config_notices(self, config: dict[str, str]) -> list[dict[str, str]]:
+        """历史账号配置的提示项（只读；不改写任何已保存的值）。
+
+        覆盖两类继承配置：已移除的供应商（openai_oauth）与不再生效的
+        engine 值（旧版本 config.set / PAIR_HARNESS_ENGINE 写入的 codex）。
+        """
+        notices: list[dict[str, str]] = []
+        unavailable = _provider_unavailable(self.dialogue_provider_name(config))
+        if unavailable is not None:
+            notices.append(unavailable)
+        engine_notice = _legacy_engine_notice((config.get("engine") or "").strip())
+        if engine_notice is not None:
+            notices.append(engine_notice)
+        return notices
 
     def _emit_diagnostic_warning(self, payload: dict[str, Any]) -> None:
         """V0.3.8 T4（契约 §14.6）：引擎诊断告警转发到客户端事件通道。"""
@@ -5756,7 +6143,13 @@ class DesktopApplicationService:
             ) from exc
 
     def _canonicalize_provider_updates(self, updates: dict[str, str]) -> dict[str, str]:
-        """把一次配置写入收敛为一个供应商，拒绝孤立切换执行引擎。"""
+        """把一次配置写入收敛为一个供应商。
+
+        B-03：供应商由 dialogue.provider / dialogue.base_url 决定（两者必须
+        一致），engine 不再承载任何选择信息——它由后端推导并恒为
+        reasonix acp；客户端发来的旧 engine 值（codex/deepseek）按可定位的
+        invalid_engine 拒绝，不静默改写用户配置。
+        """
         provider_keys = {
             "engine",
             "dialogue.provider",
@@ -5773,23 +6166,14 @@ class DesktopApplicationService:
 
         if explicit_provider:
             provider = self._normalize_dialogue_provider(updates["dialogue.provider"])
-            updates["dialogue.provider"] = provider
-        elif explicit_engine:
-            requested_engine = updates["engine"].strip().casefold()
-            if requested_engine not in {"codex", "deepseek"}:
+            # B-03：不受支持的供应商不能经配置写入被选中（历史值仍可读取）；
+            # 拒绝要可定位，且不写入半个配置。
+            unavailable = _provider_unavailable(provider)
+            if unavailable is not None:
                 raise ServiceError(
-                    f"不支持的编程助手引擎：{updates['engine']}",
-                    code="invalid_engine",
+                    unavailable["message"], code=unavailable["code"]
                 )
-            provider = (
-                "deepseek"
-                if requested_engine == "deepseek"
-                else (
-                    current_provider
-                    if current_provider in {"openai_oauth", "openai_compatible"}
-                    else "openai_compatible"
-                )
-            )
+            updates["dialogue.provider"] = provider
         elif "dialogue.base_url" in updates:
             base_url = updates["dialogue.base_url"].strip()
             provider = detect_provider(base_url).value if base_url else "openai_compatible"
@@ -5811,16 +6195,14 @@ class DesktopApplicationService:
 
         if explicit_engine:
             requested_engine = updates["engine"].strip().casefold()
-            if requested_engine not in {"codex", "deepseek"}:
+            if requested_engine != PROGRAM_ENGINE:
                 raise ServiceError(
-                    f"不支持的编程助手引擎：{updates['engine']}",
+                    f"engine={updates['engine']} 已不受支持：产品只有 "
+                    f"{PROGRAM_ENGINE}（reasonix acp）一条编程助手引擎路径；"
+                    "供应商请用 dialogue.provider + dialogue.base_url 选择。",
                     code="invalid_engine",
                 )
-            if requested_engine != self._engine_for_provider(provider):
-                raise ServiceError(
-                    "engine 与 dialogue.provider 不一致；角色和古代机械必须使用同一供应商",
-                    code="provider_engine_mismatch",
-                )
+        # 后端推导：任何受支持的兼容端点都装配同一个引擎。
         updates["engine"] = self._engine_for_provider(provider)
 
         effective_base = updates.get("dialogue.base_url") or current.get(
@@ -5881,7 +6263,18 @@ class DesktopApplicationService:
                     },
                 )
         except Exception as exc:  # noqa: BLE001 - 探测失败给用户可读信息
-            return {"ok": False, "message": f"连接失败：{exc}"}
+            # V039-R2-001：连接层失败的异常自述可能为空串（httpx.ConnectError
+            # 在本机即如此），直接拼接会留下「连接失败：」空壳。复用回合路径
+            # 的回落（自述优先、为空时给真实类型名），失败状态不改写，原始
+            # 异常继续进日志。
+            logger.warning(
+                "对话服务探测失败（base_url=%s model=%s）：%s",
+                base_url,
+                model,
+                exc,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+            return {"ok": False, "message": f"连接失败：{_failure_reason(exc)}"}
         latency = int((time.monotonic() - started) * 1000)
         if response.status_code >= 400:
             return {
@@ -6656,8 +7049,6 @@ class DesktopApplicationService:
             self.dialogue_model.reasoning_effort = (
                 account_config.get("dialogue.reasoning_effort") or "auto"
             )
-        if isinstance(self.orchestrator.coding_engine, CodexAppServerEngine):
-            self.orchestrator.coding_engine.configure_reasoning(project.reasoning_effort)
         self._restore_current_conversation()
         if self.voice_runtime is not None:
             await self._focus_voice_context(conversation_id, conversation.pair_id)
@@ -6952,13 +7343,7 @@ def _build_service(
         )
         initial_codex_auth = CodexAuthService(store.database.parent, account_id)
         coding_engine = build_coding_engine(
-            engine_choice=(
-                "deepseek"
-                if detect_provider(dialogue_base).value == "deepseek"
-                else "codex"
-            ),
             codex_auth=initial_codex_auth,
-            codex_bin=settings.codex_bin,
             model=dialogue_model_name,
             base_url=dialogue_base,
             api_key=dialogue_key,
@@ -7004,6 +7389,18 @@ def _build_service(
             invalidate_sessions=False,
         )
         service._schedule_close_runtime(old_model, old_engine)
+        # B-03：历史账号配置（已移除的供应商 / engine 选择）在启动期如实提示，
+        # 不静默改写用户已保存的值；提示后应用仍可进入设置页重新配置。
+        for notice in service._legacy_config_notices(service._load_account_config()):
+            service.emitter.emit(
+                "error.reported",
+                {
+                    **notice,
+                    "severity": "recoverable",
+                    "fatal": False,
+                    "source": "sidecar",
+                },
+            )
     if not demo and settings is not None and conversation is not None:
         # V0.3.2 M6：启动即用账号级语音配置覆盖环境默认（账号保存过
         # voice.api_key/voice.base_url 时账号优先，.env 只是开发机兼容）。

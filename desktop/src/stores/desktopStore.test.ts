@@ -6,6 +6,7 @@ import type {
   ConversationSummary,
   DesktopEvent,
   DesktopSnapshot,
+  MemoryWirePayload,
   PairMemory,
   PendingApproval,
   PowerStatusPayload,
@@ -20,6 +21,7 @@ import {
   selectActiveMemories,
   selectApprovalCountByConversation,
   selectApprovalsForConversation,
+  selectBackendDemoMode,
   selectLatestSummary,
   type PromptAssemblyDiagnostics,
 } from "./desktopStore";
@@ -299,7 +301,8 @@ describe("desktopStore event projection", () => {
       port: 8765,
     });
 
-    // 载荷缺 port：协议违规，不本地猜测地址，保持原值
+    // 载荷缺 port：协议违规必须如实暴露——地址此刻不可知，不得继续展示
+    // 上一次的二维码成功态（V039-S4-004 复核）。
     desktopStore.getState().applyEvents([
       {
         kind: "event",
@@ -308,10 +311,9 @@ describe("desktopStore event projection", () => {
         payload: { host: "192.168.1.99" },
       },
     ]);
-    expect(desktopStore.getState().remotePairing.serveAddress).toEqual({
-      host: "192.168.1.42",
-      port: 8765,
-    });
+    const violated = desktopStore.getState().remotePairing;
+    expect(violated.serveAddress).toBeNull();
+    expect(violated.serveFailure).toContain("缺少 port");
   });
 
   it("error.reported recoverable 入 Toast 队列（同 code+message 去重，最多 5 条）", () => {
@@ -1438,6 +1440,7 @@ describe("V0.3.9 契约消费（摘要/记忆/租约/指标/诊断/审批终态�
     };
   }
 
+  /** 前端记录（快照/只读装载路径直接携带记录，非线缆载荷）。 */
   function memory(overrides: Partial<PairMemory> = {}): PairMemory {
     return {
       memory_id: "mem-1",
@@ -1455,12 +1458,28 @@ describe("V0.3.9 契约消费（摘要/记忆/租约/指标/诊断/审批终态�
     };
   }
 
+  /** 线缆载荷：服务端 _memory_payload 恒为扁平五分量（无嵌套 scope）。 */
+  function memoryPayload(overrides: Partial<MemoryWirePayload> = {}): MemoryWirePayload {
+    return {
+      memory_id: "mem-1",
+      account_id: "acc-1",
+      project_id: "project-1",
+      pair_id: "phainon_ancient_machine",
+      character_ref: "builtin:phainon",
+      assistant_identity: "ancient_machine",
+      content: { text: "用户喜欢安静的训练场" },
+      status: "active",
+      updated_at: "2026-01-01T00:00:00Z",
+      ...overrides,
+    };
+  }
+
   function event(
     name: DesktopEvent["event"],
-    payload: Record<string, unknown>,
+    payload: object,
     sequence: number,
   ): DesktopEvent {
-    return { kind: "event", event: name, sequence, payload };
+    return { kind: "event", event: name, sequence, payload: payload as Record<string, unknown> };
   }
 
   beforeEach(() => {
@@ -1543,20 +1562,50 @@ describe("V0.3.9 契约消费（摘要/记忆/租约/指标/诊断/审批终态�
     expect(completed?.covers_from_message_id).toBeNull();
   });
 
-  it("memory.updated 原样落库；memory.deleted 只带 id 时标记 deleted，未知 id 不造记录", () => {
+  it("memory.updated 按扁平线缆载荷落库，五分量解码为作用域；未知 id 不造记录", () => {
     desktopStore.getState().applyEvents([
-      event("memory.updated", { memory: memory() }, 1),
-      event("memory.updated", { memory: memory({ memory_id: "mem-2", status: "active" }) }, 2),
-      event("memory.deleted", { memory_id: "mem-2" }, 3),
-      event("memory.deleted", { memory_id: "mem-unknown" }, 4),
+      event("memory.updated", memoryPayload(), 1),
+      event("memory.updated", memoryPayload({ memory_id: "mem-2" }), 2),
+      event("memory.updated", memoryPayload({ memory_id: "mem-3", content: { text: "第二版" } }), 3),
     ]);
 
     const state = desktopStore.getState();
-    expect(state.memories).toHaveLength(2);
+    expect(state.memories).toHaveLength(3);
+    // 内容原样落库（不筛选、不改写）
+    expect(state.memories.find((item) => item.memory_id === "mem-3")?.content).toEqual({
+      text: "第二版",
+    });
+    // 作用域来自服务端下发的扁平五分量，界面按嵌套 scope 消费（此前恒为 undefined）
+    const first = selectActiveMemories(state).find((item) => item.memory_id === "mem-1");
+    expect(first?.scope).toEqual({
+      account_id: "acc-1",
+      project_id: "project-1",
+      pair_id: "phainon_ancient_machine",
+      character_ref: "builtin:phainon",
+      assistant_identity: "ancient_machine",
+    });
+  });
+
+  it("memory.deleted 带完整记录按记录落库；只带 id 时标记 deleted，未知 id 不造记录", () => {
+    desktopStore.getState().applyEvents([
+      event("memory.updated", memoryPayload({ memory_id: "mem-2" }), 1),
+      event("memory.deleted", { memory_id: "mem-2" }, 2),
+      event("memory.deleted", { memory_id: "mem-unknown" }, 3),
+      event("memory.updated", memoryPayload({ memory_id: "mem-4" }), 4),
+      event(
+        "memory.deleted",
+        memoryPayload({ memory_id: "mem-4", status: "deleted" }),
+        5,
+      ),
+    ]);
+
+    const state = desktopStore.getState();
     expect(state.memories.find((item) => item.memory_id === "mem-2")?.status).toBe("deleted");
     expect(state.memories.some((item) => item.memory_id === "mem-unknown")).toBe(false);
-    // 作用域由服务端下发，客户端不拼接。
-    expect(selectActiveMemories(state)[0]?.scope.assistant_identity).toBe("ancient_machine");
+    // 完整记录删除：status 与内容都按服务端下发落库
+    const deleted = state.memories.find((item) => item.memory_id === "mem-4");
+    expect(deleted?.status).toBe("deleted");
+    expect(deleted?.scope.assistant_identity).toBe("ancient_machine");
   });
 
   it("remote.control_changed 非法载荷保持 null，不伪造 free", () => {
@@ -1849,5 +1898,177 @@ describe("V0.3.9 契约消费（摘要/记忆/租约/指标/诊断/审批终态�
       "other-conversation": 1,
     });
     expect(selectApprovalsForConversation(desktopStore.getState(), "conv-1")).toEqual([]);
+  });
+});
+
+describe("本地服务连接状态与远程地址（V039-S4-007 / V039-S4-004）", () => {
+  const disconnectNotice = {
+    code: "backend_disconnected",
+    message: "Python Sidecar 已断开，正在重连…",
+    severity: "recoverable",
+    source: "sidecar",
+  };
+
+  function event(
+    name: DesktopEvent["event"],
+    payload: object,
+    sequence: number,
+  ): DesktopEvent {
+    return { kind: "event", event: name, sequence, payload: payload as Record<string, unknown> };
+  }
+
+  beforeEach(() => {
+    desktopStore.setState({
+      status: "ready",
+      error: null,
+      toasts: [],
+      needsBootstrap: false,
+      eventBuffer: [],
+      streamId: null,
+      lastSequence: -1,
+    });
+  });
+
+  it("V039-S4-007：断连错误本身即把连接状态落为断开（两路同源，任一路被丢弃都不能让药丸说谎）", () => {
+    desktopStore.getState().applyEvents([
+      event("error.reported", disconnectNotice, 1),
+    ]);
+
+    const state = desktopStore.getState();
+    expect(state.status).toBe("disconnected");
+    expect(state.needsBootstrap).toBe(false);
+    expect(state.error).toBe("Python Sidecar 已断开，正在重连…");
+    expect(state.toasts).toHaveLength(1);
+  });
+
+  it("V039-S4-007：恢复后撤回「正在重连…」瞬时通知，不再与「已连接」同屏矛盾", () => {
+    desktopStore.getState().applyEvents([
+      event("connection.status", { status: "disconnected" }, 1),
+      event("error.reported", disconnectNotice, 2),
+      event("connection.status", { status: "connected" }, 3),
+    ]);
+
+    const state = desktopStore.getState();
+    expect(state.status).toBe("booting");
+    expect(state.needsBootstrap).toBe(true);
+    expect(state.toasts).toHaveLength(0);
+    expect(state.error).toBeNull();
+  });
+
+  it("V039-S4-007：恢复只撤回断连通知，其他真实错误继续留在队列里", () => {
+    desktopStore.getState().applyEvents([
+      event("error.reported", disconnectNotice, 1),
+      event(
+        "error.reported",
+        { code: "voice.tts", message: "语音合成失败：服务无响应", severity: "recoverable" },
+        2,
+      ),
+      event("connection.status", { status: "connected" }, 3),
+    ]);
+
+    const state = desktopStore.getState();
+    expect(state.toasts.map((toast) => toast.text)).toEqual(["语音合成失败：服务无响应"]);
+    expect(state.error).toBe("语音合成失败：服务无响应");
+  });
+
+  it("V039-S4-004：serve.started 的 host=null 如实记为「已监听但无局域网地址」并保留端口与原因", () => {
+    desktopStore.getState().applyEvents([
+      event("serve.started", { host: null, port: 8765, reason: "no_lan_address" }, 1),
+    ]);
+
+    const remote = desktopStore.getState().remotePairing;
+    expect(remote.serveAddress).toBeNull();
+    expect(remote.servePort).toBe(8765);
+    expect(remote.serveUnavailableReason).toBe("no_lan_address");
+  });
+
+  it("V039-S4-004：serve_start_failed 的真实报文进远程页，随后成功的 serve.started 清除它", () => {
+    desktopStore.getState().applyEvents([
+      event(
+        "error.reported",
+        {
+          code: "serve_start_failed",
+          message: "远程服务启动失败（端口 8765）：[WinError 10048] 地址已在使用",
+          severity: "error",
+          source: "sidecar",
+        },
+        1,
+      ),
+    ]);
+    expect(desktopStore.getState().remotePairing.serveFailure).toBe(
+      "远程服务启动失败（端口 8765）：[WinError 10048] 地址已在使用",
+    );
+
+    desktopStore.getState().applyEvents([
+      event("serve.started", { host: "192.168.1.7", port: 8765 }, 2),
+    ]);
+    const remote = desktopStore.getState().remotePairing;
+    expect(remote.serveFailure).toBeNull();
+    expect(remote.serveAddress).toEqual({ host: "192.168.1.7", port: 8765 });
+    expect(remote.serveUnavailableReason).toBeNull();
+  });
+
+  it("V039-S4-004：remote.issue_code 同形的 serve_address 也能合并（一次性事件错过时仍可出二维码）", () => {
+    desktopStore.getState().setServeAddress({ host: "192.168.1.9", port: 8765 });
+
+    expect(desktopStore.getState().remotePairing.serveAddress).toEqual({
+      host: "192.168.1.9",
+      port: 8765,
+    });
+
+    // host=null：服务在监听但无局域网地址，地址清空、端口与原因保留
+    desktopStore.getState().setServeAddress({ host: null, port: 8765, reason: "no_lan_address" });
+    const remote = desktopStore.getState().remotePairing;
+    expect(remote.serveAddress).toBeNull();
+    expect(remote.servePort).toBe(8765);
+    expect(remote.serveUnavailableReason).toBe("no_lan_address");
+  });
+
+  it("V039-S4-004：serve_address 缺 port 时清空地址并暴露协议违规", () => {
+    desktopStore.getState().setServeAddress({ host: "192.168.1.9", port: 8765 });
+    desktopStore.getState().setServeAddress({ host: "192.168.1.99" });
+
+    const remote = desktopStore.getState().remotePairing;
+    expect(remote.serveAddress).toBeNull();
+    expect(remote.serveFailure).toContain("缺少 port");
+  });
+
+  it("V039-S4-002：backend.ready 保留 Sidecar 自报的演示模式与来源，未上报即未知", () => {
+    desktopStore.getState().applyEvents([
+      event(
+        "backend.ready",
+        { pid: 4321, demo: true, mode_source: "flag" },
+        1,
+      ),
+    ]);
+
+    expect(selectBackendDemoMode(desktopStore.getState())).toBe(true);
+    expect(desktopStore.getState().backendInfo).toEqual({
+      pid: 4321,
+      demo: true,
+      modeSource: "flag",
+    });
+  });
+
+  it("V039-S4-002：backend.ready 未带 demo 字段时为未知，绝不默认成真实模式", () => {
+    desktopStore.getState().applyEvents([event("backend.ready", { pid: 77 }, 1)]);
+
+    expect(desktopStore.getState().backendInfo).toEqual({
+      pid: 77,
+      demo: null,
+      modeSource: null,
+    });
+    expect(selectBackendDemoMode(desktopStore.getState())).toBeNull();
+  });
+
+  it("V039-S4-004：host 为空串时按未获得地址处理，不伪造可达地址", () => {
+    desktopStore.getState().applyEvents([
+      event("serve.started", { host: "", port: 8765 }, 1),
+    ]);
+
+    const remote = desktopStore.getState().remotePairing;
+    expect(remote.serveAddress).toBeNull();
+    expect(remote.serveUnavailableReason).toBeNull();
+    expect(remote.servePort).toBe(8765);
   });
 });

@@ -26,6 +26,35 @@ export function buildPairingUrl(
 }
 
 /**
+ * V039-S4-004：二维码不可用时的真实原因。
+ *
+ * 只复述后端实际下发的事实：启动失败报文 / 已监听端口但无局域网地址（含原因码）/
+ * 尚未收到上报。不再断言「Sidecar --serve 未启动或启动失败」——serve 已监听时
+ * 那句话与事实相反。
+ */
+export function serveUnavailableMessage(vm: RemotePairingViewModel): string {
+  if (vm.serveFailure) {
+    return `远程服务地址未就绪：${vm.serveFailure}`;
+  }
+  if (vm.servePort) {
+    const reason = vm.serveUnavailableReason
+      ? `（${serveUnavailableReasonLabel(vm.serveUnavailableReason)}）`
+      : "";
+    return `远程服务已在监听端口 ${vm.servePort}，但没有可用的局域网接入地址${reason}，二维码暂不可用。`;
+  }
+  if (vm.serveUnavailableReason) {
+    return `尚未获得可用的局域网接入地址（${serveUnavailableReasonLabel(vm.serveUnavailableReason)}），二维码暂不可用。`;
+  }
+  return "尚未收到 Sidecar 上报的远程服务地址，二维码暂不可用。若 Sidecar 未以 --serve 启动，手机端无法通过局域网连接。";
+}
+
+/** 协议原因码 → 人话；未知原因码原样展示，不猜含义。 */
+function serveUnavailableReasonLabel(reason: string): string {
+  if (reason === "no_lan_address") return "未探测到局域网地址";
+  return reason;
+}
+
+/**
  * 设置中心「远程设备」页。
  *
  * 提供手机远程接入配对码生成、二维码展示、倒计时与过期控制、
@@ -140,7 +169,7 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
               </>
             ) : (
               <p className="field-error" data-testid="pairing-qr-unavailable" role="alert" style={{ fontSize: "12px" }}>
-                远程服务地址未就绪：Sidecar --serve 未启动或启动失败，二维码暂不可用，请先核对桌面端启动提示。
+                {serveUnavailableMessage(vm)}
               </p>
             )}
           </div>

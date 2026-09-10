@@ -1,19 +1,9 @@
-/* 设置中心四页的视图类型。对应协议 config.get / config.set、
-   codex.oauth_*、voice.preview、voice.provision、account.update_profile，
-   由 presenters 映射。 */
+/* 设置中心各页的视图类型。对应协议 config.get / config.set、
+   voice.preview、voice.provision、account.update_profile，由 presenters 映射。 */
 
 export interface AccountPageView {
   displayName: string;
   avatarUrl?: string | null;
-}
-
-export interface CodingAssistantPageView {
-  /** 当前编程助手选择。 */
-  engine: "codex" | "deepseek";
-  codex: {
-    status: "logged_out" | "waiting" | "logged_in" | "expired";
-    accountLabel?: string | null;
-  };
 }
 
 export interface CharacterModelPageView {
@@ -23,6 +13,12 @@ export interface CharacterModelPageView {
   /** 已保存的 Key 只回显掩码，不回传明文。 */
   apiKeyMasked: string;
   reasoningEffort: string;
+  /** 后端 config.get 的 dialogue.provider_supported：false 表示已保存的服务商不可用。
+      是否可用一律以后端为准，前端不按 provider 取值自行推断。 */
+  providerSupported: boolean;
+  /** 后端 config.get 的 dialogue.provider_unavailable：不可用时的原因与文案；
+      可用或后端未给文案时为 null（前端不编造替代文案）。 */
+  providerUnavailable: { code: string; message: string } | null;
 }
 
 /** V0.3.2 M6：6 个说话方的专属音色生成状态。 */

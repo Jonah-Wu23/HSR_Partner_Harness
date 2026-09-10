@@ -25,6 +25,7 @@ from .contracts import (
     EngineEventType,
     EngineSessionRef,
     ExecutionReceipt,
+    MemoryDraft,
     Message,
     MessageKind,
     MessageOrigin,
@@ -55,6 +56,9 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class ConversationOutcome:
     messages: tuple[Message, ...] = ()
+    # V039-S4-003：本轮角色要求写入的长期记忆条目。持久化与作用域解析由
+    # 调用方（application_service）负责，编排器不接触存储。
+    memory_drafts: tuple[MemoryDraft, ...] = ()
     engine_events: tuple[EngineEvent, ...] = ()
     tool_runs: tuple[ToolRun, ...] = ()
     task: TaskRequest | None = None
@@ -397,6 +401,7 @@ class ConversationOrchestrator:
             local_time=now.strftime("%Y-%m-%d %H:%M:%S"),
             timezone=tz_abbr or str(now.utcoffset() or ""),
             conversation_mode=mode,
+            memory_enabled=bool((project.root_path or "").strip()),
         )
 
     def _context_or_current(
@@ -939,7 +944,10 @@ class ConversationOrchestrator:
                 text="当前是聊天模式，角色不能读取或操作项目。切换协作模式后再让它处理项目任务。",
                 pair_id=exec_context.pair_id,
             )
-            return ConversationOutcome(messages=tuple((*messages, notice)))
+            return ConversationOutcome(
+                messages=tuple((*messages, notice)),
+                memory_drafts=tuple(character_turn.memory),
+            )
 
         if character_turn.delegation_missed:
             # 委派未形成：把失败信息回传角色，自动补一轮让它重新按协议
@@ -978,7 +986,10 @@ class ConversationOrchestrator:
                     text="角色未返回结构化委派，自动重试后仍未成功，本次没有任务交给助手执行。",
                     pair_id=exec_context.pair_id,
                 )
-                return ConversationOutcome(messages=tuple((*messages, notice)))
+                return ConversationOutcome(
+                    messages=tuple((*messages, notice)),
+                    memory_drafts=tuple(character_turn.memory),
+                )
 
         if isinstance(character_turn.delegation, TaskRequestDraft):
             task = TaskRequest(
@@ -1004,10 +1015,14 @@ class ConversationOrchestrator:
                     text=f"任务仍在执行，本次委派暂未受理：{exc}",
                     pair_id=exec_context.pair_id,
                 )
-                return ConversationOutcome(messages=(user_message, character, notice))
+                return ConversationOutcome(
+                    messages=(user_message, character, notice),
+                    memory_drafts=tuple(character_turn.memory),
+                )
             messages.extend(execution.messages)
             return ConversationOutcome(
                 messages=tuple(messages),
+                memory_drafts=tuple(character_turn.memory),
                 engine_events=execution.engine_events,
                 tool_runs=execution.tool_runs,
                 task=task,
@@ -1031,8 +1046,14 @@ class ConversationOrchestrator:
                     text=f"修改未能应用：{exc}",
                     pair_id=exec_context.pair_id,
                 )
-                return ConversationOutcome(messages=(user_message, character, notice))
-        return ConversationOutcome(messages=tuple(messages))
+                return ConversationOutcome(
+                    messages=(user_message, character, notice),
+                    memory_drafts=tuple(character_turn.memory),
+                )
+        return ConversationOutcome(
+            messages=tuple(messages),
+            memory_drafts=tuple(character_turn.memory),
+        )
 
     async def _retry_character_delegation(
         self,

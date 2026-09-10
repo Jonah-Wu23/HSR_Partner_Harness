@@ -184,9 +184,24 @@ class TaskAmendmentDraft(FrozenModel):
 DelegationDraft = TaskRequestDraft | TaskAmendmentDraft
 
 
+class MemoryDraft(FrozenModel):
+    """角色本轮要求写入的长期记忆条目（V039-S4-003）。
+
+    content 是模型给出的 JSON 对象，代码不改写、不摘要、不截断；作用域
+    由会话在持久化侧权威解析（account/project/pair/character_ref/
+    assistant_identity 五分量），模型无法指定归属。要不要记、记什么
+    完全由模型自己判断，代码只做协议一致性检查。
+    """
+
+    content: dict[str, Any] = Field(min_length=1)
+
+
 class CharacterTurn(FrozenModel):
     speech: str
     delegation: DelegationDraft | None = None
+    # V039-S4-003：模型声明的长期记忆条目；空元组表示本轮没有要记的内容，
+    # 不是失败。
+    memory: tuple[MemoryDraft, ...] = ()
     # 供应商实际返回、允许展示的思考文本。正文与思考分开持久化和渲染；
     # 不返回思考字段的供应商保持空字符串。
     reasoning: str = ""
@@ -270,6 +285,11 @@ class ProjectRuntimeContext(FrozenModel):
     local_time: str = ""
     timezone: str = ""
     conversation_mode: Literal["chat", "collaboration"] = "collaboration"
+    # V039-S4-003：只有绑定了项目的聊天才有长期记忆作用域
+    # （resolve_memory_scope 对 project_id 为空的日常聊天返回 None）。
+    # 运行时协议据此决定是否向模型提供 memory 字段——没有作用域就不提供，
+    # 避免模型写下无处归属的条目。
+    memory_enabled: bool = False
 
 
 class TurnStatus(str, Enum):

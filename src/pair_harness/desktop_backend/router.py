@@ -11,6 +11,7 @@ from typing import Any, Callable, TextIO
 
 from .application_service import DesktopApplicationService, ServiceError
 from .protocol import (
+    ProtocolError,
     encode_message,
     parse_request,
     protocol_error,
@@ -120,8 +121,24 @@ class SidecarRouter:
         connection_key: str | None = None,
     ) -> None:
         def respond(message: dict[str, Any]) -> None:
-            """response 写 stdout（权威）；远程发起方同时收到同一份。"""
-            self.writer.write(message)
+            """response 写 stdout（权威）；远程发起方同时收到同一份。
+
+            V039-S4-001：结果不可序列化时必须回执真实失败原因，不能把请求
+            静默丢弃让调用方等到 backend_timeout。回执本身只含字符串，不会
+            再次触发编码失败；原始异常照常进日志。
+            """
+            try:
+                self.writer.write(message)
+            except ProtocolError as exc:
+                logger.error(
+                    "response 不可序列化，改为回执真实失败：%s", exc, exc_info=True
+                )
+                message = response_error(
+                    message.get("id"),
+                    getattr(exc, "code", "encode_error"),
+                    str(exc),
+                )
+                self.writer.write(message)
             if reply_sink is not None:
                 reply_sink(message)
 

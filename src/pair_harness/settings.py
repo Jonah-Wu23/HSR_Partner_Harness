@@ -13,8 +13,12 @@ class Settings:
     """应用配置，全部来自环境变量（B1/B2：密钥只经环境变量进入进程）。
 
     - 对话 API（B1）：PAIR_HARNESS_DIALOGUE_BASE_URL / _API_KEY / _MODEL
-    - Codex（B1）：PAIR_HARNESS_CODEX_BIN
     - DashScope 语音（B2）：DASHSCOPE_API_KEY 及可选的 HOST/WS_URL/HTTP_URL 覆盖
+
+    B-03：Codex 可执行文件配置（PAIR_HARNESS_CODEX_BIN /
+    PAIR_HARNESS_BUNDLED_CODEX_BIN / codex.bin）已随 Codex 引擎一并移除：
+    产品只支持 OpenAI Chat Completions 兼容端点，编程助手固定使用
+    Reasonix ACP，不再接受任何 codex 可执行文件来源。
 
     V0.3.2 M6（计划 5.17 节）：ASR/TTS 模型是产品不可变常量
     ``VOICE_ASR_MODEL`` / ``VOICE_TTS_MODEL``，不再读取用户可控的
@@ -22,7 +26,6 @@ class Settings:
     也不从账号配置读取语音模型。字段保留只为既有调用点的只读便捷。
     """
 
-    codex_bin: str = "codex"
     dialogue_base_url: str | None = None
     dialogue_api_key: str | None = None
     dialogue_model: str | None = None
@@ -61,7 +64,6 @@ class Settings:
             voice_http_url
         )
         return cls(
-            codex_bin=account_config.get("codex.bin") or base.codex_bin,
             dialogue_base_url=(
                 account_config.get("dialogue.base_url") or base.dialogue_base_url
             ),
@@ -122,11 +124,6 @@ class Settings:
                 )
                 configured_host = parsed.hostname
         return cls(
-            codex_bin=(
-                os.getenv("PAIR_HARNESS_CODEX_BIN")
-                or os.getenv("PAIR_HARNESS_BUNDLED_CODEX_BIN")
-                or "codex"
-            ),
             dialogue_base_url=os.getenv("PAIR_HARNESS_DIALOGUE_BASE_URL"),
             dialogue_api_key=os.getenv("PAIR_HARNESS_DIALOGUE_API_KEY"),
             dialogue_model=os.getenv("PAIR_HARNESS_DIALOGUE_MODEL"),

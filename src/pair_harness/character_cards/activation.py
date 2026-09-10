@@ -7,6 +7,12 @@ token 计数、冻结预算基准 8192、只扫描对话消息、扩展语义存
 
 激活结果只决定条目是否注入角色侧提示词，不得用于意图、委派或成败判定；
 所有真实失败保持原始错误（Let It Fail）。
+
+预算诊断口径（V0.3.9 V039-S4-017）：``budget_used`` 是**冻结契约的激活序
+累计估算**（含 constant），不是装配后按桶/depth 分别拼接的精确体积，两者
+分隔符数量与位置不同、可以有差；``budget_total`` 是只约束非 constant 条目的
+限额；分量按边际归因，超限与排除由 ``warnings`` 显式告警，``overflow_entries``
+只列确实未注入的条目。
 """
 
 from __future__ import annotations
@@ -92,16 +98,51 @@ class DepthEntryGroup:
 
 @dataclass(frozen=True)
 class ActivationDiagnostics:
-    """激活诊断（契约 §3.1、§4.6）。"""
+    """激活诊断（契约 §3.1、§4.6）。
+
+    预算口径（V0.3.9 问题 V039-S4-017）。三道口径必须分开读，互相不能替代：
+
+    - ``budget_total``：书级限额，**只约束非 constant 条目的注入**；constant
+      条目无条件注入且不被限额裁剪（契约 §3.5），但其文本仍计入累计门控的
+      候选拼接文本（契约 §3.8 按激活序累计）。
+    - ``budget_used``：**冻结契约的激活序累计估算**——门控最后接受的那份候选
+    拼接文本的整体 ``token_estimate``。它不是装配结果的精确体积：门控按激活序
+    单一序列累计，装配器按桶与 depth 分别拼接，两者的分隔符数量与位置不同，
+    因此 ``budget_used`` 与各模块文本估算之和可以有差（例如一条 before_char 加
+    一条 after_char 时二者不同）。它可以大于 ``budget_total``：constant 部分
+    不受裁剪，超出量来自 constant，不表示限额失效。
+    - 分量字段按**边际归因**记账：第 k 个注入条目的分量 = 加入该条后的累计文本
+    估算 − 加入前的估算（constant 入 ``budget_constant_used``、非 constant 入
+    ``budget_prunable_used``）。边际值不等于单条文本的估算：``token_estimate``
+    逐条取整，单条估算之和不等于拼接估算（单字符条目各为 1，4 条拼接仍是 1）。
+    两个分量只对各自分区的边际负责，不是注入体积的分割。
+
+    可判定事实：
+
+    - ``budget_prunable_used`` 是门控接受的边际之和，每个被注入的非 constant
+      条目判定时其候选累计值都 ``< budget_total``，因此该值 ``<= budget_total``
+      （单条估算之和没有这个上界，别用它代替）；
+    - ``budget_limit_reached``：非 constant 条目是否已触发限额门控（触发后
+      其后所有非 constant 条目一并排除，契约 §3.8）。触发必然把该条目记入
+      ``overflow_entries``，故该标记为真时 ``overflow_entries`` 必不为空。
+
+    ``overflow_entries`` 只列确实未进入提示词的条目（全部为非 constant）。
+    空正文条目照常激活（进桶、计入 ``activated_count``）；其自身长度是 0，但
+    边际按累计文本估算的差计算，可能因分隔符而变化，不为 0 也不能假定其不改变
+    注入内容。
+    """
 
     scan_depth: int
     scanned_message_count: int
     budget_total: int
     budget_used: int
-    overflow_entries: list[str]   # 被预算排除条目的 comment/entry_id
+    overflow_entries: list[str]   # 被预算排除条目的 comment/entry_id（仅未注入条目）
     not_run_fields: list[str]     # 存而不运行字段清单（条目级聚合）
-    warnings: list[str]           # 非法正则退化等
+    warnings: list[str]           # 非法正则退化、预算溢出等
     activated_count: int
+    budget_constant_used: int = 0
+    budget_prunable_used: int = 0
+    budget_limit_reached: bool = False
 
 
 @dataclass(frozen=True)
@@ -322,6 +363,38 @@ def _join_sort_key(item: tuple) -> tuple:
     return (entry.insertion_order, _id_sort_key(entry.entry_id, index))
 
 
+
+def _append_budget_warnings(
+    warnings: list[str],
+    *,
+    budget_total: int,
+    budget_used: int,
+    budget_constant_used: int,
+    budget_prunable_used: int,
+    overflow_entries: Sequence[str],
+) -> None:
+    """预算门控告警（V039-S4-017）：注入量超限或已有条目被预算排除时告警。
+
+    ``budget_total`` 只约束非 constant 条目（契约 §3.5、§3.8）；constant 条目
+    即使免于裁剪，其文本仍计入候选累计门控，因此总量超限可能只源于 constant。
+    两种事实分别如实说明，只陈述数字，不做语义猜测。
+    """
+    if budget_used <= budget_total and not overflow_entries:
+        return
+    if overflow_entries:
+        warnings.append(
+            f"世界书预算已排除 {len(overflow_entries)} 条未注入条目（其后非 constant "
+            f"条目一并排除）；激活序累计估算 {budget_used}（非装配体积），其中 constant 边际 "
+            f"{budget_constant_used}、受门控条目边际 {budget_prunable_used}"
+        )
+    else:
+        warnings.append(
+            f"激活序累计估算 {budget_used}（非装配体积）超出限额 {budget_total}（constant 边际 "
+            f"{budget_constant_used} + 受门控条目边际 {budget_prunable_used}）；"
+            "constant 条目免于裁剪但计入累计门控（契约 §3.5、§3.8），超出量来自该部分"
+        )
+
+
 def activate_world_book(
     book: CharacterBook | None,
     scan_texts: Sequence[str],
@@ -351,6 +424,9 @@ def activate_world_book(
                 not_run_fields=[],
                 warnings=[],
                 activated_count=0,
+                budget_constant_used=0,
+                budget_prunable_used=0,
+                budget_limit_reached=False,
             ),
         )
 
@@ -395,29 +471,45 @@ def activate_world_book(
     after_bucket: list[tuple[int, ActivatedEntry]] = []
     depth_buckets: dict[tuple[int, str], list[tuple[int, ActivatedEntry]]] = {}
     overflow: list[str] = []
-    budget_used_text = ""
-    budget_used = 0
-    over = False
+    cumulative_text = ""  # 门控接受的累计拼接文本（下一条候选即在其上拼接）
+    accepted_cost = 0  # 该累计文本的估算（= budget_used）
+    budget_constant_used = 0  # constant 条目边际之和（不受预算约束）
+    budget_prunable_used = 0  # 受预算门控条目的边际之和
+    over_budget = False  # 限额门控是否已触发
 
     for index, entry, position, matched_keys in candidates:
-        if over and not entry.constant:
-            overflow.append(_entry_ref(entry))
-            continue
-        # 预算以「候选拼接文本」的总估算为准（Codex Review P1 修复）：先前
-        # 实现先算总估算再叠加旧 budget_used，导致重复累计、虚高排除仍
-        # 在预算内的条目（如旧 1 + 候选总 3 ≥ 预算 4 即被误排除）。
+        # 候选文本 = 已注入文本 + 本条正文（"\n" 拼接）：预算判断与实际
+        # 注入量共用同一拼接口径，排除的条目绝不进入累计。
+        # 冻结算法：按「累计文本是否为空」判定序列首条（不加分隔符）；前一条
+        # 正文为空时累计文本仍为空串，紧随其后的一条同样按首条处理。
         candidate_text = (
-            budget_used_text + "\n" + entry.content if budget_used_text else entry.content
+            cumulative_text + "\n" + entry.content if cumulative_text else entry.content
         )
+        # constant 条目无条件注入、不受预算排除（契约 §3.5），直接跳过门控；
+        # 其余条目按激活优先序受限额门控，被排除者整体不注入。
+        if not entry.constant:
+            if over_budget:
+                overflow.append(_entry_ref(entry))
+                continue
+            # 预算以「候选拼接文本」的总估算为准（Codex Review P1 修复）：
+            # 先前实现先算总估算再叠加旧 budget_used，导致重复累计、虚高
+            # 排除仍在预算内的条目（如旧 1 + 候选总 3 ≥ 预算 4 即被误排除）。
+            if token_estimate(candidate_text) >= budget_total:
+                # 溢出条目整体排除（契约 §3.8，对齐 ST :4942-4953），其后
+                # 所有非 constant 条目一并排除。
+                over_budget = True
+                overflow.append(_entry_ref(entry))
+                continue
+        # 边际归因：本条按既定拼接方式并入后累计文本估值的增量。空正文条目
+        # 自身长度为 0，但其边际由分隔符变化决定，可能非 0，不能假定为 0。
         candidate_cost = token_estimate(candidate_text)
-        if not entry.constant and candidate_cost >= budget_total:
-            # 溢出条目整体排除（契约 §3.8，对齐 ST :4942-4953），
-            # 其后所有非 constant 条目一并排除。
-            over = True
-            overflow.append(_entry_ref(entry))
-            continue
-        budget_used = candidate_cost
-        budget_used_text = candidate_text
+        marginal = candidate_cost - accepted_cost
+        if entry.constant:
+            budget_constant_used += marginal
+        else:
+            budget_prunable_used += marginal
+        accepted_cost = candidate_cost
+        cumulative_text = candidate_text
         activated = ActivatedEntry(
             entry=entry,
             position=position[0],
@@ -451,6 +543,19 @@ def activate_world_book(
         )
     ]
 
+    # 注入量口径（冻结契约）：budget_used 是激活序累计的候选拼接文本估算，
+    # 不是装配结果的精确体积——装配器按桶/depth 分别拼接，分隔符数量与位置
+    # 不同，两者可以有差。两个分量是同一累计过程的边际归因之和。
+    budget_used = accepted_cost
+    _append_budget_warnings(
+        warnings,
+        budget_total=budget_total,
+        budget_used=budget_used,
+        budget_constant_used=budget_constant_used,
+        budget_prunable_used=budget_prunable_used,
+        overflow_entries=overflow,
+    )
+
     diagnostics = ActivationDiagnostics(
         scan_depth=scan_depth,
         scanned_message_count=scanned_message_count,
@@ -464,6 +569,9 @@ def activate_world_book(
             + len(after_char)
             + sum(len(group.entries) for group in depth_entries)
         ),
+        budget_constant_used=budget_constant_used,
+        budget_prunable_used=budget_prunable_used,
+        budget_limit_reached=over_budget,
     )
     return ActivationResult(
         before_char=before_char,

@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"
 
 $desktopRoot = Split-Path -Parent $PSScriptRoot
 $repoRoot = Split-Path -Parent $desktopRoot
@@ -14,14 +14,13 @@ $python = Join-Path $workspaceRoot ".venv\Scripts\python.exe"
 $entrypoint = Join-Path $repoRoot "src\pair_harness\desktop_backend\__main__.py"
 $resourceRoot = Join-Path $desktopRoot "src-tauri\resources"
 $distRoot = Join-Path $resourceRoot "sidecar"
-$codexResourceRoot = Join-Path $resourceRoot "codex"
 $workRoot = Join-Path $desktopRoot ".pyinstaller-work"
 $specRoot = Join-Path $desktopRoot ".pyinstaller-spec"
 $configRoot = Join-Path $desktopRoot ".pyinstaller-config"
 $script:bundledReasonix = Join-Path $resourceRoot "reasonix\bin\reasonix.exe"
 
 if (-not (Test-Path -LiteralPath $python)) {
-    throw "项目虚拟环境不存在：$python"
+    throw "Project virtual environment not found: $python"
 }
 
 New-Item -ItemType Directory -Path $resourceRoot -Force | Out-Null
@@ -42,17 +41,10 @@ $env:PYINSTALLER_CONFIG_DIR = $configRoot
     $entrypoint
 
 if ($LASTEXITCODE -ne 0) {
-    throw "PyInstaller 构建 Sidecar 失败，退出码：$LASTEXITCODE"
+    throw "PyInstaller failed to build the sidecar, exit code: $LASTEXITCODE"
 }
 
-# 把 Codex CLI 的 Windows 原生发行目录一起放进 Tauri resources。
-# 只复制原生 vendor 目录，不把 node_modules 或 Node.js 带进安装包；
-# Codex app-server 由这个目录里的 codex.exe 直接启动。
-$nativeRootCandidates = @()
-if ($env:PAIR_HARNESS_CODEX_NATIVE_ROOT) {
-    $nativeRootCandidates += ,$env:PAIR_HARNESS_CODEX_NATIVE_ROOT
-}
-
+# Global npm root, used to fall back to an installed Reasonix native binary (see below).
 $npmRoot = $null
 $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
 if ($npm) {
@@ -61,58 +53,9 @@ if ($npm) {
         $npmRoot = ($npmRootOutput | Select-Object -Last 1).ToString().Trim()
     }
 }
-if ($npmRoot) {
-    $nativeRootCandidates += ,(Join-Path $npmRoot "@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc")
-}
 
-$appDataRoot = $env:APPDATA
-if (-not $appDataRoot) {
-    $appDataRoot = [Environment]::GetFolderPath("ApplicationData")
-}
-if ($appDataRoot) {
-    $nativeRootCandidates += ,(Join-Path $appDataRoot "npm\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc")
-}
-
-$codexShim = Get-Command codex.cmd -ErrorAction SilentlyContinue
-if ($codexShim) {
-    $shimRoot = Split-Path -Parent $codexShim.Source
-    if ($shimRoot) {
-        $nativeRootCandidates += ,(Join-Path $shimRoot "node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc")
-    }
-}
-if (Test-Path -LiteralPath (Join-Path $codexResourceRoot "bin\codex.exe") -PathType Leaf) {
-    $nativeRootCandidates += ,$codexResourceRoot
-}
-
-$nativeRoot = $null
-foreach ($candidate in $nativeRootCandidates) {
-    if ($candidate -and (Test-Path -LiteralPath (Join-Path $candidate "bin\codex.exe") -PathType Leaf)) {
-        $nativeRoot = $candidate
-        break
-    }
-}
-
-if (-not $nativeRoot) {
-    throw "Codex native Windows distribution not found. Install @openai/codex or set PAIR_HARNESS_CODEX_NATIVE_ROOT to a directory containing bin\codex.exe."
-}
-
-New-Item -ItemType Directory -Path $codexResourceRoot -Force | Out-Null
-$resolvedSource = [IO.Path]::GetFullPath($nativeRoot).TrimEnd('\')
-$resolvedDest = [IO.Path]::GetFullPath($codexResourceRoot).TrimEnd('\')
-if ($resolvedSource -ne $resolvedDest) {
-    Get-ChildItem -LiteralPath $nativeRoot -Force | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName -Destination $codexResourceRoot -Recurse -Force
-    }
-}
-
-$bundledCodex = Join-Path $codexResourceRoot "bin\codex.exe"
-if (-not (Test-Path -LiteralPath $bundledCodex -PathType Leaf)) {
-    throw "Copying the Codex native distribution failed: $bundledCodex"
-}
-Write-Host "Bundled Codex prepared: $bundledCodex"
-
-# 把 Reasonix CLI 的 Windows 原生二进制（reasonix.exe，DeepSeek 编程助手）
-# 放进 Tauri resources，供 DeepSeek 引擎的 reasonix acp 子进程使用。
+# Copy the Reasonix CLI Windows native binary (reasonix.exe, the DeepSeek coding
+# assistant) into the Tauri resources for the DeepSeek engine's reasonix acp child.
 New-Item -ItemType Directory -Path (Split-Path -Parent $script:bundledReasonix) -Force | Out-Null
 $reasonixSource = $null
 
@@ -169,16 +112,18 @@ if ($env:PAIR_HARNESS_REASONIX_NATIVE_ROOT) {
 
 Write-Host "Bundled Reasonix prepared from $reasonixSource`: $script:bundledReasonix"
 
-# 构建 mobile PWA 并复制进 Tauri resources（V0.3.4 打包链路）：
-# sidecar --serve 静态伺服 resources/mobile-dist，手机端扫码即达 8765 同端口页面。
+# Build the mobile PWA and copy it into the Tauri resources (V0.3.4 packaging):
+# sidecar --serve statically serves resources/mobile-dist, so a phone that scans
+# the pairing QR code reaches the page on the same 8765 port.
 $mobileRoot = Join-Path $desktopRoot "mobile"
 if ([string]::IsNullOrWhiteSpace($mobileRoot) -or -not (Test-Path -LiteralPath $mobileRoot -PathType Container)) {
-    throw "mobile root 无效：desktopRoot='$desktopRoot' mobileRoot='$mobileRoot'"
+    throw "Invalid mobile root: desktopRoot='$desktopRoot' mobileRoot='$mobileRoot'"
 }
 
-# Push-Location 不会同步子进程继承的工作目录（PowerShell 的 Location 与
-# [Environment]::CurrentDirectory 是两回事），此前 npm 实际跑在 desktop 根
-# 目录、mobile-dist 从未被重建。改用 cmd /c cd /d 显式固定 npm 的工作目录，
+# Push-Location does not change the working directory inherited by child
+# processes (PowerShell's Location and [Environment]::CurrentDirectory are two
+# different things), so npm used to run in the desktop root and mobile-dist was
+# never rebuilt. Use cmd /c cd /d to pin npm's working directory explicitly.
 if (-not (Test-Path -LiteralPath (Join-Path $mobileRoot "node_modules") -PathType Container)) {
     & cmd.exe /d /s /c "cd /d `"$mobileRoot`" && npm install"
     if ($LASTEXITCODE -ne 0) {

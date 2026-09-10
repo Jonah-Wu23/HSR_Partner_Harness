@@ -1,9 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ConversationRecord, DesktopSnapshot, Message, PairRecord } from "@shared/contracts/protocol";
+import type {
+  ConversationRecord,
+  DesktopSnapshot,
+  MemoryWirePayload,
+  Message,
+  PairRecord,
+} from "@shared/contracts/protocol";
 import {
   appendTtsChunk,
   mobileWsClient,
   resetVoiceTerminalStateForTests,
+  selectMobileActiveMemories,
   TTS_MAX_BUFFERED_PCM_BYTES,
   useMobileStore,
   type MobileTtsChunk,
@@ -80,6 +87,23 @@ function snapshotResult(sequence: number): DesktopSnapshot {
     sequence,
     stream_id: "stream-current",
   } as unknown as DesktopSnapshot;
+}
+
+/** 线缆载荷：后端 _memory_payload 恒为扁平五分量（线缆上没有嵌套 scope）。 */
+function memoryWirePayload(overrides: Partial<MemoryWirePayload> = {}): MemoryWirePayload {
+  return {
+    memory_id: "mem-1",
+    account_id: "acc",
+    project_id: "p1",
+    pair_id: "pair-default",
+    character_ref: "builtin:phainon",
+    assistant_identity: "ancient_machine",
+    status: "active",
+    updated_at: "2026-01-01T00:00:00Z",
+    content: { text: "喜欢安静的训练场" },
+    conversation_id: "c1",
+    ...overrides,
+  };
 }
 
 function lastInstance(): FakeWebSocket {
@@ -2034,35 +2058,133 @@ describe("mobileStore V0.3.9 契约消费（摘要/记忆/租约/回合/审批�
     expect(failed?.error).toBe("provider timeout");
     expect(failed?.content).toBeNull();
 
+    // 真实线缆载荷：扁平五分量（见下方 memory.* 专项用例）。
     lastInstance().emit({
       kind: "event",
       event: "memory.updated",
       sequence: 12,
       stream_id: "stream-current",
-      payload: {
-        memory: {
-          memory_id: "mem-1",
-          scope: {
-            account_id: "acc",
-            project_id: "p1",
-            pair_id: "pair-default",
-            character_ref: "builtin:phainon",
-            assistant_identity: "ancient_machine",
-          },
-          content: { text: "记忆" },
-          status: "active",
-          updated_at: "2026-01-01T00:00:00Z",
-        },
-      },
+      payload: memoryWirePayload({ content: { text: "记忆" } }),
     });
+    expect(useMobileStore.getState().memories[0]?.scope.assistant_identity).toBe(
+      "ancient_machine",
+    );
+  });
+
+  it("memory.updated/deleted 按扁平线缆载荷解码作用域；只带 id 的删除只标记已知记录", async () => {
+    await pairAndBootstrap();
+
+    // 后端 _memory_payload：五分量扁平下发，线缆上没有嵌套 scope 对象。
+    lastInstance().emit({
+      kind: "event",
+      event: "memory.updated",
+      sequence: 11,
+      stream_id: "stream-current",
+      payload: memoryWirePayload(),
+    });
+    const created = useMobileStore.getState().memories[0];
+    expect(created?.memory_id).toBe("mem-1");
+    expect(created?.scope).toEqual({
+      account_id: "acc",
+      project_id: "p1",
+      pair_id: "pair-default",
+      character_ref: "builtin:phainon",
+      assistant_identity: "ancient_machine",
+    });
+    expect(created?.content).toEqual({ text: "喜欢安静的训练场" });
+    expect(created?.conversation_id).toBe("c1");
+    expect(selectMobileActiveMemories(useMobileStore.getState())).toHaveLength(1);
+
+    // 同 id 的后续更新覆盖原记录，不重复入列。
+    lastInstance().emit({
+      kind: "event",
+      event: "memory.updated",
+      sequence: 12,
+      stream_id: "stream-current",
+      payload: memoryWirePayload({ content: { text: "第二版" } }),
+    });
+    expect(useMobileStore.getState().memories).toHaveLength(1);
+    expect(useMobileStore.getState().memories[0]?.content).toEqual({ text: "第二版" });
+
+    // 完整删除载荷（memory.delete 的广播形态）：status=deleted，作用域仍可读。
     lastInstance().emit({
       kind: "event",
       event: "memory.deleted",
       sequence: 13,
       stream_id: "stream-current",
-      payload: { memory_id: "mem-1" },
+      payload: memoryWirePayload({ status: "deleted" }),
     });
-    expect(useMobileStore.getState().memories[0]?.status).toBe("deleted");
+    const deleted = useMobileStore.getState().memories[0];
+    expect(deleted?.status).toBe("deleted");
+    expect(deleted?.scope.character_ref).toBe("builtin:phainon");
+    expect(selectMobileActiveMemories(useMobileStore.getState())).toHaveLength(0);
+
+    // 只带 id 的删除：标记已知记录；未知 id 不凭空造记录。
+    lastInstance().emit({
+      kind: "event",
+      event: "memory.updated",
+      sequence: 14,
+      stream_id: "stream-current",
+      payload: memoryWirePayload({ memory_id: "mem-2" }),
+    });
+    lastInstance().emit({
+      kind: "event",
+      event: "memory.deleted",
+      sequence: 15,
+      stream_id: "stream-current",
+      payload: { memory_id: "mem-2" },
+    });
+    lastInstance().emit({
+      kind: "event",
+      event: "memory.deleted",
+      sequence: 16,
+      stream_id: "stream-current",
+      payload: { memory_id: "mem-unknown" },
+    });
+    const state = useMobileStore.getState();
+    expect(state.memories.map((item) => item.memory_id).sort()).toEqual(["mem-1", "mem-2"]);
+    expect(state.memories.find((item) => item.memory_id === "mem-2")?.status).toBe("deleted");
+    expect(state.memories.find((item) => item.memory_id === "mem-2")?.scope.pair_id).toBe(
+      "pair-default",
+    );
+  });
+
+  it("memory.updated/deleted 载荷形状不符时如实抛错，不吞错也不伪造记录", async () => {
+    await pairAndBootstrap();
+
+    // 缺 status：既不能解码成记录，也不允许静默丢弃。
+    expect(() =>
+      lastInstance().emit({
+        kind: "event",
+        event: "memory.updated",
+        sequence: 11,
+        stream_id: "stream-current",
+        payload: { memory_id: "mem-1", content: { text: "只有 id 与内容" } },
+      }),
+    ).toThrow(/memory\.updated 载荷形状不符/);
+
+    expect(() =>
+      lastInstance().emit({
+        kind: "event",
+        event: "memory.updated",
+        sequence: 12,
+        stream_id: "stream-current",
+        payload: null,
+      }),
+    ).toThrow(/memory\.updated 载荷形状不符/);
+
+    // 删除载荷既不是完整记录也没有 memory_id：报错，不能当成「已删除」。
+    expect(() =>
+      lastInstance().emit({
+        kind: "event",
+        event: "memory.deleted",
+        sequence: 13,
+        stream_id: "stream-current",
+        payload: { memory_id: "" },
+      }),
+    ).toThrow(/memory\.deleted 载荷形状不符/);
+
+    expect(useMobileStore.getState().memories).toEqual([]);
   });
 
   it("remote.control_changed 非法载荷保持 null；remote.control_status 只读查询写入租约", async () => {
@@ -2179,7 +2301,7 @@ describe("mobileStore V0.3.9 契约消费（摘要/记忆/租约/回合/审批�
     });
   });
 
-  it("summary.get / memory.list 只读查询写入结果；响应缺数组时保持现状", async () => {
+  it("summary.get / memory.list 只读查询写入结果并按线缆形状解码作用域", async () => {
     await pairAndBootstrap();
     const summaryQuery = useMobileStore.getState().loadSummaries("c1");
     await vi.waitFor(() => expect(lastSentFrame().method).toBe("summary.get"));
@@ -2214,10 +2336,82 @@ describe("mobileStore V0.3.9 契约消费（摘要/记忆/租约/回合/审批�
     const memoryQuery = useMobileStore.getState().loadMemories("c1");
     await vi.waitFor(() => expect(lastSentFrame().method).toBe("memory.list"));
     const memoryFrame = lastSentFrame();
-    lastInstance().emit({ kind: "response", id: memoryFrame.id, ok: true, result: {} });
+    expect(memoryFrame.params).toMatchObject({ conversation_id: "c1" });
+    lastInstance().emit({
+      kind: "response",
+      id: memoryFrame.id,
+      ok: true,
+      result: {
+        memories: [
+          memoryWirePayload(),
+          memoryWirePayload({
+            memory_id: "mem-2",
+            assistant_identity: "fourth_mirror",
+            status: "deleted",
+          }),
+        ],
+      },
+    });
     await memoryQuery;
-    // 缺数组时不合成空列表，也不清空既有结果。
-    expect(useMobileStore.getState().memories).toEqual([]);
+    // memory.list 是整批权威结果：逐条解码出 scope，不做增量合并。
+    const memories = useMobileStore.getState().memories;
+    expect(memories).toHaveLength(2);
+    expect(memories[0]?.scope).toEqual({
+      account_id: "acc",
+      project_id: "p1",
+      pair_id: "pair-default",
+      character_ref: "builtin:phainon",
+      assistant_identity: "ancient_machine",
+    });
+    expect(memories[1]?.scope.assistant_identity).toBe("fourth_mirror");
+    expect(selectMobileActiveMemories(useMobileStore.getState())).toHaveLength(1);
     expect(useMobileStore.getState().summaries[0]?.summary_id).toBe("s9");
+  });
+
+  it("memory.list 响应缺数组或条目形状不符时如实报错，不合成空数据也不清空既有记录", async () => {
+    await pairAndBootstrap();
+    lastInstance().emit({
+      kind: "event",
+      event: "memory.updated",
+      sequence: 11,
+      stream_id: "stream-current",
+      payload: memoryWirePayload(),
+    });
+    expect(useMobileStore.getState().memories).toHaveLength(1);
+
+    // ① 返回体缺 memories 数组：协议违规，必须报错而不是当成功。
+    const missingArray = useMobileStore.getState().loadMemories("c1");
+    await vi.waitFor(() => expect(lastSentFrame().method).toBe("memory.list"));
+    const firstFrame = lastSentFrame();
+    lastInstance().emit({ kind: "response", id: firstFrame.id, ok: true, result: {} });
+    await expect(missingArray).rejects.toThrow(/memory\.list 返回体缺 memories 数组/);
+    expect(useMobileStore.getState().memories).toHaveLength(1);
+
+    // ② 数组里有解不开的条目：报错，不把整批降级成空列表。
+    const badEntry = useMobileStore.getState().loadMemories("c1");
+    await vi.waitFor(() => expect(lastSentFrame().method).toBe("memory.list"));
+    const secondFrame = lastSentFrame();
+    lastInstance().emit({
+      kind: "response",
+      id: secondFrame.id,
+      ok: true,
+      result: { memories: [{ memory_id: "mem-3", content: { text: "缺 status 与作用域" } }] },
+    });
+    await expect(badEntry).rejects.toThrow(/memory\.list 载荷形状不符/);
+    expect(useMobileStore.getState().memories).toHaveLength(1);
+    expect(useMobileStore.getState().memories[0]?.memory_id).toBe("mem-1");
+
+    // ③ 服务端真实返回空列表（memories: []）是合法零条，如实写入。
+    const emptyList = useMobileStore.getState().loadMemories("c1");
+    await vi.waitFor(() => expect(lastSentFrame().method).toBe("memory.list"));
+    const thirdFrame = lastSentFrame();
+    lastInstance().emit({
+      kind: "response",
+      id: thirdFrame.id,
+      ok: true,
+      result: { memories: [] },
+    });
+    await emptyList;
+    expect(useMobileStore.getState().memories).toEqual([]);
   });
 });

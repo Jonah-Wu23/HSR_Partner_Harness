@@ -50,13 +50,12 @@ async def main() -> None:
         demo=False,
         event_sink=event_sink,
     )
-    # 切到 DeepSeek 引擎（账号配置为空时默认 codex；此处直接注入 deepseek）
+    # B-03：编程助手只有 reasonix acp 一条路径，这里按环境变量显式装配。
     from pair_harness.desktop_backend.engine_factory import build_coding_engine
     from pair_harness.core.contracts import ApprovalMode
     import os
 
     service.coding_engine = build_coding_engine(
-        engine_choice="deepseek",
         codex_auth=service.codex_auth,
         model=os.getenv("PAIR_HARNESS_DIALOGUE_MODEL"),
         base_url=os.getenv("PAIR_HARNESS_DIALOGUE_BASE_URL"),

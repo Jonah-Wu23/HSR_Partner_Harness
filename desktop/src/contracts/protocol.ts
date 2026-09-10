@@ -353,10 +353,6 @@ export type DesktopCommandMethod =
   | "config.get"
   | "config.set"
   | "config.test_connection"
-  | "codex.oauth_start"
-  | "codex.oauth_status"
-  | "codex.logout"
-  | "codex.api_login"
   | "card.list"
   | "card.get"
   | "card.create_draft"
@@ -386,6 +382,7 @@ export type DesktopCommandMethod =
   | "summary.get"
   | "summary.regenerate"
   | "memory.list"
+  | "memory.create"
   | "memory.update"
   | "memory.delete"
   | "metrics.query"
@@ -648,7 +645,94 @@ export interface ConversationSummary {
 }
 
 export interface MemoryScope { account_id: string; project_id: string; pair_id: string; character_ref: string; assistant_identity: string; }
-export interface PairMemory { memory_id: string; scope: MemoryScope; content: Record<string, unknown>; status: "active" | "deleted"; updated_at: string; }
+
+/**
+ * memory.list 条目与 memory.updated / memory.deleted 事件载荷的真实线缆形状。
+ *
+ * 来源：`application_service._memory_payload`（写命令与事件共用）与
+ * `core.memory.memory_event_payload`，两处都把五分量作用域作为**扁平字段**下发，
+ * 线缆上没有嵌套 scope 对象。做会话解析（携带 conversation_id）时载荷再带该字段。
+ */
+export interface MemoryWirePayload {
+  memory_id: string;
+  account_id: string;
+  project_id: string;
+  pair_id: string;
+  character_ref: string;
+  assistant_identity: string;
+  status: "active" | "deleted";
+  updated_at: string;
+  content: Record<string, unknown>;
+  conversation_id?: string;
+}
+
+/**
+ * 前端记忆记录：线缆五分量 + 由 `pairMemoryFromPayload` 派生的嵌套 scope。
+ *
+ * scope 是同一批服务端原值的另一种摆放，客户端不拼接、不改写作用域；既有消费方
+ * （上下文状态条）按嵌套 scope 读取，因此线缆解码一律经由该函数，避免出现
+ * scope 缺失而显示「未报告」。
+ */
+export interface PairMemory {
+  memory_id: string;
+  scope: MemoryScope;
+  content: Record<string, unknown>;
+  status: "active" | "deleted";
+  updated_at: string;
+  /** 载荷原样携带的扁平分量（本地构造的记录可以没有；线缆解码后一定有）。 */
+  account_id?: string;
+  project_id?: string;
+  pair_id?: string;
+  character_ref?: string;
+  assistant_identity?: string;
+  /** 服务端按会话解析时随载荷下发的会话 id。 */
+  conversation_id?: string;
+}
+
+/**
+ * 线缆载荷 → 前端记录；缺失分量如实保留为空串，不伪造作用域。
+ *
+ * 结构非法（缺 memory_id、content 不是对象）时如实抛错，不静默吞：命令返回体
+ * 一旦不符协议，调用方必须看到失败，而不是拿到一条字段缺失的“记忆”。
+ */
+export function pairMemoryFromPayload(payload: MemoryWirePayload): PairMemory {
+  if (!payload || typeof payload.memory_id !== "string" || !payload.memory_id) {
+    throw new Error("记忆载荷缺少 memory_id");
+  }
+  if (
+    !payload.content ||
+    typeof payload.content !== "object" ||
+    Array.isArray(payload.content)
+  ) {
+    throw new Error("记忆载荷的 content 必须是对象");
+  }
+  const text = (value: unknown): string => (typeof value === "string" ? value : "");
+  return {
+    memory_id: payload.memory_id,
+    scope: {
+      account_id: text(payload.account_id),
+      project_id: text(payload.project_id),
+      pair_id: text(payload.pair_id),
+      character_ref: text(payload.character_ref),
+      assistant_identity: text(payload.assistant_identity),
+    },
+    content: payload.content,
+    status: payload.status,
+    updated_at: payload.updated_at,
+    account_id: text(payload.account_id),
+    project_id: text(payload.project_id),
+    pair_id: text(payload.pair_id),
+    character_ref: text(payload.character_ref),
+    assistant_identity: text(payload.assistant_identity),
+    ...(payload.conversation_id === undefined ? {} : { conversation_id: payload.conversation_id }),
+  };
+}
+
+/** memory.list 的返回体。 */
+export interface MemoryListResult { memories: MemoryWirePayload[]; }
+
+/** memory.create / memory.update / memory.delete 的返回体。 */
+export interface MemoryWriteResult { memory: MemoryWirePayload; }
 
 export interface TurnMetric {
   metric_id: string; account_id: string; project_id: string; conversation_id: string; pair_id: string; character_ref: string; assistant_identity: string;
@@ -774,10 +858,24 @@ export interface CardDeleteResult {
   deleted: boolean;
 }
 
-/** remote.issue_code：配对码一次性、短期有效（当前 ttl 300 秒）。 */
+/**
+ * V039-S4-004：Sidecar --serve 的地址上报载荷。
+ *
+ * `serve.started` 事件与 `remote.issue_code` 返回的 `serve_address` 同形：
+ * `host` 为 null 表示服务确已在监听、但没有可用的局域网地址（原因见 `reason`）。
+ */
+export interface ServeAddressPayload {
+  host: string | null;
+  port: number;
+  reason?: string | null;
+}
+
+/** remote.issue_code：配对码一次性、短期有效（当前 ttl 300 秒）。
+    返回体同时带上当前 serve 地址，避免只依赖一次性的 serve.started 事件。 */
 export interface RemoteIssueCodeResult {
   code: string;
   ttl_seconds: number;
+  serve_address?: ServeAddressPayload | null;
 }
 
 export interface RemotePairResult {

@@ -354,6 +354,10 @@ def summary_event_payload(
         "covers_from_message_id": summary.covers_from_message_id,
         "covers_to_message_id": summary.covers_to_message_id,
         "covers_message_count": summary.covers_message_count,
+        # V039-S4-013：摘要记录必须标注实际生成所用的供应商与模型，
+        # 未观测时为 null（事件字段与落库记录同源，不各自表述）。
+        "provider": summary.provider,
+        "model": summary.model,
         "created_at": summary.created_at,
         "updated_at": summary.updated_at,
     }

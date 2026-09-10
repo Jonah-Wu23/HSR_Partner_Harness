@@ -174,12 +174,13 @@ async def test_metrics_query_filters_by_status_and_unknown_command_rejected(
             command("metrics-2", "metrics.query", status="completed")
         )
         assert all(metric["status"] == "completed" for metric in result["metrics"])
-        # 白名单校验：未实现的 memory.create 不进入 handler（unknown_method）。
+        # 白名单校验：未实现的命令不进入 handler（unknown_method）。
+        # V039-S4-003 起 memory.create 已实现并进白名单，此处改用仍未实现的命令。
         from pair_harness.desktop_backend.commands import CommandValidationError
 
         with pytest.raises(CommandValidationError) as exc:
             DesktopCommand.from_payload(
-                {"id": "req-1", "method": "memory.create", "params": {}}
+                {"id": "req-1", "method": "memory.reindex", "params": {}}
             )
         assert "未知桌面命令" in str(exc.value)
         # 白名单已放行的新命令均可通过 from_payload 校验。
@@ -187,6 +188,10 @@ async def test_metrics_query_filters_by_status_and_unknown_command_rejected(
             {"id": "req-2", "method": "metrics.query", "params": {}}
         )
         assert accepted.method == "metrics.query"
+        accepted_create = DesktopCommand.from_payload(
+            {"id": "req-3", "method": "memory.create", "params": {}}
+        )
+        assert accepted_create.method == "memory.create"
     finally:
         await service.shutdown()
 

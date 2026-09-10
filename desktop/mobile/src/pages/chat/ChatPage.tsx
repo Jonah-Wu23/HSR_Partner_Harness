@@ -113,6 +113,10 @@ export function ChatPage({ conversationId }: ChatPageProps) {
   const [regenerateError, setRegenerateError] = useState<string | null>(null);
   // V0.3.9 V08：软键盘占位高度（visualViewport 驱动；null=键盘未占位或引擎不支持）。
   const [keyboardViewportHeight, setKeyboardViewportHeight] = useState<number | null>(null);
+  // V0.3.9 P1：面板开合是独立于采集模式的本地状态。此前面板可见性由
+  // voice.mode !== "off" 推导，导致「打开面板」必然隐式开始 auto 采集，
+  // 采集报错（mode 复位 off）又会连带关掉面板、吞掉错误提示。
+  const [voicePanelOpen, setVoicePanelOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const voice = useVoiceCapture(conversationId);
@@ -341,8 +345,6 @@ export function ChatPage({ conversationId }: ChatPageProps) {
       />
     );
   };
-
-  const showVoicePanel = voice.mode !== "off";
 
   // V0.3.9 V08：键盘占位时把聊天容器压到 visualViewport 高度；无占位时为
   // undefined，由 chat.css 的 100dvh / 100vh 回退控制。
@@ -672,68 +674,69 @@ export function ChatPage({ conversationId }: ChatPageProps) {
                 语音不可用：{voice.disabledReason}
               </span>
             </div>
-          ) : showVoicePanel ? (
+          ) : voicePanelOpen ? (
             <div className="mobile-voice-panel">
-              <div className="mobile-voice-mode-switch" role="group" aria-label="语音输入模式">
-                <button
-                  type="button"
-                  className={`mobile-voice-mode-btn${voice.mode === "hold" ? " active" : ""}`}
-                  aria-pressed={voice.mode === "hold"}
-                  data-testid="voice-mode-hold"
-                  onClick={() => {
-                    if (voice.mode === "auto") {
-                      void voice.stopListening().then(() => voice.activateHold());
-                    } else {
-                      voice.activateHold();
-                    }
-                  }}
-                >
-                  按住说话
-                </button>
+              {/* V0.3.9 P1：面板内是两个互斥操作，不再有「按住说话 / 自动检测」模式
+                  切换分段控件——那个控件绑的是 onClick 且隐式开始采集，与下方同文案的
+                  大按钮抢同一个短语，用户按到的往往是不能抬起的那一个。 */}
+
+              {/* 按住说话：pointerdown 起采，抬起 / 取消即停止并发最终转写 */}
+              <button
+                type="button"
+                className="mobile-voice-hold-btn"
+                data-testid="voice-hold-btn"
+                aria-label="按住说话"
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  // 捕获指针：手指轻微滑出按钮不再误中断，抬起 / 取消仍派发到本元素。
+                  e.currentTarget.setPointerCapture?.(e.pointerId);
+                  voice.beginHoldCapture();
+                }}
+                onPointerUp={(e) => {
+                  e.preventDefault();
+                  voice.endHoldCapture();
+                }}
+                onPointerCancel={(e) => {
+                  e.preventDefault();
+                  voice.endHoldCapture();
+                }}
+                onLostPointerCapture={() => {
+                  voice.endHoldCapture();
+                }}
+                onContextMenu={(e) => {
+                  // 抑制长按弹出的系统菜单：长按期间必须一直属于采集
+                  e.preventDefault();
+                }}
+              >
+                <MicIcon />
+                {voice.captureState === "recording" ? "聆听中…" : "按住说话"}
+              </button>
+
+              {voice.mode === "hold" && voice.captureState !== "idle" ? (
+                <span className="mobile-voice-listening" data-testid="voice-hold-status">
+                  <span className="mobile-voice-listening-dot" aria-hidden="true" />
+                  {voice.captureState === "recording"
+                    ? "聆听中，抬起发送"
+                    : voice.captureState === "starting"
+                      ? "准备中…"
+                      : "正在结束…"}
+                </span>
+              ) : null}
+
+              {/* 自动检测：点击开始，再点停止（本地静音检测自动收尾） */}
+              <div className="mobile-voice-mode-switch" role="group" aria-label="自动检测语音输入">
                 <button
                   type="button"
                   className={`mobile-voice-mode-btn${voice.mode === "auto" ? " active" : ""}`}
                   aria-pressed={voice.mode === "auto"}
-                  data-testid="voice-mode-auto"
-                  onClick={() => {
-                    if (voice.mode === "hold") {
-                      void voice.stopListening().then(() => voice.toggleAuto());
-                    } else {
-                      voice.toggleAuto();
-                    }
-                  }}
+                  data-testid="voice-auto-toggle-btn"
+                  onClick={() => voice.toggleAuto()}
                 >
                   自动检测
                 </button>
               </div>
 
-              {voice.mode === "hold" ? (
-                <button
-                  type="button"
-                  className="mobile-voice-hold-btn"
-                  data-testid="voice-hold-btn"
-                  aria-label="按住说话"
-                  onPointerDown={(e) => {
-                    e.preventDefault();
-                    voice.activateHold();
-                  }}
-                  onPointerUp={(e) => {
-                    e.preventDefault();
-                    voice.deactivateHold();
-                  }}
-                  onPointerLeave={(e) => {
-                    e.preventDefault();
-                    voice.deactivateHold();
-                  }}
-                  onPointerCancel={(e) => {
-                    e.preventDefault();
-                    voice.deactivateHold();
-                  }}
-                >
-                  <MicIcon />
-                  {voice.captureState === "recording" ? "聆听中…" : "按住说话"}
-                </button>
-              ) : (
+              {voice.mode === "auto" ? (
                 <div className="mobile-voice-auto">
                   <span className="mobile-voice-listening">
                     <span className="mobile-voice-listening-dot" aria-hidden="true" />
@@ -750,7 +753,7 @@ export function ChatPage({ conversationId }: ChatPageProps) {
                     停止
                   </button>
                 </div>
-              )}
+              ) : null}
 
               {voice.transcriptText ? (
                 <p className="mobile-voice-transcript" data-testid="voice-transcript">
@@ -761,14 +764,23 @@ export function ChatPage({ conversationId }: ChatPageProps) {
               {voice.captureError ? (
                 <div className="mobile-voice-error" role="alert" data-testid="voice-capture-error">
                   <span>语音失败：{voice.captureError}</span>
-                  <button
-                    type="button"
-                    className="mobile-voice-retry-btn"
-                    data-testid="voice-retry-btn"
-                    onClick={() => (voice.mode === "hold" ? voice.activateHold() : voice.toggleAuto())}
-                  >
-                    重试
-                  </button>
+                  {/* 重试入口按「最近一次尝试的模式」给，不看当前 mode：
+                      启动失败后 capture 回 idle，复位 effect 会把 mode 收回 off，
+                      按 mode 判断会让自动检测的重试按钮永远不可达。 */}
+                  {voice.lastAttemptMode === "auto" ? (
+                    <button
+                      type="button"
+                      className="mobile-voice-retry-btn"
+                      data-testid="voice-retry-btn"
+                      onClick={() => voice.toggleAuto()}
+                    >
+                      重试
+                    </button>
+                  ) : (
+                    // 按住说话是按压语义：重试就是再按住一次大按钮，
+                    // 不给 click 启动入口（click 不构成一次按压）。
+                    <span data-testid="voice-hold-retry-hint">请再次按住说话重试</span>
+                  )}
                 </div>
               ) : null}
 
@@ -776,7 +788,12 @@ export function ChatPage({ conversationId }: ChatPageProps) {
                 type="button"
                 className="mobile-voice-close-btn"
                 data-testid="voice-close-btn"
-                onClick={() => voice.stopListening()}
+                onClick={() => {
+                  // 先停采集再合面板：停止失败会由 store 写入 captureError，
+                  // 面板合上不再展示，故停止动作必须真的发出去（不因合面板跳过）。
+                  void voice.stopListening();
+                  setVoicePanelOpen(false);
+                }}
               >
                 关闭语音
               </button>
@@ -787,7 +804,7 @@ export function ChatPage({ conversationId }: ChatPageProps) {
                 type="button"
                 className="mobile-voice-trigger-btn"
                 data-testid="voice-trigger-btn"
-                onClick={() => voice.toggleAuto()}
+                onClick={() => setVoicePanelOpen(true)}
                 aria-label="语音输入"
               >
                 <MicIcon />

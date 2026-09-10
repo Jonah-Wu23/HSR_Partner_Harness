@@ -146,6 +146,56 @@ describe("DiagnosticsDrawer（V0.3.9 V03 诊断抽屉）", () => {
     expect(screen.getByTestId("diag-metrics-nodata")).toHaveTextContent("指标未读取到");
   });
 
+
+  it("V039-S4-001：查询失败时不得给出「0 条」这一成功语义", () => {
+    // store 的 turnMetrics 初值是 []（未读取），失败后 Host 仍会把它当结果传下来；
+    // 此时抽屉必须只说失败，不能并列渲染「查询返回 0 条指标记录。」
+    render(
+      <DiagnosticsDrawer
+        open
+        onClose={() => {}}
+        metrics={[]}
+        metricsState="failed"
+        metricsError="backend_timeout: metrics.query 未在 30s 内返回"
+      />,
+    );
+
+    expect(screen.getByTestId("diag-metrics-error")).toHaveTextContent(
+      "backend_timeout: metrics.query 未在 30s 内返回",
+    );
+    expect(screen.queryByTestId("diag-metrics-empty")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("diag-metrics-count")).not.toBeInTheDocument();
+    expect(screen.getByTestId("diag-metrics-nodata")).toHaveTextContent("指标未读取到");
+  });
+
+  it("V039-S4-001：刷新失败但保留上次结果时，只如实标注为上一次读取的结果", () => {
+    render(
+      <DiagnosticsDrawer
+        open
+        onClose={() => {}}
+        metrics={[metricRecord({ metric_id: "tm-stale" })]}
+        metricsState="failed"
+        metricsError="backend_timeout"
+      />,
+    );
+
+    expect(screen.getByTestId("diag-metrics-error")).toHaveTextContent("backend_timeout");
+    expect(screen.getByTestId("diag-metrics-stale")).toHaveTextContent(
+      "本次读取失败，以下 1 条是上一次成功读取的结果。",
+    );
+    // 旧数据仍在屏幕上，但不得被冒充成本次查询的结论
+    expect(screen.queryByTestId("diag-metrics-count")).not.toBeInTheDocument();
+    expect(screen.getByTestId("diag-metric-tm-stale")).toBeInTheDocument();
+  });
+
+  it("V039-S4-001：首次读取中不提前宣称「0 条」", () => {
+    render(<DiagnosticsDrawer open onClose={() => {}} metrics={[]} metricsState="loading" />);
+
+    expect(screen.getByText("正在读取指标…")).toBeInTheDocument();
+    expect(screen.queryByTestId("diag-metrics-empty")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("diag-metrics-nodata")).not.toBeInTheDocument();
+  });
+
   it("详情展开渲染 TurnMetric 全字段（含 null 与零值）", () => {
     render(
       <DiagnosticsDrawer

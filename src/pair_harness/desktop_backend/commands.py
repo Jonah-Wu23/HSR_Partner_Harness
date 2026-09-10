@@ -46,10 +46,8 @@ DESKTOP_COMMANDS = frozenset(
         "config.get",
         "config.set",
         "config.test_connection",
-        "codex.oauth_start",
-        "codex.oauth_status",
-        "codex.logout",
-        "codex.api_login",
+        # B-03：codex.* 仅保留为历史兼容入口——oauth_start / api_login 一律以
+        # codex_login_removed 拒绝，oauth_status / logout 只读/清理本地遗留数据。
         "codex.oauth_start",
         "codex.oauth_status",
         "codex.logout",
@@ -93,6 +91,7 @@ DESKTOP_COMMANDS = frozenset(
         # V0.3.9 契约 §5/§7：摘要、记忆、指标与装配诊断的显式命令。
         "summary.regenerate",
         "summary.get",
+        "memory.create",
         "memory.list",
         "memory.update",
         "memory.delete",

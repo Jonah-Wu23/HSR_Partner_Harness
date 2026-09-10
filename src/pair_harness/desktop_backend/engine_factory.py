@@ -1,32 +1,38 @@
 """编程助手引擎工厂——V0.2 M3（方案 §M3-4/§M3-5）。
 
-按统一供应商配置（``engine`` 由 ``dialogue.provider`` 推导）构建 CodingEngine：
-- codex → CodexAppServerEngine（app-server JSONL）；
-- deepseek → AcpCodingEngine（本地 DeepSeek-Reasonix 的 ``reasonix acp``，
-  ACP v1，出处见 THIRD_PARTY_NOTICES）。
+B-03（V0.3.9）：产品只支持 OpenAI Chat Completions 兼容端点，编程助手引擎
+只剩一条路径——``AcpCodingEngine``（本地 DeepSeek-Reasonix 的
+``reasonix acp``，ACP v1，出处见 THIRD_PARTY_NOTICES）。任意 http(s) 端点
+都被写成账号私有的 ``REASONIX_HOME`` 供应商实例（见
+:func:`ensure_reasonix_home`），Reasonix 按 ``base_url`` 自行识别供应商；
+装配期不联网、不校验端点协议形态，端点不可达由真实请求如实失败。
 
-每个本地账号注入独立的 Codex 数据目录（CODEX_HOME），Token/Key/session
-不串账号；环境变量覆盖顺序：显式传入 > PAIR_HARNESS_* 环境变量 > 默认命令。
+每个本地账号使用独立的 Reasonix 配置目录
+（``base_dir/accounts/{account_id}/reasonix``），端点、模型与密钥不串账号；
+环境变量覆盖顺序：显式传入 > PAIR_HARNESS_* 环境变量 > 默认命令。
 """
 
 from __future__ import annotations
 
 import os
 import tempfile
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 from pair_harness.adapters.codex.auth import CodexAuthService
-from pair_harness.adapters.codex.engine import CodexAppServerEngine
 from pair_harness.adapters.codex.transport import (
     JsonlProcessTransport,
     SubprocessJsonLineConnection,
 )
-from pair_harness.config.providers import load_reasoning_preset, normalize_effort
+from pair_harness.config.providers import (
+    ProviderKind,
+    detect_provider,
+    load_reasoning_preset,
+    normalize_effort,
+)
 
-# V0.3.8 T4：codex 引擎的诊断告警出口（引擎无进展等），由装配方注入。
+# V0.3.8 T4：引擎的诊断告警出口（引擎无进展等），由装配方注入。
 DiagnosticCallback = Callable[[dict[str, Any]], None]
 
 
@@ -67,67 +73,52 @@ def _provider_env(
     }
 
 
-def build_codex_transport(
-    *,
-    codex_auth: CodexAuthService,
-    codex_bin: str | None = None,
-    base_url: str | None = None,
-    api_key: str | None = None,
-) -> JsonlProcessTransport:
-    executable = resolve_codex_executable(codex_bin)
-    env = {**codex_auth.env_overrides, **_provider_env(base_url=base_url, api_key=api_key, model=None)}
-    # V0.3.8 T4（C4 根因）：不再注入 OPENAI_BASE_URL/OPENAI_API_KEY——codex-cli
-    # 不跟随该变量（0.147.0 实证），注入只会让请求静默打向 api.openai.com
-    # 无限重试。codex 的官方供给只认 CODEX_HOME 内的 OAuth/API Key 登录态；
-    # 第三方后端的端点覆盖在 build_coding_engine 装配层显式拒绝。
+def _reasonix_api_key_env(kind: ProviderKind) -> str:
+    """``api_key_env`` 指向的变量名（Reasonix 从 ``<REASONIX_HOME>/.env`` 取值）。
 
-    async def connection() -> SubprocessJsonLineConnection:
-        return await SubprocessJsonLineConnection.create(
-            executable, args=["app-server"], env=env
-        )
-
-    return JsonlProcessTransport(
-        executable, connection_factory=connection, request_timeout=3600.0
-    )
-
-
-def build_codex_dialogue_model(
-    *,
-    codex_auth: CodexAuthService,
-    model: str,
-    codex_bin: str | None = None,
-    reasoning_effort: str = "auto",
-) -> "CodexDialogueModel":
-    from pair_harness.adapters.codex.dialogue import CodexDialogueModel
-
-    return CodexDialogueModel(
-        build_codex_transport(codex_auth=codex_auth, codex_bin=codex_bin),
-        model=model,
-        reasoning_effort=reasoning_effort,
-    )
-
-
-def _require_responses_backend(base_url: str | None) -> None:
-    """V0.3.8 T4（C4 根因）：codex 引擎只允许 Responses API 后端。
-
-    codex 0.122+ 已移除 ``wire_api="chat"``，仅支持 Responses 协议；DeepSeek
-    与通用 OpenAI 兼容端点只有 Chat Completions。此前这种误配会静默打向
-    不可达端点无限重试（客户端零通知）。装配时显式拒绝并说明处置建议，
-    DeepSeek 对话配置应走 reasonix 引擎（``_engine_for_provider`` 推导）。
-    base_url 为空表示走 codex 自身 OAuth/API Key 登录态（OpenAI 官方），
-    放行。
+    DeepSeek 端点沿用既有 ``DEEPSEEK_API_KEY``；通用兼容端点使用
+    ``PAIR_HARNESS_DIALOGUE_API_KEY``——该名同时由 ``_provider_env`` 注入
+    子进程环境，两处同名同值，不另造一套凭据命名。
     """
-    if not base_url:
-        return
-    host = (urlparse(base_url).hostname or "").lower()
-    if host == "api.openai.com" or host.endswith(".openai.com"):
-        return
-    raise RuntimeError(
-        "codex 引擎要求 Responses API 后端，当前对话端点不兼容："
-        f"{base_url}。codex-cli 无法对接 Chat Completions 端点（0.122+ 已移除 "
-        "wire_api=chat）。请改用 DeepSeek 对话配置（委派将自动走 reasonix "
-        "引擎），或提供 Responses 兼容后端。"
-    )
+    if kind is ProviderKind.DEEPSEEK:
+        return "DEEPSEEK_API_KEY"
+    return "PAIR_HARNESS_DIALOGUE_API_KEY"
+
+
+def _reasonix_config_toml(
+    *, kind: ProviderKind, base_url: str, model: str, effort: str
+) -> str:
+    """``REASONIX_HOME/config.toml`` 正文：一个 OpenAI 兼容供应商实例。
+
+    依据（本机 Reasonix 二进制内嵌文档 §3.1 与 REASONING_PROVIDERS）：
+    ``kind = "openai"`` 就是 OpenAI 兼容 ``/chat/completions`` 实现，
+    “OpenAI-compatible vendors are config instances of kind = "openai",
+    differing only in base_url / model / api_key_env”；供应商识别按
+    ``base_url`` 的 host 判定（``matchesVendorHost``），实例 ``name`` 只是
+    标签（文档示例 `"my-glm-proxy"`）；``default_model`` 经
+    ``Config.ResolveModel`` 接受 ``provider/model`` 形态。
+    """
+    instance = kind.value
+    lines = [
+        f"default_model = {_toml_quote(f'{instance}/{model}')}",
+        "",
+        "[[providers]]",
+        f"name = {_toml_quote(instance)}",
+        f"kind = {_toml_quote('openai')}",
+        f"base_url = {_toml_quote(base_url)}",
+        f"model = {_toml_quote(model)}",
+        f"api_key_env = {_toml_quote(_reasonix_api_key_env(kind))}",
+    ]
+    if kind is ProviderKind.DEEPSEEK:
+        # DeepSeek 沿用既有实测值；通用端点不写未证实的能力数字。
+        lines.append("context_window = 1000000")
+    lines += [
+        f"effort = {_toml_quote(effort)}",
+        "",
+        "[tools]",
+        f"enabled = [{', '.join(_toml_quote(name) for name in REASONIX_EXECUTION_TOOLS)}]",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def _toml_quote(value: str) -> str:
@@ -198,21 +189,13 @@ def ensure_reasonix_home(
     """
     home = codex_auth.base_dir / "accounts" / codex_auth.account_id / "reasonix"
     home.mkdir(parents=True, exist_ok=True)
+    kind = detect_provider(base_url)
     effort = _normalize_reasonix_effort(base_url, model, reasoning_effort)
-    toml = (
-        f"default_model = {_toml_quote(f'deepseek/{model}')}\n\n"
-        "[[providers]]\n"
-        f"name = {_toml_quote('deepseek')}\n"
-        f"kind = {_toml_quote('openai')}\n"
-        f"base_url = {_toml_quote(base_url)}\n"
-        f"model = {_toml_quote(model)}\n"
-        f"api_key_env = {_toml_quote('DEEPSEEK_API_KEY')}\n"
-        "context_window = 1000000\n"
-        f"effort = {_toml_quote(effort)}\n"
-        "\n[tools]\n"
-        f"enabled = [{', '.join(_toml_quote(name) for name in REASONIX_EXECUTION_TOOLS)}]\n"
+    toml = _reasonix_config_toml(
+        kind=kind, base_url=base_url, model=model, effort=effort
     )
-    env_body = f"DEEPSEEK_API_KEY={api_key}\n" if api_key else ""
+    api_key_env = _reasonix_api_key_env(kind)
+    env_body = f"{api_key_env}={api_key}\n" if api_key else ""
     config_path = home / "config.toml"
     if not config_path.exists() or config_path.read_text(encoding="utf-8") != toml:
         _atomic_write_text(config_path, toml)
@@ -232,15 +215,6 @@ def _resolve_executable(
     return default
 
 
-def resolve_codex_executable(bundled_bin: str | None = None) -> str:
-    """codex 可执行文件：打包内置 > 环境变量 > PATH 默认。"""
-    return _resolve_executable(
-        bundled_bin,
-        ("PAIR_HARNESS_BUNDLED_CODEX_BIN", "PAIR_HARNESS_CODEX_BIN", "CODEX_BIN"),
-        "codex",
-    )
-
-
 def resolve_reasonix_executable(bundled_bin: str | None = None) -> str:
     """reasonix 可执行文件（DeepSeek 编程助手）。
 
@@ -256,67 +230,54 @@ def resolve_reasonix_executable(bundled_bin: str | None = None) -> str:
 
 def build_coding_engine(
     *,
-    engine_choice: str,
     codex_auth: CodexAuthService,
-    codex_bin: str | None = None,
     reasonix_bin: str | None = None,
     model: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
     reasoning_effort: str = "auto",
-    codex_idle_timeout: float = 600.0,
+    idle_timeout: float = 600.0,
     diagnostic_callback: DiagnosticCallback | None = None,
-) -> "CodexAppServerEngine | AcpCodingEngine":
-    """按统一供应商构建编程助手引擎；角色与助手共享模型参数。
+) -> "AcpCodingEngine":
+    """为任意 OpenAI Chat Completions 兼容端点构建编程助手引擎。
 
-    ``reasoning_effort`` 是账号级 ``dialogue.reasoning_effort``，用于
-    Reasonix 生成配置与 Codex 回合请求。``codex_idle_timeout`` 是 Codex
-    app-server 回合连续无事件后的空闲超时（秒），默认 10 分钟。
-    ``diagnostic_callback`` 接收引擎诊断告警（如回合无进展），由装配方
-    转发到客户端事件通道（V0.3.8 T4，契约 §14.6）。
+    B-03：产品只有 reasonix ACP 一条引擎路径，端点（包括解析不了的域名）
+    只被写进账号私有的 Reasonix 配置，不建立任何连接，因此装配不会因为
+    端点的协议形态或可达性失败；连接失败一律发生在真实请求上并由调用方
+    如实暴露。
+
+    ``reasoning_effort`` 是账号级 ``dialogue.reasoning_effort``，写进
+    Reasonix 供应商配置。``idle_timeout`` 是回合连续无事件后的空闲超时
+    （秒），默认 10 分钟。``diagnostic_callback`` 接收引擎诊断告警（如
+    回合无进展），由装配方转发到客户端事件通道（V0.3.8 T4，契约 §14.6）。
+
+    ``codex_auth`` 只承担账号定位（``base_dir/accounts/{account_id}/reasonix``），
+    与 Codex 登录态无关。
     """
-    shared_env = _provider_env(base_url=base_url, api_key=api_key, model=model)
-    if engine_choice == "deepseek":
-        from pair_harness.adapters.acp.engine import AcpCodingEngine
+    from pair_harness.adapters.acp.engine import AcpCodingEngine
 
-        executable = resolve_reasonix_executable(reasonix_bin)
-        engine_env = dict(shared_env)
-        if base_url and (dialogue_model_name := (model or "")):
-            reasonix_home = ensure_reasonix_home(
-                codex_auth,
-                base_url=base_url,
-                model=dialogue_model_name,
-                api_key=api_key or "",
-                reasoning_effort=reasoning_effort,
-            )
-            engine_env["REASONIX_HOME"] = str(reasonix_home)
-
-        async def acp_connection() -> SubprocessJsonLineConnection:
-            return await SubprocessJsonLineConnection.create(
-                executable, args=["acp"], env=engine_env
-            )
-
-        return AcpCodingEngine(
-            JsonlProcessTransport(
-                executable, connection_factory=acp_connection, request_timeout=3600.0
-            ),
+    executable = resolve_reasonix_executable(reasonix_bin)
+    engine_env = _provider_env(base_url=base_url, api_key=api_key, model=model)
+    if base_url and model:
+        reasonix_home = ensure_reasonix_home(
+            codex_auth,
+            base_url=base_url,
             model=model,
-            idle_timeout=codex_idle_timeout,
-            diagnostic_callback=diagnostic_callback,
+            api_key=api_key or "",
+            reasoning_effort=reasoning_effort,
+        )
+        engine_env["REASONIX_HOME"] = str(reasonix_home)
+
+    async def acp_connection() -> SubprocessJsonLineConnection:
+        return await SubprocessJsonLineConnection.create(
+            executable, args=["acp"], env=engine_env
         )
 
-    _require_responses_backend(base_url)
-    transport = build_codex_transport(
-        codex_auth=codex_auth,
-        codex_bin=codex_bin,
-        base_url=base_url,
-        api_key=api_key,
-    )
-
-    return CodexAppServerEngine(
-        transport,
-        model=model or "gpt-5.6-sol",
-        reasoning_effort=reasoning_effort,
-        idle_timeout=codex_idle_timeout,
+    return AcpCodingEngine(
+        JsonlProcessTransport(
+            executable, connection_factory=acp_connection, request_timeout=3600.0
+        ),
+        model=model,
+        idle_timeout=idle_timeout,
         diagnostic_callback=diagnostic_callback,
     )

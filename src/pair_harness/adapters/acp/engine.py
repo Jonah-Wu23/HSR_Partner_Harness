@@ -199,19 +199,11 @@ class AcpCodingEngine(CodingEngine):
         }
         codec = AcpCodec()
         assistant_chunks: list[str] = []
-        tool_succeeded = False
-        tool_failed = False
         quiet_seconds = 0.0
 
         def remember_event(event: EngineEvent) -> None:
-            nonlocal tool_succeeded, tool_failed
             if event.type == EngineEventType.ASSISTANT_DELTA:
                 assistant_chunks.append(str(event.payload.get("text") or ""))
-            elif event.type == EngineEventType.TOOL_FINISHED:
-                if str(event.payload.get("status") or "") == "succeeded":
-                    tool_succeeded = True
-                else:
-                    tool_failed = True
 
         notification_task: asyncio.Task[Any] | None = None
         try:
@@ -374,28 +366,44 @@ class AcpCodingEngine(CodingEngine):
             or stop.get("errorMessage")
             or stop.get("error_message")
         )
-        # Reasonix 的真实 session/prompt 成功响应可能只包含 sessionId，
-        # 不带 stopReason。v1.24.2 还会在助手最终回复与工具均成功后返回
-        # stopReason=error 或 cancelled；此时保留 warning，但不能把已完成
-        # 的任务改写成失败——状态保持 completed，stop_reason 原样进入回执
-        # 卡片供界面如实展示（V0.3.3）。
-        failure_text = f"{stop_reason} {stop_error or ''}".lower()
-        terminal_error = bool(
-            stop_error or "error" in failure_text or "fail" in failure_text
-        )
-        # 工具与正文均已成功的回合即便带上 error/cancelled 终态标记，也按
-        # recoverable 处理；cancelled 不在 error/fail 关键词里，单独纳入。
-        recoverable_terminal_error = (
-            terminal_error or "cancel" in failure_text
-        ) and bool(assistant_chunks and tool_succeeded and not tool_failed)
-        status = "completed" if not terminal_error or recoverable_terminal_error else "failed"
-        warning = None
-        if recoverable_terminal_error:
-            warning = stop_error or stop_reason
+        # V0.3.9 §009：回合终态只以协议响应为准。旧实现按 error/fail/cancel
+        # 关键词猜测，并在「助手正文与工具均已成功」时把协议给出的失败终态
+        # 改写成 completed——工具执行成功不能反证引擎终态成功，该改写已删除。
+        # 协议依据：ACP v1 的 PromptResponse.stopReason 是必填字段
+        # （agent-client-protocol docs/protocol/v1/schema.mdx 标 required；
+        # prompt-turn.mdx §4「the Agent MUST respond ... with a StopReason」），
+        # Reasonix docs/ACP.md 亦声明只发 ACP v1 stop reason，供应商/工具/运行时
+        # 失败走 JSON-RPC -32603，不用成功结果里的非标准 stopReason 表达。
+        # 只返回 sessionId 的是 session/new，不是 session/prompt——旧注释混淆了
+        # 两者，据此产生的「缺省 stopReason 也算成功」分支已删除：缺失或空值
+        # 即协议违规，按失败上报。
+        normalized_reason = stop_reason.strip().lower()
+        failure_reason: str | None = None
+        if stop_error is not None:
+            status = "failed"
+            failure_reason = str(stop_error)
+        elif normalized_reason == "end_turn":
+            status = "completed"
+        elif normalized_reason == "cancelled":
+            # 协议终态 cancelled 不是成功：与 codex 适配器同形，经
+            # TURN_COMPLETED 携带 status=cancelled，编排器据 payload.status
+            # 生成取消回执（不降级成 failed，也不伪装成 completed）。
+            status = "cancelled"
+        elif not normalized_reason:
+            # 必填字段缺失/为空：不是成功，也不能让失败原因留空。
+            status = "failed"
+            failure_reason = "session/prompt 响应缺少 stopReason（ACP 要求必带终态）"
+        else:
+            # 其余取值（max_turn_requests 或未知取值）都不是协议定义的成功
+            # 终态：如实上报失败并带上原始取值，不做语义猜测。
+            status = "failed"
+            failure_reason = stop_reason
+        if status == "failed":
+            # 真实失败必须留下可定位的原始终态，不静默改写、不只进日志不进回执。
             logger.warning(
-                "Reasonix returned terminal %s after successful tool execution: %s",
-                "error" if terminal_error else "cancelled",
-                warning,
+                "Reasonix turn failed by protocol terminal state: stop_reason=%r error=%r",
+                stop_reason,
+                stop_error,
             )
         if assistant_chunks:
             yield EngineEvent(
@@ -410,19 +418,19 @@ class AcpCodingEngine(CodingEngine):
             "summary": "DeepSeek 编程助手回合结束",
             "stop_reason": stop_reason,
         }
-        if warning:
-            terminal_payload["warning"] = str(warning)
-        if status == "failed" and stop_error:
-            terminal_payload["error"] = str(stop_error)
+        if status == "cancelled":
+            terminal_payload["status"] = "cancelled"
+        if failure_reason is not None:
+            terminal_payload["error"] = failure_reason
         yield EngineEvent(
             conversation_id=request.conversation_id,
             task_id=request.task_id,
             engine_turn_id=binding["engine_turn_id"],
             sequence=0,
             type=(
-                EngineEventType.TURN_COMPLETED
-                if status == "completed"
-                else EngineEventType.TURN_FAILED
+                EngineEventType.TURN_FAILED
+                if status == "failed"
+                else EngineEventType.TURN_COMPLETED
             ),
             payload=terminal_payload,
         )

@@ -1,13 +1,13 @@
 // 桌面二进制入口在 src/main.rs；应用主体（含移动端 mobile_entry_point 的 run()）在本库。
 
 use std::collections::HashMap;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -199,11 +199,124 @@ fn sidecar_stderr_log_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     Some(data_dir.join("sidecar.stderr.log"))
 }
 
-fn drain_sidecar_stderr(stderr: ChildStderr, log_path: Option<PathBuf>) {
+/// stderr 日志单文件上限：达到上限后在下一次会话开始时滚动，
+/// 避免同一文件跨批次无限追加（V039-S4-010）。
+const SIDECAR_LOG_MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// 保留的滚动副本数量（sidecar.stderr.log.1 … .N）。
+const SIDECAR_LOG_BACKUPS: u32 = 3;
+
+fn sidecar_log_backup_path(path: &Path, index: u32) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(format!(".{index}"));
+    PathBuf::from(name)
+}
+
+/// 日志达到 max_bytes 时把当前文件滚动为 .1，旧副本依次后移，最旧的丢弃。
+/// 文件不存在或未达上限时不做改动；backups 至少为 1。返回是否发生滚动。
+fn rotate_sidecar_log(path: &Path, max_bytes: u64, backups: u32) -> std::io::Result<bool> {
+    let size = match std::fs::metadata(path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if size < max_bytes {
+        return Ok(false);
+    }
+    let oldest = sidecar_log_backup_path(path, backups);
+    if oldest.exists() {
+        std::fs::remove_file(&oldest)?;
+    }
+    for index in (1..backups).rev() {
+        let from = sidecar_log_backup_path(path, index);
+        if from.exists() {
+            std::fs::rename(&from, sidecar_log_backup_path(path, index + 1))?;
+        }
+    }
+    std::fs::rename(path, sidecar_log_backup_path(path, 1))?;
+    Ok(true)
+}
+
+/// 会话起始标记：日志跨会话追加时，凭这一行把后续日志归属到具体会话与进程。
+fn sidecar_log_session_header(
+    stream_id: u64,
+    pid: u32,
+    mode: BackendMode,
+    timestamp: &str,
+) -> String {
+    format!(
+        "===== sidecar stderr session {timestamp} stream_id={stream_id} pid={pid} mode={} =====\n",
+        mode.as_str()
+    )
+}
+
+/// 日志时间戳取 UTC（带 Z 后缀），避免跨批次比对时依赖本机时区。
+fn utc_timestamp(now: SystemTime) -> String {
+    let elapsed = now.duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO);
+    let seconds = elapsed.as_secs();
+    let (year, month, day) = civil_from_days((seconds / 86_400) as i64);
+    let second_of_day = seconds % 86_400;
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
+        second_of_day / 3_600,
+        (second_of_day % 3_600) / 60,
+        second_of_day % 60,
+        elapsed.subsec_millis(),
+    )
+}
+
+/// 以 1970-01-01 为第 0 天的日序 → (年, 月, 日)。
+/// Howard Hinnant 的 civil_from_days，避免为一个时间戳引入新依赖。
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let shifted = days + 719_468;
+    let era = if shifted >= 0 {
+        shifted
+    } else {
+        shifted - 146_096
+    } / 146_097;
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * month_index + 2) / 5 + 1) as u32;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = if month <= 2 { year + 1 } else { year };
+    (year, month as u32, day)
+}
+
+/// 打开会话日志并写入起始标记：先按上限滚动，再追加本次会话的标记行。
+fn open_sidecar_log(path: &Path, header: &str) -> std::io::Result<File> {
+    rotate_sidecar_log(path, SIDECAR_LOG_MAX_BYTES, SIDECAR_LOG_BACKUPS)?;
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    file.write_all(header.as_bytes())?;
+    file.flush()?;
+    Ok(file)
+}
+
+/// 打开本次会话的日志；打不开时说明原因并放弃落盘，但不中断 stderr 排空。
+fn open_session_log(log_path: Option<PathBuf>, header: &str) -> Option<File> {
+    let Some(path) = log_path else {
+        eprintln!("[sidecar] 应用数据目录不可用，stderr 不落盘");
+        return None;
+    };
+    match open_sidecar_log(&path, header) {
+        Ok(file) => Some(file),
+        Err(error) => {
+            eprintln!("[sidecar] stderr 日志不可写（{}）：{error}", path.display());
+            None
+        }
+    }
+}
+
+fn drain_sidecar_stderr(stderr: ChildStderr, log_path: Option<PathBuf>, header: String) {
     std::thread::spawn(move || {
+        let mut log = open_session_log(log_path, &header);
         let mut reader = BufReader::new(stderr);
-        let mut log =
-            log_path.and_then(|path| OpenOptions::new().create(true).append(true).open(path).ok());
         let mut line = Vec::new();
         loop {
             line.clear();
@@ -218,17 +331,6 @@ fn drain_sidecar_stderr(stderr: ChildStderr, log_path: Option<PathBuf>) {
             }
         }
     });
-}
-
-fn packaged_codex(app: &tauri::AppHandle) -> Option<PathBuf> {
-    let resource_root = app.path().resource_dir().ok()?;
-    for root in [resource_root.clone(), resource_root.join("resources")] {
-        let candidate = root.join("codex").join("bin").join("codex.exe");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
 }
 
 fn packaged_reasonix(app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -336,41 +438,106 @@ fn configured_env_file(app: &tauri::AppHandle, root: &Path) -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.is_file())
 }
 
-fn env_file_has_real_config(path: &Path) -> bool {
-    std::fs::read_to_string(path)
-        .map(|contents| env_content_has_real_config(&contents))
-        .unwrap_or(false)
+/// Sidecar 运行模式。真实模式是默认值；演示模式只能由显式请求触发
+/// （V039-S4-002：缺少 .env 时不得静默降级为演示数据）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackendMode {
+    Real,
+    Demo,
 }
 
-fn env_content_has_real_config(contents: &str) -> bool {
-    let mut dialogue_base = false;
-    let mut dialogue_key = false;
-    let mut dialogue_model = false;
-    for raw_line in contents.lines() {
-        let line = raw_line.trim();
-        let line = line.strip_prefix("export ").unwrap_or(line);
-        let Some((raw_key, raw_value)) = line.split_once('=') else {
-            continue;
-        };
-        let key = raw_key.trim();
-        let value = raw_value.trim().trim_matches(|ch| ch == '\'' || ch == '"');
-        if value.is_empty() || value.starts_with("replace-with-") {
-            continue;
+impl BackendMode {
+    /// 传给 Sidecar 的命令行开关。
+    fn as_arg(self) -> &'static str {
+        match self {
+            BackendMode::Real => "--real",
+            BackendMode::Demo => "--demo",
         }
-        match key {
-            "PAIR_HARNESS_DIALOGUE_BASE_URL" => dialogue_base = true,
-            "PAIR_HARNESS_DIALOGUE_API_KEY" => dialogue_key = true,
-            "PAIR_HARNESS_DIALOGUE_MODEL" => dialogue_model = true,
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            BackendMode::Real => "real",
+            BackendMode::Demo => "demo",
+        }
+    }
+}
+
+/// PAIR_HARNESS_REAL 的取值 → 模式；反向取值同样是显式声明，指向另一个模式。
+fn mode_from_real_flag(value: bool) -> BackendMode {
+    if value {
+        BackendMode::Real
+    } else {
+        BackendMode::Demo
+    }
+}
+
+/// PAIR_HARNESS_DEMO 的取值 → 模式。
+fn mode_from_demo_flag(value: bool) -> BackendMode {
+    if value {
+        BackendMode::Demo
+    } else {
+        BackendMode::Real
+    }
+}
+
+/// 合并同一来源里的一对模式声明：都没声明得到 None；两条声明指向不同模式时报错，
+/// 不静默取其一。
+fn merge_mode_flags(real: Option<bool>, demo: Option<bool>) -> Result<Option<BackendMode>, String> {
+    let from_real = real.map(mode_from_real_flag);
+    let from_demo = demo.map(mode_from_demo_flag);
+    match (from_real, from_demo) {
+        (Some(left), Some(right)) if left != right => Err(format!(
+            "配置冲突：PAIR_HARNESS_REAL 与 PAIR_HARNESS_DEMO 指向不同模式（{} / {}）",
+            left.as_str(),
+            right.as_str()
+        )),
+        (Some(mode), _) | (_, Some(mode)) => Ok(Some(mode)),
+        (None, None) => Ok(None),
+    }
+}
+
+/// 命令行显式请求；命令行是最高优先级来源。
+fn cli_mode_request<I>(args: I) -> Result<Option<BackendMode>, String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut real = false;
+    let mut demo = false;
+    for arg in args {
+        match arg.as_str() {
+            "--real" => real = true,
+            "--demo" => demo = true,
             _ => {}
         }
     }
-    if let Some(value) = env_content_flag(contents, "PAIR_HARNESS_REAL") {
-        return value;
+    merge_mode_flags(real.then_some(true), demo.then_some(true))
+}
+
+/// 进程环境变量里的显式请求。
+fn env_mode_request() -> Result<Option<BackendMode>, String> {
+    merge_mode_flags(env_flag("PAIR_HARNESS_REAL"), env_flag("PAIR_HARNESS_DEMO"))
+}
+
+/// .env 内容里的显式请求。对话配置（BASE_URL/API_KEY/MODEL）是否齐全不再参与
+/// 模式判定：缺配置必须由真实模式如实报错，而不是降级成演示数据。
+fn env_content_mode_request(contents: &str) -> Result<Option<BackendMode>, String> {
+    merge_mode_flags(
+        env_content_flag(contents, "PAIR_HARNESS_REAL"),
+        env_content_flag(contents, "PAIR_HARNESS_DEMO"),
+    )
+}
+
+/// 读取 .env 里的显式请求；文件不存在等同没有声明，读取失败如实报错。
+fn env_file_mode_request(path: Option<&Path>) -> Result<Option<BackendMode>, String> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    match std::fs::read_to_string(path) {
+        Ok(contents) => env_content_mode_request(&contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("读取 {} 失败：{error}", path.display())),
     }
-    if env_content_flag(contents, "PAIR_HARNESS_DEMO") == Some(true) {
-        return false;
-    }
-    dialogue_base && dialogue_key && dialogue_model
 }
 
 fn env_content_flag(contents: &str, wanted_key: &str) -> Option<bool> {
@@ -396,14 +563,22 @@ fn env_content_flag(contents: &str, wanted_key: &str) -> Option<bool> {
     None
 }
 
-fn use_real_backend(env_file: Option<&Path>) -> bool {
-    if let Some(value) = env_flag("PAIR_HARNESS_REAL") {
-        return value;
-    }
-    if env_flag("PAIR_HARNESS_DEMO") == Some(true) {
-        return false;
-    }
-    env_file.is_some_and(env_file_has_real_config)
+/// 模式判定优先级：命令行 > 进程环境 > .env；三者都没有声明时默认真实模式。
+fn resolve_backend_mode(
+    cli: Option<BackendMode>,
+    env: Option<BackendMode>,
+    file: Option<BackendMode>,
+) -> BackendMode {
+    cli.or(env).or(file).unwrap_or(BackendMode::Real)
+}
+
+/// 从当前进程的实参、环境变量与已定位到的 .env 解析 Sidecar 模式。
+fn detect_backend_mode(env_file: Option<&Path>) -> Result<BackendMode, String> {
+    Ok(resolve_backend_mode(
+        cli_mode_request(std::env::args())?,
+        env_mode_request()?,
+        env_file_mode_request(env_file)?,
+    ))
 }
 
 fn stream_id_value(stream_id: u64) -> String {
@@ -421,7 +596,6 @@ fn launch_sidecar(
     stream_id: u64,
 ) -> Result<(Child, ChildStdin, ChildStdout), String> {
     let packaged = packaged_sidecar(app);
-    let bundled_codex = packaged_codex(app);
     let bundled_reasonix = packaged_reasonix(app);
     let runtime_root = std::env::var_os("PAIR_HARNESS_ROOT")
         .map(PathBuf::from)
@@ -442,14 +616,13 @@ fn launch_sidecar(
         .clone()
         .unwrap_or_else(|| python_command(&runtime_root));
     let env_file = configured_env_file(app, &runtime_root);
-    let real = use_real_backend(env_file.as_deref());
+    let mode = detect_backend_mode(env_file.as_deref())?;
     let stderr_log = sidecar_stderr_log_path(app);
     let mut command = Command::new(program);
     command.current_dir(&runtime_root);
-    let mode = if real { "--real" } else { "--demo" };
     if packaged.is_some() {
         command
-            .arg(mode)
+            .arg(mode.as_arg())
             .arg("--serve")
             .arg(REMOTE_SERVE_PORT)
             .arg("--project")
@@ -459,7 +632,7 @@ fn launch_sidecar(
             .args([
                 "-m",
                 "pair_harness.desktop_backend",
-                mode,
+                mode.as_arg(),
                 "--serve",
                 REMOTE_SERVE_PORT,
                 "--project",
@@ -476,9 +649,6 @@ fn launch_sidecar(
     }
     if let Some(env_file) = env_file {
         command.env("PAIR_HARNESS_ENV_FILE", env_file);
-    }
-    if let Some(codex) = bundled_codex {
-        command.env("PAIR_HARNESS_BUNDLED_CODEX_BIN", codex);
     }
     if let Some(reasonix) = bundled_reasonix {
         command.env("PAIR_HARNESS_BUNDLED_REASONIX_BIN", reasonix);
@@ -497,7 +667,13 @@ fn launch_sidecar(
         .spawn()
         .map_err(|error| format!("启动 Python Sidecar 失败：{error}"))?;
     if let Some(stderr) = child.stderr.take() {
-        drain_sidecar_stderr(stderr, stderr_log);
+        let header = sidecar_log_session_header(
+            stream_id,
+            child.id(),
+            mode,
+            &utc_timestamp(SystemTime::now()),
+        );
+        drain_sidecar_stderr(stderr, stderr_log, header);
     }
     let stdin = child
         .stdin
@@ -1051,15 +1227,18 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        backoff_delay, classify_exit, debug_console_requested, encode_request_line,
-        env_content_has_real_config, fail_pending, pwa_static_dir, request_timeout_secs,
-        stream_id_value, ExitClass, PendingMap, REMOTE_SERVE_PORT,
+        backoff_delay, civil_from_days, classify_exit, cli_mode_request, debug_console_requested,
+        encode_request_line, env_content_mode_request, env_file_mode_request, fail_pending,
+        open_sidecar_log, pwa_static_dir, request_timeout_secs, resolve_backend_mode,
+        rotate_sidecar_log, sidecar_log_backup_path, sidecar_log_session_header, stream_id_value,
+        utc_timestamp, BackendMode, ExitClass, PendingMap, REMOTE_SERVE_PORT,
     };
     use serde_json::json;
     use std::collections::HashMap;
+    use std::io::Write;
     use std::process::ExitStatus;
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+    use std::time::{Duration, UNIX_EPOCH};
 
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
@@ -1230,19 +1409,96 @@ mod tests {
         assert!(first.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-'));
     }
 
+    // ------------------------------------------------- V039-S4-002 后端模式判定
+
     #[test]
-    fn env_file_requires_real_dialogue_configuration() {
-        assert!(env_content_has_real_config(
-            "PAIR_HARNESS_DIALOGUE_BASE_URL=https://example.test\nPAIR_HARNESS_DIALOGUE_API_KEY=secret\nPAIR_HARNESS_DIALOGUE_MODEL=model\n"
-        ));
-        assert!(env_content_has_real_config("PAIR_HARNESS_REAL=1\n"));
-        assert!(!env_content_has_real_config(
-            "PAIR_HARNESS_REAL=0\nPAIR_HARNESS_DIALOGUE_BASE_URL=https://example.test\nPAIR_HARNESS_DIALOGUE_API_KEY=secret\nPAIR_HARNESS_DIALOGUE_MODEL=model\n"
-        ));
-        assert!(!env_content_has_real_config("PAIR_HARNESS_DEMO=1\n"));
-        assert!(!env_content_has_real_config(
-            "PAIR_HARNESS_DIALOGUE_BASE_URL=https://example.test\nPAIR_HARNESS_DIALOGUE_API_KEY=replace-with-your-api-key\nPAIR_HARNESS_DIALOGUE_MODEL=model\n"
-        ));
+    fn backend_mode_defaults_to_real_without_any_explicit_request() {
+        // 无 .env、无 --demo、无模式环境变量时必须是真实模式，不得静默跑演示数据
+        assert_eq!(resolve_backend_mode(None, None, None), BackendMode::Real);
+    }
+
+    #[test]
+    fn higher_priority_explicit_request_wins() {
+        assert_eq!(
+            resolve_backend_mode(
+                Some(BackendMode::Demo),
+                Some(BackendMode::Real),
+                Some(BackendMode::Real)
+            ),
+            BackendMode::Demo
+        );
+        assert_eq!(
+            resolve_backend_mode(None, Some(BackendMode::Demo), Some(BackendMode::Real)),
+            BackendMode::Demo
+        );
+        assert_eq!(
+            resolve_backend_mode(None, None, Some(BackendMode::Demo)),
+            BackendMode::Demo
+        );
+    }
+
+    #[test]
+    fn demo_mode_requires_an_explicit_command_line_flag() {
+        assert_eq!(
+            cli_mode_request(["--demo".to_string()]).unwrap(),
+            Some(BackendMode::Demo)
+        );
+        assert_eq!(
+            cli_mode_request(["--real".to_string()]).unwrap(),
+            Some(BackendMode::Real)
+        );
+        assert_eq!(
+            cli_mode_request(["hsr-partner-harness.exe".to_string()]).unwrap(),
+            None
+        );
+        // 同一来源里两条相反声明必须暴露为冲突，不能静默取其一
+        assert!(cli_mode_request(["--demo".to_string(), "--real".to_string()]).is_err());
+    }
+
+    #[test]
+    fn dialogue_config_alone_is_not_a_mode_declaration() {
+        // 只有对话配置、没有任何模式声明：不算显式请求（旧实现据此降级为演示）
+        assert_eq!(env_content_mode_request("PAIR_HARNESS_DIALOGUE_BASE_URL=https://example.test\nPAIR_HARNESS_DIALOGUE_API_KEY=secret\nPAIR_HARNESS_DIALOGUE_MODEL=model\n").unwrap(), None);
+        assert_eq!(env_content_mode_request("# 没有模式声明\n").unwrap(), None);
+        assert_eq!(
+            env_content_mode_request("PAIR_HARNESS_DEMO=1\n").unwrap(),
+            Some(BackendMode::Demo)
+        );
+        assert_eq!(
+            env_content_mode_request("PAIR_HARNESS_REAL=1\n").unwrap(),
+            Some(BackendMode::Real)
+        );
+        // 反向取值同样是显式声明，指向另一个模式
+        assert_eq!(
+            env_content_mode_request("PAIR_HARNESS_REAL=0\n").unwrap(),
+            Some(BackendMode::Demo)
+        );
+        assert_eq!(
+            env_content_mode_request("PAIR_HARNESS_DEMO=0\n").unwrap(),
+            Some(BackendMode::Real)
+        );
+        assert!(env_content_mode_request("PAIR_HARNESS_REAL=1\nPAIR_HARNESS_DEMO=1\n").is_err());
+    }
+
+    #[test]
+    fn missing_env_file_is_not_a_demo_signal() {
+        let base = std::env::temp_dir().join(format!("ph-env-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let env_file = base.join(".env");
+
+        assert_eq!(env_file_mode_request(None).unwrap(), None);
+        assert_eq!(env_file_mode_request(Some(&env_file)).unwrap(), None);
+
+        std::fs::write(&env_file, "PAIR_HARNESS_DEMO=1\n").unwrap();
+        assert_eq!(
+            env_file_mode_request(Some(&env_file)).unwrap(),
+            Some(BackendMode::Demo)
+        );
+        std::fs::write(&env_file, "PAIR_HARNESS_DIALOGUE_MODEL=deepseek-chat\n").unwrap();
+        assert_eq!(env_file_mode_request(Some(&env_file)).unwrap(), None);
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1283,6 +1539,89 @@ mod tests {
             pwa_static_dir(true, Some(&base.join("pkg-empty")), &base.join("repo")),
             None
         );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // ------------------------------------------------- V039-S4-010 stderr 日志取证
+
+    #[test]
+    fn session_header_marks_stream_process_and_mode() {
+        assert_eq!(
+            sidecar_log_session_header(7, 4242, BackendMode::Real, "2026-09-10T10:37:00.000Z"),
+            "===== sidecar stderr session 2026-09-10T10:37:00.000Z stream_id=7 pid=4242 mode=real =====\n"
+        );
+        assert!(sidecar_log_session_header(8, 1, BackendMode::Demo, "T").contains("mode=demo"));
+    }
+
+    #[test]
+    fn utc_timestamp_matches_unix_epoch_seconds() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(20_454), (2026, 1, 1));
+        assert_eq!(
+            utc_timestamp(UNIX_EPOCH + Duration::from_secs(1_789_036_620)),
+            "2026-09-10T10:37:00.000Z"
+        );
+        assert_eq!(
+            utc_timestamp(UNIX_EPOCH + Duration::from_millis(1_789_036_620_123)),
+            "2026-09-10T10:37:00.123Z"
+        );
+    }
+
+    #[test]
+    fn log_rotates_into_numbered_backups_when_over_the_limit() {
+        let base = std::env::temp_dir().join(format!("ph-log-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let log = base.join("sidecar.stderr.log");
+        let backup = |index: u32| sidecar_log_backup_path(&log, index);
+
+        // 文件不存在或未达上限：不滚动，也不报错
+        assert!(!rotate_sidecar_log(&log, 8, 2).unwrap());
+        std::fs::write(&log, b"first").unwrap();
+        assert!(!rotate_sidecar_log(&log, 8, 2).unwrap());
+        assert!(log.exists());
+
+        // 达到上限：当前日志变成 .1
+        assert!(rotate_sidecar_log(&log, 5, 2).unwrap());
+        assert!(!log.exists());
+        assert_eq!(std::fs::read(backup(1)).unwrap(), b"first");
+
+        // 再滚动两次：旧副本后移，最旧的按上限丢弃
+        std::fs::write(&log, b"second").unwrap();
+        assert!(rotate_sidecar_log(&log, 5, 2).unwrap());
+        assert_eq!(std::fs::read(backup(1)).unwrap(), b"second");
+        assert_eq!(std::fs::read(backup(2)).unwrap(), b"first");
+        std::fs::write(&log, b"third").unwrap();
+        assert!(rotate_sidecar_log(&log, 5, 2).unwrap());
+        assert_eq!(std::fs::read(backup(1)).unwrap(), b"third");
+        assert_eq!(std::fs::read(backup(2)).unwrap(), b"second");
+        assert!(!backup(3).exists());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn opening_the_log_writes_one_session_marker_per_session() {
+        let base = std::env::temp_dir().join(format!("ph-log-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let log = base.join("sidecar.stderr.log");
+
+        for (index, mode) in [(1u64, BackendMode::Real), (2u64, BackendMode::Demo)] {
+            let header = sidecar_log_session_header(index, 100 + index as u32, mode, "T");
+            let mut file = open_sidecar_log(&log, &header).unwrap();
+            file.write_all(format!("body-{index}\n").as_bytes())
+                .unwrap();
+        }
+
+        let expected = concat!(
+            "===== sidecar stderr session T stream_id=1 pid=101 mode=real =====\n",
+            "body-1\n",
+            "===== sidecar stderr session T stream_id=2 pid=102 mode=demo =====\n",
+            "body-2\n",
+        );
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), expected);
 
         let _ = std::fs::remove_dir_all(&base);
     }

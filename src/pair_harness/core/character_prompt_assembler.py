@@ -86,7 +86,9 @@ class AssembledPrompt:
       splice 进对话消息列表）；基座装配恒为空元组；
     - ``diagnostics``：装配级诊断（§4.6：scan_depth/scanned_message_count/
       budget_total/budget_used/overflow_entries/not_run_fields/
-      unexpanded_macros/warnings/activated_count 与 depth_injections 计数）。
+      unexpanded_macros/warnings/activated_count 与 depth_injections 计数；
+      预算口径另见 budget_constant_used/budget_prunable_used/
+      budget_limit_reached，见 activation 模块预算诊断口径）。
     """
 
     system_text: str
@@ -599,6 +601,9 @@ def _assemble_diagnostics(
             "scanned_message_count": ad.scanned_message_count,
             "budget_total": ad.budget_total,
             "budget_used": ad.budget_used,
+            "budget_constant_used": ad.budget_constant_used,
+            "budget_prunable_used": ad.budget_prunable_used,
+            "budget_limit_reached": ad.budget_limit_reached,
             "overflow_entries": list(ad.overflow_entries),
             "warnings": list(ad.warnings),
             "activated_count": ad.activated_count,
@@ -610,6 +615,9 @@ def _assemble_diagnostics(
             "scanned_message_count": len(scan_texts),
             "budget_total": round(0.25 * context_tokens),
             "budget_used": 0,
+            "budget_constant_used": 0,
+            "budget_prunable_used": 0,
+            "budget_limit_reached": False,
             "overflow_entries": [],
             "warnings": [],
             "activated_count": 0,

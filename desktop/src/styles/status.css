@@ -33,6 +33,19 @@
 .connection-pill-disconnected .connection-pill-dot { background: var(--danger); }
 .connection-pill-disconnected { color: var(--danger); }
 
+/* V039-S4-002 演示模式标识：与连接药丸并列，措辞自成一句，不读成「已连接」。 */
+.demo-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--text-c1-size);
+  color: var(--warning);
+  flex: none;
+  white-space: nowrap;
+}
+
 /* ========== 技术详情抽屉 ========== */
 
 .tech-drawer-backdrop {
