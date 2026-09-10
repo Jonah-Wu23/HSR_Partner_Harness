@@ -807,8 +807,10 @@ describe("CharacterVoiceSection", () => {
       />,
     );
 
+    // 详情提交后重置效应还会异步补写默认前缀；等它落地再输入，否则这次补写会覆盖
+    // 用户刚输入的非法值（断言强度不变，仅消除时序竞争）。
     await waitFor(() => {
-      expect(screen.getByTestId("prefix-input")).toBeInTheDocument();
+      expect(screen.getByTestId("prefix-input")).not.toHaveValue("");
     });
 
     fireEvent.change(screen.getByTestId("prefix-input"), { target: { value: "ABC!" } });

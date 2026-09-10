@@ -30,9 +30,6 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev,voice]"
 
-      - name: Diagnose PowerShell module resolution (temporary)
-        run: python ci_ps_diag.py
-
       - name: Run Python tests
         run: python -m pytest -q
 

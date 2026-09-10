@@ -53,7 +53,16 @@ if ($existingLibrary -and $existingLibrary.LinkType -eq "SymbolicLink") {
 } else {
     Copy-Item -LiteralPath $library -Destination $jniDir -Force
 }
-$libraryHash = (Get-FileHash -LiteralPath $library -Algorithm SHA256).Hash.ToLowerInvariant()
+# Hash with the BCL instead of Get-FileHash: that cmdlet lives in the auto-loaded
+# Microsoft.PowerShell.Utility module, which some hosts cannot resolve (the GitHub
+# windows-latest image is one), and this script has to run on any Windows host.
+$sha256 = [System.Security.Cryptography.SHA256]::Create()
+try {
+    $libraryStream = [IO.File]::OpenRead($library)
+    try { $libraryHashBytes = $sha256.ComputeHash($libraryStream) }
+    finally { $libraryStream.Dispose() }
+} finally { $sha256.Dispose() }
+$libraryHash = ([BitConverter]::ToString($libraryHashBytes) -replace "-", "").ToLowerInvariant()
 
 $assetsPath = [IO.Path]::GetFullPath((Join-Path $androidRoot "app/src/main/assets"))
 $expectedAssets = [IO.Path]::GetFullPath((Join-Path $desktopRoot "src-tauri/gen/android/app/src/main/assets"))
