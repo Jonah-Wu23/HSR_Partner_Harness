@@ -25,7 +25,7 @@
     "真实语音输出：voice.preview 与角色回复的 TTS 入队、固定模型标识核对"
   ],
   "expected": "仅角色自然语言进入 TTS；固定 ASR/TTS 模型不漂移；世界书按关键词激活且装配诊断可见（隐藏原文需显式请求）",
-  "actual": "装配诊断在绑定卡会话返回 5 个模块（世界书（角色设定前）/角色设定/性格/场景/世界书（角色设定后）），隐藏原文需 include_hidden=true；真实语音输入通过：42 个分片（131,680 B PCM）喂入后 ptt_stop 返回逐字一致的文本「请把项目根目录里的文件念给我听。」；固定模型标识：asr_model=qwen-audio-3.0-asr-flash-streaming、tts_model=qwen-audio-3.0-tts-flash（只读，无编辑入口）；朗读边界：用户消息 tts_eligible=false、角色最终消息 tts_eligible=true；混合时间线仅取到角色/助手/系统三类（该委派回合未在观测窗口内产出工具与思考条目）；语音输出受阻：voice.preview 以「手机正在控制语音」被拒（调用方即持控制权的远程端，提示与状态矛盾），且随后 DashScope 侧出现 Throttling.RateQuota 限流导致合成失败（错误已如实进入 voice.error）；补充：此用例消耗了真实 TTS 额度（用户随后要求停用语音，账号级 voice.enabled 已置 false）",
+  "actual": "装配诊断在绑定卡会话返回 5 个模块（世界书（角色设定前）/角色设定/性格/场景/世界书（角色设定后）），隐藏原文需 include_hidden=true；真实语音输入通过：42 个分片（131,680 B PCM）喂入后 ptt_stop 返回逐字一致的文本「请把项目根目录里的文件念给我听。」；固定模型标识：asr_model=qwen-audio-3.0-asr-flash-streaming、tts_model=qwen-audio-3.0-tts-flash（只读，无编辑入口）；朗读边界：用户消息 tts_eligible=false、角色最终消息 tts_eligible=true；世界书装配预算失败（V039-S4-017）：budget_total=2048 / budget_used=21552 / warnings 空，预算被超出约 10 倍，世界书模块实际占约 14,400 字符；混合时间线只取到角色/助手/系统三类（该委派回合未在观测窗口内产出工具与思考条目）；语音输出受阻：DashScope 侧 Throttling.RateQuota 导致合成失败（错误已如实进入 voice.error），账号级 voice.enabled 已按用户要求置 false；补充：此用例消耗了真实 TTS 额度（用户随后要求停用语音）",
   "timestamps": {
     "batch": "batch-2026-09-10",
     "recorded_at": "2026-09-10T11:05:00Z"
@@ -49,9 +49,51 @@
   ],
   "severity": "P2",
   "frequency": "高频回合下必现",
-  "impact": "语音输出在远程控制态被拒；连续回合触发上游限流",
-  "status": "受阻",
-  "blocker": "上游 DashScope 限流（Throttling.RateQuota）；用户已要求停用语音以控制成本",
-  "owner": "Sidecar Python（TTS 队列/错误呈现）",
-  "next_action": "修复控制权守卫提示与限流退避后，在低速率下复验语音输出与混合时间线（工具/思考条目）"
+  "impact": "世界书预算不约束实际注入（提示词约 14,400 字符逐回合送入模型，成本放大）；语音输出在远程控制态被拒；连续回合触发上游限流",
+  "status": "失败",
+  "blocker": "语音输出子项：上游 DashScope 限流 + 用户成本约束（B-02）。世界书预算不是受阻，是产品缺陷 V039-S4-017，已判失败。",
+  "owner": "Sidecar Python（世界书激活预算 V039-S4-017；播放控制守卫 V039-S4-016）；环境提供方（额度，B-02）",
+  "next_action": "修复 V039-S4-017 的预算口径与告警后复验长世界书装配；修复 V039-S4-016 后复验语音输出；混合时间线需重取含工具/思考的真实委派回合",
+  "sub_results": [
+    {
+      "item": "装配诊断与隐藏原文规则",
+      "status": "通过",
+      "evidence": "A08/a08-run.json 的 assembly.normal / assembly.hidden；隐藏原文需 include_hidden=true，隐藏文本不出现在普通对话"
+    },
+    {
+      "item": "真实语音输入（ASR 往返）",
+      "status": "通过",
+      "evidence": "A08/a08-asr-input.wav + A08/a08-run.json：42 分片 131,680 B PCM → ptt_stop 返回逐字一致文本"
+    },
+    {
+      "item": "固定 ASR/TTS 模型标识",
+      "status": "通过",
+      "evidence": "asr_model=qwen-audio-3.0-asr-flash-streaming、tts_model=qwen-audio-3.0-tts-flash（只读）"
+    },
+    {
+      "item": "朗读边界（仅角色自然语言入 TTS）",
+      "status": "通过",
+      "evidence": "user tts_eligible=false、character 最终消息 tts_eligible=true"
+    },
+    {
+      "item": "世界书装配预算",
+      "status": "失败",
+      "defect": "V039-S4-017",
+      "evidence": "A08/a08-run.json 的 assembly.diagnostics：budget_total 2048 / budget_used 21552 / warnings 空",
+      "note": "85 条世界书（24 条 constant）激活后预算被超出约 10 倍，世界书模块实际占用约 14,400 字符"
+    },
+    {
+      "item": "混合时间线与工具/思考条目",
+      "status": "受阻",
+      "blocker": "B-05",
+      "evidence": "A08/a08-run.json 的 mixed_timeline：kinds=[assistant.natural_language, character.speech, system.approval, user.text]，tool_runs=[]",
+      "note": "已取到 4 类（用户/角色/助手/系统审批），未取到工具与思考条目；该回合的 assistant.natural_language 正文为空但审批结果为「允许」，与 V039-S4-008 同源，需一并复验"
+    },
+    {
+      "item": "语音输出",
+      "status": "受阻",
+      "blocker": "B-02",
+      "evidence": "A08/a08-run.json 的 voice_runtime_state.error 携带 Throttling.RateQuota 原始报文"
+    }
+  ]
 }

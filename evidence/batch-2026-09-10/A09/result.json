@@ -23,7 +23,7 @@
     "显式 voice.tts_stop"
   ],
   "expected": "旧播放、队列与在途合成停止；迟到 PCM 不复活播放；partial delta 不直接朗读",
-  "actual": "voice.preview 被拒（remote_playback_active，见 V039-S4-016）；改用真实长回复：520 字回复触发真实合成，voice.tts 观测为 playing；播放中提交新消息后：3 秒时 tts=synthesizing（旧播放已让位给新合成）、8 秒后 tts=idle、最终 tts=idle 且 speech_queue_len=0，未观察到迟到分片复活播放；朗读边界：user tts_eligible=false、character 最终消息 tts_eligible=true；voice.state_changed 事件捕获到播放态迁移",
+  "actual": "voice.preview 被拒（remote_playback_active，见 V039-S4-016）——持权远程端在控制期内没有任何可用的起始播放/试听路径；改用真实长回复路径：520 字回复触发真实合成，voice.tts 观测为 playing；播放中提交新消息后：3 秒时 tts=synthesizing（旧播放已让位给新合成）、8 秒后 tts=idle、最终 tts=idle 且 speech_queue_len=0，未观察到迟到分片复活播放；朗读边界：user tts_eligible=false、character 最终消息 tts_eligible=true；voice.state_changed 事件捕获到播放态迁移。语音输出侧仍受上游 Throttling.RateQuota 限制（voice.error 如实携带原始报文）。",
   "timestamps": {
     "batch": "batch-2026-09-10",
     "recorded_at": "2026-09-10T11:05:00Z"
@@ -43,11 +43,33 @@
     "A09/commands.ps1",
     "A09/http.log"
   ],
-  "severity": "P3",
+  "severity": "P2",
   "frequency": "远程控制态必现",
-  "impact": "远程端无法用 preview 触发长播放；抢占用例只能走回复路径",
-  "status": "受阻",
-  "blocker": "远程持有播放控制权时 preview 被拒（提示与状态矛盾）；上游限流风险",
-  "owner": "Sidecar Python（播放控制守卫文案/语义）",
-  "next_action": "修正守卫语义后按桌面播放路径复验 created/首 delta 两类抢占"
+  "impact": "持权远程端无法用 preview 构造长播放（V039-S4-016，控制期内无起始播放路径）；连续合成触发上游限流",
+  "status": "失败",
+  "blocker": "语音输出子项：上游 DashScope 限流（Throttling.RateQuota）+ 用户成本约束（B-02）。preview 子项不是受阻，是产品缺陷 V039-S4-016，已判失败。",
+  "owner": "Sidecar Python（播放控制守卫与错误文案，V039-S4-016）；环境提供方（额度，B-02）",
+  "next_action": "修复 V039-S4-016 的守卫语义（按调用方身份判定）后按桌面与持权远程两条路径复验抢占；语音输出在低速率、已授权额度下复验 B-02",
+  "sub_results": [
+    {
+      "item": "长播放中的抢占（520 字真实长回复）",
+      "status": "通过",
+      "evidence": "A09/a09-long.json：playing → 提交新消息 → 3 秒时 tts=synthesizing → 8 秒后 tts=idle，speech_queue_len=0，迟到分片未复活播放",
+      "note": "未使用 preview 路径，改用真实角色回复路径取得"
+    },
+    {
+      "item": "voice.preview 构造长播放（原定路径）",
+      "status": "失败",
+      "defect": "V039-S4-016",
+      "evidence": "A09/a09-run.json 的 control_claim / preview 字段；A09/ws-frames.log",
+      "note": "持权远程端调用 voice.preview 被 remote_playback_active 拒绝，提示与自身状态矛盾；源码核对确认守卫不识别调用方身份"
+    },
+    {
+      "item": "语音输出（TTS 合成与播放）",
+      "status": "受阻",
+      "blocker": "B-02",
+      "evidence": "A09/a09-long.json 的 voice.error 携带 DashScope Throttling.RateQuota 原始报文",
+      "note": "上游按账号限流，且用户明确要求停止 393KB 相关回合的语音合成以控制成本"
+    }
+  ]
 }
