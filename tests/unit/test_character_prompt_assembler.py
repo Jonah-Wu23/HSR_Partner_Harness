@@ -528,6 +528,14 @@ def test_turn_budget_overflow_excludes_low_priority_entry() -> None:
     assert "B" in result.diagnostics["overflow_entries"]
     assert result.diagnostics["budget_total"] == 4
     assert result.diagnostics["budget_used"] > 0
+    # 预算口径随诊断一并透出（V039-S4-017）：受门控边际不超限额、常量边际
+    # 单独计量；budget_used 是激活序累计估算，不等于各模块文本估算之和。
+    d = result.diagnostics
+    assert d["budget_prunable_used"] <= d["budget_total"] == 4
+    assert d["budget_constant_used"] > 0
+    assert d["budget_limit_reached"] is True
+    assert d["overflow_entries"] == ["B"]
+    assert d["warnings"] and "已排除" in d["warnings"][0]
 
 
 def test_turn_unexpanded_macros_from_field_and_entry() -> None:

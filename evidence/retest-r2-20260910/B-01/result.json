@@ -1,0 +1,42 @@
+{
+  "batch": "retest-r2-20260910",
+  "case_id": "B-01",
+  "title": "断网注入（进程级网络沙盒）与错误可定位性复验",
+  "candidate_commit": "工作树快照 @ cc4077c + S4-R2 uncommitted fixes",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "exe_sha256": "2f58c825c80a1870fafde556c34405fa449f220843aefc095e5e034e7b7d828f",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "sidecar_sha256": "356c8ce5180ffbd901b890e6ef9bfd43b21bb28b71f3f5489213ec367c75f178",
+    "apk": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\gen\\android\\app\\build\\outputs\\apk\\arm64\\debug\\app-arm64-debug.apk",
+    "apk_sha256": "cb23957c99cb2a2cffea30cf719a772208cd77bf3ee5a19c0d672397dff1bf88"
+  },
+  "device": "Windows 11 10.0.26200 / 2560x1440 / 缩放150% / 本地桌面会话",
+  "network": "本机直连公网（无 Tailscale）；手机端经局域网 10.81.0.0/16",
+  "preconditions": {},
+  "steps": [],
+  "expected": "四种沙盒形态与名称解析失败形态的失败原因互不相同且可定位；候选能以保留域端点进入可用运行态",
+  "actual": "四形态：连接被拒=All connection attempts failed；传输中断=ReadError；请求悬挂=30.3s ReadTimeout；名称解析失败=[Errno 11001] getaddrinfo failed（不经代理，日志无 http_proxy 路径）。候选以 https://no-such-host-r2.invalid/v1 成功启动（S4-R1 的启动期阻断已消失）。forward 基线真实回合成功，证明候选经代理出站。",
+  "timestamps": {
+    "started_at": "2026-09-10T14:18:54.860Z",
+    "finished_at": "2026-09-10T14:19:31.650Z",
+    "recorded_at": "2026-09-10T15:05:00Z"
+  },
+  "ids": {},
+  "evidence": [
+    "network-run.json",
+    "ws-frames.log",
+    "events.log",
+    "sidecar.log",
+    "sandbox.injection.log",
+    "batch-manifest.json"
+  ],
+  "severity": "",
+  "frequency": "必现",
+  "impact": "出站故障五形态",
+  "status": "通过",
+  "blocker": "",
+  "owner": "",
+  "next_action": "无（S4-R1 的受阻状态已解除）"
+}

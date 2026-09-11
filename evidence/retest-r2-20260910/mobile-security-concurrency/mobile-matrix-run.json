@@ -1,0 +1,214 @@
+{
+  "started_at": "2026-09-10T14:35:00.562Z",
+  "security": {
+    "no_auth": {
+      "ok": false,
+      "code": "unauthorized",
+      "message": "missing_token"
+    },
+    "no_auth_command": {
+      "ok": false,
+      "code": "unauthorized",
+      "message": "missing_token"
+    },
+    "bad_token": {
+      "ok": false,
+      "code": "unauthorized",
+      "message": "invalid_token"
+    },
+    "bad_token_command": {
+      "ok": false,
+      "code": "unauthorized",
+      "message": "invalid_token"
+    },
+    "paired_devices": [
+      {
+        "device_name": "r2-desktop-probe",
+        "issued_at": "2026-09-10T14:13:11.583369+00:00",
+        "last_used_at": "2026-09-10T14:35:00.576252+00:00",
+        "revoked": false
+      },
+      {
+        "device_name": "我的手机",
+        "issued_at": "2026-09-10T14:29:18.422382+00:00",
+        "last_used_at": "2026-09-10T14:32:17.813381+00:00",
+        "revoked": false
+      },
+      {
+        "device_name": "我的手机",
+        "issued_at": "2026-09-10T14:34:12.489921+00:00",
+        "last_used_at": "2026-09-10T14:34:49.317067+00:00",
+        "revoked": false
+      }
+    ]
+  },
+  "concurrency": {
+    "conversations": [
+      {
+        "index": 1,
+        "conversation_id": "1df32ef7-f30d-4605-b0d5-4c0e507d433e",
+        "owner": "desktop"
+      },
+      {
+        "index": 2,
+        "conversation_id": "7e6a5061-3045-45c6-a60b-ff967b7f4623",
+        "owner": "mobile"
+      },
+      {
+        "index": 3,
+        "conversation_id": "588c8fdd-369e-4a04-bb31-260ec83fe586",
+        "owner": "desktop"
+      },
+      {
+        "index": 4,
+        "conversation_id": "22cb4a59-cd13-4829-8296-cad038d4ebf0",
+        "owner": "mobile"
+      }
+    ],
+    "submit_spread_seconds": 0.0,
+    "initial_open": [
+      {
+        "index": 1,
+        "owner": "desktop",
+        "messages": [
+          {
+            "source": "user",
+            "kind": "user.text",
+            "status": "done",
+            "text": "复测移动并发：会话 1，请只回复两个字：收到。"
+          }
+        ],
+        "active_task": false,
+        "queue_items": 0
+      },
+      {
+        "index": 2,
+        "owner": "mobile",
+        "messages": [
+          {
+            "source": "user",
+            "kind": "user.text",
+            "status": "done",
+            "text": "复测移动并发：会话 2，请只回复两个字：收到。"
+          }
+        ],
+        "active_task": false,
+        "queue_items": 0
+      },
+      {
+        "index": 3,
+        "owner": "desktop",
+        "messages": [
+          {
+            "source": "user",
+            "kind": "user.text",
+            "status": "done",
+            "text": "复测移动并发：会话 3，请只回复两个字：收到。"
+          }
+        ],
+        "active_task": false,
+        "queue_items": 0
+      },
+      {
+        "index": 4,
+        "owner": "mobile",
+        "messages": [
+          {
+            "source": "user",
+            "kind": "user.text",
+            "status": "done",
+            "text": "复测移动并发：会话 4，请只回复两个字：收到。"
+          }
+        ],
+        "active_task": false,
+        "queue_items": 0
+      }
+    ],
+    "final": [
+      {
+        "index": 1,
+        "owner": "desktop",
+        "settled": true,
+        "messages": [
+          {
+            "source": "user",
+            "kind": "user.text",
+            "status": "done",
+            "text": "复测移动并发：会话 1，请只回复两个字：收到。"
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "owner": "mobile",
+        "settled": true,
+        "messages": [
+          {
+            "source": "user",
+            "kind": "user.text",
+            "status": "done",
+            "text": "复测移动并发：会话 2，请只回复两个字：收到。"
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "owner": "desktop",
+        "settled": true,
+        "messages": [
+          {
+            "source": "user",
+            "kind": "user.text",
+            "status": "done",
+            "text": "复测移动并发：会话 3，请只回复两个字：收到。"
+          }
+        ]
+      },
+      {
+        "index": 4,
+        "owner": "mobile",
+        "settled": true,
+        "messages": [
+          {
+            "source": "user",
+            "kind": "user.text",
+            "status": "done",
+            "text": "复测移动并发：会话 4，请只回复两个字：收到。"
+          }
+        ]
+      }
+    ],
+    "all_settled": true,
+    "cross_talk": [
+      {
+        "index": 1,
+        "user_texts": [
+          "复测移动并发：会话 1，请只回复两个字：收到。"
+        ],
+        "char_texts": []
+      },
+      {
+        "index": 2,
+        "user_texts": [
+          "复测移动并发：会话 2，请只回复两个字：收到。"
+        ],
+        "char_texts": []
+      },
+      {
+        "index": 3,
+        "user_texts": [
+          "复测移动并发：会话 3，请只回复两个字：收到。"
+        ],
+        "char_texts": []
+      },
+      {
+        "index": 4,
+        "user_texts": [
+          "复测移动并发：会话 4，请只回复两个字：收到。"
+        ],
+        "char_texts": []
+      }
+    ]
+  },
+  "finished_at": "2026-09-10T14:35:00.848Z"
+}

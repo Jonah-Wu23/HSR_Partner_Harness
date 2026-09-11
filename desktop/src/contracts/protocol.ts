@@ -7,6 +7,8 @@ export type MessageKind =
   | "assistant.reasoning"
   | "tool.record"
   | "system.status"
+  | "system.summary"
+  | "system.error"
   | "system.approval"
   | "assistant.code"
   | "assistant.command";
@@ -68,6 +70,7 @@ export interface ToolRun {
 export type ApprovalMode = "request_approval" | "review" | "full_auto";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export type ConversationMode = "chat" | "collaboration";
+export type TaskStatus = "pending" | "running" | "amendment_pending" | "completed" | "failed" | "cancelled";
 
 export type TurnStatus =
   | "queued"
@@ -228,6 +231,8 @@ export interface PendingApproval {
     summary: string;
   };
   reason: string;
+  requested_at?: string;
+  expires_at?: string;
   /** V0.3.2 M5：审批归属的任务 id（approval.requested/resolved 载荷新增）。 */
   task_id?: string;
 }
@@ -271,6 +276,9 @@ export interface DesktopSnapshot {
   active_tasks?: ActiveTask[];
   busy: boolean;
   approvals: PendingApproval[];
+  summaries?: ConversationSummary[];
+  memories?: PairMemory[];
+  remote_control?: RemoteControlState;
   voice: VoiceState;
   pair: PairRecord;
   pairs: PairSummary[];
@@ -290,6 +298,10 @@ export interface ConversationOpenResult {
   turns: Turn[];
   queue_items: QueueItem[];
   active_task: ActiveTask | null;
+  approvals?: PendingApproval[];
+  summaries?: ConversationSummary[];
+  memories?: PairMemory[];
+  remote_control?: RemoteControlState;
   /** 响应生成时最近已发出的同连接事件序号，用于重放等待期间的实时事件。 */
   sequence: number;
   stream_id?: string | number;
@@ -302,6 +314,7 @@ export interface ConversationOpenResult {
 export type ConversationCreateResult = DesktopSnapshot & { reused: boolean };
 
 export type DesktopCommandMethod =
+  | "ping"
   | "app.bootstrap"
   | "app.shutdown"
   | "app.reconnect"
@@ -340,10 +353,6 @@ export type DesktopCommandMethod =
   | "config.get"
   | "config.set"
   | "config.test_connection"
-  | "codex.oauth_start"
-  | "codex.oauth_status"
-  | "codex.logout"
-  | "codex.api_login"
   | "card.list"
   | "card.get"
   | "card.create_draft"
@@ -370,10 +379,21 @@ export type DesktopCommandMethod =
   | "voice.mobile_audio_chunk"
   | "voice.mobile_ptt_stop"
   | "voice.mobile_tts_stop"
+  | "summary.get"
+  | "summary.regenerate"
+  | "memory.list"
+  | "memory.create"
+  | "memory.update"
+  | "memory.delete"
+  | "metrics.query"
+  | "diagnostics.prompt_assembly"
+  | "remote.control_status"
   | "remote.issue_code"
   | "remote.pair"
   | "remote.list_devices"
   | "remote.revoke"
+  | "remote.claim_control"
+  | "remote.release_control"
   | "power.get_status";
 
 export interface DesktopCommand {
@@ -390,7 +410,7 @@ export interface DesktopResponse<T = unknown> {
   id: string;
   ok: boolean;
   result?: T;
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; details?: Record<string, unknown> };
 }
 
 export type DesktopEventName =
@@ -400,6 +420,11 @@ export type DesktopEventName =
   | "message.status_changed"
   | "message.delta"
   | "message.finalized"
+  | "summary.started"
+  | "summary.completed"
+  | "summary.failed"
+  | "memory.updated"
+  | "memory.deleted"
   | "tool_run.upserted"
   | "approval.requested"
   | "approval.resolved"
@@ -420,6 +445,10 @@ export type DesktopEventName =
   | "voice.mobile_transcript"
   | "voice.mobile_tts_chunk"
   | "voice.mobile_tts_end"
+  | "voice.mobile_tts_failed"
+  | "voice.playback_interrupted"
+  | "remote.control_changed"
+  | "conversation.card_missing"
   | "connection.status"
   | "error.reported"
   | "diagnostic.warning"
@@ -433,6 +462,12 @@ export interface DesktopEvent<T = Record<string, unknown>> {
   /** M2.1：连接代次标识；业务事件按 (stream_id, sequence) 去重和查缺。 */
   stream_id?: string | number;
   payload: T;
+}
+
+export interface MessageCreatedPayload {
+  message: Message;
+  /** 服务端在创建时给出的真实可朗读能力；store 可合并进本地视图模型。 */
+  tts_ready?: boolean;
 }
 
 export interface MessageDeltaPayload {
@@ -589,14 +624,131 @@ export interface VoiceMobileTtsEndPayload {
   message_id: string;
 }
 
-/** V0.3.5 审批仲裁：approval.resolved 携带决策与来源，双端据此收敛。 */
+/** V0.3.9 审批终态；来源缺失保持 null，不由前端伪造。 */
 export interface ApprovalResolvedPayload {
   approval_id: string;
-  conversation_id?: string;
-  decision: "approve" | "deny" | string;
-  resolved_by: "desktop" | "remote" | string;
-  task_id?: string;
+  conversation_id: string;
+  task_id: string | null;
+  decision: "allow" | "allow_for_conversation" | "deny" | "timeout";
+  resolved_by: "desktop" | "remote" | "system" | "reviewer" | null;
+  actor: "user" | "reviewer" | "system" | null;
+  reason: string | null;
+  resolved_at: string;
+  error_code: "approval_timeout" | null;
 }
+
+export interface ConversationSummary {
+  summary_id: string; conversation_id: string; status: "idle" | "running" | "completed" | "failed";
+  covers_from_message_id: string | null; covers_to_message_id: string | null; covers_message_count: number;
+  content: Record<string, unknown> | null; provider: string | null; model: string | null;
+  error_code: string | null; error: string | null; created_at: string; updated_at: string;
+}
+
+export interface MemoryScope { account_id: string; project_id: string; pair_id: string; character_ref: string; assistant_identity: string; }
+
+/**
+ * memory.list 条目与 memory.updated / memory.deleted 事件载荷的真实线缆形状。
+ *
+ * 来源：`application_service._memory_payload`（写命令与事件共用）与
+ * `core.memory.memory_event_payload`，两处都把五分量作用域作为**扁平字段**下发，
+ * 线缆上没有嵌套 scope 对象。做会话解析（携带 conversation_id）时载荷再带该字段。
+ */
+export interface MemoryWirePayload {
+  memory_id: string;
+  account_id: string;
+  project_id: string;
+  pair_id: string;
+  character_ref: string;
+  assistant_identity: string;
+  status: "active" | "deleted";
+  updated_at: string;
+  content: Record<string, unknown>;
+  conversation_id?: string;
+}
+
+/**
+ * 前端记忆记录：线缆五分量 + 由 `pairMemoryFromPayload` 派生的嵌套 scope。
+ *
+ * scope 是同一批服务端原值的另一种摆放，客户端不拼接、不改写作用域；既有消费方
+ * （上下文状态条）按嵌套 scope 读取，因此线缆解码一律经由该函数，避免出现
+ * scope 缺失而显示「未报告」。
+ */
+export interface PairMemory {
+  memory_id: string;
+  scope: MemoryScope;
+  content: Record<string, unknown>;
+  status: "active" | "deleted";
+  updated_at: string;
+  /** 载荷原样携带的扁平分量（本地构造的记录可以没有；线缆解码后一定有）。 */
+  account_id?: string;
+  project_id?: string;
+  pair_id?: string;
+  character_ref?: string;
+  assistant_identity?: string;
+  /** 服务端按会话解析时随载荷下发的会话 id。 */
+  conversation_id?: string;
+}
+
+/**
+ * 线缆载荷 → 前端记录；缺失分量如实保留为空串，不伪造作用域。
+ *
+ * 结构非法（缺 memory_id、content 不是对象）时如实抛错，不静默吞：命令返回体
+ * 一旦不符协议，调用方必须看到失败，而不是拿到一条字段缺失的“记忆”。
+ */
+export function pairMemoryFromPayload(payload: MemoryWirePayload): PairMemory {
+  if (!payload || typeof payload.memory_id !== "string" || !payload.memory_id) {
+    throw new Error("记忆载荷缺少 memory_id");
+  }
+  if (
+    !payload.content ||
+    typeof payload.content !== "object" ||
+    Array.isArray(payload.content)
+  ) {
+    throw new Error("记忆载荷的 content 必须是对象");
+  }
+  const text = (value: unknown): string => (typeof value === "string" ? value : "");
+  return {
+    memory_id: payload.memory_id,
+    scope: {
+      account_id: text(payload.account_id),
+      project_id: text(payload.project_id),
+      pair_id: text(payload.pair_id),
+      character_ref: text(payload.character_ref),
+      assistant_identity: text(payload.assistant_identity),
+    },
+    content: payload.content,
+    status: payload.status,
+    updated_at: payload.updated_at,
+    account_id: text(payload.account_id),
+    project_id: text(payload.project_id),
+    pair_id: text(payload.pair_id),
+    character_ref: text(payload.character_ref),
+    assistant_identity: text(payload.assistant_identity),
+    ...(payload.conversation_id === undefined ? {} : { conversation_id: payload.conversation_id }),
+  };
+}
+
+/** memory.list 的返回体。 */
+export interface MemoryListResult { memories: MemoryWirePayload[]; }
+
+/** memory.create / memory.update / memory.delete 的返回体。 */
+export interface MemoryWriteResult { memory: MemoryWirePayload; }
+
+export interface TurnMetric {
+  metric_id: string; account_id: string; project_id: string; conversation_id: string; pair_id: string; character_ref: string; assistant_identity: string;
+  turn_kind: "character_turn" | "assistant_task"; turn_id: string; task_id: string | null; engine_turn_id: string | null;
+  provider: string | null; model: string | null; engine_type: string | null; reasoning_effort: string | null;
+  status: TurnStatus; started_at: string; first_event_at: string | null; completed_at: string | null; duration_ms: number | null;
+  input_tokens: number | null; output_tokens: number | null; total_tokens: number | null; tool_rounds: number; compression_count: number;
+  approval_count: number; failure_type: string | null; failure_message: string | null; origin: "desktop" | "remote";
+  remote_device_key: string | null; remote_device_name: string | null;
+}
+
+export interface RemoteControlState {
+  state: "free" | "held" | "grace"; device_key: string | null; expires_at: string | null; grace_expires_at: string | null; reason: string | null;
+}
+
+export interface VoiceMobileTtsFailedPayload { conversation_id: string; message_id: string; error_code: string | null; error: string; }
 
 /* ------------------------------------------------------------------ *
  * V0.3.7 PNG 双向兼容与电源状态（契约见 docs/plans/V0.3.7-契约冻结.md §1/§2）。
@@ -706,10 +858,24 @@ export interface CardDeleteResult {
   deleted: boolean;
 }
 
-/** remote.issue_code：配对码一次性、短期有效（当前 ttl 300 秒）。 */
+/**
+ * V039-S4-004：Sidecar --serve 的地址上报载荷。
+ *
+ * `serve.started` 事件与 `remote.issue_code` 返回的 `serve_address` 同形：
+ * `host` 为 null 表示服务确已在监听、但没有可用的局域网地址（原因见 `reason`）。
+ */
+export interface ServeAddressPayload {
+  host: string | null;
+  port: number;
+  reason?: string | null;
+}
+
+/** remote.issue_code：配对码一次性、短期有效（当前 ttl 300 秒）。
+    返回体同时带上当前 serve 地址，避免只依赖一次性的 serve.started 事件。 */
 export interface RemoteIssueCodeResult {
   code: string;
   ttl_seconds: number;
+  serve_address?: ServeAddressPayload | null;
 }
 
 export interface RemotePairResult {

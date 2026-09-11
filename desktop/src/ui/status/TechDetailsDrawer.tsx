@@ -1,3 +1,4 @@
+import { DemoModeNotice } from "./DemoModeNotice";
 import type { ConnectionDetails, ConnectionViewStatus } from "./types";
 
 interface TechDetailsDrawerProps {
@@ -8,6 +9,8 @@ interface TechDetailsDrawerProps {
   /** 逻辑线接入 app.reconnect 后提供；缺省时隐藏对应按钮。 */
   onReconnect?: () => void;
   onRestartSidecar?: () => void;
+  /** V0.3.9 V03：打开诊断抽屉入口。未提供时隐藏对应按钮。 */
+  onOpenDiagnostics?: () => void;
 }
 
 /** 技术详情抽屉：连接、Sidecar、日志等技术词全部收在这里。 */
@@ -18,6 +21,7 @@ export function TechDetailsDrawer({
   onClose,
   onReconnect,
   onRestartSidecar,
+  onOpenDiagnostics,
 }: TechDetailsDrawerProps) {
   if (!open) return null;
   return (
@@ -46,6 +50,8 @@ export function TechDetailsDrawer({
             <dt>本地服务（Sidecar）</dt>
             <dd>{details.sidecarStatus ?? "未知"}</dd>
           </div>
+          {/* V039-S4-002：Sidecar 自报的运行模式（未上报时不显示，不替它下结论） */}
+          <DemoModeNotice variant="detail" />
           {details.lastError ? (
             <div className="tech-drawer-row">
               <dt>最近错误</dt>
@@ -65,6 +71,19 @@ export function TechDetailsDrawer({
         </dl>
 
         <div className="tech-drawer-actions">
+          {onOpenDiagnostics ? (
+            <button
+              type="button"
+              className="btn btn-outline"
+              onClick={() => {
+                onClose();
+                onOpenDiagnostics();
+              }}
+              data-testid="tech-drawer-open-diagnostics"
+            >
+              打开诊断（指标与装配）
+            </button>
+          ) : null}
           {onReconnect ? (
             <button type="button" className="btn btn-secondary" onClick={onReconnect}>
               立即重连

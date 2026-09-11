@@ -1,0 +1,76 @@
+{
+  "cut_midstream": {
+    "label": "传输中断（流式中途）",
+    "conversation_id": "743b64e4-c392-47ed-ad80-d6480ae2b679",
+    "sandbox_action": "SET forward",
+    "control_reply": "OK forward connections=4 tunnels=3",
+    "cut_reply": "OK forward connections=6 tunnels=5",
+    "submit": {
+      "ok": true,
+      "result": {
+        "message_id": "78c3a6e1-6419-4b2c-ac28-2b23badf021f",
+        "conversation_id": "743b64e4-c392-47ed-ad80-d6480ae2b679",
+        "status": "received",
+        "target": "character",
+        "turn_id": "016a1e95-9f89-4328-8271-f24588eac214"
+      }
+    },
+    "elapsed_seconds": 6.03,
+    "turn": {
+      "message_count": 2,
+      "messages": [
+        {
+          "source": "user",
+          "kind": "user.text",
+          "status": "done",
+          "text": "复测 B-01：请写一段两百字左右的短文，说明什么是传输中断。"
+        },
+        {
+          "source": "character",
+          "kind": "character.speech",
+          "status": "done",
+          "text": "传输中断啊，这个我熟。就像送信的鸽子飞到半路突然没了影，东西没送到，收信人也不知道它去了哪儿。简单讲，就是数据从一个地方往另一个地方传的途中，链路因为某些原因断掉了。可能是线路被人碰了，可能是信号在某个节点卡住，也可能是对方那边的接收端口临时关了门。结果就是发出去的内容到不了终点，中间丢了。遇到这种情况，发的一方往往要重新来一遍，收的一方也得等重传。跟写信一个道理，信没到，对方当然不知道你写了什么。要是想弄明白具体是哪一段断的，那得翻记录、看日志才行。"
+        }
+      ],
+      "failure_notice": null
+    },
+    "sandbox_events": [
+      {
+        "event": "mode_changed",
+        "mode": "forward",
+        "request": null,
+        "error": null
+      },
+      {
+        "event": "client_request",
+        "mode": "forward",
+        "request": "CONNECT api.deepseek.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "tunnel_established",
+        "mode": "forward",
+        "request": "CONNECT api.deepseek.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "client_request",
+        "mode": "forward",
+        "request": "CONNECT llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "tunnel_established",
+        "mode": "forward",
+        "request": "CONNECT llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "tunnels_cut",
+        "mode": "forward",
+        "request": null,
+        "error": null
+      }
+    ]
+  }
+}

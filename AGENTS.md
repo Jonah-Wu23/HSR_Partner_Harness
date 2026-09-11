@@ -96,10 +96,12 @@ npm run tauri -- build --bundles nsis
 
 发布节奏：开发迭代只更新 `desktop/src-tauri/target/release/hsr-partner-harness.exe`，不重新生成或上传安装包。v0.3.2 已重新生成并上传 NSIS 安装包；下一次安装包更新安排在 v0.4.0。
 
-Android arm64 Debug APK：配置 `JAVA_HOME`、`ANDROID_HOME`、`NDK_HOME` 后，在 `desktop/` 运行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-android.ps1`，依赖已缓存时可加 `-Offline`。脚本先构建移动前端及包含前端资源的 Rust 动态库，再打包 APK，不执行安装。不得仅复制 `assets/` 或因旧 `.so` 存在就宣称新代码已打入 APK。
+Android arm64 Debug APK：配置 `JAVA_HOME`、`ANDROID_HOME`、`NDK_HOME` 后，在 `desktop/` 运行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-android.ps1`，依赖已缓存时可加 `-Offline`。脚本先构建移动前端及包含前端资源的 Rust 动态库，再打包 APK，不执行安装。调用 gradle 前，脚本读取 `src-tauri/tauri.conf.json` 的 `version`，按 tauri CLI 同一派生式 `major*1000000+minor*1000+patch` 算出 versionCode（0.3.9 → 3009），并写出 `gen/android/app/tauri.properties`（`tauri.android.versionName` / `tauri.android.versionCode`）；该文件只在 `tauri android build` 路径生成，脚本直连 gradle 必须自行补写，否则包内版本恒为 1 / 1.0，`adb install -r` 会因降级被拒。版本缺失、非 semver 或派生值超出 1..2100000000 时脚本报错并非零退出，不进打包。不得仅复制 `assets/` 或因旧 `.so` 存在就宣称新代码已打入 APK。
 
 ## 外部代码
 
 `src/pair_harness/config/providers.py` 含有根据 DeepSeek-Reasonix 改写的供应商识别逻辑。修改这部分时保留文件内出处，并同步检查 `THIRD_PARTY_NOTICES.md`。
 
-Codex 通过本机 app-server 接入，仓库不包含 Codex 源码。相关协议改动应以 OpenAI Codex 当前实现为准。
+编程助手统一经打包的 DeepSeek-Reasonix（ACP）接入，自己配置的 OpenAI 兼容端点按 Chat Completions 工作；仓库不包含 Codex 源码，产品不再要求 Codex app-server、Responses API 或 OAuth 登录（B-03）。
+
+`src/pair_harness/adapters/codex/` 下仍有 `transport` 与 `auth` 两个遗留共享模块：`transport` 只提供子进程 JSONL 传输（由 ACP 连接复用），`auth` 只承载账号目录定位与本地遗留登录状态的只读/清理。两者都不构成 Codex 产品依赖，改动时不要据此恢复 Codex 运行路径。

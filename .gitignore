@@ -33,6 +33,13 @@ output/
 desktop/mobile/connection-check.log
 desktop/src-tauri/gen/android/buildSrc/.kotlin/
 desktop/src-tauri/gen/android/app/src/main/assets/
+# 运行时的本地账号与端点配置（含密钥），不入库
+accounts/
 
 docs/promo/
 .dsh_better_edit/
+# S4 真机验证证据：原始帧/事件日志与音频体积过大（A02 单目录 259MB），
+# 保留在本地 evidence/ 目录供复现与抽查；结构化交付物（result.json、
+# notes.md、commands.ps1、manifest、日报与 blockers）随仓库提交。
+evidence/**/*.log
+evidence/**/*.wav

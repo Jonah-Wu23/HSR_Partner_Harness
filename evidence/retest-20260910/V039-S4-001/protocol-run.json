@@ -1,0 +1,1007 @@
+{
+  "started_at": "2026-09-10T13:20:27.364Z",
+  "ids": {
+    "project_id": "bf0fd819-2809-43b4-9f44-88c1086eca7c",
+    "conversation_id": "8dbee377-71fc-4e33-b257-0a394e8e7f39"
+  },
+  "summary_phase": {
+    "fixture": "fix-b2-count-only.json",
+    "fixture_messages": 80,
+    "fixture_total_bytes": 77246,
+    "plan": "前 79 条提交后 task.cancel；第 80 条走真实模型完整回合",
+    "submits": [
+      {
+        "index": 0,
+        "real_turn": false,
+        "message_id": "61a90c93-7d35-42c4-b81c-1c09741a9649",
+        "cancelled": true
+      },
+      {
+        "index": 1,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 2,
+        "real_turn": false,
+        "message_id": "d29d2be6-6062-40c6-9e7c-41f76d3d5c62",
+        "cancelled": true
+      },
+      {
+        "index": 3,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 4,
+        "real_turn": false,
+        "message_id": "dca1f4f6-d03a-42e3-95e4-4d5f9b1780aa",
+        "cancelled": true
+      },
+      {
+        "index": 5,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 6,
+        "real_turn": false,
+        "message_id": "f195fcf3-18a2-45cd-8982-0b2ee1279d9a",
+        "cancelled": true
+      },
+      {
+        "index": 7,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 8,
+        "real_turn": false,
+        "message_id": "4e63b9af-ad10-458e-91e1-11e254300a2a",
+        "cancelled": true
+      },
+      {
+        "index": 9,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 10,
+        "real_turn": false,
+        "message_id": "53c41d80-2cee-4860-9c69-d66fc88be720",
+        "cancelled": true
+      },
+      {
+        "index": 11,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 12,
+        "real_turn": false,
+        "message_id": "9dd67e11-152b-4e4c-ac86-8f9084da29d1",
+        "cancelled": true
+      },
+      {
+        "index": 13,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 14,
+        "real_turn": false,
+        "message_id": "8df953fd-48b5-4a34-ae32-cf2918e7d326",
+        "cancelled": true
+      },
+      {
+        "index": 15,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 16,
+        "real_turn": false,
+        "message_id": "ee944e7c-d365-451f-91ae-0e5b7f502911",
+        "cancelled": true
+      },
+      {
+        "index": 17,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 18,
+        "real_turn": false,
+        "message_id": "033a5f7c-2dd3-4dd4-abe7-3f8dcb4b35b9",
+        "cancelled": true
+      },
+      {
+        "index": 19,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 20,
+        "real_turn": false,
+        "message_id": "56bb7a94-d4e1-4936-8f29-a6de71512e84",
+        "cancelled": true
+      },
+      {
+        "index": 21,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 22,
+        "real_turn": false,
+        "message_id": "5251c64f-e575-4c23-8cfa-b962828ff023",
+        "cancelled": true
+      },
+      {
+        "index": 23,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 24,
+        "real_turn": false,
+        "message_id": "73538876-a982-4db4-88b8-ea8c76529788",
+        "cancelled": true
+      },
+      {
+        "index": 25,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 26,
+        "real_turn": false,
+        "message_id": "e21cf4c4-7941-49f9-b3a7-06aa533ab966",
+        "cancelled": true
+      },
+      {
+        "index": 27,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 28,
+        "real_turn": false,
+        "message_id": "0eba889a-4cd7-43e7-b938-b4d4e716c157",
+        "cancelled": true
+      },
+      {
+        "index": 29,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 30,
+        "real_turn": false,
+        "message_id": "1e90d88a-74b0-4ac8-94f7-5e6b8e3f2506",
+        "cancelled": true
+      },
+      {
+        "index": 31,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 32,
+        "real_turn": false,
+        "message_id": "b4475b2c-d5ab-4cf4-a5e8-d2702140de71",
+        "cancelled": true
+      },
+      {
+        "index": 33,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 34,
+        "real_turn": false,
+        "message_id": "42709825-6637-485c-8b8e-8bae02f6b769",
+        "cancelled": true
+      },
+      {
+        "index": 35,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 36,
+        "real_turn": false,
+        "message_id": "9d23e1d0-f4bd-4235-9234-2c99262fe8ce",
+        "cancelled": true
+      },
+      {
+        "index": 37,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 38,
+        "real_turn": false,
+        "message_id": "bb64f1d3-8736-4956-8ea0-73963382ba8c",
+        "cancelled": true
+      },
+      {
+        "index": 39,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 40,
+        "real_turn": false,
+        "message_id": "214c56ca-e02f-4c47-9ef1-b92bded8350c",
+        "cancelled": true
+      },
+      {
+        "index": 41,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 42,
+        "real_turn": false,
+        "message_id": "e3a1f89f-d80e-47da-bb07-ab8570d296af",
+        "cancelled": true
+      },
+      {
+        "index": 43,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 44,
+        "real_turn": false,
+        "message_id": "fbfe100b-e8db-4af8-86b6-457b05736c20",
+        "cancelled": true
+      },
+      {
+        "index": 45,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 46,
+        "real_turn": false,
+        "message_id": "4f39fdf1-57dd-4a93-aa67-4a3351805690",
+        "cancelled": true
+      },
+      {
+        "index": 47,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 48,
+        "real_turn": false,
+        "message_id": "e146b3ef-b874-4e62-9f40-ed186a4493dd",
+        "cancelled": true
+      },
+      {
+        "index": 49,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 50,
+        "real_turn": false,
+        "message_id": "a1b37739-3520-4619-84bb-7d165a95a4de",
+        "cancelled": true
+      },
+      {
+        "index": 51,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 52,
+        "real_turn": false,
+        "message_id": "9aee1f04-771c-48fd-a3cd-4ed1b16dc3f7",
+        "cancelled": true
+      },
+      {
+        "index": 53,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 54,
+        "real_turn": false,
+        "message_id": "e932c93d-9fd1-4349-8ce5-02fa9692a3b3",
+        "cancelled": true
+      },
+      {
+        "index": 55,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 56,
+        "real_turn": false,
+        "message_id": "dd5dbfe4-8629-4d80-8e3b-7b36335a5d75",
+        "cancelled": true
+      },
+      {
+        "index": 57,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 58,
+        "real_turn": false,
+        "message_id": "51791af8-6969-4f15-b41c-7b9fc9707622",
+        "cancelled": true
+      },
+      {
+        "index": 59,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 60,
+        "real_turn": false,
+        "message_id": "56a4cc0e-849e-460d-a102-1eb3bd55a3e3",
+        "cancelled": true
+      },
+      {
+        "index": 61,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 62,
+        "real_turn": false,
+        "message_id": "ff245f72-568d-460e-9007-c821ae5fb6b4",
+        "cancelled": true
+      },
+      {
+        "index": 63,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 64,
+        "real_turn": false,
+        "message_id": "d55fe4a5-379d-41bf-9835-0867961d5e2d",
+        "cancelled": true
+      },
+      {
+        "index": 65,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 66,
+        "real_turn": false,
+        "message_id": "f506dca4-f0b7-40ee-b671-535b196bf475",
+        "cancelled": true
+      },
+      {
+        "index": 67,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 68,
+        "real_turn": false,
+        "message_id": "250eace1-ebde-43fe-92d4-c3f170cf7c3d",
+        "cancelled": true
+      },
+      {
+        "index": 69,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 70,
+        "real_turn": false,
+        "message_id": "5c3bd709-dc5d-4f2d-a69b-eda87abf87c1",
+        "cancelled": true
+      },
+      {
+        "index": 71,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 72,
+        "real_turn": false,
+        "message_id": "72a7fcfb-fa4e-4f58-9545-e37c76ab427e",
+        "cancelled": true
+      },
+      {
+        "index": 73,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 74,
+        "real_turn": false,
+        "message_id": "dc3a5e4f-8ad8-4055-bfbc-619465d740f2",
+        "cancelled": true
+      },
+      {
+        "index": 75,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 76,
+        "real_turn": false,
+        "message_id": "3a8fb4b9-3724-4d8d-a5f8-f1241252d76d",
+        "cancelled": true
+      },
+      {
+        "index": 77,
+        "real_turn": false,
+        "message_id": null,
+        "cancelled": true
+      },
+      {
+        "index": 78,
+        "real_turn": false,
+        "message_id": "74aba4d6-c11b-4ec3-a5a0-e0b69284344f",
+        "cancelled": true
+      },
+      {
+        "index": 79,
+        "real_turn": true,
+        "message_id": null
+      }
+    ],
+    "started_event": {
+      "summary_id": "auto-8dbee377-71fc-4e33-b257-0a394e8e7f39-speech:8dbee377-71fc-4e33-b257-0a394e8e7f39:0f2fe1f9-bb8c-4ff9-802f-cf93d5037389",
+      "conversation_id": "8dbee377-71fc-4e33-b257-0a394e8e7f39",
+      "status": "running",
+      "account_id": "default-local",
+      "project_id": "bf0fd819-2809-43b4-9f44-88c1086eca7c",
+      "pair_id": "phainon_ancient_machine",
+      "character_ref": "builtin:phainon",
+      "assistant_identity": "ancient_machine",
+      "covers_from_message_id": "61a90c93-7d35-42c4-b81c-1c09741a9649",
+      "covers_to_message_id": "speech:8dbee377-71fc-4e33-b257-0a394e8e7f39:0f2fe1f9-bb8c-4ff9-802f-cf93d5037389",
+      "covers_message_count": 80,
+      "provider": null,
+      "model": null,
+      "created_at": "2026-09-10T13:23:06.343418+00:00",
+      "updated_at": "2026-09-10T13:23:06.343418+00:00"
+    },
+    "terminal_event": {
+      "event": "summary.completed",
+      "summary_id": "auto-8dbee377-71fc-4e33-b257-0a394e8e7f39-speech:8dbee377-71fc-4e33-b257-0a394e8e7f39:0f2fe1f9-bb8c-4ff9-802f-cf93d5037389",
+      "conversation_id": "8dbee377-71fc-4e33-b257-0a394e8e7f39",
+      "status": "completed",
+      "account_id": "default-local",
+      "project_id": "bf0fd819-2809-43b4-9f44-88c1086eca7c",
+      "pair_id": "phainon_ancient_machine",
+      "character_ref": "builtin:phainon",
+      "assistant_identity": "ancient_machine",
+      "covers_from_message_id": "61a90c93-7d35-42c4-b81c-1c09741a9649",
+      "covers_to_message_id": "speech:8dbee377-71fc-4e33-b257-0a394e8e7f39:0f2fe1f9-bb8c-4ff9-802f-cf93d5037389",
+      "covers_message_count": 80,
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "created_at": "2026-09-10T13:23:09.106951+00:00",
+      "updated_at": "2026-09-10T13:23:09.106951+00:00"
+    }
+  },
+  "conversation_after": {
+    "message_count": 157,
+    "fixture_messages_present": 79,
+    "timestamp_shape": {
+      "iso_text": [
+        "created_at=2026-09-10T13:25:24.686744+00:00",
+        "created_at=2026-09-10T13:25:24.602436Z",
+        "updated_at=2026-09-10T13:25:24.602436+00:00",
+        "created_at=2026-09-10T13:25:20.040508Z",
+        "updated_at=2026-09-10T13:25:24.501042+00:00",
+        "created_at=2026-09-10T13:25:16.363739Z",
+        "updated_at=2026-09-10T13:25:20.019802+00:00",
+        "created_at=2026-09-10T13:25:12.031007Z",
+        "updated_at=2026-09-10T13:25:15.925166+00:00",
+        "created_at=2026-09-10T13:25:08.267385Z",
+        "updated_at=2026-09-10T13:25:12.010305+00:00",
+        "created_at=2026-09-10T13:25:04.238607Z",
+        "updated_at=2026-09-10T13:25:07.830255+00:00",
+        "created_at=2026-09-10T13:25:00.741449Z",
+        "updated_at=2026-09-10T13:25:04.221160+00:00",
+        "created_at=2026-09-10T13:24:56.634293Z",
+        "updated_at=2026-09-10T13:25:00.614402+00:00",
+        "created_at=2026-09-10T13:24:53.112659Z",
+        "updated_at=2026-09-10T13:24:56.615156+00:00",
+        "created_at=2026-09-10T13:24:48.271495Z",
+        "updated_at=2026-09-10T13:24:53.005657+00:00",
+        "created_at=2026-09-10T13:24:44.740685Z",
+        "updated_at=2026-09-10T13:24:48.250988+00:00",
+        "created_at=2026-09-10T13:24:41.164169Z",
+        "updated_at=2026-09-10T13:24:44.599212+00:00",
+        "created_at=2026-09-10T13:24:37.811221Z",
+        "updated_at=2026-09-10T13:24:41.146007+00:00",
+        "created_at=2026-09-10T13:24:33.647245Z",
+        "updated_at=2026-09-10T13:24:37.343573+00:00",
+        "created_at=2026-09-10T13:24:30.388635Z",
+        "updated_at=2026-09-10T13:24:33.623509+00:00",
+        "created_at=2026-09-10T13:24:26.761397Z",
+        "updated_at=2026-09-10T13:24:30.256206+00:00",
+        "created_at=2026-09-10T13:24:22.132452Z",
+        "updated_at=2026-09-10T13:24:26.737601+00:00",
+        "created_at=2026-09-10T13:24:18.613736Z",
+        "updated_at=2026-09-10T13:24:22.020714+00:00",
+        "created_at=2026-09-10T13:24:15.711020Z",
+        "updated_at=2026-09-10T13:24:18.592501+00:00",
+        "created_at=2026-09-10T13:24:12.330715Z",
+        "updated_at=2026-09-10T13:24:15.589252+00:00",
+        "created_at=2026-09-10T13:24:08.531360Z",
+        "updated_at=2026-09-10T13:24:12.311473+00:00",
+        "created_at=2026-09-10T13:24:04.719444Z",
+        "updated_at=2026-09-10T13:24:08.422089+00:00",
+        "created_at=2026-09-10T13:24:01.155584Z",
+        "updated_at=2026-09-10T13:24:04.696904+00:00",
+        "created_at=2026-09-10T13:23:57.587829Z",
+        "updated_at=2026-09-10T13:24:01.069107+00:00",
+        "created_at=2026-09-10T13:23:54.220610Z",
+        "updated_at=2026-09-10T13:23:57.568022+00:00",
+        "created_at=2026-09-10T13:23:50.502451Z",
+        "updated_at=2026-09-10T13:23:54.104333+00:00",
+        "created_at=2026-09-10T13:23:47.164325Z",
+        "updated_at=2026-09-10T13:23:50.482449+00:00",
+        "created_at=2026-09-10T13:23:43.734456Z",
+        "updated_at=2026-09-10T13:23:46.939079+00:00",
+        "created_at=2026-09-10T13:23:40.247703Z",
+        "updated_at=2026-09-10T13:23:43.714494+00:00",
+        "created_at=2026-09-10T13:23:36.091036Z",
+        "updated_at=2026-09-10T13:23:40.159239+00:00",
+        "created_at=2026-09-10T13:23:32.916412Z",
+        "updated_at=2026-09-10T13:23:36.070826+00:00",
+        "created_at=2026-09-10T13:23:29.677821Z",
+        "updated_at=2026-09-10T13:23:32.706544+00:00",
+        "created_at=2026-09-10T13:23:26.499736Z",
+        "updated_at=2026-09-10T13:23:29.660979+00:00",
+        "created_at=2026-09-10T13:23:23.236184Z",
+        "updated_at=2026-09-10T13:23:26.358298+00:00",
+        "created_at=2026-09-10T13:23:20.103055Z",
+        "updated_at=2026-09-10T13:23:23.216820+00:00",
+        "created_at=2026-09-10T13:23:16.675020Z",
+        "updated_at=2026-09-10T13:23:19.869229+00:00",
+        "created_at=2026-09-10T13:23:13.633377Z",
+        "updated_at=2026-09-10T13:23:16.657409+00:00",
+        "created_at=2026-09-10T13:23:10.339694Z",
+        "updated_at=2026-09-10T13:23:13.539401+00:00",
+        "created_at=2026-09-10T13:23:06.456203Z",
+        "updated_at=2026-09-10T13:23:10.324058+00:00",
+        "created_at=2026-09-10T13:23:01.431073Z",
+        "updated_at=2026-09-10T13:23:06.347652+00:00",
+        "created_at=2026-09-10T13:22:57.711193Z",
+        "updated_at=2026-09-10T13:23:01.411674+00:00",
+        "created_at=2026-09-10T13:22:52.021868Z",
+        "updated_at=2026-09-10T13:22:57.605041+00:00",
+        "created_at=2026-09-10T13:22:48.416530Z",
+        "updated_at=2026-09-10T13:22:52.006455+00:00",
+        "created_at=2026-09-10T13:22:44.827297Z",
+        "updated_at=2026-09-10T13:22:48.324106+00:00",
+        "created_at=2026-09-10T13:22:41.040502Z",
+        "updated_at=2026-09-10T13:22:44.810658+00:00",
+        "created_at=2026-09-10T13:22:36.694891Z",
+        "updated_at=2026-09-10T13:22:40.859267+00:00",
+        "created_at=2026-09-10T13:22:33.138993Z",
+        "updated_at=2026-09-10T13:22:36.678451+00:00",
+        "created_at=2026-09-10T13:22:27.988034Z",
+        "updated_at=2026-09-10T13:22:32.913995+00:00",
+        "created_at=2026-09-10T13:22:23.153953Z",
+        "updated_at=2026-09-10T13:22:27.972857+00:00",
+        "created_at=2026-09-10T13:22:17.400654Z",
+        "updated_at=2026-09-10T13:22:23.073852+00:00",
+        "created_at=2026-09-10T13:22:13.570571Z",
+        "updated_at=2026-09-10T13:22:17.380823+00:00",
+        "created_at=2026-09-10T13:22:08.963746Z",
+        "updated_at=2026-09-10T13:22:13.266747+00:00",
+        "created_at=2026-09-10T13:22:03.572876Z",
+        "updated_at=2026-09-10T13:22:08.946746+00:00",
+        "created_at=2026-09-10T13:21:59.728107Z",
+        "updated_at=2026-09-10T13:22:03.334071+00:00",
+        "created_at=2026-09-10T13:21:56.108164Z",
+        "updated_at=2026-09-10T13:21:59.713568+00:00",
+        "created_at=2026-09-10T13:21:52.220748Z",
+        "updated_at=2026-09-10T13:21:55.963435+00:00",
+        "created_at=2026-09-10T13:21:48.229134Z",
+        "updated_at=2026-09-10T13:21:52.203258+00:00",
+        "created_at=2026-09-10T13:21:43.484998Z",
+        "updated_at=2026-09-10T13:21:48.136564+00:00",
+        "created_at=2026-09-10T13:21:39.586544Z",
+        "updated_at=2026-09-10T13:21:43.466086+00:00",
+        "created_at=2026-09-10T13:21:35.789792Z",
+        "updated_at=2026-09-10T13:21:39.393061+00:00",
+        "created_at=2026-09-10T13:21:32.721427Z",
+        "updated_at=2026-09-10T13:21:35.768817+00:00",
+        "created_at=2026-09-10T13:21:29.034727Z",
+        "updated_at=2026-09-10T13:21:32.621685+00:00",
+        "created_at=2026-09-10T13:21:26.275522Z",
+        "updated_at=2026-09-10T13:21:29.017000+00:00",
+        "created_at=2026-09-10T13:21:21.791231Z",
+        "updated_at=2026-09-10T13:21:26.149314+00:00",
+        "created_at=2026-09-10T13:21:18.390065Z",
+        "updated_at=2026-09-10T13:21:21.775533+00:00",
+        "created_at=2026-09-10T13:21:14.951428Z",
+        "updated_at=2026-09-10T13:21:18.295391+00:00",
+        "created_at=2026-09-10T13:21:10.559861Z",
+        "updated_at=2026-09-10T13:21:14.934154+00:00",
+        "created_at=2026-09-10T13:21:06.907866Z",
+        "updated_at=2026-09-10T13:21:10.473816+00:00",
+        "created_at=2026-09-10T13:21:02.487215Z",
+        "updated_at=2026-09-10T13:21:06.893095+00:00",
+        "created_at=2026-09-10T13:20:57.815693Z",
+        "updated_at=2026-09-10T13:21:02.398127+00:00",
+        "created_at=2026-09-10T13:20:53.803462Z",
+        "updated_at=2026-09-10T13:20:57.800485+00:00",
+        "created_at=2026-09-10T13:20:50.036095Z",
+        "updated_at=2026-09-10T13:20:53.702425+00:00",
+        "created_at=2026-09-10T13:20:46.255288Z",
+        "updated_at=2026-09-10T13:20:50.019502+00:00",
+        "created_at=2026-09-10T13:20:42.708287Z",
+        "updated_at=2026-09-10T13:20:46.162351+00:00",
+        "created_at=2026-09-10T13:20:39.142718Z",
+        "updated_at=2026-09-10T13:20:42.691602+00:00",
+        "created_at=2026-09-10T13:20:35.680765Z",
+        "updated_at=2026-09-10T13:20:39.047908+00:00",
+        "created_at=2026-09-10T13:20:32.669684Z",
+        "updated_at=2026-09-10T13:20:35.666566+00:00",
+        "created_at=2026-09-10T13:20:29.091818Z",
+        "updated_at=2026-09-10T13:20:32.517937+00:00",
+        "created_at=2026-09-10T13:20:27.403767Z",
+        "updated_at=2026-09-10T13:20:29.077190+00:00",
+        "created_at=2026-09-10T13:25:24.591913Z",
+        "created_at=2026-09-10T13:25:23.959781Z",
+        "created_at=2026-09-10T13:25:20.030399Z",
+        "created_at=2026-09-10T13:25:20.006575Z",
+        "created_at=2026-09-10T13:25:16.349186Z",
+        "created_at=2026-09-10T13:25:15.781433Z",
+        "created_at=2026-09-10T13:25:12.021161Z",
+        "created_at=2026-09-10T13:25:11.994493Z",
+        "created_at=2026-09-10T13:25:08.252891Z",
+        "created_at=2026-09-10T13:25:07.658595Z",
+        "created_at=2026-09-10T13:25:04.231851Z",
+        "created_at=2026-09-10T13:25:04.204391Z",
+        "created_at=2026-09-10T13:25:00.730057Z",
+        "created_at=2026-09-10T13:25:00.322892Z",
+        "created_at=2026-09-10T13:24:56.625763Z",
+        "created_at=2026-09-10T13:24:56.598569Z",
+        "created_at=2026-09-10T13:24:53.100906Z",
+        "created_at=2026-09-10T13:24:52.293958Z",
+        "created_at=2026-09-10T13:24:48.262012Z",
+        "created_at=2026-09-10T13:24:48.240192Z",
+        "created_at=2026-09-10T13:24:44.731446Z",
+        "created_at=2026-09-10T13:24:44.427493Z",
+        "created_at=2026-09-10T13:24:41.155683Z",
+        "created_at=2026-09-10T13:24:41.134558Z",
+        "created_at=2026-09-10T13:24:37.806913Z",
+        "created_at=2026-09-10T13:24:37.223497Z",
+        "created_at=2026-09-10T13:24:33.635968Z",
+        "created_at=2026-09-10T13:24:33.608142Z",
+        "created_at=2026-09-10T13:24:30.376909Z",
+        "created_at=2026-09-10T13:24:29.394840Z",
+        "created_at=2026-09-10T13:24:26.748964Z",
+        "created_at=2026-09-10T13:24:26.721750Z",
+        "created_at=2026-09-10T13:24:22.121128Z",
+        "created_at=2026-09-10T13:24:21.811956Z",
+        "created_at=2026-09-10T13:24:18.602841Z",
+        "created_at=2026-09-10T13:24:18.576719Z",
+        "created_at=2026-09-10T13:24:15.702111Z",
+        "created_at=2026-09-10T13:24:14.886012Z",
+        "created_at=2026-09-10T13:24:12.320767Z",
+        "created_at=2026-09-10T13:24:12.295093Z",
+        "created_at=2026-09-10T13:24:08.521814Z",
+        "created_at=2026-09-10T13:24:07.986796Z",
+        "created_at=2026-09-10T13:24:04.709873Z",
+        "created_at=2026-09-10T13:24:04.683387Z",
+        "created_at=2026-09-10T13:24:01.147157Z",
+        "created_at=2026-09-10T13:24:00.730087Z",
+        "created_at=2026-09-10T13:23:57.577703Z",
+        "created_at=2026-09-10T13:23:57.555671Z",
+        "created_at=2026-09-10T13:23:54.207096Z",
+        "created_at=2026-09-10T13:23:53.655017Z",
+        "created_at=2026-09-10T13:23:50.493275Z",
+        "created_at=2026-09-10T13:23:50.466862Z",
+        "created_at=2026-09-10T13:23:47.159802Z",
+        "created_at=2026-09-10T13:23:46.839010Z",
+        "created_at=2026-09-10T13:23:43.725500Z",
+        "created_at=2026-09-10T13:23:43.697588Z",
+        "created_at=2026-09-10T13:23:40.239747Z",
+        "created_at=2026-09-10T13:23:39.551636Z",
+        "created_at=2026-09-10T13:23:36.081633Z",
+        "created_at=2026-09-10T13:23:36.056868Z",
+        "created_at=2026-09-10T13:23:32.883172Z",
+        "created_at=2026-09-10T13:23:32.637271Z",
+        "created_at=2026-09-10T13:23:29.669869Z",
+        "created_at=2026-09-10T13:23:29.645808Z",
+        "created_at=2026-09-10T13:23:26.492214Z",
+        "created_at=2026-09-10T13:23:26.271026Z",
+        "created_at=2026-09-10T13:23:23.226837Z",
+        "created_at=2026-09-10T13:23:23.205155Z",
+        "created_at=2026-09-10T13:23:20.090946Z",
+        "created_at=2026-09-10T13:23:19.684597Z",
+        "created_at=2026-09-10T13:23:16.668125Z",
+        "created_at=2026-09-10T13:23:16.644647Z",
+        "created_at=2026-09-10T13:23:13.625598Z",
+        "created_at=2026-09-10T13:23:13.201208Z",
+        "created_at=2026-09-10T13:23:10.333383Z",
+        "created_at=2026-09-10T13:23:10.311758Z",
+        "created_at=2026-09-10T13:23:06.452564Z",
+        "created_at=2026-09-10T13:23:05.993618Z",
+        "created_at=2026-09-10T13:23:01.421351Z",
+        "created_at=2026-09-10T13:23:01.401402Z",
+        "created_at=2026-09-10T13:22:57.705051Z",
+        "created_at=2026-09-10T13:22:56.917733Z",
+        "created_at=2026-09-10T13:22:52.014952Z",
+        "created_at=2026-09-10T13:22:51.991961Z",
+        "created_at=2026-09-10T13:22:48.410578Z",
+        "created_at=2026-09-10T13:22:48.163421Z",
+        "created_at=2026-09-10T13:22:44.821128Z",
+        "created_at=2026-09-10T13:22:44.801578Z",
+        "created_at=2026-09-10T13:22:41.032680Z",
+        "created_at=2026-09-10T13:22:40.464737Z",
+        "created_at=2026-09-10T13:22:36.687184Z",
+        "created_at=2026-09-10T13:22:36.668909Z",
+        "created_at=2026-09-10T13:22:33.124258Z",
+        "created_at=2026-09-10T13:22:32.817852Z",
+        "created_at=2026-09-10T13:22:27.983047Z",
+        "created_at=2026-09-10T13:22:27.958124Z",
+        "created_at=2026-09-10T13:22:23.147517Z",
+        "created_at=2026-09-10T13:22:22.825812Z",
+        "created_at=2026-09-10T13:22:17.394441Z",
+        "created_at=2026-09-10T13:22:17.364802Z",
+        "created_at=2026-09-10T13:22:13.561198Z",
+        "created_at=2026-09-10T13:22:13.122713Z",
+        "created_at=2026-09-10T13:22:08.956874Z",
+        "created_at=2026-09-10T13:22:08.935780Z",
+        "created_at=2026-09-10T13:22:03.569596Z",
+        "created_at=2026-09-10T13:22:03.007069Z",
+        "created_at=2026-09-10T13:21:59.721809Z",
+        "created_at=2026-09-10T13:21:59.703502Z",
+        "created_at=2026-09-10T13:21:56.101415Z",
+        "created_at=2026-09-10T13:21:55.749239Z",
+        "created_at=2026-09-10T13:21:52.214709Z",
+        "created_at=2026-09-10T13:21:52.191940Z",
+        "created_at=2026-09-10T13:21:48.220807Z",
+        "created_at=2026-09-10T13:21:47.364388Z",
+        "created_at=2026-09-10T13:21:43.477612Z",
+        "created_at=2026-09-10T13:21:43.453762Z",
+        "created_at=2026-09-10T13:21:39.578752Z",
+        "created_at=2026-09-10T13:21:39.290818Z",
+        "created_at=2026-09-10T13:21:35.782560Z",
+        "created_at=2026-09-10T13:21:35.758662Z",
+        "created_at=2026-09-10T13:21:32.715209Z",
+        "created_at=2026-09-10T13:21:32.354265Z",
+        "created_at=2026-09-10T13:21:29.028246Z",
+        "created_at=2026-09-10T13:21:29.002752Z",
+        "created_at=2026-09-10T13:21:26.270067Z",
+        "created_at=2026-09-10T13:21:25.830260Z",
+        "created_at=2026-09-10T13:21:21.785637Z",
+        "created_at=2026-09-10T13:21:21.766243Z",
+        "created_at=2026-09-10T13:21:18.383985Z",
+        "created_at=2026-09-10T13:21:17.778127Z",
+        "created_at=2026-09-10T13:21:14.946872Z",
+        "created_at=2026-09-10T13:21:14.921874Z",
+        "created_at=2026-09-10T13:21:10.554781Z",
+        "created_at=2026-09-10T13:21:09.832174Z",
+        "created_at=2026-09-10T13:21:06.903606Z",
+        "created_at=2026-09-10T13:21:06.883113Z",
+        "created_at=2026-09-10T13:21:02.483127Z",
+        "created_at=2026-09-10T13:21:01.655877Z",
+        "created_at=2026-09-10T13:20:57.811450Z",
+        "created_at=2026-09-10T13:20:57.790437Z",
+        "created_at=2026-09-10T13:20:53.797540Z",
+        "created_at=2026-09-10T13:20:53.375183Z",
+        "created_at=2026-09-10T13:20:50.030319Z",
+        "created_at=2026-09-10T13:20:50.010933Z",
+        "created_at=2026-09-10T13:20:46.250882Z",
+        "created_at=2026-09-10T13:20:45.700910Z",
+        "created_at=2026-09-10T13:20:42.701712Z",
+        "created_at=2026-09-10T13:20:42.677995Z",
+        "created_at=2026-09-10T13:20:39.138509Z",
+        "created_at=2026-09-10T13:20:38.608867Z",
+        "created_at=2026-09-10T13:20:35.674940Z",
+        "created_at=2026-09-10T13:20:35.660046Z",
+        "created_at=2026-09-10T13:20:32.664393Z",
+        "created_at=2026-09-10T13:20:32.337588Z",
+        "created_at=2026-09-10T13:20:29.087788Z",
+        "created_at=2026-09-10T13:20:29.073654Z",
+        "created_at=2026-09-10T13:20:27.403767Z",
+        "created_at=2026-09-10T13:00:21.910658+00:00",
+        "created_at=2026-09-10T13:20:27.373668+00:00",
+        "updated_at=2026-09-10T13:25:24.591913+00:00"
+      ]
+    }
+  },
+  "summary_get": {
+    "ok": true,
+    "code": null,
+    "note": null,
+    "count": 1,
+    "statuses": [
+      "completed"
+    ],
+    "timestamp_shape": {
+      "iso_text": [
+        "created_at=2026-09-10T13:23:09.106951+00:00",
+        "updated_at=2026-09-10T13:23:09.106951+00:00"
+      ]
+    },
+    "has_content_object": [
+      true
+    ],
+    "provider_model": [
+      [
+        "deepseek",
+        "deepseek-v4-flash"
+      ]
+    ],
+    "covers_message_count": [
+      80
+    ]
+  },
+  "metrics_query": {
+    "ok": true,
+    "code": null,
+    "note": null,
+    "record_count": 30,
+    "timestamp_shape": {
+      "iso_text": [
+        "started_at=2026-09-10T13:23:32.916412Z",
+        "created_at=2026-09-10T13:23:36.071333Z",
+        "started_at=2026-09-10T13:23:36.091036Z",
+        "created_at=2026-09-10T13:23:40.160063Z",
+        "started_at=2026-09-10T13:23:40.247703Z",
+        "created_at=2026-09-10T13:23:43.716440Z",
+        "started_at=2026-09-10T13:23:43.734456Z",
+        "created_at=2026-09-10T13:23:46.940604Z",
+        "started_at=2026-09-10T13:23:47.164325Z",
+        "created_at=2026-09-10T13:23:50.483455Z",
+        "started_at=2026-09-10T13:23:50.502451Z",
+        "created_at=2026-09-10T13:23:54.106339Z",
+        "started_at=2026-09-10T13:23:54.220610Z",
+        "created_at=2026-09-10T13:23:57.569357Z",
+        "started_at=2026-09-10T13:23:57.587829Z",
+        "created_at=2026-09-10T13:24:01.070132Z",
+        "started_at=2026-09-10T13:24:01.155584Z",
+        "created_at=2026-09-10T13:24:04.699194Z",
+        "started_at=2026-09-10T13:24:04.719444Z",
+        "created_at=2026-09-10T13:24:08.423196Z",
+        "started_at=2026-09-10T13:24:08.531360Z",
+        "created_at=2026-09-10T13:24:12.312476Z",
+        "started_at=2026-09-10T13:24:12.330715Z",
+        "created_at=2026-09-10T13:24:15.589252Z",
+        "started_at=2026-09-10T13:24:15.711020Z",
+        "created_at=2026-09-10T13:24:18.593690Z",
+        "started_at=2026-09-10T13:24:18.613736Z",
+        "created_at=2026-09-10T13:24:22.021836Z",
+        "started_at=2026-09-10T13:24:22.132452Z",
+        "created_at=2026-09-10T13:24:26.737601Z",
+        "started_at=2026-09-10T13:24:26.761397Z",
+        "created_at=2026-09-10T13:24:30.257205Z",
+        "started_at=2026-09-10T13:24:30.388635Z",
+        "created_at=2026-09-10T13:24:33.625358Z",
+        "started_at=2026-09-10T13:24:33.647245Z",
+        "created_at=2026-09-10T13:24:37.344573Z",
+        "started_at=2026-09-10T13:24:37.811221Z",
+        "created_at=2026-09-10T13:24:41.147007Z",
+        "started_at=2026-09-10T13:24:41.164169Z",
+        "created_at=2026-09-10T13:24:44.600389Z",
+        "started_at=2026-09-10T13:24:44.740685Z",
+        "created_at=2026-09-10T13:24:48.250988Z",
+        "started_at=2026-09-10T13:24:48.271495Z",
+        "created_at=2026-09-10T13:24:53.006722Z",
+        "started_at=2026-09-10T13:24:53.112659Z",
+        "created_at=2026-09-10T13:24:56.619788Z",
+        "started_at=2026-09-10T13:24:56.634293Z",
+        "created_at=2026-09-10T13:25:00.614402Z",
+        "started_at=2026-09-10T13:25:00.741449Z",
+        "created_at=2026-09-10T13:25:04.221160Z",
+        "started_at=2026-09-10T13:25:04.238607Z",
+        "created_at=2026-09-10T13:25:07.831263Z",
+        "started_at=2026-09-10T13:25:08.267385Z",
+        "created_at=2026-09-10T13:25:12.010305Z",
+        "started_at=2026-09-10T13:25:12.031007Z",
+        "created_at=2026-09-10T13:25:15.925472Z",
+        "started_at=2026-09-10T13:25:16.363739Z",
+        "created_at=2026-09-10T13:25:20.020809Z",
+        "started_at=2026-09-10T13:25:20.040508Z",
+        "created_at=2026-09-10T13:25:24.502042Z"
+      ]
+    },
+    "sample": {
+      "metric_id": "9bfb188f-51c1-4271-9afe-7c13e9125cb1",
+      "account_id": "default-local",
+      "project_id": "bf0fd819-2809-43b4-9f44-88c1086eca7c",
+      "conversation_id": "8dbee377-71fc-4e33-b257-0a394e8e7f39",
+      "pair_id": "phainon_ancient_machine",
+      "character_ref": null,
+      "assistant_identity": null,
+      "turn_kind": "character_turn",
+      "turn_id": "4e0a5259-3a40-4fee-b2c4-9d2a57056837",
+      "task_id": null,
+      "engine_turn_id": null,
+      "source_message_id": null,
+      "provider": "deepseek",
+      "model": null,
+      "engine_type": null,
+      "reasoning_effort": "auto",
+      "status": "completed",
+      "started_at": "2026-09-10T13:25:20.040508Z",
+      "first_event_at": "2026-09-10T13:25:24.501042Z",
+      "completed_at": "2026-09-10T13:25:24.502042Z",
+      "duration_ms": 4461,
+      "first_event_latency_ms": null,
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "tool_rounds": 0,
+      "compression_count": 0,
+      "approval_count": 0,
+      "failure_type": null,
+      "failure_message": null,
+      "origin": "desktop",
+      "remote_device_key": null,
+      "remote_device_name": null,
+      "created_at": "2026-09-10T13:25:24.502042Z"
+    }
+  },
+  "memory_list": {
+    "ok": true,
+    "code": null,
+    "count": 2,
+    "timestamp_shape": {
+      "iso_text": [
+        "updated_at=2026-09-10T13:00:59.830753+00:00",
+        "updated_at=2026-09-10T13:01:12.113262+00:00"
+      ]
+    }
+  },
+  "empty_summary_get": {
+    "ok": true,
+    "count": 0,
+    "code": null
+  },
+  "finished_at": "2026-09-10T13:25:24.762Z",
+  "sidecar_new_lines": 881
+}

@@ -1,0 +1,137 @@
+{
+  "started_at": "2026-09-10T13:03:51.668Z",
+  "card_import": {
+    "ok": true,
+    "card_id": "b812f065739647e3b41d5b57b9fbb4f9",
+    "code": null,
+    "message": null,
+    "fixture_bytes": 164169
+  },
+  "conversation_id": "9bd21568-f880-44f0-97d2-7afdf8b5ba3c",
+  "card_world_book_entries": 0,
+  "card_world_book_bytes": 0,
+  "assembly_normal": {
+    "ok": true,
+    "reason": null,
+    "module_count": 5,
+    "module_names": [
+      "世界书（角色设定前）",
+      "角色设定",
+      "性格",
+      "场景",
+      "世界书（角色设定后）"
+    ],
+    "hidden_all_null": true,
+    "diagnostics_raw": [
+      "scan_depth: 2",
+      "scanned_message_count: 1",
+      "budget_total: 2048",
+      "budget_used: 20898",
+      "budget_constant_used: 20898",
+      "budget_prunable_used: 0",
+      "budget_limit_reached: False",
+      "overflow_entries: ",
+      "warnings: 激活序累计估算 20898（非装配体积）超出限额 2048（constant 边际 20898 + 受门控条目边际 0）；constant 条目免于裁剪但计入累计门控（契约 §3.5、§3.8），超出量来自该部分",
+      "activated_count: 24",
+      "not_run_fields: ",
+      "unexpanded_macros: ",
+      "depth_injections: 1",
+      "summary: injected=False, summary_id=无数据, char_count=0",
+      "memory: injected=False, count=0, memory_ids=, char_count=0"
+    ],
+    "diagnostics_parsed": {
+      "scan_depth": "2",
+      "scanned_message_count": "1",
+      "budget_total": "2048",
+      "budget_used": "20898",
+      "budget_constant_used": "20898",
+      "budget_prunable_used": "0",
+      "budget_limit_reached": "False",
+      "overflow_entries": "",
+      "warnings": "激活序累计估算 20898（非装配体积）超出限额 2048（constant 边际 20898 + 受门控条目边际 0）；constant 条目免于裁剪但计入累计门控（契约 §3.5、§3.8），超出量来自该部分",
+      "activated_count": "24",
+      "not_run_fields": "",
+      "unexpanded_macros": "",
+      "depth_injections": "1",
+      "summary": "injected=False, summary_id=无数据, char_count=0",
+      "memory": "injected=False, count=0, memory_ids=, char_count=0"
+    }
+  },
+  "assembly_hidden": {
+    "ok": true,
+    "module_count": 5,
+    "module_char_span": [
+      {
+        "name": "世界书（角色设定前）",
+        "chars": 14168,
+        "hidden_chars": 14154
+      },
+      {
+        "name": "角色设定",
+        "chars": 47,
+        "hidden_chars": 39
+      },
+      {
+        "name": "性格",
+        "chars": 29,
+        "hidden_chars": 23
+      },
+      {
+        "name": "场景",
+        "chars": 16,
+        "hidden_chars": 10
+      },
+      {
+        "name": "世界书（角色设定后）",
+        "chars": 559,
+        "hidden_chars": 545
+      }
+    ],
+    "hidden_chars_total": 14771
+  },
+  "budget_check": {
+    "budget_total": 2048,
+    "budget_used": 20898,
+    "budget_constant_used": 20898,
+    "budget_prunable_used": 0,
+    "budget_limit_reached": "false",
+    "overflow_count": 0,
+    "overflow_entries": [],
+    "warnings": "激活序累计估算 20898（非装配体积）超出限额 2048（constant 边际 20898 + 受门控条目边际 0）；constant 条目免于裁剪但计入累计门控（契约 §3.5、§3.8），超出量来自该部分",
+    "field_set": [
+      "activated_count",
+      "budget_constant_used",
+      "budget_limit_reached",
+      "budget_prunable_used",
+      "budget_total",
+      "budget_used",
+      "depth_injections",
+      "memory",
+      "not_run_fields",
+      "overflow_entries",
+      "scan_depth",
+      "scanned_message_count",
+      "summary",
+      "unexpanded_macros",
+      "warnings"
+    ],
+    "has_legacy_reconciliation": false,
+    "has_legacy_separator": false,
+    "world_book_module_chars": 14727,
+    "world_book_hidden_chars": 14699,
+    "assertions": {
+      "prunable_within_total": true,
+      "limit_flag_matches_overflow": true,
+      "warnings_present_when_limited": true,
+      "constant_plus_prunable_leq_used": true,
+      "world_book_chars_match_hidden": false
+    }
+  },
+  "contract_checks": {
+    "activated_count": 24,
+    "note": "空正文条目照常激活与门控序列首条判定由离线用例覆盖；真机核对其副作用：activated_count 与模块实际内容一致、世界书模块首条为角色设定前的世界书模块",
+    "first_module": "世界书（角色设定前）"
+  },
+  "finished_at": "2026-09-10T13:03:51.854Z",
+  "sidecar_new_lines": 2
+}

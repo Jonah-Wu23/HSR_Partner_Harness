@@ -4,7 +4,9 @@
   align-items: center;
   justify-content: center;
   gap: 12px;
+  /* V0.3.9 V08：100vh 为回退，dvh 跟随真实可视高度（含移动端工具栏/键盘）。 */
   min-height: 100vh;
+  min-height: 100dvh;
   padding: 24px;
   background: var(--bg, #101014);
   color: var(--text, #f3f3f5);

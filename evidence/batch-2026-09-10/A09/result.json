@@ -1,0 +1,75 @@
+{
+  "batch": "batch-2026-09-10",
+  "case_id": "A09",
+  "title": "真实 TTS 播放中的抢占",
+  "candidate_commit": "897193a2fb983cd39c8328e98f7e225963a1ee64",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "exe_sha256": "d068bbf86df17770caa82185f02f39a42d881775cdd3fdac8a66b91171d17897",
+    "sidecar_sha256": "34d8325bc2ea53993aa2dda235de8f7ca7acbbc16917f3db755fc14bef0eb04f"
+  },
+  "device": "Windows 11 10.0.26200 / Ryzen 7 7840H / 2560x1440 / 缩放150% / 本机桌面会话",
+  "network": "本机直连公网；局域网 sidecar --serve 0.0.0.0:8765（Tailscale 未配置）",
+  "preconditions": {
+    "voice": "语音开启（本用例执行时）；长回复由真实模型生成，约 520 字 ≈ 100 秒朗读"
+  },
+  "steps": [
+    "领取远程播放控制权并尝试 voice.preview 长文本",
+    "改为真实长回复路径：提交要求五百字以上的消息 → 角色长回复 → 观察 tts=playing",
+    "播放中提交新消息（桌面发送抢占）→ 记录 voice 状态与事件",
+    "播放停止后等待 8 秒，核对是否被迟到分片复活",
+    "显式 voice.tts_stop"
+  ],
+  "expected": "旧播放、队列与在途合成停止；迟到 PCM 不复活播放；partial delta 不直接朗读",
+  "actual": "voice.preview 被拒（remote_playback_active，见 V039-S4-016）——持权远程端在控制期内没有任何可用的起始播放/试听路径；改用真实长回复路径：520 字回复触发真实合成，voice.tts 观测为 playing；播放中提交新消息后：3 秒时 tts=synthesizing（旧播放已让位给新合成）、8 秒后 tts=idle、最终 tts=idle 且 speech_queue_len=0，未观察到迟到分片复活播放；朗读边界：user tts_eligible=false、character 最终消息 tts_eligible=true；voice.state_changed 事件捕获到播放态迁移。语音输出侧仍受上游 Throttling.RateQuota 限制（voice.error 如实携带原始报文）。",
+  "timestamps": {
+    "batch": "batch-2026-09-10",
+    "recorded_at": "2026-09-10T11:05:00Z"
+  },
+  "ids": {
+    "A09-preemption": "225c5885-7492-4853-a1c2-d51e7ef0870e",
+    "A09-long": "（见 a09-long.json conversation_id）"
+  },
+  "evidence": [
+    "A09/a09-run.json",
+    "A09/a09-long.json",
+    "A09/ws-frames.log",
+    "A09/ws-frames-long.log",
+    "A09/events.log",
+    "A09/events-long.log",
+    "A09/sidecar-long.log",
+    "A09/commands.ps1",
+    "A09/http.log"
+  ],
+  "severity": "P2",
+  "frequency": "远程控制态必现",
+  "impact": "持权远程端无法用 preview 构造长播放（V039-S4-016，控制期内无起始播放路径）；连续合成触发上游限流",
+  "status": "失败",
+  "blocker": "语音输出子项：上游 DashScope 限流（Throttling.RateQuota）+ 用户成本约束（B-02）。preview 子项不是受阻，是产品缺陷 V039-S4-016，已判失败。",
+  "owner": "Sidecar Python（播放控制守卫与错误文案，V039-S4-016）；环境提供方（额度，B-02）",
+  "next_action": "修复 V039-S4-016 的守卫语义（按调用方身份判定）后按桌面与持权远程两条路径复验抢占；语音输出在低速率、已授权额度下复验 B-02",
+  "sub_results": [
+    {
+      "item": "长播放中的抢占（520 字真实长回复）",
+      "status": "通过",
+      "evidence": "A09/a09-long.json：playing → 提交新消息 → 3 秒时 tts=synthesizing → 8 秒后 tts=idle，speech_queue_len=0，迟到分片未复活播放",
+      "note": "未使用 preview 路径，改用真实角色回复路径取得"
+    },
+    {
+      "item": "voice.preview 构造长播放（原定路径）",
+      "status": "失败",
+      "defect": "V039-S4-016",
+      "evidence": "A09/a09-run.json 的 control_claim / preview 字段；A09/ws-frames.log",
+      "note": "持权远程端调用 voice.preview 被 remote_playback_active 拒绝，提示与自身状态矛盾；源码核对确认守卫不识别调用方身份"
+    },
+    {
+      "item": "语音输出（TTS 合成与播放）",
+      "status": "受阻",
+      "blocker": "B-02",
+      "evidence": "A09/a09-long.json 的 voice.error 携带 DashScope Throttling.RateQuota 原始报文",
+      "note": "上游按账号限流，且用户明确要求停止 393KB 相关回合的语音合成以控制成本"
+    }
+  ]
+}

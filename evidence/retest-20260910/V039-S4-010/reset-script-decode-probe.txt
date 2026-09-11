@@ -1,0 +1,13 @@
+﻿file_bytes=4018
+has_bom=False
+has_crlf=False
+utf8_line_count=116
+ansi_cp936_line_count=114
+--- ANSI(CP936) 解码后含 logRoot 的行 ---
+ansi_line 10: $desktopRoot = Split-Path -Parent $PSScriptRoot
+ansi_line 57:         $parent = Get-FullPath (Split-Path -Parent $fullTarget)
+ansi_line 69:     # 璁╀笂涓€鎵规鐨?traceback 娣疯繘鏈壒娆¤瘉鎹紙V039-S4-010锛夛紝棣栨杩愯蹇呴』涓€骞舵竻绌恒€?    $logRoot = Get-FullPath (Join-Path (Get-FullPath $appData) "com.jonahwu.hsr-partner-harness")
+ansi_line 70:     if ((Get-FullPath (Split-Path -Parent $logRoot)) -ne (Get-FullPath $appData)) {
+ansi_line 71:         throw "Refusing to clear logs from an unvalidated path: $logRoot"
+ansi_line 73:     if (Test-Path -LiteralPath $logRoot) {
+ansi_line 74:         foreach ($logFile in Get-ChildItem -LiteralPath $logRoot -File -Filter "sidecar.stderr.log*") {

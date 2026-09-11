@@ -1,0 +1,203 @@
+[无租约 A] {"voice.preview": {"code": "invalid_params", "ok": false, "message": "缺少非空参数：text", "guarded": "放行（参数类错误）"}, "voice.tts_play": {"code": "message_not_found", "ok": false, "message": "消息不存在", "guarded": "放行（参数类错误）"}, "voice.card_preview": {"code": "card_not_found", "ok": false, "message": "角色卡不存在", "guarded": "放行（参数类错误）"}}
+[持权 A] {"voice.preview": {"code": "invalid_params", "ok": false, "message": "缺少非空参数：text", "guarded": "放行（参数类错误）"}, "voice.tts_play": {"code": "message_not_found", "ok": false, "message": "消息不存在", "guarded": "放行（参数类错误）"}, "voice.card_preview": {"code": "card_not_found", "ok": false, "message": "角色卡不存在", "guarded": "放行（参数类错误）"}}
+[他端 B] {"voice.preview": {"code": "remote_playback_active", "ok": false, "message": "另一台远程设备正在控制语音，请先在该设备退出远程控制或撤销该设备", "guarded": "被守卫拒绝"}, "voice.tts_play": {"code": "remote_playback_active", "ok": false, "message": "另一台远程设备正在控制语音，请先在该设备退出远程控制或撤销该设备", "guarded": "被守卫拒绝"}, "voice.card_preview": {"code": "remote_playback_active", "ok": false, "message": "另一台远程设备正在控制语音，请先在该设备退出远程控制或撤销该设备", "guarded": "被守卫
+[释放后 A] {"voice.preview": {"code": "invalid_params", "ok": false, "message": "缺少非空参数：text", "guarded": "放行（参数类错误）"}, "voice.tts_play": {"code": "message_not_found", "ok": false, "message": "消息不存在", "guarded": "放行（参数类错误）"}, "voice.card_preview": {"code": "card_not_found", "ok": false, "message": "角色卡不存在", "guarded": "放行（参数类错误）"}}
+[释放后 B] {"voice.preview": {"code": "invalid_params", "ok": false, "message": "缺少非空参数：text", "guarded": "放行（参数类错误）"}, "voice.tts_play": {"code": "message_not_found", "ok": false, "message": "消息不存在", "guarded": "放行（参数类错误）"}, "voice.card_preview": {"code": "card_not_found", "ok": false, "message": "角色卡不存在", "guarded": "放行（参数类错误）"}}
+{
+  "started_at": "2026-09-10T13:01:47.684Z",
+  "issue_code": {
+    "ok": true,
+    "result": {
+      "code": "042569",
+      "ttl_seconds": 300,
+      "serve_address": {
+        "host": "10.81.102.166",
+        "port": 8765
+      }
+    },
+    "code": null,
+    "message": null
+  },
+  "pair_device_b": {
+    "ok": true,
+    "error": ""
+  },
+  "baseline_no_lease": {
+    "voice.preview": {
+      "code": "invalid_params",
+      "ok": false,
+      "message": "缺少非空参数：text",
+      "guarded": "放行（参数类错误）"
+    },
+    "voice.tts_play": {
+      "code": "message_not_found",
+      "ok": false,
+      "message": "消息不存在",
+      "guarded": "放行（参数类错误）"
+    },
+    "voice.card_preview": {
+      "code": "card_not_found",
+      "ok": false,
+      "message": "角色卡不存在",
+      "guarded": "放行（参数类错误）"
+    }
+  },
+  "claim_control": {
+    "ok": true,
+    "result": {
+      "claimed": true,
+      "active_controllers": 1
+    }
+  },
+  "control_status_after_claim": {
+    "ok": true,
+    "result": {
+      "state": "held",
+      "device_key": "8713d92223c946daf8e6a17cadaf20da760dbd27338347fd74dbbf4333449c0e",
+      "expires_at": "2026-09-10T13:02:32.719891+00:00",
+      "grace_expires_at": null,
+      "reason": "claimed"
+    }
+  },
+  "holder_a": {
+    "voice.preview": {
+      "code": "invalid_params",
+      "ok": false,
+      "message": "缺少非空参数：text",
+      "guarded": "放行（参数类错误）"
+    },
+    "voice.tts_play": {
+      "code": "message_not_found",
+      "ok": false,
+      "message": "消息不存在",
+      "guarded": "放行（参数类错误）"
+    },
+    "voice.card_preview": {
+      "code": "card_not_found",
+      "ok": false,
+      "message": "角色卡不存在",
+      "guarded": "放行（参数类错误）"
+    }
+  },
+  "other_device_b": {
+    "voice.preview": {
+      "code": "remote_playback_active",
+      "ok": false,
+      "message": "另一台远程设备正在控制语音，请先在该设备退出远程控制或撤销该设备",
+      "guarded": "被守卫拒绝"
+    },
+    "voice.tts_play": {
+      "code": "remote_playback_active",
+      "ok": false,
+      "message": "另一台远程设备正在控制语音，请先在该设备退出远程控制或撤销该设备",
+      "guarded": "被守卫拒绝"
+    },
+    "voice.card_preview": {
+      "code": "remote_playback_active",
+      "ok": false,
+      "message": "另一台远程设备正在控制语音，请先在该设备退出远程控制或撤销该设备",
+      "guarded": "被守卫拒绝"
+    }
+  },
+  "holder_real_preview": {
+    "ok": true,
+    "code": null,
+    "message": null
+  },
+  "voice_during_preview": {
+    "supported": true,
+    "enabled": true,
+    "assistant_voice_enabled": false,
+    "vad": "playing",
+    "vad_enabled": false,
+    "ptt": false,
+    "tts": "playing",
+    "asr_partial": "",
+    "error": null,
+    "speech_queue_len": 0
+  },
+  "tts_stop": {
+    "ok": true,
+    "result": {
+      "voice": {
+        "supported": true,
+        "enabled": true,
+        "assistant_voice_enabled": false,
+        "vad": "idle",
+        "vad_enabled": false,
+        "ptt": false,
+        "tts": "idle",
+        "asr_partial": "",
+        "error": null,
+        "speech_queue_len": 0
+      }
+    }
+  },
+  "release_control": {
+    "ok": true,
+    "result": {
+      "released": true,
+      "active_controllers": 0
+    }
+  },
+  "after_release": {
+    "voice.preview": {
+      "code": "invalid_params",
+      "ok": false,
+      "message": "缺少非空参数：text",
+      "guarded": "放行（参数类错误）"
+    },
+    "voice.tts_play": {
+      "code": "message_not_found",
+      "ok": false,
+      "message": "消息不存在",
+      "guarded": "放行（参数类错误）"
+    },
+    "voice.card_preview": {
+      "code": "card_not_found",
+      "ok": false,
+      "message": "角色卡不存在",
+      "guarded": "放行（参数类错误）"
+    }
+  },
+  "after_release_b": {
+    "voice.preview": {
+      "code": "invalid_params",
+      "ok": false,
+      "message": "缺少非空参数：text",
+      "guarded": "放行（参数类错误）"
+    },
+    "voice.tts_play": {
+      "code": "message_not_found",
+      "ok": false,
+      "message": "消息不存在",
+      "guarded": "放行（参数类错误）"
+    },
+    "voice.card_preview": {
+      "code": "card_not_found",
+      "ok": false,
+      "message": "角色卡不存在",
+      "guarded": "放行（参数类错误）"
+    }
+  },
+  "control_events": [
+    {
+      "event": "remote.control_changed",
+      "state": "held",
+      "device_key": "8713d92223c946daf8e6a17cadaf20da760dbd27338347fd74dbbf4333449c0e",
+      "expires_at": "2026-09-10T13:02:32.719891+00:00",
+      "grace_expires_at": null,
+      "reason": "claimed"
+    },
+    {
+      "event": "remote.control_changed",
+      "state": "free",
+      "device_key": "8713d92223c946daf8e6a17cadaf20da760dbd27338347fd74dbbf4333449c0e",
+      "expires_at": "2026-09-10T13:02:32.719891+00:00",
+      "grace_expires_at": null,
+      "reason": "released"
+    }
+  ],
+  "finished_at": "2026-09-10T13:01:50.983Z",
+  "sidecar_new_lines": 8
+}

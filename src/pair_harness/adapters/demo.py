@@ -37,6 +37,19 @@ class ScriptedDialogueModel(DialogueModel):
         text = " ".join(user_message.text.split())[:14]
         return f"关于{text}" if text else None
 
+    async def generate_summary(
+        self, *, pair_id: str, assistant_prompt: str, context_text: str
+    ) -> dict | None:
+        """确定性摘要：demo/测试用，不做语义判断、不改写消息原文。"""
+        if not context_text.strip():
+            return None
+        lines = [line for line in context_text.splitlines() if line.strip()]
+        return {
+            "title": f"关于{lines[0][:20] if lines else '对话'}",
+            "key_points": [line[:50] for line in lines[:3]],
+            "summary": "demo 摘要——结构化对象形状校验用。",
+        }
+
     async def stream_reply(self, request: DialogueRequest) -> AsyncIterator[DialogueEvent]:
         if request.result_summary is not None:
             result = request.result_summary

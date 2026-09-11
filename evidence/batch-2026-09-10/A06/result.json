@@ -1,0 +1,61 @@
+{
+  "batch": "batch-2026-09-10",
+  "case_id": "A06",
+  "title": "指标与装配诊断、真实服务失败注入",
+  "candidate_commit": "897193a2fb983cd39c8328e98f7e225963a1ee64",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "exe_sha256": "d068bbf86df17770caa82185f02f39a42d881775cdd3fdac8a66b91171d17897",
+    "sidecar_sha256": "34d8325bc2ea53993aa2dda235de8f7ca7acbbc16917f3db755fc14bef0eb04f"
+  },
+  "device": "Windows 11 10.0.26200 / Ryzen 7 7840H / 2560x1440 / 缩放150% / 本机桌面会话",
+  "network": "本机直连公网；局域网 sidecar --serve 0.0.0.0:8765（Tailscale 未配置）",
+  "preconditions": {
+    "card": "导入卡 ad95dd92f89d427f974e69d44b366901 绑定的会话",
+    "account": "错误注入在验收账号上进行后已恢复，最后核对 config.get 为原始配置"
+  },
+  "steps": [
+    "装配诊断：普通查询与 include_hidden=true 对比，核对隐藏原文规则与是否进入对话流",
+    "只读命令可用性：metrics.query / summary.get / memory.list / power.get_status",
+    "失败注入：错误 API Key → 真实 401；切换 provider/base_url → 记录拒绝原因；同 provider 改 base_url → 核对是否生效",
+    "断网：尝试用出站防火墙规则阻断 api.deepseek.com",
+    "错误 Key 下跑真实回合，核对失败在会话中的呈现"
+  ],
+  "expected": "缺失指标为 null、真实零为 0；隐藏原文须显式请求且关闭清除、不进普通对话；错误可定位且原文可见",
+  "actual": "隐藏原文规则通过：普通查询 5 个模块 hidden_content 全为 null，include_hidden=true 返回 5 段共 14,771 字符，且模块原文不出现在对话消息里（hidden_text_absent_from_dialogue=true）；只读命令部分失败：metrics.query 有记录即超时（V039-S4-001）；summary.get 空则正常、有记录即超时（同一条缺陷）；错误 Key：config.test_connection 返回真实 401（原始供应商报文可见，错误可定位）；错误 base_url：config.set 返回成功但 config.get 显示 base_url 仍是 api.deepseek.com（被静默改写），test_connection 仍报「连接正常（延迟 531 ms）」（V039-S4-014）；切换 provider 被如实拒绝并说明原因（codex 需要 Responses 后端）；断网阻断：创建出站防火墙规则失败（非管理员，rc=1），未执行（见 blockers.md）；失败回合呈现：turn 终态 failed、用户消息 failed、出现 system.status 提示「本次回复失败：」但原因字段为空（V039-S4-015）",
+  "timestamps": {
+    "batch": "batch-2026-09-10",
+    "recorded_at": "2026-09-10T11:05:00Z"
+  },
+  "ids": {
+    "conversation_card": "daa0a2bc-629c-424b-8c0b-c2b48b83c3fb",
+    "badkey_turn": "393b8673-5c26-4ad3-8e42-ab3020269ae3",
+    "unreachable_turn": "cd8393c8-3765-4c3e-bcb7-455fd8078b90"
+  },
+  "evidence": [
+    "A06/04-metrics-timeout-drawer.png",
+    "A06/a06-injections.json",
+    "A06/a06-run.json",
+    "A06/a06-turn-terminal.json",
+    "A06/a06-unreachable.json",
+    "A06/blast-radius.json",
+    "A06/commands.ps1",
+    "A06/events.log",
+    "A06/http.log",
+    "A06/result.json",
+    "A06/sidecar.log",
+    "A06/ws-frames-blast.log",
+    "A06/ws-frames-inject2.log",
+    "A06/ws-frames-unreachable.log",
+    "A06/ws-frames.log"
+  ],
+  "severity": "P1（读取）/P2（配置静默改写）",
+  "frequency": "必现",
+  "impact": "诊断读取不可用；配置写入结果与提示不一致；失败原因不可见",
+  "status": "失败",
+  "blocker": "断网注入需管理员权限（见 blockers.md B-01）",
+  "owner": "Sidecar Python / 前端诊断与设置页",
+  "next_action": "修复 V039-S4-001/014/015 后复验；断网注入改用管理员会话或虚拟机"
+}

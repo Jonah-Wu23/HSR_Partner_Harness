@@ -8,18 +8,23 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import socket
+import sys
+import threading
 from typing import Any
 
 import aiohttp
 import pytest
 
+from pair_harness.adapters.demo import ScriptedDialogueModel
 from pair_harness.desktop_backend.application_service import build_demo_service
 from pair_harness.desktop_backend.event_fanout import EventFanout
 from pair_harness.desktop_backend.router import JsonlWriter, SidecarRouter
 from pair_harness.desktop_backend.ws_server import WSServerMode
+from pair_harness.storage.records import TurnMetricQuery
 
 
 def _free_port() -> int:
@@ -289,13 +294,71 @@ async def test_revoke_closes_established_connection(tmp_path) -> None:
         await harness.stop()
 
 
+class _BlockingStdin(io.StringIO):
+    """可手动放行的 stdin：readline 阻塞到 release()。
+
+    run_stdin 在独立线程里读 stdin，阻塞读取不会卡住事件循环，
+    因此用例可以在服务运行期间查询命令，再放行 EOF 走正常停机。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._released = threading.Event()
+
+    def readline(self, *args, **kwargs) -> str:  # type: ignore[override]
+        self._released.wait()
+        return ""
+
+    def release(self) -> None:
+        self._released.set()
+
+
+async def _wait_until(predicate, *, message: str, timeout: float = 10.0) -> None:
+    """轮询等待条件成立；超时直接失败，不静默跳过。"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(message)
+
+
+def _run_args(tmp_path, *, serve: int | None = None, demo: bool = True, real: bool = False):
+    """__main__._run 的启动参数（与 Rust 侧实际传入的字段一致）。"""
+    import argparse
+
+    return argparse.Namespace(
+        serve=serve,
+        demo=demo,
+        real=real,
+        pair="phainon_ancient_machine",
+        project=tmp_path,
+        data_dir=tmp_path / "data",
+    )
+
+
+def _capture_service(monkeypatch, backend_main) -> dict[str, Any]:
+    """包住 build_configured_service，拿到 _run 内部真正构造的服务实例。"""
+    captured: dict[str, Any] = {}
+    original = backend_main.build_configured_service
+
+    def wrapper(**kwargs):
+        service = original(**kwargs)
+        captured["service"] = service
+        captured["demo"] = kwargs.get("demo")
+        return service
+
+    monkeypatch.setattr(backend_main, "build_configured_service", wrapper)
+    return captured
+
+
+
 @pytest.mark.asyncio
 async def test_serve_started_reports_lan_address(tmp_path, monkeypatch) -> None:
-    """V0.3.4 缺陷 6：serve 启动成功后上报 serve.started（host/port），
-    桌面端二维码按它生成；stdin 正常 EOF 退出 0。"""
-    import argparse
-    import sys
-
+    """V0.3.4 缺陷 6 / V039-S4-004：serve 启动成功后上报 serve.started（host/port），
+    桌面端二维码按它生成；同一事实同时落在 service.remote_serve_address，
+    服务层可按需读取（不必只依赖一次性事件）；stdin 正常 EOF 退出 0。"""
     import pair_harness.desktop_backend.__main__ as backend_main
 
     port = _free_port()
@@ -303,32 +366,29 @@ async def test_serve_started_reports_lan_address(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(sys, "stdin", io.StringIO())
     monkeypatch.setattr(sys, "stdout", out)
     monkeypatch.setattr(backend_main, "_detect_lan_ip", lambda: "192.168.1.42")
-    args = argparse.Namespace(
-        serve=port,
-        demo=True,
-        real=False,
-        pair="phainon_ancient_machine",
-        project=tmp_path,
-        data_dir=tmp_path / "data",
-    )
-    rc = await backend_main._run(args)
+    captured = _capture_service(monkeypatch, backend_main)
+    rc = await backend_main._run(_run_args(tmp_path, serve=port))
     assert rc == 0
 
     lines = [json.loads(line) for line in out.getvalue().splitlines()]
     serve_events = [m for m in lines if m.get("event") == "serve.started"]
     assert len(serve_events) == 1
     assert serve_events[0]["payload"] == {"host": "192.168.1.42", "port": port}
+    assert captured["service"].remote_serve_address == {
+        "host": "192.168.1.42",
+        "port": port,
+    }
 
 
 @pytest.mark.asyncio
-async def test_lan_ip_probe_failure_does_not_report_fake_address(
+async def test_lan_ip_probe_failure_reports_started_without_address(
     tmp_path, monkeypatch
 ) -> None:
-    """V0.3.4 Codex 建议 C：局域网地址探测失败（返回 None）时如实不下发
-    serve.started，桌面端保持「地址未就绪」占位，不伪造 127.0.0.1 可达地址。"""
-    import argparse
-    import sys
-
+    """V039-S4-004 事件契约：服务确已监听、只是探测不到局域网地址时，
+    serve.started 仍下发且 host 为 null、reason 为 no_lan_address
+    （不伪造 127.0.0.1 / 0.0.0.0 等不可达地址），同时不下发
+    serve_start_failed——桌面端据此把「已启动但无局域网地址」与
+    「--serve 未启动/启动失败」区分开。"""
     import pair_harness.desktop_backend.__main__ as backend_main
 
     port = _free_port()
@@ -336,20 +396,135 @@ async def test_lan_ip_probe_failure_does_not_report_fake_address(
     monkeypatch.setattr(sys, "stdin", io.StringIO())
     monkeypatch.setattr(sys, "stdout", out)
     monkeypatch.setattr(backend_main, "_detect_lan_ip", lambda: None)
-    args = argparse.Namespace(
-        serve=port,
-        demo=True,
-        real=False,
-        pair="phainon_ancient_machine",
-        project=tmp_path,
-        data_dir=tmp_path / "data",
-    )
-    rc = await backend_main._run(args)
+    captured = _capture_service(monkeypatch, backend_main)
+    rc = await backend_main._run(_run_args(tmp_path, serve=port))
     assert rc == 0
 
     lines = [json.loads(line) for line in out.getvalue().splitlines()]
     serve_events = [m for m in lines if m.get("event") == "serve.started"]
-    assert serve_events == []
+    assert len(serve_events) == 1
+    expected = {"host": None, "port": port, "reason": "no_lan_address"}
+    assert serve_events[0]["payload"] == expected
+    assert captured["service"].remote_serve_address == expected
+    failures = [
+        m for m in lines
+        if m.get("event") == "error.reported"
+        and m["payload"].get("code") == "serve_start_failed"
+    ]
+    assert failures == [], "服务已监听时不得上报启动失败"
+
+
+def _isolate_from_dev_env(monkeypatch, tmp_path) -> None:
+    """把用例与开发机环境隔离：无 .env、无进程级对话配置。"""
+    monkeypatch.setenv("PAIR_HARNESS_ENV_FILE", str(tmp_path / "absent.env"))
+    for key in (
+        "PAIR_HARNESS_DIALOGUE_BASE_URL",
+        "PAIR_HARNESS_DIALOGUE_API_KEY",
+        "PAIR_HARNESS_DIALOGUE_MODEL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.mark.asyncio
+async def test_explicit_demo_startup_stays_scripted(tmp_path, monkeypatch) -> None:
+    """V039-S4-002：显式声明 --demo 时按脚本化适配器启动，
+    backend.ready 如实上报 demo=True 与来源 explicit_demo。"""
+    import pair_harness.desktop_backend.__main__ as backend_main
+
+    out = io.StringIO()
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    monkeypatch.setattr(sys, "stdout", out)
+    captured = _capture_service(monkeypatch, backend_main)
+    rc = await backend_main._run(_run_args(tmp_path, demo=True))
+    assert rc == 0
+
+    ready = _events(out, "backend.ready")[0]["payload"]
+    assert ready["demo"] is True
+    assert ready["mode_source"] == "explicit_demo"
+    assert captured["demo"] is True
+    assert isinstance(captured["service"].dialogue_model, ScriptedDialogueModel)
+
+
+@pytest.mark.asyncio
+async def test_conflicting_mode_flags_fail_startup(tmp_path, monkeypatch) -> None:
+    """同时声明 --real 与 --demo 是调用方的矛盾输入：如实报启动错误并退出 2，
+    不挑一个模式执行。"""
+    import pair_harness.desktop_backend.__main__ as backend_main
+
+    out = io.StringIO()
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    monkeypatch.setattr(sys, "stdout", out)
+    rc = await backend_main._run(_run_args(tmp_path, demo=True, real=True))
+    assert rc == 2
+
+    errors = _events(out, "error.reported")
+    assert len(errors) == 1
+    assert errors[0]["payload"]["code"] == "conflicting_start_mode"
+    assert errors[0]["payload"]["fatal"] is True
+    assert _events(out, "backend.ready") == []
+
+
+@pytest.mark.asyncio
+async def test_undeclared_mode_without_key_reaches_onboarding(
+    tmp_path, monkeypatch
+) -> None:
+    """V039-S4-002 主路径：没有 .env、也没有声明模式（默认真实接线）时，
+    账号未配 Key 也必须照常起来并进入首次引导，不能因为没配 Key 就崩溃；
+    config.test_connection 如实报「缺少对话服务配置」，不合成成功，
+    也不退回演示数据。"""
+    import pair_harness.desktop_backend.__main__ as backend_main
+    from pair_harness.desktop_backend.commands import DesktopCommand
+
+    out = io.StringIO()
+    stdin = _BlockingStdin()
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.setattr(sys, "stdout", out)
+    _isolate_from_dev_env(monkeypatch, tmp_path)
+    captured = _capture_service(monkeypatch, backend_main)
+    task = asyncio.create_task(
+        backend_main._run(_run_args(tmp_path, demo=False, real=False))
+    )
+    try:
+        await _wait_until(lambda: "service" in captured, message="服务未构造")
+        await _wait_until(
+            lambda: "backend.ready" in out.getvalue(),
+            message="backend.ready 未上报",
+        )
+        ready = _events(out, "backend.ready")[0]["payload"]
+        assert ready["demo"] is False
+        assert ready["mode_source"] == "default_real"
+        fatal = [
+            m for m in _events(out, "error.reported") if m["payload"].get("fatal")
+        ]
+        assert fatal == [], "未配 Key 不得变成启动失败"
+
+        service = captured["service"]
+        bootstrap = await service.handle_command(
+            DesktopCommand(request_id="boot-1", method="app.bootstrap", params={})
+        )
+        current = bootstrap["current_account"]
+        assert current["account_id"] == "default-local"
+        assert current["onboarding_complete"] is False
+        # 未配供应商时如实报缺配置（离线判定，不发起真实请求）
+        probe = await service.handle_command(
+            DesktopCommand(
+                request_id="probe-1", method="config.test_connection", params={}
+            )
+        )
+        assert probe["ok"] is False
+        assert "缺少对话服务配置" in probe["message"]
+    finally:
+        stdin.release()
+        assert await asyncio.wait_for(task, timeout=15) == 0
+
+
+def _events(out: io.StringIO, name: str) -> list[dict[str, Any]]:
+    """按事件名筛出 stdout JSONL 里的事件。"""
+    return [
+        message
+        for message in (json.loads(line) for line in out.getvalue().splitlines())
+        if message.get("event") == name
+    ]
 
 
 @pytest.mark.asyncio
@@ -404,4 +579,64 @@ async def test_sigint_routes_to_orderly_stop(tmp_path, monkeypatch) -> None:
         finally:
             signal.signal(signal.SIGINT, previous)
     finally:
+        await harness.stop()
+
+
+@pytest.mark.asyncio
+async def test_remote_submit_metric_records_origin_and_device(tmp_path) -> None:
+    """V0.3.9 §5：手机经 WS 提交的回合，指标如实记录 remote 来源与设备。
+
+    全链路：真实 WS 客户端 → WSServerMode 鉴权 → Router 注入
+    origin/device_key/device_name → chat.submit → TurnMetric。
+    """
+    harness = SidecarHarness(tmp_path, io.StringIO())
+    await harness.start()
+    session = aiohttp.ClientSession()
+    try:
+        code = harness.service.pairing_service.issue_code()
+        token = harness.service.pairing_service.claim(code, device_name="指标手机")
+        conversation_id = harness.service.current_conversation_id
+        ws = await session.ws_connect(f"http://127.0.0.1:{harness.port}/ws")
+        await ws.send_json(
+            {
+                "kind": "request",
+                "id": "m1",
+                "method": "chat.submit",
+                "params": {
+                    "conversation_id": conversation_id,
+                    "target": "character",
+                    "text": "来自手机的消息",
+                },
+                "auth": {"token": token},
+            }
+        )
+        # response 之前可能有本回合的事件先到，按 kind 过滤直到拿到 response。
+        deadline = asyncio.get_running_loop().time() + 5.0
+        response: dict[str, Any] | None = None
+        while response is None:
+            remaining = deadline - asyncio.get_running_loop().time()
+            assert remaining > 0, "未在超时内收到 chat.submit response"
+            message = await asyncio.wait_for(_recv_message(ws), timeout=remaining)
+            if message.get("kind") == "response":
+                response = message
+        assert response["ok"] is True, response
+        turn_id = response["result"]["turn_id"]
+
+        def metric():
+            page = harness.service.store.query_turn_metrics(
+                TurnMetricQuery(conversation_id=conversation_id, limit=50)
+            )
+            return next((m for m in page.items if m.turn_id == turn_id), None)
+
+        await _wait_until(lambda: metric() is not None, message="回合终态应写入指标")
+        record = metric()
+        assert record is not None
+        assert record.origin == "remote"
+        assert record.remote_device_key == hashlib.sha256(
+            token.encode("utf-8")
+        ).hexdigest()
+        assert record.remote_device_name == "指标手机"
+        await ws.close()
+    finally:
+        await session.close()
         await harness.stop()

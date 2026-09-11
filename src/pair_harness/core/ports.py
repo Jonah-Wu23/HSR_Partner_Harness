@@ -44,6 +44,17 @@ class DialogueModel(ABC):
         del pair_id, context
         return None
 
+    async def generate_summary(
+        self, *, pair_id: str, assistant_prompt: str, context_text: str
+    ) -> dict | None:
+        """用配置的真实模型生成聊天摘要结构化对象（契约 §2）。
+
+        返回的字典由模型负责；调用方只校验结构与身份，不改写语义。
+        未实现/调用失败返回 None；结构不符由调用方按真实失败处理。
+        """
+        del pair_id, assistant_prompt, context_text
+        return None
+
 
 class CodingEngine(ABC):
     native_preexecution_approval: bool = False
@@ -114,6 +125,33 @@ class StateStore(ABC):
     @abstractmethod
     def load_conversation(self, conversation_id: str) -> dict[str, Any]:
         raise NotImplementedError
+
+    # ---- V0.3.9 普通增量缓冲（contract-v1 第 4 节）----
+    # 批量实现（SQLiteStore）把普通增量合并成 50 条 / 50ms 的事务；
+    # 这里给出的默认实现没有缓冲，直接同步落库并让 flush 成为空操作。
+    # 默认实现不会丢数据，只是不做批量合并，因此端口替换仍然安全。
+
+    def enqueue_message(self, message: Message) -> None:
+        """普通增量入队；默认实现直接同步落库。"""
+        self.save_message(message)
+
+    def enqueue_tool_run(self, tool_run: ToolRun) -> None:
+        """普通增量入队；默认实现直接同步落库。"""
+        self.save_tool_run(tool_run)
+
+    def flush(self) -> int:
+        """强制刷盘挂起的普通增量；默认实现无缓冲，返回 0。"""
+        return 0
+
+    def flush_if_due(self, now: float | None = None) -> bool:
+        """按阈值刷盘；默认实现无缓冲，返回 False。"""
+        del now
+        return False
+
+    def next_flush_deadline(self, now: float | None = None) -> float | None:
+        """下一个刷盘截止时间；默认实现无缓冲，返回 None。"""
+        del now
+        return None
 
 
 class Reviewer(ABC):

@@ -292,4 +292,14 @@ describe("NotificationPreferences 组件", () => {
 
     expect(await screen.findByTestId("notif-permission-granted")).toBeInTheDocument();
   });
+
+  it("渲染各平台真实能力矩阵，如实展示 Android 壳与 Web/PWA 差异及通知点击限制", async () => {
+    render(<NotificationPreferences />);
+    const limits = screen.getByTestId("notif-platform-limits");
+    expect(limits).toBeInTheDocument();
+    expect(limits).toHaveTextContent("Android 壳");
+    expect(limits).toHaveTextContent("Android 浏览器 / iOS Safari / iOS PWA");
+    expect(limits).toHaveTextContent("通知点击");
+    expect(limits).toHaveTextContent("真机待验");
+  });
 });

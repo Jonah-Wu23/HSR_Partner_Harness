@@ -1,0 +1,70 @@
+{
+  "cut_after_bytes": {
+    "label": "传输中断（下行 256 字节后）",
+    "conversation_id": "643d4c65-b36c-4ed6-b732-b7a3c6fae959",
+    "sandbox_action": "SET cut_soon 256",
+    "control_reply": "OK cut_soon connections=1 tunnels=1",
+    "cut_reply": null,
+    "submit": {
+      "ok": true,
+      "result": {
+        "message_id": "c4e5baa5-c021-4788-a739-67cff8641e95",
+        "conversation_id": "643d4c65-b36c-4ed6-b732-b7a3c6fae959",
+        "status": "received",
+        "target": "character",
+        "turn_id": "28d48887-6263-4d20-a52e-f0f62984fd8e"
+      }
+    },
+    "elapsed_seconds": 1.56,
+    "turn": {
+      "message_count": 2,
+      "messages": [
+        {
+          "source": "user",
+          "kind": "user.text",
+          "status": "failed",
+          "text": "复测 B-01：请写一段三百字左右的说明，讲清楚什么是传输中断、它和连接被拒有什么区别、遇到之后应该怎么排查。"
+        },
+        {
+          "source": "system",
+          "kind": "system.status",
+          "status": "done",
+          "text": "本次回复失败：ReadError"
+        }
+      ],
+      "failure_notice": "本次回复失败：ReadError"
+    },
+    "sandbox_events": [
+      {
+        "event": "mode_changed",
+        "mode": "cut_soon",
+        "request": null,
+        "error": null
+      },
+      {
+        "event": "client_request",
+        "mode": "cut_soon",
+        "request": "CONNECT api.deepseek.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "tunnel_established",
+        "mode": "cut_soon",
+        "request": "CONNECT api.deepseek.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "auto_cut_fired",
+        "mode": "cut_soon",
+        "request": null,
+        "error": null
+      },
+      {
+        "event": "mode_changed",
+        "mode": "forward",
+        "request": null,
+        "error": null
+      }
+    ]
+  }
+}

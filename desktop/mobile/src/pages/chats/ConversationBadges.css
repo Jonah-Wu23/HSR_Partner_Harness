@@ -1,0 +1,78 @@
+/* V0.3.9 V01：会话行徽章。状态色沿用 styles.css 语义令牌，窄屏下允许换行。 */
+
+.conversation-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin-top: 2px;
+}
+
+.conv-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  font-weight: 500;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+}
+
+/* 运行中：与「委派」标签同色语言，表示后台有活动任务。 */
+.conv-badge.is-running {
+  background: oklch(0.28 0.08 65);
+  border-color: transparent;
+  color: var(--accent);
+}
+
+/* 待审批：需要用户操作，用警示色。 */
+.conv-badge.is-approval {
+  background: var(--warn);
+  border-color: transparent;
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+
+.conv-badge.is-queued {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+/* 未读：强调但不高过待审批。 */
+.conv-badge.is-unread {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+
+/* 最近终态：按状态取色（-status-<state>）。 */
+.conv-badge.badge-status-failed {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.conv-badge.badge-status-cancelled {
+  border-color: var(--muted);
+  color: var(--muted);
+}
+
+.conv-badge.badge-status-completed {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+/* 窄屏（≤360px）：徽章更紧凑，保证会话行仍可点。 */
+@media (max-width: 360px) {
+  .conversation-badges {
+    gap: 3px 4px;
+  }
+  .conv-badge {
+    padding: 1px 5px;
+    font-size: 10px;
+  }
+}

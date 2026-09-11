@@ -1,0 +1,220 @@
+{
+  "started_at": "2026-09-10T15:08:04.780Z",
+  "conversation_id": "937b296a-56bb-4449-8912-6ac6c3c5cd59",
+  "phone_focus": "Starting: Intent { cmp=com.jonahwu.hsr_partner_harness/.MainActivity }",
+  "submit_a": {
+    "message_id": "324b7ea3-a811-46c6-b8c0-c959d952ff81",
+    "conversation_id": "937b296a-56bb-4449-8912-6ac6c3c5cd59",
+    "status": "received",
+    "target": "character",
+    "turn_id": "9ea5a6fa-ebcc-417c-906d-095d2510b258"
+  },
+  "playback_watch": [
+    {
+      "at": "2026-09-10T15:08:10.715Z",
+      "voice.mobile_tts_chunk": 0,
+      "voice.mobile_tts_end": 0,
+      "voice.mobile_tts_failed": 0
+    },
+    {
+      "at": "2026-09-10T15:08:11.718Z",
+      "voice.mobile_tts_chunk": 0,
+      "voice.mobile_tts_end": 0,
+      "voice.mobile_tts_failed": 0
+    },
+    {
+      "at": "2026-09-10T15:08:12.722Z",
+      "voice.mobile_tts_chunk": 0,
+      "voice.mobile_tts_end": 0,
+      "voice.mobile_tts_failed": 0
+    },
+    {
+      "at": "2026-09-10T15:08:13.724Z",
+      "voice.mobile_tts_chunk": 0,
+      "voice.mobile_tts_end": 0,
+      "voice.mobile_tts_failed": 0
+    },
+    {
+      "at": "2026-09-10T15:08:14.718Z",
+      "voice.mobile_tts_chunk": 0,
+      "voice.mobile_tts_end": 0,
+      "voice.mobile_tts_failed": 0
+    },
+    {
+      "at": "2026-09-10T15:08:15.724Z",
+      "voice.mobile_tts_chunk": 0,
+      "voice.mobile_tts_end": 0,
+      "voice.mobile_tts_failed": 0
+    },
+    {
+      "at": "2026-09-10T15:08:16.722Z",
+      "voice.mobile_tts_chunk": 0,
+      "voice.mobile_tts_end": 0,
+      "voice.mobile_tts_failed": 0
+    },
+    {
+      "at": "2026-09-10T15:08:17.735Z",
+      "voice.mobile_tts_chunk": 0,
+      "voice.mobile_tts_end": 0,
+      "voice.mobile_tts_failed": 0
+    },
+    {
+      "at": "2026-09-10T15:08:18.739Z",
+      "voice.mobile_tts_chunk": 0,
+      "voice.mobile_tts_end": 0,
+      "voice.mobile_tts_failed": 0
+    },
+    {
+      "at": "2026-09-10T15:08:19.736Z",
+      "voice.mobile_tts_chunk": 3,
+      "voice.mobile_tts_end": 0,
+      "voice.mobile_tts_failed": 0
+    }
+  ],
+  "first_chunk_at": "2026-09-10T15:08:19.736Z",
+  "audio_during_play": "09-10 20:21:58:799 abandonAudioFocus() from uid/pid 10326/13804 clientId=android.media.AudioManager@4ca715ejo1.b@d836804 callingPack=tv.danmaku.bili\n09-10 20:21:59:073 abandonAudioFocus() from uid/pid 10326/13804 clientId=android.media.AudioManager@4ca715ejo1.b@d836804 callingPack=tv.danmaku.bili\n09-10 20:22:02:151 abandonAudioFocus() from uid/pid 10326/13804 clientId=android.media.AudioManager@4ca715ejo1.b@36c41b4 callingPack=tv.danmaku.bili\n09-10 20:22:02:332 requestAudioFocus() from uid/pid 10326/13804 AA=USAGE_MEDIA/CONTENT_TYPE_MOVIE clientId=android.media.AudioManager@4ca715ejo1.b@4fd8b4c callingPack=tv.danmaku.bili req=1 flags=0x3 sdk=35\n09-10 20:22:34:994 abandonAudioFocus() from uid/pid 10326/13804 clientId=android.media.AudioManager@4ca715ejo1.b@4fd8b4c callingPack=tv.danmaku.bili\n09-10 20:34:21:177 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:34:25:698 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:34:26:872 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:34:33:682 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:34:33:980 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:34:34:018 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:34:34:925 requestAudioFocus() from uid/pid 10326/19183 AA=USAGE_MEDIA/CONTENT_TYPE_MOVIE clientId=android.media.AudioManager@84d78cfjo1.b@793c34d callingPack=tv.danmaku.bili req=1 flags=0x3 sdk=35\n09-10 20:34:58:954 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@793c34d callingPack=tv.danmaku.bili\n09-10 20:34:59:074 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:34:59:199 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@793c34d callingPack=tv.danmaku.bili\n09-10 20:34:59:226 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@793c34d callingPack=tv.danmaku.bili\n09-10 20:35:01:733 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:35:15:390 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:35:17:542 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:35:21:616 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:35:21:637 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:35:21:866 requestAudioFocus() from uid/pid 10326/19183 AA=USAGE_MEDIA/CONTENT_TYPE_MOVIE clientId=android.media.AudioManager@84d78cfjo1.b@6a20ab1 callingPack=tv.danmaku.bili req=1 flags=0x3 sdk=35\n09-10 20:35:31:736 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@6a20ab1 callingPack=tv.danmaku.bili\n09-10 20:35:56:642 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@6a20ab1 callingPack=tv.danmaku.bili\n09-10 20:36:00:231 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:36:08:755 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@8555",
+  "playback_started": true,
+  "chunks_before_preempt": {
+    "voice.mobile_tts_chunk": 106,
+    "voice.mobile_tts_end": 0,
+    "voice.mobile_tts_failed": 0
+  },
+  "submit_b": {
+    "message_id": "5928c53c-a2c3-4d46-bfd6-8b458794d320",
+    "conversation_id": "937b296a-56bb-4449-8912-6ac6c3c5cd59",
+    "status": "received",
+    "target": "character",
+    "turn_id": "7d01ec94-ae2d-4405-aa75-006d25301264"
+  },
+  "preempt_at": "2026-09-10T15:08:24.962Z",
+  "counts_after_preempt": {
+    "voice.mobile_tts_chunk": 139,
+    "voice.mobile_tts_end": 1,
+    "voice.mobile_tts_failed": 0
+  },
+  "preempt_observed": {
+    "chunks_before": {
+      "voice.mobile_tts_chunk": 117,
+      "voice.mobile_tts_end": 0,
+      "voice.mobile_tts_failed": 0
+    },
+    "chunks_after": {
+      "voice.mobile_tts_chunk": 139,
+      "voice.mobile_tts_end": 1,
+      "voice.mobile_tts_failed": 0
+    }
+  },
+  "final_counts": {
+    "voice.mobile_tts_chunk": 139,
+    "voice.mobile_tts_end": 1,
+    "voice.mobile_tts_failed": 0
+  },
+  "message_ids": [
+    {
+      "message_id": "22f425e1-5b0a-40bc-bd40-f1db0b5e7a17",
+      "source": "user",
+      "kind": "user.text",
+      "status": "done",
+      "tts_eligible": false,
+      "chars": 50,
+      "text": "请用大约两百字介绍一下你自己，用连贯的段落写，不要用列表。这段文字会被朗读出来，请写适合朗读的句子。"
+    },
+    {
+      "message_id": "speech:937b296a-56bb-4449-8912-6ac6c3c5cd59:22f425e1-5b0a-40bc-bd40-f1db0b5e7a17",
+      "source": "character",
+      "kind": "character.speech",
+      "status": "done",
+      "tts_eligible": true,
+      "chars": 171,
+      "text": "我叫白厄，从哀丽秘榭那片金色麦田里走出来的。奥赫玛的人喜欢叫我救世主，其实也就是剑术练得还行，平时照样在广场上晃。闲下来爱逛古玩店和市集，鉴宝是跟西塔罗斯先生学的，眼力还过得去，手气就差了，常常整麻袋买回来，拆开一看全是赝品，我自己讲着都先"
+    },
+    {
+      "message_id": "7b617dbc-b164-48ab-9c17-d065652ccf89",
+      "source": "user",
+      "kind": "user.text",
+      "status": "done",
+      "tts_eligible": false,
+      "chars": 16,
+      "text": "打断测试：请只回复两个字：收到。"
+    },
+    {
+      "message_id": "speech:937b296a-56bb-4449-8912-6ac6c3c5cd59:7b617dbc-b164-48ab-9c17-d065652ccf89",
+      "source": "character",
+      "kind": "character.speech",
+      "status": "done",
+      "tts_eligible": true,
+      "chars": 3,
+      "text": "收到。"
+    },
+    {
+      "message_id": "324b7ea3-a811-46c6-b8c0-c959d952ff81",
+      "source": "user",
+      "kind": "user.text",
+      "status": "done",
+      "tts_eligible": false,
+      "chars": 77,
+      "text": "请用大约六百字写一段连贯的自述，介绍你的来历、日常、性格和在意的人，分成若干自然段，不要用列表，不要用标题。这段文字会被完整朗读出来，请写适合朗读的长句。"
+    },
+    {
+      "message_id": "speech:937b296a-56bb-4449-8912-6ac6c3c5cd59:324b7ea3-a811-46c6-b8c0-c959d952ff81",
+      "source": "character",
+      "kind": "character.speech",
+      "status": "done",
+      "tts_eligible": true,
+      "chars": 728,
+      "text": "我叫白厄，是从哀丽秘榭那片金色麦田里走出来的少年。我们那个地方在翁法罗斯的边陲，麦子熟了的时候，一阵风过去，整片地都像在翻涌。我当时只觉得那地方安静，每天练剑、看麦子，日子过得慢。后来才知道，奥赫玛那边的人给了我一个称呼，叫救世主。黄金裔的"
+    },
+    {
+      "message_id": "5928c53c-a2c3-4d46-bfd6-8b458794d320",
+      "source": "user",
+      "kind": "user.text",
+      "status": "done",
+      "tts_eligible": false,
+      "chars": 16,
+      "text": "打断测试：请只回复两个字：收到。"
+    },
+    {
+      "message_id": "speech:937b296a-56bb-4449-8912-6ac6c3c5cd59:5928c53c-a2c3-4d46-bfd6-8b458794d320",
+      "source": "character",
+      "kind": "character.speech",
+      "status": "done",
+      "tts_eligible": true,
+      "chars": 3,
+      "text": "收到。"
+    }
+  ],
+  "tts_buckets": {
+    "speech:937b296a-56bb-4449-8912-6ac6c3c5cd59:324b7ea3-a811-46c6-b8c0-c959d952ff81": {
+      "message_id": "speech:937b296a-56bb-4449-8912-6ac6c3c5cd59:324b7ea3-a811-46c6-b8c0-c959d952ff81",
+      "chunks": 136,
+      "bytes": 4889600,
+      "first_chunk_at": "2026-09-10T15:08:19.620Z",
+      "last_chunk_at": "2026-09-10T15:08:25.815Z",
+      "end": null,
+      "failed": null,
+      "failed_payload": null
+    },
+    "speech:937b296a-56bb-4449-8912-6ac6c3c5cd59:5928c53c-a2c3-4d46-bfd6-8b458794d320": {
+      "message_id": "speech:937b296a-56bb-4449-8912-6ac6c3c5cd59:5928c53c-a2c3-4d46-bfd6-8b458794d320",
+      "chunks": 3,
+      "bytes": 76800,
+      "first_chunk_at": "2026-09-10T15:08:27.526Z",
+      "last_chunk_at": "2026-09-10T15:08:27.555Z",
+      "end": "2026-09-10T15:08:27.587Z",
+      "failed": null,
+      "failed_payload": null
+    }
+  },
+  "audio_after": "09-10 20:21:58:799 abandonAudioFocus() from uid/pid 10326/13804 clientId=android.media.AudioManager@4ca715ejo1.b@d836804 callingPack=tv.danmaku.bili\n09-10 20:21:59:073 abandonAudioFocus() from uid/pid 10326/13804 clientId=android.media.AudioManager@4ca715ejo1.b@d836804 callingPack=tv.danmaku.bili\n09-10 20:22:02:151 abandonAudioFocus() from uid/pid 10326/13804 clientId=android.media.AudioManager@4ca715ejo1.b@36c41b4 callingPack=tv.danmaku.bili\n09-10 20:22:02:332 requestAudioFocus() from uid/pid 10326/13804 AA=USAGE_MEDIA/CONTENT_TYPE_MOVIE clientId=android.media.AudioManager@4ca715ejo1.b@4fd8b4c callingPack=tv.danmaku.bili req=1 flags=0x3 sdk=35\n09-10 20:22:34:994 abandonAudioFocus() from uid/pid 10326/13804 clientId=android.media.AudioManager@4ca715ejo1.b@4fd8b4c callingPack=tv.danmaku.bili\n09-10 20:34:21:177 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:34:25:698 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:34:26:872 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:34:33:682 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:34:33:980 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:34:34:018 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:34:34:925 requestAudioFocus() from uid/pid 10326/19183 AA=USAGE_MEDIA/CONTENT_TYPE_MOVIE clientId=android.media.AudioManager@84d78cfjo1.b@793c34d callingPack=tv.danmaku.bili req=1 flags=0x3 sdk=35\n09-10 20:34:58:954 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@793c34d callingPack=tv.danmaku.bili\n09-10 20:34:59:074 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:34:59:199 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@793c34d callingPack=tv.danmaku.bili\n09-10 20:34:59:226 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@793c34d callingPack=tv.danmaku.bili\n09-10 20:35:01:733 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:35:15:390 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:35:17:542 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:35:21:616 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:35:21:637 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:35:21:866 requestAudioFocus() from uid/pid 10326/19183 AA=USAGE_MEDIA/CONTENT_TYPE_MOVIE clientId=android.media.AudioManager@84d78cfjo1.b@6a20ab1 callingPack=tv.danmaku.bili req=1 flags=0x3 sdk=35\n09-10 20:35:31:736 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@6a20ab1 callingPack=tv.danmaku.bili\n09-10 20:35:56:642 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@6a20ab1 callingPack=tv.danmaku.bili\n09-10 20:36:00:231 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@85552e callingPack=tv.danmaku.bili\n09-10 20:36:08:755 abandonAudioFocus() from uid/pid 10326/19183 clientId=android.media.AudioManager@84d78cfjo1.b@8555",
+  "sidecar_new_lines": 22,
+  "preempt_log_lines": [
+    "INFO:pair_harness.desktop_backend.application_service:mobile-tts: 非角色可朗读消息，跳过 source=user kind=user.text eligible=False",
+    "INFO:pair_harness.desktop_backend.application_service:mobile-tts: 触发下发 speech:937b296a-56bb-4449-8912-6ac6c3c5cd59:324b7ea3-a811-46c6-b8c0-c959d952ff81（len=728）",
+    "INFO:pair_harness.desktop_backend.application_service:mobile-tts: 开始合成 speech:937b296a-56bb-4449-8912-6ac6c3c5cd59:324b7ea3-a811-46c6-b8c0-c959d952ff81 voice=qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32 ws=wss://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference",
+    "INFO:pair_harness.desktop_backend.application_service:mobile-tts: 非角色可朗读消息，跳过 source=user kind=user.text eligible=False",
+    "INFO:pair_harness.desktop_backend.application_service:mobile-tts: 触发下发 speech:937b296a-56bb-4449-8912-6ac6c3c5cd59:5928c53c-a2c3-4d46-bfd6-8b458794d320（len=3）",
+    "INFO:pair_harness.desktop_backend.application_service:mobile-tts: 开始合成 speech:937b296a-56bb-4449-8912-6ac6c3c5cd59:5928c53c-a2c3-4d46-bfd6-8b458794d320 voice=qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32 ws=wss://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference",
+    "INFO:pair_harness.desktop_backend.application_service:mobile-tts: 合成完成 speech:937b296a-56bb-4449-8912-6ac6c3c5cd59:5928c53c-a2c3-4d46-bfd6-8b458794d320 chunks=3"
+  ],
+  "finished_at": "2026-09-10T15:08:40.618Z"
+}

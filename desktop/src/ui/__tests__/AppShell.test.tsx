@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AppShell } from "../AppShell";
@@ -31,6 +31,8 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
   afterEach(() => {
     cleanup();
     desktopStore.getState().setStatus("booting");
+    // V039-S4-002：自报运行模式属于跨用例会串的状态，逐例复位
+    desktopStore.setState({ backendInfo: null });
   });
 
   it("single-project：导航、气泡与输入区完整渲染", async () => {
@@ -155,6 +157,75 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
     await waitFor(() => expect(desktopStore.getState().status).toBe("booting"));
   });
 
+
+  it("disconnected：生产形状的断连事件下药丸、横幅与 Toast 一致（V039-S4-007）", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    const controller = createActionController(backend);
+    const snapshot = createMockScenario("single-project").snapshot;
+    // 与 Rust 侧一致：快照与事件都带 stream_id 代次，事件按代次校验后才进 store
+    desktopStore.getState().hydrate({ ...snapshot, stream_id: "1", sequence: 10 });
+    const present = () => presentAppShell(desktopStore.getState());
+    const { rerender } = render(<AppShell vm={present()} actions={controller.actions} />);
+    expect(screen.getByRole("button", { name: /连接状态：已连接/ })).toBeInTheDocument();
+
+    // sidecar 被杀：Rust 连发 connection.status 与 error.reported（同代次、同批次）
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "connection.status",
+        sequence: 11,
+        stream_id: "1",
+        payload: { status: "disconnected", stream_id: "1" },
+      },
+      {
+        kind: "event",
+        event: "error.reported",
+        sequence: 12,
+        stream_id: "1",
+        payload: {
+          code: "backend_disconnected",
+          message: "Python Sidecar 已断开，正在重连…",
+          severity: "recoverable",
+          source: "sidecar",
+        },
+      },
+    ]);
+    rerender(<AppShell vm={present()} actions={controller.actions} />);
+
+    // 同一帧里不得同时出现「已连接药丸」与「已断开 Toast」两种相反结论
+    expect(screen.getByText("Python Sidecar 已断开，正在重连…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /连接状态：连接已断开/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /连接状态：已连接/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("与本地服务失去连接");
+
+    // 恢复：断开期间的瞬时通知随恢复撤回，且不得再显示「已连接」药丸
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "connection.status",
+        sequence: 13,
+        stream_id: "2",
+        payload: { status: "connected", stream_id: "2" },
+      },
+    ]);
+    rerender(<AppShell vm={present()} actions={controller.actions} />);
+    expect(screen.queryByText("Python Sidecar 已断开，正在重连…")).not.toBeInTheDocument();
+    expect(desktopStore.getState().status).toBe("booting");
+    expect(screen.queryByRole("button", { name: /连接状态：已连接/ })).not.toBeInTheDocument();
+  });
+
+
+  it("演示模式：Sidecar 自报 demo=true 时与连接状态并列标注（V039-S4-002）", async () => {
+    const { controller, rerender, present } = await renderScenario("single-project");
+    // backend.ready 事件路径由 store 单测覆盖，这里只验证界面把自报的演示模式如实标出来
+    desktopStore.setState({ backendInfo: { pid: 4321, demo: true, modeSource: "flag" } });
+    rerender(<AppShell vm={present()} actions={controller.actions} />);
+
+    // 运行模式与连通性各自成句：演示模式在，同时连接状态如实显示「已连接」
+    expect(screen.getByTestId("demo-mode-badge")).toHaveTextContent("演示模式：未调用真实模型");
+    expect(screen.getByRole("button", { name: /连接状态：已连接/ })).toBeInTheDocument();
+  });
+
   it("booting：只渲染状态页", async () => {
     const backend = new MockDesktopBackend("single-project");
     const controller = createActionController(backend);
@@ -217,6 +288,60 @@ describe("AppShell V0.2 M4 接口接线", () => {
     }
   });
 
+
+  it("gate-default：空密码的默认账号可直接进入应用（V039-S4-005）", async () => {
+    const backend = new MockDesktopBackend("gate-default");
+    const controller = createActionController(backend);
+    const unsubscribe = backend.subscribe((event) => desktopStore.getState().applyEvents([event]));
+    try {
+      await controller.loadBootstrap();
+      const present = () => presentAppShell(desktopStore.getState());
+      const { rerender } = render(<AppShell vm={present()} actions={controller.actions} />);
+
+      // 默认账号（种子未设密码）被默认选中：不填密码，「进入」必须可用
+      expect(screen.getByRole("button", { name: "进入" })).toBeEnabled();
+      fireEvent.click(screen.getByRole("button", { name: "进入" }));
+
+      await waitFor(() =>
+        expect(desktopStore.getState().currentAccount?.last_login_at).not.toBeNull(),
+      );
+      rerender(<AppShell vm={present()} actions={controller.actions} />);
+      // 账号身份仍是默认账号（username=default），账号门必须真的让开
+      expect(screen.queryByText("欢迎回来")).not.toBeInTheDocument();
+      expect(screen.getByRole("navigation", { name: "项目轨道" })).toBeInTheDocument();
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("账号门：切到注册表单时清掉上一次登录错误（V039-S4-006）", async () => {
+    const backend = new MockDesktopBackend("gate-default");
+    const controller = createActionController(backend);
+    const unsubscribe = backend.subscribe((event) => desktopStore.getState().applyEvents([event]));
+    try {
+      await controller.loadBootstrap();
+      const present = () => presentAppShell(desktopStore.getState());
+      // 真实后端会用「密码错误」拒绝；这里直接注入这次失败，验证错误提示的作用域
+      const actions = {
+        ...controller.actions,
+        loginAccount: vi.fn().mockRejectedValue(new Error("密码错误")),
+      };
+      render(<AppShell vm={present()} actions={actions} />);
+
+      fireEvent.change(screen.getByLabelText("密码"), { target: { value: "wrong-pass" } });
+      fireEvent.click(screen.getByRole("button", { name: "进入" }));
+      await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("密码错误"));
+
+      fireEvent.click(screen.getByRole("button", { name: /注册新账号/ }));
+
+      // 注册表单与上一次登录失败无关：错误提示必须已被清理
+      expect(screen.getByRole("heading", { name: "注册新账号" })).toBeInTheDocument();
+      expect(screen.queryByText("密码错误")).not.toBeInTheDocument();
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("onboarding-pending：非默认账号且引导未完成 → 整屏首次引导", async () => {
     await renderScenario("onboarding-pending");
     // 步骤指示器与面板标题都会出现「创建第一个项目」
@@ -252,8 +377,8 @@ describe("AppShell V0.2 M4 接口接线", () => {
     fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
 
     await waitFor(() => expect(testConnection).toHaveBeenCalledOnce());
+    // B-03：前端只写 dialogue.*，引擎由后端按 dialogue.provider 推导
     expect(setConfig).toHaveBeenCalledWith({
-      engine: "deepseek",
       "dialogue.provider": "deepseek",
       "dialogue.base_url": "https://api.deepseek.com",
       "dialogue.model": "deepseek-v4-flash",
@@ -262,31 +387,33 @@ describe("AppShell V0.2 M4 接口接线", () => {
     expect(screen.getByRole("heading", { name: "都准备好了" })).toBeInTheDocument();
   });
 
-  it("引导页 OpenAI 兼容 API 让角色与助手使用同一模型", async () => {
+  it("引导页 OpenAI 兼容 API 只写用户填写的端点，不再调用任何 Codex 登录", async () => {
     const { controller, rerender, present } = await renderScenario("onboarding-pending");
     const setConfig = vi.fn().mockResolvedValue(undefined);
-    const codexApiLogin = vi.fn().mockResolvedValue(undefined);
     const testConnection = vi.fn().mockResolvedValue("连接正常（延迟 12 ms）");
-    const actions = { ...controller.actions, setConfig, codexApiLogin, testConnection };
+    const actions = { ...controller.actions, setConfig, testConnection };
     rerender(<AppShell vm={present()} actions={actions} />);
 
     fireEvent.click(screen.getByRole("button", { name: "跳过" }));
     fireEvent.change(screen.getByLabelText("模型来源"), {
-      target: { value: "OpenAI 兼容 API（包括 OpenAI API）" },
+      target: { value: "openai_compatible" },
+    });
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "https://gateway.example.com/v1" },
     });
     fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "sk-openai" } });
     fireEvent.change(screen.getByLabelText("模型"), { target: { value: "gpt-5.6-sol" } });
     fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
 
     await waitFor(() => expect(testConnection).toHaveBeenCalledOnce());
+    // 自定义 Base URL 必须原样落库：不写 engine，也不经过 codex.api_login（后者会把
+    // dialogue.base_url/model 改回 api.openai.com 默认值，属于静默改写用户配置）
     expect(setConfig).toHaveBeenCalledWith({
-      engine: "codex",
       "dialogue.provider": "openai_compatible",
-      "dialogue.base_url": "https://api.openai.com/v1",
+      "dialogue.base_url": "https://gateway.example.com/v1",
       "dialogue.model": "gpt-5.6-sol",
       "dialogue.api_key": "sk-openai",
     });
-    expect(codexApiLogin).toHaveBeenCalledWith("sk-openai");
     expect(screen.getByRole("heading", { name: "都准备好了" })).toBeInTheDocument();
   });
 
@@ -309,8 +436,12 @@ describe("AppShell V0.2 M4 接口接线", () => {
 
     const toast = screen.getByText("Python Sidecar 已断开，正在重连…");
     expect(toast).toBeInTheDocument();
-    // Toast 有技术详情入口（打开技术详情抽屉）
-    expect(screen.getByRole("button", { name: "查看技术详情" })).toBeInTheDocument();
+    // Toast 有技术详情入口（打开技术详情抽屉）；断连横幅上也有同名按钮，按 Toast 容器取
+    expect(
+      within(toast.closest(".toast") as HTMLElement).getByRole("button", {
+        name: "查看技术详情",
+      }),
+    ).toBeInTheDocument();
 
     // 点击关闭后 Toast 消失
     fireEvent.click(screen.getByRole("button", { name: "关闭通知" }));
@@ -369,12 +500,11 @@ describe("AppShell V0.2 M4 接口接线", () => {
     );
   });
 
-  it("设置页从 DeepSeek 切到 OpenAI OAuth 时先保存再启动登录", async () => {
+  it("设置页切到 OpenAI 兼容 API 时只写 dialogue.* 并测试连接", async () => {
     const { controller, rerender, present } = await renderScenario("single-project");
     const setConfig = vi.fn().mockResolvedValue(undefined);
-    const codexOauthStart = vi.fn().mockResolvedValue(undefined);
-    const testConnection = vi.fn().mockResolvedValue("请先完成 OpenAI OAuth 登录");
-    const actions = { ...controller.actions, setConfig, codexOauthStart, testConnection };
+    const testConnection = vi.fn().mockResolvedValue("连接正常（延迟 33 ms）");
+    const actions = { ...controller.actions, setConfig, testConnection };
     rerender(<AppShell vm={present()} actions={actions} />);
 
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
@@ -384,15 +514,14 @@ describe("AppShell V0.2 M4 接口接线", () => {
     fireEvent.click(screen.getByRole("button", { name: "角色对话模型" }));
     await waitFor(() => expect(screen.getByLabelText("服务商")).toHaveValue("deepseek"));
     fireEvent.change(screen.getByLabelText("服务商"), {
-      target: { value: "openai_oauth" },
+      target: { value: "openai_compatible" },
     });
     fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
 
     await waitFor(() => expect(setConfig).toHaveBeenCalledOnce());
-    await waitFor(() => expect(codexOauthStart).toHaveBeenCalledOnce());
-    expect(testConnection).not.toHaveBeenCalled();
+    expect(testConnection).toHaveBeenCalledOnce();
     expect(setConfig).toHaveBeenCalledWith({
-      "dialogue.provider": "openai_oauth",
+      "dialogue.provider": "openai_compatible",
       "dialogue.base_url": "https://api.openai.com/v1",
       "dialogue.model": "gpt-5.6-sol",
     });
@@ -565,8 +694,8 @@ describe("AppShell QueueStrip 接线（V0.2 M4）", () => {
     );
     await waitFor(() =>
       expect(screen.getByTestId("character-voice-select")).toHaveValue("card-draft-001"),
-    );
-    // AppShell 必须把 actions 传入 SettingsCenter，否则音色区会显示「服务未接入」块
+    );
+    // AppShell 必须把 actions 传入 SettingsCenter，否则音色区会显示「服务未接入」块
     expect(screen.queryByTestId("environment-unavailable-block")).not.toBeInTheDocument();
 
     // Esc 关闭后从顶栏齿轮重新打开：预选卡不得残留

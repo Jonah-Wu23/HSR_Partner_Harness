@@ -4,19 +4,25 @@ import type { HarnessActions } from "../../contracts/actions";
 import type {
   AccountPageView,
   CharacterModelPageView,
-  CodingAssistantPageView,
   TestResult,
   VoiceProvisionResult,
   VoicePageView,
   VoiceSpeakerStatus,
 } from "./types";
+import {
+  DIALOGUE_PROVIDERS,
+  DIALOGUE_PROVIDER_IDS,
+  isSupportedDialogueProvider,
+  normalizeDialogueProvider,
+} from "./dialogueProviders";
 import type { CharacterCardVoicePageViewModel, RemotePairingViewModel } from "../../contracts/view-models";
 import type { FileFilter } from "../../services/backend";
 import { CharacterVoiceSection } from "./CharacterVoiceSection";
 import { RemotePairingPanel } from "./remote/RemotePairingPanel";
 import { PowerStatusSection } from "../power/PowerStatusSection";
+import { MemoryPanel } from "../memory/MemoryPanel";
 
-export type SettingsPage = "account" | "coding" | "model" | "voice" | "remote";
+export type SettingsPage = "account" | "coding" | "model" | "voice" | "memory" | "remote";
 
 interface SettingsCenterProps {
   open: boolean;
@@ -24,7 +30,6 @@ interface SettingsCenterProps {
   onPageChange: (page: SettingsPage) => void;
   onClose: () => void;
   account: AccountPageView;
-  coding: CodingAssistantPageView;
   model: CharacterModelPageView;
   voice: VoicePageView;
   /** V0.3.5：语音页「角色音色」区数据（卡列表 + 账号语音配置完备性）。 */
@@ -45,9 +50,6 @@ interface SettingsCenterProps {
   onSaveProfile: (displayName: string) => void;
   onChangePassword: (oldPassword: string, newPassword: string) => void;
   onLogout: () => void;
-  onCodexOAuthStart: () => void | Promise<void>;
-  onCodexLogout: () => void;
-  onCodexApiLogin: (apiKey: string) => void;
   onSaveModel: (config: CharacterModelPageView & { apiKey?: string }) => void | Promise<void>;
   onTestModel: () => void;
   /** 保存当前本地账号的语音配置与开关偏好。 */
@@ -72,6 +74,7 @@ const NAV: Array<{ id: SettingsPage; label: string }> = [
   { id: "coding", label: "编程助手" },
   { id: "model", label: "角色对话模型" },
   { id: "voice", label: "语音" },
+  { id: "memory", label: "长期记忆" },
   { id: "remote", label: "远程设备" },
 ];
 
@@ -268,103 +271,30 @@ function AccountPage(props: SettingsCenterProps) {
   );
 }
 
-function CodingAssistantPage(props: SettingsCenterProps) {
-  const [apiKey, setApiKey] = useState("");
-  const [oauthError, setOauthError] = useState<string | null>(null);
-  const { codex } = props.coding;
-
-  const startOAuth = async () => {
-    setOauthError(null);
-    try {
-      await props.onCodexOAuthStart();
-    } catch (error) {
-      setOauthError(error instanceof Error ? error.message : String(error));
-    }
-  };
-
+function CodingAssistantPage() {
   return (
     <section className="settings-page">
       <p className="settings-hint">
-        供应商在「角色对话模型」页统一选择，角色和助手始终使用同一家：OpenAI OAuth/API 使用 GPT，DeepSeek 使用 DeepSeek。
+        编程助手不单独配置账号：它在「角色对话模型」页选择的服务商、Base URL 与 API Key
+        同时用于角色对话和助手读写项目，保存后从下一个任务开始生效。
       </p>
-
-      {props.coding.engine === "codex" ? (
-        <div className={`settings-status-card settings-status-${codex.status}`}>
-          {codex.status === "logged_in" ? (
-            <>
-              <p className="settings-status-ok">已登录 {codex.accountLabel ?? "Codex"}</p>
-              <div className="settings-row">
-                <button type="button" className="btn btn-outline" onClick={() => void startOAuth()}>
-                  重新授权
-                </button>
-                <button type="button" className="btn btn-danger-outline" onClick={props.onCodexLogout}>
-                  退出登录
-                </button>
-              </div>
-            </>
-          ) : codex.status === "waiting" ? (
-            <p role="status">等待浏览器授权… 请在打开的浏览器页面完成登录。</p>
-          ) : (
-            <>
-              {codex.status === "expired" ? (
-                <p className="field-error" role="alert">登录已过期，请重新授权。</p>
-              ) : null}
-              <div className="settings-row">
-                <button type="button" className="btn btn-primary" onClick={() => void startOAuth()}>
-                  通过浏览器登录
-                </button>
-              </div>
-              {oauthError ? <p className="field-error" role="alert">{oauthError}</p> : null}
-              <h3 className="settings-subhead">或使用 API Key</h3>
-              <label className="field">
-                <span className="field-label">OpenAI API Key</span>
-                <input
-                  type="password"
-                  value={apiKey}
-                  onChange={(event) => setApiKey(event.target.value)}
-                />
-              </label>
-              <div className="settings-row">
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  disabled={!apiKey}
-                  onClick={() => props.onCodexApiLogin(apiKey)}
-                >
-                  保存并验证
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      ) : (
-        <p className="settings-hint">
-          DeepSeek 编程助手复用「角色对话模型」页的服务商与 Key，保存后下一个任务生效。
-        </p>
-      )}
     </section>
   );
 }
 
 function CharacterModelPage(props: SettingsCenterProps) {
-  const normalizeProvider = (value: string) => {
-    const normalized = value.trim().toLowerCase().replaceAll("_", " ");
-    if (normalized.includes("deepseek")) return "deepseek";
-    if (normalized.includes("oauth")) return "openai_oauth";
-    return "openai_compatible";
-  };
-  const defaultsForProvider = (provider: string) =>
-    provider === "deepseek"
-      ? { baseUrl: "https://api.deepseek.com", model: "deepseek-v4-flash" }
-      : { baseUrl: "https://api.openai.com/v1", model: "gpt-5.6-sol" };
   const [form, setForm] = useState({
     ...props.model,
-    provider: normalizeProvider(props.model.provider),
+    provider: normalizeDialogueProvider(props.model.provider),
   });
-  const initialProvider = normalizeProvider(props.model.provider);
+  const initialProvider = normalizeDialogueProvider(props.model.provider);
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // B-03：服务商是否可用以后端 config.get 的 provider_supported 为准，前端不自行
+  // 推断；只有「后端判定不可用 + 用户还没改选」才拦保存，改选后立即恢复。
+  const providerBlocked = !props.model.providerSupported && form.provider === initialProvider;
+  const unavailable = props.model.providerUnavailable;
   const dirty =
     form.provider !== initialProvider ||
     form.model !== props.model.model ||
@@ -380,14 +310,35 @@ function CharacterModelPage(props: SettingsCenterProps) {
           value={form.provider}
           onChange={(event) => {
             const provider = event.target.value;
-            setForm({ ...form, provider, ...defaultsForProvider(provider) });
+            setForm({
+              ...form,
+              provider,
+              ...(isSupportedDialogueProvider(provider)
+                ? {
+                    baseUrl: DIALOGUE_PROVIDERS[provider].baseUrl,
+                    model: DIALOGUE_PROVIDERS[provider].model,
+                  }
+                : {}),
+            });
           }}
         >
-          <option value="deepseek">DeepSeek</option>
-          <option value="openai_compatible">OpenAI API</option>
-          <option value="openai_oauth">OpenAI OAuth</option>
+          {providerBlocked && unavailable ? (
+            <option value={form.provider} disabled>
+              {unavailable.message}
+            </option>
+          ) : null}
+          {DIALOGUE_PROVIDER_IDS.map((id) => (
+            <option key={id} value={id}>
+              {DIALOGUE_PROVIDERS[id].label}
+            </option>
+          ))}
         </select>
       </label>
+      {providerBlocked && unavailable ? (
+        <p className="field-error" role="alert">
+          {unavailable.message}
+        </p>
+      ) : null}
       <label className="field">
         <span className="field-label">模型</span>
         <input value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} />
@@ -438,16 +389,12 @@ function CharacterModelPage(props: SettingsCenterProps) {
         <button
           type="button"
           className="btn btn-primary"
-          disabled={!dirty || saving}
+          disabled={!dirty || saving || providerBlocked}
           onClick={() => {
             setSaving(true);
             setSaveError(null);
             void Promise.resolve(props.onSaveModel({ ...form, apiKey: apiKey || undefined }))
-              .then(() => {
-                // OAuth 的保存动作会直接启动浏览器登录；此时不能立刻拿
-                // 尚未登录的 OAuth 状态去做连接测试并显示失败。
-                if (form.provider !== "openai_oauth") props.onTestModel();
-              })
+              .then(() => props.onTestModel())
               .catch((error: unknown) => {
                 setSaveError(error instanceof Error ? error.message : String(error));
               })
@@ -861,6 +808,10 @@ function VoicePage(props: SettingsCenterProps) {
   );
 }
 
+function MemoryPage(props: SettingsCenterProps) {
+  return <MemoryPanel actions={props.actions} />;
+}
+
 function RemotePage(props: SettingsCenterProps) {
   return (
     <>
@@ -881,5 +832,6 @@ const PAGES = {
   coding: CodingAssistantPage,
   model: CharacterModelPage,
   voice: VoicePage,
+  memory: MemoryPage,
   remote: RemotePage,
 };

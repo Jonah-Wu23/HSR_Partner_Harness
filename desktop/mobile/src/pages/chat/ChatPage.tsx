@@ -7,18 +7,23 @@ import type {
   Message,
   PendingApproval,
 } from "@shared/contracts/protocol";
+import { ContextStatusStrip } from "../../components/ContextStatusStrip";
+import { ChatStatusHint } from "../../components/ChatStatusHint";
 import { ApprovalCard } from "../../components/cards/ApprovalCard";
 import { ArrowDownIcon, BackIcon, MicIcon, StopIcon } from "../../components/cards/icons";
 import { DelegationCard, type DelegationStatus } from "../../components/cards/DelegationCard";
 import { ToolCard } from "../../components/cards/ToolCard";
 import { useMobileStore } from "../../lib/mobileStore";
 import { navigateBack } from "../../lib/router";
+import { RemoteCommandError } from "../../lib/wsClient";
 import { useVoiceCapture } from "../../lib/useVoiceCapture";
 import { useVoicePlayback } from "../../lib/voicePlayback";
 import { ChatComposer, type ChatComposerTarget } from "./ChatComposer";
 import { MessageBubble } from "./MessageBubble";
 import { QueueItemRow } from "./QueueItemRow";
 import { useChatTimeline, type TimelineItem } from "./useChatTimeline";
+import { useContextStatus } from "./useContextStatus";
+import { usePlaybackErrorCode, usePlaybackInterruption } from "./usePlaybackStatus";
 import "./chat.css";
 
 export interface ChatPageProps {
@@ -80,6 +85,11 @@ export function ChatPage({ conversationId }: ChatPageProps) {
   const allResolved = useMobileStore((state) => state.resolvedApprovals);
   const projects = useMobileStore((state) => state.projects);
   const setApprovalMode = useMobileStore((state) => state.setApprovalMode);
+  const connection = useMobileStore((state) => state.connection);
+  const bootstrapped = useMobileStore((state) => state.bootstrapped);
+  const controlLostAt = useMobileStore(
+    (state) => (state as unknown as { controlLostAt?: string | null }).controlLostAt ?? null,
+  );
 
   const approvals = (allApprovals ?? []).filter(
     (a) => a.conversation_id === conversationId,
@@ -94,10 +104,26 @@ export function ChatPage({ conversationId }: ChatPageProps) {
   const [modeSwitching, setModeSwitching] = useState(false);
   const [modeError, setModeError] = useState<string | null>(null);
   const [resolvingApprovalIds, setResolvingApprovalIds] = useState<Set<string>>(new Set());
+  // V0.3.9 V07：审批 resolve 的真实错误与幂等终态必须在页内可见（此前 177-191 行
+  // 静默吞掉非 approval_already_resolved 的错误，违反 Let It Fail）。
+  const [approvalErrors, setApprovalErrors] = useState<Record<string, string>>({});
+  const [approvalNotices, setApprovalNotices] = useState<Record<string, string>>({});
+  // V0.3.9 V02：summary.regenerate 的提交与真实错误。
+  const [regenerating, setRegenerating] = useState(false);
+  const [regenerateError, setRegenerateError] = useState<string | null>(null);
+  // V0.3.9 V08：软键盘占位高度（visualViewport 驱动；null=键盘未占位或引擎不支持）。
+  const [keyboardViewportHeight, setKeyboardViewportHeight] = useState<number | null>(null);
+  // V0.3.9 P1：面板开合是独立于采集模式的本地状态。此前面板可见性由
+  // voice.mode !== "off" 推导，导致「打开面板」必然隐式开始 auto 采集，
+  // 采集报错（mode 复位 off）又会连带关掉面板、吞掉错误提示。
+  const [voicePanelOpen, setVoicePanelOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const voice = useVoiceCapture(conversationId);
   const { playingMessageId, playbackMessageId, playbackError } = useVoicePlayback(conversationId);
+  const contextStatus = useContextStatus(conversationId);
+  const playbackErrorCode = usePlaybackErrorCode();
+  const playbackInterruption = usePlaybackInterruption();
 
   // 装载会话
   useEffect(() => {
@@ -107,6 +133,37 @@ export function ChatPage({ conversationId }: ChatPageProps) {
       setLoadError(message);
     });
   }, [conversationId, openConversation]);
+
+  // V0.3.9 V08：软键盘处理。visualViewport 是软键盘唯一可靠信号（dvh 只跟随
+  // 浏览器工具栏收起/展开，不跟随键盘）；不支持 visualViewport 的引擎回退到
+  // chat.css 的 100dvh / 100vh 两档。仅当键盘真实占位（布局视口与可视视口差值
+  // 超过 120px）时才把容器压到可视高度，避免浏览器工具栏变化引起的抖动。
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const sync = () => {
+      const inset = Math.round(window.innerHeight - viewport.height);
+      setKeyboardViewportHeight(inset > 120 ? Math.round(viewport.height) : null);
+    };
+    sync();
+    viewport.addEventListener("resize", sync);
+    viewport.addEventListener("scroll", sync);
+    return () => {
+      viewport.removeEventListener("resize", sync);
+      viewport.removeEventListener("scroll", sync);
+    };
+  }, []);
+
+  // 键盘弹出/收起后把最新消息重新贴到底部：输入区与最新回复同时可见。
+  useEffect(() => {
+    if (keyboardViewportHeight === null) return;
+    setPinned(true);
+    const node = scrollRef.current;
+    if (node) {
+      node.scrollTop = node.scrollHeight;
+    }
+  }, [keyboardViewportHeight]);
 
   const { items, isStreaming } = useChatTimeline(conversationId);
 
@@ -174,19 +231,71 @@ export function ChatPage({ conversationId }: ChatPageProps) {
   const handleSubmit = (text: string) =>
     target === "assistant" ? submitDelegation(text) : submitMessage(text);
 
+  const clearApprovalFeedback = (approvalId: string) => {
+    setApprovalErrors((prev) => {
+      if (!(approvalId in prev)) return prev;
+      const next = { ...prev };
+      delete next[approvalId];
+      return next;
+    });
+    setApprovalNotices((prev) => {
+      if (!(approvalId in prev)) return prev;
+      const next = { ...prev };
+      delete next[approvalId];
+      return next;
+    });
+  };
+
   const handleResolve = async (approvalId: string, decision: string) => {
     setResolvingApprovalIds((prev) => new Set(prev).add(approvalId));
+    clearApprovalFeedback(approvalId);
     try {
       await resolveApproval(approvalId, decision);
-    } catch {
-      // 错误（含 approval_already_resolved）已由 store 写入 resolvedApprovals，
-      // 本端只需要让按钮退出提交中状态。
+    } catch (err) {
+      // Let It Fail：契约 §6 规定命令错误除幂等终态外均须显示或抛出。
+      // approval_already_resolved 是服务端真实终态，展示服务端原文而非报错；
+      // 其余错误（含 error_code）在页内如实展示，不再静默。
+      const code = err instanceof RemoteCommandError ? err.code : "";
+      const message = err instanceof Error ? err.message : String(err);
+      if (code === "approval_already_resolved") {
+        setApprovalNotices((prev) => ({ ...prev, [approvalId]: message }));
+      } else {
+        setApprovalErrors((prev) => ({
+          ...prev,
+          [approvalId]: code ? `${code}：${message}` : message,
+        }));
+      }
     } finally {
       setResolvingApprovalIds((prev) => {
         const next = new Set(prev);
         next.delete(approvalId);
         return next;
       });
+    }
+  };
+
+  // V0.3.9 V02：恢复按钮只在 store 提供真实 summary.regenerate 动作时可用；
+  // 真实错误原文照实展示，不合成成功。
+  const handleRegenerate = async (summaryId: string) => {
+    const regenerate = contextStatus.regenerateSummary;
+    if (!regenerate) return;
+    setRegenerating(true);
+    setRegenerateError(null);
+    try {
+      await regenerate(summaryId);
+    } catch (err) {
+      setRegenerateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
+  const handleInputFocus = () => {
+    // 聚焦输入时把最新消息贴到底部，键盘抬起后输入区与最新回复同屏。
+    setPinned(true);
+    const node = scrollRef.current;
+    if (node) {
+      node.scrollTop = node.scrollHeight;
     }
   };
 
@@ -237,10 +346,14 @@ export function ChatPage({ conversationId }: ChatPageProps) {
     );
   };
 
-  const showVoicePanel = voice.mode !== "off";
+  // V0.3.9 V08：键盘占位时把聊天容器压到 visualViewport 高度；无占位时为
+  // undefined，由 chat.css 的 100dvh / 100vh 回退控制。
+  const viewportStyle = keyboardViewportHeight
+    ? { height: `${keyboardViewportHeight}px`, maxHeight: `${keyboardViewportHeight}px` }
+    : undefined;
 
   return (
-    <main className="mobile-chat-container" data-testid="chat-page">
+    <main className="mobile-chat-container" data-testid="chat-page" style={viewportStyle}>
       {/* 顶栏：返回按钮 + 标题与模式 + 状态 */}
       <header className="mobile-chat-header">
         <button
@@ -265,6 +378,63 @@ export function ChatPage({ conversationId }: ChatPageProps) {
       {loadError ? (
         <div className="mobile-composer-error" style={{ margin: "8px 12px 0" }} role="alert">
           <span className="mobile-composer-error-text">会话装载失败：{loadError}</span>
+        </div>
+      ) : null}
+
+      {/* V0.3.9 V06：聊天页页内连接 / 重新同步 / 失去控制权轻提示。
+          与顶部全局 ConnectionBanner 分工：showConnection=false 避免连接态重复，
+          重点提供重同步与失去控制权事实提示；无事实时返回 null。 */}
+      <ChatStatusHint
+        connection={connection}
+        resyncing={!bootstrapped && connection === "connected"}
+        leaseLostAt={controlLostAt}
+        showConnection={false}
+      />
+
+      {/* V0.3.9 V02：压缩 / 记忆非消息状态条。无真实数据时组件自身返回 null，
+          不显示「压缩完成」「记忆 0 条」这类伪造状态。 */}
+      <ContextStatusStrip
+        summary={contextStatus.summary}
+        memories={contextStatus.memories}
+        onRegenerate={contextStatus.regenerateSummary ? handleRegenerate : null}
+        regenerating={regenerating}
+        regenerateError={regenerateError}
+      />
+
+      {/* V0.3.9 V07：页级播放错误条。气泡内提示受 tts_ready 与虚拟化渲染窗口
+          限制（消息已移出窗口就看不到错误），pcm_overflow 等真实错误码与原始
+          错误必须页级可见。 */}
+      {playbackError ? (
+        <div className="mobile-playback-error" role="alert" data-testid="playback-error-bar">
+          <span className="mobile-playback-error-label">朗读失败</span>
+          {playbackErrorCode ? (
+            <code className="mobile-playback-error-code" data-testid="playback-error-code">
+              {playbackErrorCode}
+            </code>
+          ) : null}
+          <span className="mobile-playback-error-text" data-testid="playback-error-text">
+            {playbackError}
+          </span>
+        </div>
+      ) : null}
+
+      {/* V0.3.9 V07：抢占反馈。voice.playback_interrupted 落地前按冻结事件类型
+          先出提示；reason 有值才展示原因，不合成结论。 */}
+      {playbackInterruption ? (
+        <div
+          className="mobile-playback-interrupted"
+          role="status"
+          data-testid="playback-interrupted"
+        >
+          <span className="mobile-playback-interrupted-text">已被新回复打断 / 已停止</span>
+          {playbackInterruption.reason ? (
+            <span
+              className="mobile-playback-interrupted-reason"
+              data-testid="playback-interrupted-reason"
+            >
+              {playbackInterruption.reason}
+            </span>
+          ) : null}
         </div>
       ) : null}
 
@@ -306,8 +476,33 @@ export function ChatPage({ conversationId }: ChatPageProps) {
       })()}
 
       {/* 审批卡片区：待审批 + 已决收敛 */}
-      {approvals.length > 0 || resolvedApprovals.length > 0 ? (
+      {approvals.length > 0 ||
+      resolvedApprovals.length > 0 ||
+      Object.keys(approvalErrors).length > 0 ||
+      Object.keys(approvalNotices).length > 0 ? (
         <section className="mobile-chat-approvals" aria-label="审批操作">
+          {/* V0.3.9 V07：审批 resolve 的真实错误（含 error_code）页内可见。 */}
+          {Object.entries(approvalErrors).map(([approvalId, message]) => (
+            <p
+              key={`approval-error-${approvalId}`}
+              className="mobile-approval-error"
+              role="alert"
+              data-testid="approval-resolve-error"
+            >
+              审批提交失败：{message}
+            </p>
+          ))}
+          {/* 幂等终态（approval_already_resolved）：展示服务端真实终态原文，不报错也不吞。 */}
+          {Object.entries(approvalNotices).map(([approvalId, message]) => (
+            <p
+              key={`approval-notice-${approvalId}`}
+              className="mobile-approval-notice"
+              role="status"
+              data-testid="approval-resolve-notice"
+            >
+              审批已由服务端终态收敛：{message}
+            </p>
+          ))}
           {approvals.map((approval) => (
             <ApprovalCard
               key={approval.approval_id}
@@ -321,7 +516,18 @@ export function ChatPage({ conversationId }: ChatPageProps) {
               onReject={() => void handleResolve(approval.approval_id, "deny")}
             />
           ))}
-          {resolvedApprovals.map((resolved) => (
+          {resolvedApprovals.map((resolved) => {
+            // V0.3.9 待真实接线：ApprovalResolvedPayload 的 actor / reason /
+            // error_code / resolved_at 目前没有进入 store 的 resolvedApprovals
+            // 记录（store 只保留 decision / resolved_by / 申请理由）。此处按
+            // 可选字段读取，逻辑轨补上后无需改本页即可展示；缺失保持 null。
+            const resolvedExtras = resolved as typeof resolved & {
+              actor?: string | null;
+              resolved_reason?: string | null;
+              error_code?: string | null;
+              resolved_at?: string | null;
+            };
+            return (
             <ApprovalCard
               key={resolved.approval_id}
               approval={{
@@ -341,8 +547,13 @@ export function ChatPage({ conversationId }: ChatPageProps) {
               status="resolved"
               decision={resolved.decision}
               resolvedBy={resolved.resolved_by}
+              actor={resolvedExtras.actor ?? null}
+              resolvedReason={resolvedExtras.resolved_reason ?? null}
+              errorCode={resolvedExtras.error_code ?? null}
+              resolvedAt={resolvedExtras.resolved_at ?? null}
             />
-          ))}
+            );
+          })}
         </section>
       ) : null}
 
@@ -463,68 +674,69 @@ export function ChatPage({ conversationId }: ChatPageProps) {
                 语音不可用：{voice.disabledReason}
               </span>
             </div>
-          ) : showVoicePanel ? (
+          ) : voicePanelOpen ? (
             <div className="mobile-voice-panel">
-              <div className="mobile-voice-mode-switch" role="group" aria-label="语音输入模式">
-                <button
-                  type="button"
-                  className={`mobile-voice-mode-btn${voice.mode === "hold" ? " active" : ""}`}
-                  aria-pressed={voice.mode === "hold"}
-                  data-testid="voice-mode-hold"
-                  onClick={() => {
-                    if (voice.mode === "auto") {
-                      void voice.stopListening().then(() => voice.activateHold());
-                    } else {
-                      voice.activateHold();
-                    }
-                  }}
-                >
-                  按住说话
-                </button>
+              {/* V0.3.9 P1：面板内是两个互斥操作，不再有「按住说话 / 自动检测」模式
+                  切换分段控件——那个控件绑的是 onClick 且隐式开始采集，与下方同文案的
+                  大按钮抢同一个短语，用户按到的往往是不能抬起的那一个。 */}
+
+              {/* 按住说话：pointerdown 起采，抬起 / 取消即停止并发最终转写 */}
+              <button
+                type="button"
+                className="mobile-voice-hold-btn"
+                data-testid="voice-hold-btn"
+                aria-label="按住说话"
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  // 捕获指针：手指轻微滑出按钮不再误中断，抬起 / 取消仍派发到本元素。
+                  e.currentTarget.setPointerCapture?.(e.pointerId);
+                  voice.beginHoldCapture();
+                }}
+                onPointerUp={(e) => {
+                  e.preventDefault();
+                  voice.endHoldCapture();
+                }}
+                onPointerCancel={(e) => {
+                  e.preventDefault();
+                  voice.endHoldCapture();
+                }}
+                onLostPointerCapture={() => {
+                  voice.endHoldCapture();
+                }}
+                onContextMenu={(e) => {
+                  // 抑制长按弹出的系统菜单：长按期间必须一直属于采集
+                  e.preventDefault();
+                }}
+              >
+                <MicIcon />
+                {voice.captureState === "recording" ? "聆听中…" : "按住说话"}
+              </button>
+
+              {voice.mode === "hold" && voice.captureState !== "idle" ? (
+                <span className="mobile-voice-listening" data-testid="voice-hold-status">
+                  <span className="mobile-voice-listening-dot" aria-hidden="true" />
+                  {voice.captureState === "recording"
+                    ? "聆听中，抬起发送"
+                    : voice.captureState === "starting"
+                      ? "准备中…"
+                      : "正在结束…"}
+                </span>
+              ) : null}
+
+              {/* 自动检测：点击开始，再点停止（本地静音检测自动收尾） */}
+              <div className="mobile-voice-mode-switch" role="group" aria-label="自动检测语音输入">
                 <button
                   type="button"
                   className={`mobile-voice-mode-btn${voice.mode === "auto" ? " active" : ""}`}
                   aria-pressed={voice.mode === "auto"}
-                  data-testid="voice-mode-auto"
-                  onClick={() => {
-                    if (voice.mode === "hold") {
-                      void voice.stopListening().then(() => voice.toggleAuto());
-                    } else {
-                      voice.toggleAuto();
-                    }
-                  }}
+                  data-testid="voice-auto-toggle-btn"
+                  onClick={() => voice.toggleAuto()}
                 >
                   自动检测
                 </button>
               </div>
 
-              {voice.mode === "hold" ? (
-                <button
-                  type="button"
-                  className="mobile-voice-hold-btn"
-                  data-testid="voice-hold-btn"
-                  aria-label="按住说话"
-                  onPointerDown={(e) => {
-                    e.preventDefault();
-                    voice.activateHold();
-                  }}
-                  onPointerUp={(e) => {
-                    e.preventDefault();
-                    voice.deactivateHold();
-                  }}
-                  onPointerLeave={(e) => {
-                    e.preventDefault();
-                    voice.deactivateHold();
-                  }}
-                  onPointerCancel={(e) => {
-                    e.preventDefault();
-                    voice.deactivateHold();
-                  }}
-                >
-                  <MicIcon />
-                  {voice.captureState === "recording" ? "聆听中…" : "按住说话"}
-                </button>
-              ) : (
+              {voice.mode === "auto" ? (
                 <div className="mobile-voice-auto">
                   <span className="mobile-voice-listening">
                     <span className="mobile-voice-listening-dot" aria-hidden="true" />
@@ -541,7 +753,7 @@ export function ChatPage({ conversationId }: ChatPageProps) {
                     停止
                   </button>
                 </div>
-              )}
+              ) : null}
 
               {voice.transcriptText ? (
                 <p className="mobile-voice-transcript" data-testid="voice-transcript">
@@ -552,14 +764,23 @@ export function ChatPage({ conversationId }: ChatPageProps) {
               {voice.captureError ? (
                 <div className="mobile-voice-error" role="alert" data-testid="voice-capture-error">
                   <span>语音失败：{voice.captureError}</span>
-                  <button
-                    type="button"
-                    className="mobile-voice-retry-btn"
-                    data-testid="voice-retry-btn"
-                    onClick={() => (voice.mode === "hold" ? voice.activateHold() : voice.toggleAuto())}
-                  >
-                    重试
-                  </button>
+                  {/* 重试入口按「最近一次尝试的模式」给，不看当前 mode：
+                      启动失败后 capture 回 idle，复位 effect 会把 mode 收回 off，
+                      按 mode 判断会让自动检测的重试按钮永远不可达。 */}
+                  {voice.lastAttemptMode === "auto" ? (
+                    <button
+                      type="button"
+                      className="mobile-voice-retry-btn"
+                      data-testid="voice-retry-btn"
+                      onClick={() => voice.toggleAuto()}
+                    >
+                      重试
+                    </button>
+                  ) : (
+                    // 按住说话是按压语义：重试就是再按住一次大按钮，
+                    // 不给 click 启动入口（click 不构成一次按压）。
+                    <span data-testid="voice-hold-retry-hint">请再次按住说话重试</span>
+                  )}
                 </div>
               ) : null}
 
@@ -567,7 +788,12 @@ export function ChatPage({ conversationId }: ChatPageProps) {
                 type="button"
                 className="mobile-voice-close-btn"
                 data-testid="voice-close-btn"
-                onClick={() => voice.stopListening()}
+                onClick={() => {
+                  // 先停采集再合面板：停止失败会由 store 写入 captureError，
+                  // 面板合上不再展示，故停止动作必须真的发出去（不因合面板跳过）。
+                  void voice.stopListening();
+                  setVoicePanelOpen(false);
+                }}
               >
                 关闭语音
               </button>
@@ -578,7 +804,7 @@ export function ChatPage({ conversationId }: ChatPageProps) {
                 type="button"
                 className="mobile-voice-trigger-btn"
                 data-testid="voice-trigger-btn"
-                onClick={() => voice.toggleAuto()}
+                onClick={() => setVoicePanelOpen(true)}
                 aria-label="语音输入"
               >
                 <MicIcon />
@@ -590,6 +816,7 @@ export function ChatPage({ conversationId }: ChatPageProps) {
 
         <ChatComposer
           target={target}
+          onInputFocus={handleInputFocus}
           disabled={assistantBlocked}
           disabledHint={assistantBlocked
             ? "对话模式下助手不接收委派，请先切换到协作模式。"

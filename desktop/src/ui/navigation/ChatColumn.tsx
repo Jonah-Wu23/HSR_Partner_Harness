@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import type { HarnessActions } from "../../contracts/actions";
 import type {
   ConversationViewModel,
@@ -126,6 +127,34 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
     ].filter((group) => group.items.length > 0);
   }, [filtered]);
 
+  type FlatChatRow =
+    | { kind: "header"; id: string; label: string }
+    | { kind: "item"; conversation: ConversationViewModel };
+
+  const flatRows = useMemo<FlatChatRow[]>(() => {
+    const result: FlatChatRow[] = [];
+    for (const group of groups) {
+      result.push({ kind: "header", id: group.id, label: group.label });
+      for (const item of group.items) {
+        result.push({ kind: "item", conversation: item });
+      }
+    }
+    return result;
+  }, [groups]);
+
+  const shouldVirtualize = flatRows.length > 40;
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const virtualizer = useVirtualizer({
+    count: flatRows.length,
+    getScrollElement: () => chatScrollRef.current,
+    estimateSize: (index) => (flatRows[index]?.kind === "header" ? 28 : 64),
+    overscan: 6,
+    getItemKey: (index) => {
+      const row = flatRows[index];
+      return row?.kind === "header" ? `h-${row.id}` : row?.conversation.conversation_id ?? index;
+    },
+  });
+
   const pathBroken = currentProject !== null && !currentProject.path_available;
 
   const commitRename = (conversationId: string) => {
@@ -142,6 +171,11 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
   };
 
   const renderRow = (conversation: ConversationViewModel) => {
+    const extendedConv = conversation as ConversationViewModel & {
+      unreadCount?: number;
+      isCompleted?: boolean;
+    };
+    const hasUnread = typeof extendedConv.unreadCount === "number" && extendedConv.unreadCount > 0;
     const editing = editingId === conversation.conversation_id;
     const convPairId = conversation.pair_id;
     const matchedPair =
@@ -210,7 +244,18 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
             >
               <div className="conv-title-row">
                 {conversation.isRunning ? <span className="conv-running-dot" aria-hidden /> : null}
+                {extendedConv.isCompleted && !conversation.isRunning ? (
+                  <span className="conv-completed-dot" aria-hidden title="任务已完成" />
+                ) : null}
                 <span className="conv-title">{conversation.title}</span>
+                {hasUnread ? (
+                  <span
+                    className="conv-unread-badge"
+                    aria-label={`${extendedConv.unreadCount} 条未读`}
+                  >
+                    {extendedConv.unreadCount! > 99 ? "99+" : extendedConv.unreadCount}
+                  </span>
+                ) : null}
               </div>
               {meta}
             </button>
@@ -417,7 +462,7 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
         />
       ) : null}
 
-      <div className="chat-groups">
+      <div className="chat-groups" ref={chatScrollRef}>
         {!currentProject ? (
           <div className="nav-empty">
             <span>还没有项目</span>
@@ -433,6 +478,40 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
           <div className="nav-empty">还没有聊天，点击上方新建</div>
         ) : groups.length === 0 ? (
           <div className="nav-empty">没有匹配的聊天</div>
+        ) : shouldVirtualize ? (
+          <div
+            className="chat-groups-virtual"
+            style={{
+              height: `${virtualizer.getTotalSize()}px`,
+              position: "relative",
+              width: "100%",
+            }}
+          >
+            {virtualizer.getVirtualItems().map((vItem) => {
+              const row = flatRows[vItem.index];
+              if (!row) return null;
+              return (
+                <div
+                  key={vItem.key}
+                  ref={virtualizer.measureElement}
+                  data-index={vItem.index}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    transform: `translateY(${vItem.start}px)`,
+                  }}
+                >
+                  {row.kind === "header" ? (
+                    <div className="chat-group-label">{row.label}</div>
+                  ) : (
+                    renderRow(row.conversation)
+                  )}
+                </div>
+              );
+            })}
+          </div>
         ) : (
           groups.map((group) => (
             <section key={group.id} aria-label={group.label}>

@@ -1,0 +1,150 @@
+{
+  "started_at": "2026-09-10T13:01:59.924Z",
+  "account_before": "default-local",
+  "config_before": {
+    "ok": true,
+    "result": {
+      "engine": "deepseek",
+      "dialogue": {
+        "provider": "deepseek",
+        "model": "deepseek-v4-flash",
+        "base_url": "https://api.deepseek.com",
+        "api_key_masked": "sk-2…c09a",
+        "reasoning_effort": "auto"
+      },
+      "voice": {
+        "enabled": "true",
+        "base_url": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1",
+        "api_key_masked": "",
+        "credential_source": "development_env",
+        "ws_url": "wss://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference",
+        "customization_endpoint": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/customization",
+        "asr_model": "qwen-audio-3.0-asr-flash-streaming",
+        "tts_model": "qwen-audio-3.0-tts-flash",
+        "asr_available": true,
+        "voices_source": "env_author",
+        "speakers": [
+          {
+            "speaker_id": "phainon",
+            "name": "白厄",
+            "method": "clone",
+            "voice_id": "",
+            "state": "not_generated",
+            "error": null
+          },
+          {
+            "speaker_id": "firefly",
+            "name": "流萤",
+            "method": "clone",
+            "voice_id": "",
+            "state": "not_generated",
+            "error": null
+          },
+          {
+            "speaker_id": "sam",
+            "name": "萨姆",
+            "method": "clone",
+            "voice_id": "",
+            "state": "not_generated",
+            "error": null
+          },
+          {
+            "speaker_id": "march7",
+            "name": "三月七",
+            "method": "clone",
+            "voice_id": "",
+            "state": "not_generated",
+            "error": null
+          },
+          {
+            "speaker_id": "fourth_mirror",
+            "name": "第四面镜",
+            "method": "clone",
+            "voice_id": "",
+            "state": "not_generated",
+            "error": null
+          },
+          {
+            "speaker_id": "ancient_machine",
+            "name": "神秘的古代机械",
+            "method": "design",
+            "voice_id": "",
+            "state": "not_generated",
+            "error": null
+          }
+        ],
+        "manifest_error": null,
+        "character_voice": "qwen-audio-3.0-tts-flash-firefly-233c61b0cb184b1e94fe5de4448df4ea",
+        "character_voice_name": "流萤",
+        "assistant_voice": "qwen-audio-3.0-tts-flash-sam-576163dee3584951ae8847f7dd748b2e",
+        "assistant_voice_name": "萨姆",
+        "assistant_voice_enabled": "false",
+        "vad_enabled": ""
+      },
+      "codex": {
+        "status": "logged_out",
+        "account_label": null
+      }
+    }
+  },
+  "inject_refused_base_url": {
+    "config_set": {
+      "ok": false,
+      "code": "config_rejected",
+      "message": "RuntimeError: codex 引擎要求 Responses API 后端，当前对话端点不兼容：https://127.0.0.1:1/v1。codex-cli 无法对接 Chat Completions 端点（0.122+ 已移除 wire_api=chat）。请改用 DeepSeek 对话配置（委派将自动走 reasonix 引擎），或提供 Responses 兼容后端。",
+      "details": null
+    },
+    "config_after": {
+      "ok": true,
+      "result": {
+        "engine": "deepseek",
+        "dialogue": {
+          "provider": "deepseek",
+          "model": "deepseek-v4-flash",
+          "base_url": "https://api.deepseek.com",
+          "api_key_masked": "sk-2…c09a",
+          "reasoning_effort": "auto"
+        },
+        "voice": {
+          "enabled": "true",
+          "base_url": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1",
+          "api_key_masked": "",
+          "credential_source": "development_env",
+          "ws_url": "wss://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference",
+          "customization_endpoint": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/customization",
+          "asr_model": "qwen-audio-3.0-asr-flash-streaming",
+          "tts_model": "qwen-audio-3.0-tts-flash",
+          "asr_available": true,
+          "voices_source": "env_author",
+          "speakers": [
+            {
+              "speaker_id": "phainon",
+              "name": "白厄",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "firefly",
+              "name": "流萤",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "sam",
+              "name": "萨姆",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+              "error": null
+            },
+            {
+              "speaker_id": "march7",
+              "name": "三月七",
+              "method": "clone",
+              "voice_id": "",
+              "state": "not_generated",
+          

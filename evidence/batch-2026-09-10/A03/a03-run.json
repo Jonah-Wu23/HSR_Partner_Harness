@@ -1,0 +1,131 @@
+{
+  "started_at": "2026-09-10T10:34:01.222Z",
+  "reconnaissance": {
+    "ui": {
+      "actions_memory": [
+        "desktop\\src\\services\\actions.ts:699: memory_injected: typeof item?.memory_injected === \"boolean\" ? item.memory_injected : null,",
+        "desktop\\src\\services\\actions.ts:706: memory_injected: Boolean(rawObj.memory_injected),"
+      ],
+      "contracts_actions_memory": [],
+      "ui_components_calling_memory_commands": [],
+      "store_event_handling": [
+        "desktop\\src\\stores\\desktopStore.ts:1529: case \"memory.updated\": {",
+        "desktop\\src\\stores\\desktopStore.ts:1557: case \"memory.deleted\": {"
+      ],
+      "context_strip_memory_text": [
+        "desktop\\src\\ui\\status\\ContextStatusStrip.tsx:34: /** 配对记忆记录（contract-v1 §2 PairMemory）。null/缺省 = 未读取；[] = 真实零条。 */",
+        "desktop\\src\\ui\\status\\ContextStatusStrip.tsx:43: /** 显式传 null 表示日常聊天（无项目）：不读写长期记忆，界面如实说明。 */",
+        "desktop\\src\\ui\\status\\ContextStatusStrip.tsx:78: * V0.3.9 V02 桌面端上下文状态条（压缩 / 长期记忆）。",
+        "desktop\\src\\ui\\status\\ContextStatusStrip.tsx:84: * 长期记忆只展示服务端解析出的作用域分量，客户端不拼键、不写死；",
+        "desktop\\src\\ui\\status\\ContextStatusStrip.tsx:276: <span className=\"context-strip-status context-strip-status-completed\">长期记忆已启用</span>",
+        "desktop\\src\\ui\\status\\ContextStatusStrip.tsx:314: <span className=\"context-strip-status\">长期记忆</span>",
+        "desktop\\src\\ui\\status\\ContextStatusStrip.tsx:315: <span className=\"context-strip-value\">日常聊天（无项目）不读写长期记忆</span>"
+      ]
+    },
+    "rust": {
+      "memory_in_src_tauri": []
+    },
+    "sidecar_api": {
+      "upsert_memory_definition": [
+        "src\\pair_harness\\storage\\sqlite_store.py:1796: def upsert_memory(self, memory: PairMemory) -> PairMemory:"
+      ],
+      "upsert_memory_callers": [
+        "src\\pair_harness\\storage\\sqlite_store.py:1796: def upsert_memory(self, memory: PairMemory) -> PairMemory:"
+      ],
+      "other_memory_writers": [],
+      "memory_command_registration": [
+        "src\\pair_harness\\desktop_backend\\application_service.py:1636: \"memory.list\": self._memory_list,",
+        "src\\pair_harness\\desktop_backend\\application_service.py:1637: \"memory.update\": self._memory_update,",
+        "src\\pair_harness\\desktop_backend\\application_service.py:1638: \"memory.delete\": self._memory_delete,",
+        "src\\pair_harness\\desktop_backend\\application_service.py:4962: \"\"\"memory.list：按作用域读取记忆（显式只读；默认 active）。\"\"\"",
+        "src\\pair_harness\\desktop_backend\\application_service.py:4984: \"\"\"memory.update：更新记忆内容/状态；作用域以会话权威解析，越作用域真实报错。\"\"\"",
+        "src\\pair_harness\\desktop_backend\\application_service.py:4993: raise ServiceError(\"memory.update 需要 memory_id\", code=MEMORY_INVALID)",
+        "src\\pair_harness\\desktop_backend\\application_service.py:5009: raise ServiceError(\"memory.update 无更新字段\", code=MEMORY_INVALID)",
+        "src\\pair_harness\\desktop_backend\\application_service.py:5017: \"memory.updated\",",
+        "src\\pair_harness\\desktop_backend\\application_service.py:5023: \"\"\"memory.delete：软删除记忆并持久化广播（契约 §2 真实状态）。\"\"\"",
+        "src\\pair_harness\\desktop_backend\\application_service.py:5032: raise ServiceError(\"memory.delete 需要 memory_id\", code=MEMORY_INVALID)",
+        "src\\pair_harness\\desktop_backend\\application_service.py:5038: \"memory.deleted\",",
+        "src\\pair_harness\\desktop_backend\\commands.py:96: \"memory.list\",",
+        "src\\pair_harness\\desktop_backend\\commands.py:97: \"memory.update\",",
+        "src\\pair_harness\\desktop_backend\\commands.py:98: \"memory.delete\","
+      ]
+    },
+    "write_path_absence_check": {
+      "grep_upsert_memory_occurrences": [
+        "src\\pair_harness\\storage\\sqlite_store.py:1796: def upsert_memory(self, memory: PairMemory) -> PairMemory:"
+      ],
+      "conclusion": "只有 storage 层定义，调用点零处 → 运行期没有任何路径会写入 pair_memories"
+    }
+  },
+  "scopes": {
+    "a_pair_phainon": {
+      "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+      "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+      "pair_id": "phainon_ancient_machine",
+      "character_ref": "builtin:phainon",
+      "assistant_identity": "ancient_machine"
+    },
+    "b_same_pair_other_assistant": {
+      "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+      "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+      "pair_id": "phainon_ancient_machine",
+      "character_ref": "builtin:phainon",
+      "assistant_identity": "fourth_mirror"
+    },
+    "c_other_project": {
+      "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+      "project_id": "00000000-0000-0000-0000-0000000000ff",
+      "pair_id": "phainon_ancient_machine",
+      "character_ref": "builtin:phainon",
+      "assistant_identity": "ancient_machine"
+    }
+  },
+  "protocol_probes": {
+    "incomplete_scope": {
+      "ok": false,
+      "code": "memory_invalid",
+      "message": "3 validation errors for MemoryScope\npair_id\n  Value error, pair_id 必须是非空字符串 [type=value_error, input_value='', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/valu"
+    },
+    "scope_a": {
+      "ok": true,
+      "result": {
+        "memories": []
+      }
+    },
+    "scope_b_same_pair_other_assistant": {
+      "ok": true,
+      "result": {
+        "memories": []
+      }
+    },
+    "scope_c_other_project": {
+      "ok": true,
+      "result": {
+        "memories": []
+      }
+    },
+    "by_conversation": {
+      "ok": true,
+      "result": {
+        "memories": []
+      }
+    },
+    "update_unknown_id": {
+      "ok": false,
+      "code": "memory_not_found",
+      "message": "'unknown memory_id: s4-nonexistent-memory'"
+    },
+    "delete_unknown_id": {
+      "ok": false,
+      "code": "memory_not_found",
+      "message": "'unknown memory_id: s4-nonexistent-memory'"
+    }
+  },
+  "memory_list_serializable": true,
+  "db_readonly": {
+    "stdout": "memories\n0\n----------------------------------------\nsql\n\nCREATE INDEX idx_pair_memories_scope\nON pair_memories(\n    account_id, project_id, pair_id, character_ref, assistant_identity,\n    status, updated_at DESC\n)\nCREATE UNIQUE INDEX idx_pair_memories_scope_active_content\nON pair_memories(\n    account_id, project_id, pair_id, character_ref, assistant_identity, content\n)\nWHERE status = 'active'\n----------------------------------------\n",
+    "stderr": ""
+  },
+  "finished_at": "2026-09-10T10:34:03.107Z",
+  "sidecar_new_lines": 0
+}

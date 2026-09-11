@@ -1,0 +1,269 @@
+{
+  "started_at": "2026-09-10T10:46:09.184Z",
+  "phase": "long-reply-preemption",
+  "conversation_id": "d8ad55e3-918d-4cea-9576-0eb5abfa2501",
+  "voice_initial": {
+    "supported": true,
+    "enabled": true,
+    "assistant_voice_enabled": false,
+    "vad": "idle",
+    "vad_enabled": false,
+    "ptt": false,
+    "tts": "idle",
+    "asr_partial": "",
+    "error": "语音合成失败：{\"header\":{\"task_id\":\"be9f27c2889e45a59cd3748804740498\",\"event\":\"task-failed\",\"error_code\":\"Throttling.RateQuota\",\"error_message\":\"Requests rate limit exceeded, please try again later.\"},\"payload\":{}}",
+    "speech_queue_len": 0
+  },
+  "reply": {
+    "chars": [
+      520
+    ],
+    "head": "奥赫玛的黄昏来得慢。太阳往西边沉的时候，先是从刺眼的金变成温吞的橘，整座圣城像被谁拿一块旧布慢慢蒙上。石阶先凉，广场上那些白色立柱影子越拉越长，最后斜斜地铺到集"
+  },
+  "playback_states": [
+    {
+      "tts": "playing",
+      "queue": 0,
+      "error": true
+    },
+    {
+      "tts": "playing",
+      "queue": 0,
+      "error": true
+    },
+    {
+      "tts": "playing",
+      "queue": 0,
+      "error": true
+    },
+    {
+      "tts": "playing",
+      "queue": 0,
+      "error": true
+    },
+    {
+      "tts": "playing",
+      "queue": 0,
+      "error": true
+    },
+    {
+      "tts": "playing",
+      "queue": 0,
+      "error": true
+    },
+    {
+      "tts": "playing",
+      "queue": 0,
+      "error": true
+    },
+    {
+      "tts": "playing",
+      "queue": 0,
+      "error": true
+    },
+    {
+      "tts": "playing",
+      "queue": 0,
+      "error": true
+    },
+    {
+      "tts": "playing",
+      "queue": 0,
+      "error": true
+    },
+    {
+      "tts": "playing",
+      "queue": 0,
+      "error": true
+    },
+    {
+      "tts": "playing",
+      "queue": 0,
+      "error": true
+    },
+    {
+      "tts": "playing",
+      "queue": 0,
+      "error": true
+    },
+    {
+      "tts": "playing",
+      "queue": 0,
+      "error": true
+    },
+    {
+      "tts": "playing",
+      "queue": 0,
+      "error": true
+    },
+    {
+      "tts": "playing",
+      "queue": 0,
+      "error": true
+    },
+    {
+      "tts": "playing",
+      "queue": 0,
+      "error": true
+    },
+    {
+      "tts": "playing",
+      "queue": 0,
+      "error": true
+    },
+    {
+      "tts": "playing",
+      "queue": 0,
+      "error": true
+    },
+    {
+      "tts": "playing",
+      "queue": 0,
+      "error": true
+    }
+  ],
+  "observed_playing": true,
+  "preempt_submit": {
+    "ok": true,
+    "result": {
+      "message_id": "4477ad21-6a2e-45ef-8382-f5a0a5776e18",
+      "conversation_id": "d8ad55e3-918d-4cea-9576-0eb5abfa2501",
+      "status": "received",
+      "target": "character",
+      "turn_id": "8bc809ad-e411-4244-a0b6-c3e9beb95acf"
+    }
+  },
+  "voice_after_preempt": {
+    "supported": true,
+    "enabled": true,
+    "assistant_voice_enabled": false,
+    "vad": "playing",
+    "vad_enabled": false,
+    "ptt": false,
+    "tts": "synthesizing",
+    "asr_partial": "",
+    "error": "语音合成失败：{\"header\":{\"task_id\":\"be9f27c2889e45a59cd3748804740498\",\"event\":\"task-failed\",\"error_code\":\"Throttling.RateQuota\",\"error_message\":\"Requests rate limit exceeded, please try again later.\"},\"payload\":{}}",
+    "speech_queue_len": 0
+  },
+  "preempt_events": [
+    {
+      "voice": {
+        "supported": true,
+        "enabled": true,
+        "assistant_voice_enabled": false,
+        "vad": "playing",
+        "vad_enabled": false,
+        "ptt": false,
+        "tts": "idle",
+        "asr_partial": "",
+        "error": "语音合成失败：{\"header\":{\"task_id\":\"be9f27c2889e45a59cd3748804740498\",\"event\":\"task-failed\",\"error_code\":\"Throttling.RateQuota\",\"error_message\":\"Requests rate limit exceeded, please try again later.\"},\"payload\":{}}",
+        "speech_queue_len": 0
+      }
+    },
+    {
+      "voice": {
+        "supported": true,
+        "enabled": true,
+        "assistant_voice_enabled": false,
+        "vad": "idle",
+        "vad_enabled": false,
+        "ptt": false,
+        "tts": "idle",
+        "asr_partial": "",
+        "error": "语音合成失败：{\"header\":{\"task_id\":\"be9f27c2889e45a59cd3748804740498\",\"event\":\"task-failed\",\"error_code\":\"Throttling.RateQuota\",\"error_message\":\"Requests rate limit exceeded, please try again later.\"},\"payload\":{}}",
+        "speech_queue_len": 0
+      }
+    },
+    {
+      "conversation_id": "d8ad55e3-918d-4cea-9576-0eb5abfa2501",
+      "message_id": "speech:d8ad55e3-918d-4cea-9576-0eb5abfa2501:876e8e71-fe94-4e43-9329-02543ca6eb5c",
+      "reason": "user_send"
+    },
+    {
+      "voice": {
+        "supported": true,
+        "enabled": true,
+        "assistant_voice_enabled": false,
+        "vad": "playing",
+        "vad_enabled": false,
+        "ptt": false,
+        "tts": "idle",
+        "asr_partial": "",
+        "error": "语音合成失败：{\"header\":{\"task_id\":\"be9f27c2889e45a59cd3748804740498\",\"event\":\"task-failed\",\"error_code\":\"Throttling.RateQuota\",\"error_message\":\"Requests rate limit exceeded, please try again later.\"},\"payload\":{}}",
+        "speech_queue_len": 0
+      }
+    },
+    {
+      "voice": {
+        "supported": true,
+        "enabled": true,
+        "assistant_voice_enabled": false,
+        "vad": "playing",
+        "vad_enabled": false,
+        "ptt": false,
+        "tts": "synthesizing",
+        "asr_partial": "",
+        "error": "语音合成失败：{\"header\":{\"task_id\":\"be9f27c2889e45a59cd3748804740498\",\"event\":\"task-failed\",\"error_code\":\"Throttling.RateQuota\",\"error_message\":\"Requests rate limit exceeded, please try again later.\"},\"payload\":{}}",
+        "speech_queue_len": 0
+      }
+    }
+  ],
+  "voice_after_8s": {
+    "supported": true,
+    "enabled": true,
+    "assistant_voice_enabled": false,
+    "vad": "idle",
+    "vad_enabled": false,
+    "ptt": false,
+    "tts": "idle",
+    "asr_partial": "",
+    "error": "语音合成失败：{\"header\":{\"task_id\":\"be9f27c2889e45a59cd3748804740498\",\"event\":\"task-failed\",\"error_code\":\"Throttling.RateQuota\",\"error_message\":\"Requests rate limit exceeded, please try again later.\"},\"payload\":{}}",
+    "speech_queue_len": 0
+  },
+  "final": {
+    "messages": [
+      {
+        "s": "user",
+        "k": "user.text",
+        "st": "done",
+        "tts": false,
+        "len": 34
+      },
+      {
+        "s": "character",
+        "k": "character.speech",
+        "st": "done",
+        "tts": true,
+        "len": 520
+      },
+      {
+        "s": "user",
+        "k": "user.text",
+        "st": "done",
+        "tts": false,
+        "len": 25
+      },
+      {
+        "s": "character",
+        "k": "character.speech",
+        "st": "done",
+        "tts": true,
+        "len": 2
+      }
+    ],
+    "voice": {
+      "supported": true,
+      "enabled": true,
+      "assistant_voice_enabled": false,
+      "vad": "idle",
+      "vad_enabled": false,
+      "ptt": false,
+      "tts": "idle",
+      "asr_partial": "",
+      "error": "语音合成失败：{\"header\":{\"task_id\":\"be9f27c2889e45a59cd3748804740498\",\"event\":\"task-failed\",\"error_code\":\"Throttling.RateQuota\",\"error_message\":\"Requests rate limit exceeded, please try again later.\"},\"payload\":{}}",
+      "speech_queue_len": 0
+    }
+  },
+  "finished_at": "2026-09-10T10:46:45.611Z",
+  "sidecar_new_lines": 1
+}

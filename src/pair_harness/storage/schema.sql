@@ -159,6 +159,151 @@ CREATE TABLE IF NOT EXISTS character_assets (
 CREATE INDEX IF NOT EXISTS idx_character_assets_card
 ON character_assets(card_id);
 
+-- V0.3.9（contract-v1 第 2/4/5 节）：持久化投影、聊天摘要、配对长期记忆与
+-- 回合指标。投影只存引用（message_id/summary_id/tool_call_id），不复制原文；
+-- messages/tool_runs 继续永久保存原文。
+CREATE TABLE IF NOT EXISTS conversation_projections (
+    conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+    entry_id TEXT NOT NULL,
+    -- 投影内顺序，0 起，按会话唯一（契约第 1 节：不得用 rowid 作权威顺序）
+    position INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    message_id TEXT,
+    summary_id TEXT,
+    tool_call_id TEXT,
+    -- 已被摘要覆盖时指向摘要；NULL 表示该原文仍进入角色上下文
+    covered_by_summary_id TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (conversation_id, entry_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_projections_position
+ON conversation_projections(conversation_id, position);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_projections_kind
+ON conversation_projections(conversation_id, kind, position);
+
+-- V0.3.9：聊天级摘要。covers_* 描述连续、已最终落库的消息区间；
+-- 摘要键只含 conversation_id，不跨聊天读取。status: idle|running|completed|failed。
+CREATE TABLE IF NOT EXISTS conversation_summaries (
+    summary_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+    covers_from_message_id TEXT NOT NULL,
+    covers_to_message_id TEXT NOT NULL,
+    covers_message_count INTEGER NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    provider TEXT,
+    model TEXT,
+    status TEXT NOT NULL,
+    error_code TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- 同一区间重复摘要幂等：投影引用不会因重跑而漂移。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_summaries_range
+ON conversation_summaries(conversation_id, covers_from_message_id, covers_to_message_id);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_summaries_conversation
+ON conversation_summaries(conversation_id, updated_at DESC);
+
+-- V0.3.9：配对级长期记忆。作用域唯一键
+-- account_id + project_id + pair_id + character_ref + assistant_identity；
+-- assistant_identity 是权威搭档配置的 pair.assistant.id，pair_id 不可替代。
+-- 项目为空的日常聊天不读写长期记忆（project_id NOT NULL）。
+-- conversation_id 只是来源记录，不加外键：记忆跨聊天存活，不随聊天删除。
+CREATE TABLE IF NOT EXISTS pair_memories (
+    memory_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    pair_id TEXT NOT NULL,
+    character_ref TEXT NOT NULL,
+    assistant_identity TEXT NOT NULL,
+    conversation_id TEXT,
+    content TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    provider TEXT,
+    model TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_pair_memories_scope
+ON pair_memories(
+    account_id, project_id, pair_id, character_ref, assistant_identity,
+    status, updated_at DESC
+);
+
+-- 同作用域内同内容只保留一条 active（结构去重，不做关键词筛选）；
+-- 已删除记录不阻塞重新写入。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pair_memories_scope_active_content
+ON pair_memories(
+    account_id, project_id, pair_id, character_ref, assistant_identity, content
+)
+WHERE status = 'active';
+
+-- V0.3.9：回合/任务指标（contract-v1 第 5 节）。未观测字段为 NULL，
+-- 真实零值为 0；禁止用字符数估算 token。每个 (conversation, turn_kind, turn)
+-- 只有一行，终态用 UPDATE 收尾。
+CREATE TABLE IF NOT EXISTS turn_metrics (
+    metric_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+    pair_id TEXT NOT NULL,
+    character_ref TEXT,
+    assistant_identity TEXT,
+    turn_kind TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    task_id TEXT,
+    engine_turn_id TEXT,
+    source_message_id TEXT,
+    provider TEXT,
+    model TEXT,
+    engine_type TEXT,
+    reasoning_effort TEXT,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    first_event_at TEXT,
+    completed_at TEXT,
+    duration_ms INTEGER,
+    first_event_latency_ms INTEGER,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    total_tokens INTEGER,
+    tool_rounds INTEGER NOT NULL DEFAULT 0,
+    compression_count INTEGER NOT NULL DEFAULT 0,
+    approval_count INTEGER NOT NULL DEFAULT 0,
+    failure_type TEXT,
+    failure_message TEXT,
+    origin TEXT NOT NULL DEFAULT 'desktop',
+    remote_device_key TEXT,
+    remote_device_name TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_turn_metrics_turn
+ON turn_metrics(conversation_id, turn_kind, turn_id);
+
+CREATE INDEX IF NOT EXISTS idx_turn_metrics_conversation
+ON turn_metrics(conversation_id, started_at DESC, metric_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_turn_metrics_account
+ON turn_metrics(account_id, started_at DESC, metric_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_turn_metrics_project
+ON turn_metrics(project_id, started_at DESC, metric_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_turn_metrics_pair
+ON turn_metrics(pair_id, started_at DESC, metric_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_turn_metrics_status
+ON turn_metrics(status, started_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_turn_metrics_assistant
+ON turn_metrics(assistant_identity, started_at DESC, metric_id DESC);
+
 -- O4.3：新库的完整表结构由本文件保证（IF NOT EXISTS 只影响新库）。
 -- 旧库（user_version=0）的补列/删列迁移在 sqlite_store.SCHEMA_VERSION
 -- 中逐级执行；新库创建后由 sqlite_store 直接标记当前版本。

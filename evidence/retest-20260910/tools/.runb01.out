@@ -1,0 +1,221 @@
+{
+  "started_at": "2026-09-10T13:08:01.507Z",
+  "conversation_id": "b1080a18-bc47-436f-9e67-5770f78802fb",
+  "proxy_env": {
+    "HTTPS_PROXY": "http://127.0.0.1:8767",
+    "NO_PROXY": "127.0.0.1,localhost",
+    "note": "候选 EXE 及其 Sidecar 在启动时继承该环境（复测计划 §4.1）"
+  },
+  "forward_baseline": {
+    "label": "forward 基线",
+    "sandbox_action": "SET forward",
+    "control_reply": "OK forward connections=0 tunnels=0",
+    "cut_reply": null,
+    "submit": {
+      "ok": true,
+      "result": {
+        "message_id": "e9a032b4-9d90-4d29-8fda-71b65efdeb7e",
+        "conversation_id": "b1080a18-bc47-436f-9e67-5770f78802fb",
+        "status": "received",
+        "target": "character",
+        "turn_id": "db11a843-46ce-46d6-9cea-57fb169f3849"
+      }
+    },
+    "elapsed_seconds": 1.64,
+    "turn": {
+      "message_count": 2,
+      "messages": [
+        {
+          "source": "user",
+          "kind": "user.text",
+          "status": "done",
+          "text": "复测 B-01：请只回复两个字：通路。"
+        },
+        {
+          "source": "character",
+          "kind": "character.speech",
+          "status": "done",
+          "text": "通路。"
+        }
+      ],
+      "failure_notice": null
+    },
+    "sandbox_events": [
+      {
+        "event": "mode_changed",
+        "mode": "forward",
+        "request": null,
+        "error": null
+      },
+      {
+        "event": "client_request",
+        "mode": "forward",
+        "request": "CONNECT api.deepseek.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "tunnel_established",
+        "mode": "forward",
+        "request": "CONNECT api.deepseek.com:443 HTTP/1.1",
+        "error": null
+      }
+    ]
+  },
+  "reject": {
+    "label": "连接被拒",
+    "sandbox_action": "SET reject",
+    "control_reply": "OK reject connections=1 tunnels=1",
+    "cut_reply": null,
+    "submit": {
+      "ok": true,
+      "result": {
+        "message_id": "013c2c44-43b2-4be8-844a-0f4eeda1a1e1",
+        "conversation_id": "b1080a18-bc47-436f-9e67-5770f78802fb",
+        "status": "received",
+        "target": "character",
+        "turn_id": "706418f2-003b-4784-88dd-ebce4d47eb00"
+      }
+    },
+    "elapsed_seconds": 0.11,
+    "turn": {
+      "message_count": 3,
+      "messages": [
+        {
+          "source": "user",
+          "kind": "user.text",
+          "status": "done",
+          "text": "复测 B-01：请只回复两个字：通路。"
+        },
+        {
+          "source": "character",
+          "kind": "character.speech",
+          "status": "done",
+          "text": "通路。"
+        },
+        {
+          "source": "user",
+          "kind": "user.text",
+          "status": "done",
+          "text": "复测 B-01：请只回复两个字：拒绝。"
+        }
+      ],
+      "failure_notice": null
+    },
+    "sandbox_events": [
+      {
+        "event": "listen_stopped",
+        "mode": "forward",
+        "request": null,
+        "error": null
+      },
+      {
+        "event": "mode_changed",
+        "mode": "reject",
+        "request": null,
+        "error": null
+      }
+    ]
+  },
+  "cut": {
+    "label": "传输中断",
+    "sandbox_action": "SET forward",
+    "control_reply": "OK forward connections=1 tunnels=1",
+    "cut_reply": "OK forward connections=5 tunnels=5",
+    "submit": {
+      "ok": true,
+      "result": {
+        "queue_item": {
+          "queue_item_id": "405e1ea0-1be2-4fca-8e07-1387c08b794b",
+          "account_id": "default-local",
+          "conversation_id": "b1080a18-bc47-436f-9e67-5770f78802fb",
+          "target": "character",
+          "text": "复测 B-01：请只回复两个字：中断。",
+          "intent": "followup",
+          "position": 0,
+          "status": "queued",
+          "created_at": "2026-09-10T13:08:03.304235+00:00",
+          "source_message_id": null
+        },
+        "queued": true,
+        "conversation_id": "b1080a18-bc47-436f-9e67-5770f78802fb"
+      }
+    },
+    "elapsed_seconds": 1.58,
+    "turn": {
+      "message_count": 5,
+      "messages": [
+        {
+          "source": "user",
+          "kind": "user.text",
+          "status": "done",
+          "text": "复测 B-01：请只回复两个字：通路。"
+        },
+        {
+          "source": "character",
+          "kind": "character.speech",
+          "status": "done",
+          "text": "通路。"
+        },
+        {
+          "source": "user",
+          "kind": "user.text",
+          "status": "failed",
+          "text": "复测 B-01：请只回复两个字：拒绝。"
+        },
+        {
+          "source": "system",
+          "kind": "system.status",
+          "status": "done",
+          "text": "本次回复失败：Server disconnected without sending a response."
+        },
+        {
+          "source": "user",
+          "kind": "user.text",
+          "status": "done",
+          "text": "复测 B-01：请只回复两个字：中断。"
+        }
+      ],
+      "failure_notice": "本次回复失败：Server disconnected without sending a response."
+    },
+    "sandbox_events": [
+      {
+        "event": "mode_changed",
+        "mode": "forward",
+        "request": null,
+        "error": null
+      },
+      {
+        "event": "client_request",
+        "mode": "forward",
+        "request": "CONNECT llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "tunnel_established",
+        "mode": "forward",
+        "request": "CONNECT llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "client_request",
+        "mode": "forward",
+        "request": "CONNECT api.deepseek.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "tunnel_established",
+        "mode": "forward",
+        "request": "CONNECT api.deepseek.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "client_request",
+        "mode": "forward",
+        "request": "CONNECT llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "tunnel_established",
+        "mode": "forward",
+        "request": "CONNECT llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com:443 HTTP/1.1",
+        "error": n

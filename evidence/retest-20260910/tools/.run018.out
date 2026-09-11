@@ -1,0 +1,56 @@
+{
+  "started_at": "2026-09-10T13:04:42.476Z",
+  "conversation_id": "5d9d13bd-881d-4172-8203-fbfb33be2055",
+  "remote_subscribers": true,
+  "turn_1": {
+    "character_messages": [
+      {
+        "message_id": "speech:5d9d13bd-881d-4172-8203-fbfb33be2055:47a940bb-bc5b-4d4e-aa2d-d327909ec4b4",
+        "chars": 226,
+        "status": "done",
+        "tts_eligible": true
+      }
+    ],
+    "first_message_id": "speech:5d9d13bd-881d-4172-8203-fbfb33be2055:47a940bb-bc5b-4d4e-aa2d-d327909ec4b4",
+    "chunks_before_preemption": 12
+  },
+  "turn_2": {
+    "character_messages": [
+      {
+        "message_id": "speech:5d9d13bd-881d-4172-8203-fbfb33be2055:47a940bb-bc5b-4d4e-aa2d-d327909ec4b4",
+        "chars": 226,
+        "status": "done"
+      }
+    ],
+    "active_task": false
+  },
+  "voice_events_summary": {
+    "chunk_per_message": {
+      "speech:5d9d13bd-881d-4172-8203-fbfb33be2055:47a940bb-bc5b-4d4e-aa2d-d327909ec4b4": 62,
+      "speech:5d9d13bd-881d-4172-8203-fbfb33be2055:438bb1db-8486-4367-90cd-1f04fad509d2": 51
+    },
+    "end_messages": [
+      "speech:5d9d13bd-881d-4172-8203-fbfb33be2055:47a940bb-bc5b-4d4e-aa2d-d327909ec4b4",
+      "speech:5d9d13bd-881d-4172-8203-fbfb33be2055:438bb1db-8486-4367-90cd-1f04fad509d2"
+    ],
+    "failed_count": 0,
+    "failed_payloads": []
+  },
+  "assertions": {
+    "no_failed_event": true,
+    "at_least_one_synthesis_observed": true,
+    "end_after_preemption": true
+  },
+  "finished_at": "2026-09-10T13:04:54.088Z",
+  "sidecar_new_lines": 23,
+  "preemption_log_lines": [
+    "INFO:pair_harness.desktop_backend.application_service:mobile-tts: 非角色可朗读消息，跳过 source=user kind=user.text eligible=False",
+    "INFO:pair_harness.desktop_backend.application_service:mobile-tts: 触发下发 speech:5d9d13bd-881d-4172-8203-fbfb33be2055:47a940bb-bc5b-4d4e-aa2d-d327909ec4b4（len=226）",
+    "INFO:pair_harness.desktop_backend.application_service:mobile-tts: 开始合成 speech:5d9d13bd-881d-4172-8203-fbfb33be2055:47a940bb-bc5b-4d4e-aa2d-d327909ec4b4 voice=qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32 ws=wss://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference",
+    "INFO:pair_harness.desktop_backend.application_service:mobile-tts: 非角色可朗读消息，跳过 source=user kind=user.text eligible=False",
+    "INFO:pair_harness.desktop_backend.application_service:mobile-tts: 合成完成 speech:5d9d13bd-881d-4172-8203-fbfb33be2055:47a940bb-bc5b-4d4e-aa2d-d327909ec4b4 chunks=62",
+    "INFO:pair_harness.desktop_backend.application_service:mobile-tts: 触发下发 speech:5d9d13bd-881d-4172-8203-fbfb33be2055:438bb1db-8486-4367-90cd-1f04fad509d2（len=155）",
+    "INFO:pair_harness.desktop_backend.application_service:mobile-tts: 开始合成 speech:5d9d13bd-881d-4172-8203-fbfb33be2055:438bb1db-8486-4367-90cd-1f04fad509d2 voice=qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32 ws=wss://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference",
+    "INFO:pair_harness.desktop_backend.application_service:mobile-tts: 合成完成 speech:5d9d13bd-881d-4172-8203-fbfb33be2055:438bb1db-8486-4367-90cd-1f04fad509d2 chunks=51"
+  ]
+}

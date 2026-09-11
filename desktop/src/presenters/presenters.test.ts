@@ -424,6 +424,9 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
       baseUrl: "",
       apiKeyMasked: "",
       reasoningEffort: "auto",
+      // 后端没上报 provider_supported 时不算不可用，也不编造不可用文案
+      providerSupported: true,
+      providerUnavailable: null,
     });
     expect(vm.settings.modelTest).toEqual({ state: "idle" });
     expect(vm.settings.voicePreview).toEqual({ state: "idle" });
@@ -436,6 +439,8 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
         base_url: "https://api.deepseek.com",
         api_key_masked: "sk-d…1234",
         reasoning_effort: "medium",
+        provider_supported: true,
+        provider_unavailable: null,
       },
       voice: {
         enabled: "true",
@@ -450,7 +455,6 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
         assistant_voice_name: "神秘的古代机械",
         vad_enabled: "true",
       },
-      codex: { status: "logged_in", account_label: "mock@openai" },
     });
     const mapped = presentAppShell(desktopStore.getState());
     expect(mapped.settings.model).toMatchObject({
@@ -458,6 +462,8 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
       model: "deepseek-chat",
       apiKeyMasked: "sk-d…1234",
       reasoningEffort: "medium",
+      providerSupported: true,
+      providerUnavailable: null,
     });
     expect(mapped.settings.voice).toMatchObject({
       enabled: true,
@@ -468,11 +474,41 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
       assistantVoiceName: "神秘的古代机械",
       vadEnabled: true,
     });
-    expect(mapped.settings.coding).toEqual({
-      engine: "deepseek",
-      codex: { status: "logged_in", accountLabel: "mock@openai" },
-    });
     expect(mapped.settings.account.displayName).toBe("演示账号");
+  });
+
+  it("settings：历史 openai_oauth 按后端 provider_supported/provider_unavailable 投影", () => {
+    desktopStore.getState().setConfigSnapshot({
+      dialogue: {
+        provider: "openai_oauth",
+        model: "gpt-5.6-sol",
+        base_url: "https://api.openai.com/v1",
+        api_key_masked: "",
+        reasoning_effort: "auto",
+        provider_supported: false,
+        provider_unavailable: {
+          code: "provider_unavailable",
+          message: "该供应商不可用，请重新选择 DeepSeek 或 OpenAI 兼容 API。",
+        },
+      },
+    });
+    expect(presentAppShell(desktopStore.getState()).settings.model).toMatchObject({
+      provider: "openai_oauth",
+      providerSupported: false,
+      providerUnavailable: {
+        code: "provider_unavailable",
+        message: "该供应商不可用，请重新选择 DeepSeek 或 OpenAI 兼容 API。",
+      },
+    });
+
+    // 后端未给文案时不编造替代文案，也不改变不可用判定
+    desktopStore.getState().setConfigSnapshot({
+      dialogue: { provider: "openai_oauth", provider_supported: false, provider_unavailable: null },
+    });
+    expect(presentAppShell(desktopStore.getState()).settings.model).toMatchObject({
+      providerSupported: false,
+      providerUnavailable: null,
+    });
   });
 
   it("toasts：store 透传到 ViewModel", () => {

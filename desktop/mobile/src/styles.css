@@ -85,18 +85,39 @@ button:focus-visible {
   outline-offset: 1px;
 }
 
+/* V0.3.9 V08：safe-area 单一来源。
+   顶部内边距留在 app-shell（状态栏/刘海）；底部内边距只由滚动容器 .page 负责，
+   避免 app-shell 与页面自身两处叠加。聊天页（.mobile-chat-container）不是 .page，
+   其底部安全区由输入区自己处理（chat.css 的 .mobile-composer），因此这里不会重复。 */
 .app-shell {
   display: flex;
   flex-direction: column;
   height: 100%;
   padding-top: var(--safe-top);
-  padding-bottom: var(--safe-bottom);
 }
 
 .page {
   flex: 1;
   overflow-y: auto;
   padding: 16px;
+  padding-bottom: calc(16px + var(--safe-bottom));
+}
+
+/* V0.3.9 V08：窄屏（≤360px）全局收敛。 */
+@media (max-width: 360px) {
+  body {
+    font-size: 14px;
+  }
+  .page {
+    padding: 12px;
+    padding-bottom: calc(12px + var(--safe-bottom));
+  }
+  .page-title {
+    font-size: 18px;
+  }
+  .card {
+    padding: 12px;
+  }
 }
 
 .page-title {

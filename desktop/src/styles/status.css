@@ -33,6 +33,19 @@
 .connection-pill-disconnected .connection-pill-dot { background: var(--danger); }
 .connection-pill-disconnected { color: var(--danger); }
 
+/* V039-S4-002 演示模式标识：与连接药丸并列，措辞自成一句，不读成「已连接」。 */
+.demo-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--text-c1-size);
+  color: var(--warning);
+  flex: none;
+  white-space: nowrap;
+}
+
 /* ========== 技术详情抽屉 ========== */
 
 .tech-drawer-backdrop {
@@ -257,3 +270,147 @@
   text-decoration: underline;
 }
 .connection-banner button:hover { color: var(--accent-hover); }
+/* ========== V0.3.9 V02 上下文状态条（压缩 / 长期记忆） ========== */
+
+.context-status-strip {
+  margin: 0 var(--space-4) var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-card);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-lg);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  animation: queue-strip-in var(--dur-menu) var(--ease-out);
+}
+
+.context-strip-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.context-strip-title {
+  font-size: var(--text-c1-size);
+  font-weight: 600;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.context-strip-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--separator-strong);
+  background: var(--bg-panel);
+  font-size: var(--text-c1-size);
+  color: var(--text-primary);
+}
+
+.context-strip-row.is-running { border-left-color: var(--running); }
+.context-strip-row.is-completed { border-left-color: var(--success); }
+.context-strip-row.is-failed { border-left-color: var(--danger); }
+.context-strip-row.is-memory { border-left-color: var(--pair-assistant); }
+.context-strip-row.is-pending { border-left-color: var(--queued); }
+.context-strip-row.is-muted { color: var(--text-muted); }
+
+.context-strip-status {
+  flex: none;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.context-strip-status-running { color: var(--running); }
+.context-strip-status-completed { color: var(--success); }
+.context-strip-status-failed { color: var(--danger); }
+.context-strip-status-pending { color: var(--queued); }
+
+.context-strip-scope {
+  flex: none;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--fill-hover);
+  color: var(--text-muted);
+  font-size: var(--text-c1-size);
+}
+
+.context-strip-value { color: var(--text-primary); overflow-wrap: break-word; }
+.context-strip-note { color: var(--text-muted); }
+
+.context-strip-toggle {
+  flex: none;
+  color: var(--accent);
+  font-size: var(--text-c1-size);
+  text-decoration: underline;
+}
+.context-strip-toggle:hover { color: var(--accent-hover); }
+
+.context-strip-error {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+}
+.context-strip-error dt {
+  color: var(--text-muted);
+  font-size: var(--text-c1-size);
+}
+.context-strip-error dd { margin: 0; }
+.context-strip-error code {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--text-c1-size);
+  color: var(--danger);
+  background: var(--reasoning-bg);
+  border: 1px solid var(--reasoning-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.context-strip-scope-facts {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-1);
+}
+.context-strip-scope-facts dt {
+  color: var(--text-muted);
+  font-size: var(--text-c1-size);
+}
+.context-strip-scope-facts dd { margin: 0; color: var(--text-primary); }
+
+.context-strip-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.context-strip-action-error {
+  color: var(--danger);
+  font-size: var(--text-c1-size);
+  overflow-wrap: anywhere;
+}
+
+.context-strip-close {
+  flex: none;
+  margin-left: auto;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+}
+.context-strip-close:hover { background: var(--fill-hover); color: var(--text-primary); }
+/* 状态条内按钮收一档，复用 .btn 原语。 */
+.context-strip-btn {
+  height: 26px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-c1-size);
+  flex: none;
+}

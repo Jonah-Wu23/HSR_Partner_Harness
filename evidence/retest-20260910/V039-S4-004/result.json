@@ -1,0 +1,22 @@
+{
+  "batch": "retest-20260910",
+  "case_id": "V039-S4-004",
+  "title": "远程配对地址上报与二维码可用性（增量复核，非复测计划正式条目）",
+  "candidate_commit": "工作树快照 @ cc4077c + uncommitted fixes",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "device": "Windows 11 10.0.26200",
+  "network": "局域网 10.81.102.166:8765",
+  "preconditions": "候选以真实模式运行，其 Sidecar 监听 0.0.0.0:8765",
+  "expected": "桌面端「远程设备」页可生成一次性配对码并显示接入地址；配对码可用于换取真实 token。",
+  "actual": "桌面端生成配对码 139220（剩余有效期 4 分 59 秒）并显示二维码与接入地址 10.81.102.166:8765；用该配对码经 remote.pair 成功换取 token（sha256[:16]=8713d92223c946da），全部后续协议用例均使用该 token。另：一次 8765 端口冲突时界面如实提示「远程服务启动失败（端口 8765）：[Errno 10048] …」，该冲突由测试侧同时启动独立 serve 实例引起，非产品缺陷。",
+  "evidence": [
+    "pairing-code-screen.png"
+  ],
+  "status": "通过",
+  "severity": "",
+  "frequency": "",
+  "impact": "",
+  "blocker": "",
+  "owner": "逻辑轨",
+  "next_action": "无"
+}

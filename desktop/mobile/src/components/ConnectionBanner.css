@@ -15,6 +15,13 @@
   min-width: 180px;
 }
 
+/* V0.3.9 V06：断连可能原因说明（不宣称真实电源状态）。 */
+.conn-banner-hint {
+  flex: 1 1 100%;
+  font-size: 12px;
+  opacity: 0.92;
+}
+
 .conn-banner-actions {
   display: flex;
   align-items: center;
@@ -38,4 +45,24 @@
 
 .conn-banner-btn:active {
   opacity: 0.8;
+}
+
+/* V0.3.9 V08：窄屏（≤360px）下文案与按钮各占一行，按钮保持可点高度。 */
+@media (max-width: 360px) {
+  .conn-banner {
+    padding: 8px 10px;
+    gap: 6px;
+    font-size: 12px;
+  }
+  .conn-banner-message {
+    min-width: 0;
+  }
+  .conn-banner-actions {
+    width: 100%;
+  }
+  .conn-banner-btn {
+    flex: 1 1 auto;
+    min-height: 44px;
+    padding: 6px 10px;
+  }
 }

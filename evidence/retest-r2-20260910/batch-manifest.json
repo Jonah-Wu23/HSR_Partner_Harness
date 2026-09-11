@@ -1,0 +1,82 @@
+{
+  "batch": "retest-r2-20260910",
+  "generated_at": "2026-09-10T22:39:59.242775+08:00",
+  "candidate": "工作树快照 @ cc4077c + S4-R2 uncommitted fixes（未提交 git）",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "artifacts": {
+    "exe": {
+      "path": "desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+      "exists": true,
+      "bytes": 11266048,
+      "mtime": "2026-09-10T22:10:00.148502",
+      "sha256": "2f58c825c80a1870fafde556c34405fa449f220843aefc095e5e034e7b7d828f"
+    },
+    "sidecar_exe": {
+      "path": "desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+      "exists": true,
+      "bytes": 11292973,
+      "mtime": "2026-09-10T22:07:25.184043",
+      "sha256": "356c8ce5180ffbd901b890e6ef9bfd43b21bb28b71f3f5489213ec367c75f178"
+    },
+    "bundled_reasonix": {
+      "path": "desktop\\src-tauri\\target\\release\\resources\\reasonix\\bin\\reasonix.exe",
+      "exists": true,
+      "bytes": 59402752,
+      "mtime": "2026-08-13T03:40:25.384288",
+      "sha256": "917b868721975019fd176ea6a643ab8af0715dc06199fd7422b8299be3301073"
+    },
+    "desktop_dist_index": {
+      "path": "desktop\\dist\\index.html",
+      "exists": true,
+      "bytes": 407,
+      "mtime": "2026-09-10T22:08:58.341120",
+      "sha256": "70bfac5102b2000f1317395b57b379ace9f58242cdc15772cea62ac6e104a008"
+    },
+    "mobile_dist_index": {
+      "path": "desktop\\mobile\\dist\\index.html",
+      "exists": true,
+      "bytes": 841,
+      "mtime": "2026-09-10T22:11:55.625598",
+      "sha256": "1eb7cc6a457207bad6cbb44d7c09436c36f493a3056d62c11d157b0b396c1d60"
+    },
+    "bundled_mobile_dist_index": {
+      "path": "desktop\\src-tauri\\target\\release\\resources\\mobile-dist\\index.html",
+      "exists": true,
+      "bytes": 841,
+      "mtime": "2026-09-10T22:07:32.014283",
+      "sha256": "1eb7cc6a457207bad6cbb44d7c09436c36f493a3056d62c11d157b0b396c1d60"
+    },
+    "apk": {
+      "path": "desktop\\src-tauri\\gen\\android\\app\\build\\outputs\\apk\\arm64\\debug\\app-arm64-debug.apk",
+      "exists": true,
+      "bytes": 249566546,
+      "mtime": "2026-09-10T22:13:14.910026",
+      "sha256": "cb23957c99cb2a2cffea30cf719a772208cd77bf3ee5a19c0d672397dff1bf88"
+    },
+    "android_lib": {
+      "path": "desktop\\src-tauri\\target\\aarch64-linux-android\\debug\\libhsr_partner_harness_lib.so",
+      "exists": true,
+      "bytes": 120382200,
+      "mtime": "2026-09-10T22:12:20.839352",
+      "sha256": "8542693d37bf1b1d2f6c90f672bf204429c402070ed7cdab8e657540c13c0e07"
+    }
+  },
+  "desktop_dist_assets": [
+    "assistant-C7ywZek9.png",
+    "assistant-D_D-Q8yQ.png",
+    "assistant-lQBU-p6n.png",
+    "character-B4aoLtFp.png",
+    "character-BCcwxPlU.png",
+    "character-D2GKzZ1w.png",
+    "index-CLWQnV2E.css",
+    "index-TsoU6c2T.js",
+    "webview-D0q242Fi.js"
+  ],
+  "mobile_dist_files": [
+    "assets\\index-D_VC5jHl.js",
+    "assets\\index-e5tQBhbx.css",
+    "index.html"
+  ],
+  "head": "cc4077ce019063945e70b1b023291c992d2b37c2",
+  "worktree_diff_stat_tail": " 74 files changed, 5911 insertions(+), 1895 deletions(-)"
+}

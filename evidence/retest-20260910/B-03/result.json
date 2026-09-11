@@ -1,0 +1,17 @@
+{
+  "batch": "retest-20260910",
+  "case_id": "B-03",
+  "candidate_commit": "工作树快照 @ cc4077c + uncommitted fixes",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "device": "Windows 11 10.0.26200 / 2560x1440 / 缩放150%",
+  "network": "本机直连公网；B-01 期间经本机沙盒代理",
+  "timestamps": {},
+  "ids": {},
+  "evidence": [],
+  "status": "失败",
+  "severity": "P1",
+  "frequency": "必现",
+  "impact": "产品决策 B-03 的三条剥离要求全部未落地",
+  "actual": "正向：DeepSeek（Chat Completions）端点上的真实委派全链路跑通（角色自然语言 → 结构化委派 → 8 条工具记录全部 succeeded → 6 次真实审批 → 文件落盘 66 B → 助手结果摘要 → 角色终局回复），终态错误 0 条（覆盖 V039-S4-009）。负向三条全部失败：(1) 仓库内仍存在要求 Responses 的校验与提示（engine_factory.py:110-130 的 _require_responses_backend）；(2) 供应商切换仍被 Responses 拒绝（实测 config.set 回 config_rejected，报文为「codex 引擎要求 Responses API 后端…」）；(3) OpenAI OAuth 入口仍向用户暴露且可选（设置 → 角色对话模型 → 服务商下拉中的 OpenAI OAuth）。连带效果：把端点指向非 OpenAI 域会让 Sidecar 在启动期直接失败退出（B-01 名称解析失败形态因此受阻）。",
+  "next_action": "按产品决策 B-03 完成剥离：移除 Responses 依赖与校验、去掉该提示、移除或标注不可用的 Codex OAuth 入口"
+}

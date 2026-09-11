@@ -1,0 +1,30 @@
+{
+  "started_at": "2026-09-10T13:31:47.167Z",
+  "bootstrap_current_account": "default-local",
+  "test_connection": {
+    "ok": true,
+    "result": {
+      "ok": false,
+      "provider": "demo",
+      "base_url": "",
+      "model": "",
+      "message": "当前是演示模式（--demo）：不进行真实连接测试，账号配置在此模式下不生效。请以真实模式重启后再测试。"
+    }
+  },
+  "conversation_id": "b0e22418-421c-4b24-b4bc-45f5b1afe176",
+  "demo_turn": [
+    {
+      "source": "user",
+      "kind": "user.text",
+      "status": "done",
+      "text": "演示模式探测"
+    },
+    {
+      "source": "character",
+      "kind": "character.speech",
+      "status": "done",
+      "text": "我听着呢。先在这里陪你把这件事慢慢说清楚。"
+    }
+  ],
+  "finished_at": "2026-09-10T13:31:53.236Z"
+}

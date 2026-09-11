@@ -1,39 +1,31 @@
 import { useEffect, useRef, useState } from "react";
-import type { CodexOAuthStatus } from "../../contracts/actions";
+import {
+  DIALOGUE_PROVIDERS,
+  DIALOGUE_PROVIDER_IDS,
+  type DialogueProviderId,
+} from "../settings/dialogueProviders";
 
 interface OnboardingProps {
   /** 选文件夹并创建第一个项目；返回 false 表示用户取消。 */
   onCreateProject: () => Promise<boolean>;
   /** 保存角色模型配置并测试连接；返回人话结果。 */
   onSaveModelConfig: (config: {
-    provider: string;
+    provider: DialogueProviderId;
     apiKey: string;
     baseUrl?: string;
     model?: string;
   }) => Promise<string>;
-  /** OAuth 启动后轮询登录状态；仅确认 logged_in 才允许进入下一步。 */
-  onCheckOAuthStatus?: () => Promise<CodexOAuthStatus>;
   onFinish: () => void;
 }
 
-const PROVIDERS = ["DeepSeek", "OpenAI 兼容 API（包括 OpenAI API）", "OpenAI OAuth"];
-const OPENAI_BASE_URL = "https://api.openai.com/v1";
-const OPENAI_MODEL = "gpt-5.6-sol";
-const OAUTH_POLL_INTERVAL_MS = 1500;
-
 /** 首次引导三步：建项目 → 配模型 → 完成。任何一步可跳过。 */
-export function Onboarding({
-  onCreateProject,
-  onSaveModelConfig,
-  onCheckOAuthStatus,
-  onFinish,
-}: OnboardingProps) {
+export function Onboarding({ onCreateProject, onSaveModelConfig, onFinish }: OnboardingProps) {
   const [step, setStep] = useState(0);
   const [projectDone, setProjectDone] = useState(false);
-  const [provider, setProvider] = useState(PROVIDERS[0]);
+  const [provider, setProvider] = useState<DialogueProviderId>(DIALOGUE_PROVIDER_IDS[0]);
   const [apiKey, setApiKey] = useState("");
-  const [baseUrl, setBaseUrl] = useState(OPENAI_BASE_URL);
-  const [model, setModel] = useState(OPENAI_MODEL);
+  const [baseUrl, setBaseUrl] = useState(DIALOGUE_PROVIDERS.openai_compatible.baseUrl);
+  const [model, setModel] = useState(DIALOGUE_PROVIDERS.openai_compatible.model);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [projectError, setProjectError] = useState<string | null>(null);
@@ -64,23 +56,6 @@ export function Onboarding({
     }
   };
 
-  const waitForOAuthLogin = async () => {
-    if (!onCheckOAuthStatus) return false;
-    // 轮询直到真实 logged_in；失败时抛错由外层展示并停留在当前步骤。
-    // 不设超时：用户可能长时间停留在浏览器登录页，离开页面由 unmount 停止。
-    while (mountedRef.current) {
-      const status = await onCheckOAuthStatus();
-      if (!mountedRef.current) return false;
-      if (status.status === "logged_in") {
-        setTestResult("OpenAI OAuth 登录成功");
-        setStep(2);
-        return true;
-      }
-      await new Promise((resolve) => setTimeout(resolve, OAUTH_POLL_INTERVAL_MS));
-    }
-    return false;
-  };
-
   const saveModelConfig = async () => {
     setTesting(true);
     setTestResult(null);
@@ -88,22 +63,13 @@ export function Onboarding({
       const result = await onSaveModelConfig({
         provider,
         apiKey,
-        ...(provider === "OpenAI 兼容 API（包括 OpenAI API）"
+        ...(provider === "openai_compatible"
           ? { baseUrl: baseUrl.trim(), model: model.trim() }
           : {}),
       });
       if (!mountedRef.current) return;
-      if (result.startsWith("连接正常")) {
-        setTestResult(result);
-        setStep(2);
-        return;
-      }
-      if (result.startsWith("已启动 OpenAI OAuth")) {
-        setTestResult(result);
-        await waitForOAuthLogin();
-        return;
-      }
       setTestResult(result);
+      if (result.startsWith("连接正常")) setStep(2);
     } catch (error) {
       if (!mountedRef.current) return;
       setTestResult(error instanceof Error ? error.message : String(error));
@@ -111,6 +77,12 @@ export function Onboarding({
       if (mountedRef.current) setTesting(false);
     }
   };
+
+  const needsEndpointFields = provider === "openai_compatible";
+  const canSubmit =
+    !testing &&
+    Boolean(apiKey) &&
+    (!needsEndpointFields || (Boolean(baseUrl.trim()) && Boolean(model.trim())));
 
   return (
     <div className="onboarding">
@@ -153,13 +125,18 @@ export function Onboarding({
           <p className="onboarding-hint">角色需要一个对话模型才能开口。之后可以在设置中心随时修改。</p>
           <label className="field">
             <span className="field-label">模型来源</span>
-            <select value={provider} onChange={(event) => setProvider(event.target.value)}>
-              {PROVIDERS.map((item) => (
-                <option key={item}>{item}</option>
+            <select
+              value={provider}
+              onChange={(event) => setProvider(event.target.value as DialogueProviderId)}
+            >
+              {DIALOGUE_PROVIDER_IDS.map((id) => (
+                <option key={id} value={id}>
+                  {DIALOGUE_PROVIDERS[id].label}
+                </option>
               ))}
             </select>
           </label>
-          {provider === "OpenAI 兼容 API（包括 OpenAI API）" ? (
+          {needsEndpointFields ? (
             <>
               <label className="field">
                 <span className="field-label">Base URL</span>
@@ -171,25 +148,17 @@ export function Onboarding({
               </label>
             </>
           ) : null}
-          {provider === "OpenAI OAuth" ? (
-            <p className="onboarding-hint">使用 OpenAI 账号登录，角色与助手共用 gpt-5.6-sol。</p>
-          ) : (
-            <label className="field">
-              <span className="field-label">API Key</span>
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(event) => setApiKey(event.target.value)}
-              />
-            </label>
-          )}
+          <label className="field">
+            <span className="field-label">API Key</span>
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+            />
+          </label>
           {testResult ? (
             <p
-              className={
-                testResult.startsWith("连接正常") || testResult.startsWith("已启动")
-                  ? "field-ok"
-                  : "field-error"
-              }
+              className={testResult.startsWith("连接正常") ? "field-ok" : "field-error"}
               role="status"
             >
               {testResult}
@@ -199,22 +168,10 @@ export function Onboarding({
             <button
               type="button"
               className="btn btn-primary"
-              disabled={
-                testing ||
-                (provider !== "OpenAI OAuth" &&
-                  (!apiKey ||
-                    (provider === "OpenAI 兼容 API（包括 OpenAI API）" &&
-                      (!baseUrl.trim() || !model.trim()))))
-              }
+              disabled={!canSubmit}
               onClick={() => void saveModelConfig()}
             >
-              {testing
-                ? provider === "OpenAI OAuth"
-                  ? "正在等待登录…"
-                  : "正在连接…"
-                : provider === "OpenAI OAuth"
-                  ? "启动并继续"
-                  : "保存并测试"}
+              {testing ? "正在连接…" : "保存并测试"}
             </button>
             <button
               type="button"

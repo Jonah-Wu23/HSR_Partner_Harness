@@ -1,4 +1,6 @@
 import { useState } from "react";
+
+import { DemoModeNotice } from "../status/DemoModeNotice";
 import type { AccountListItem } from "./types";
 
 interface AccountGateProps {
@@ -8,13 +10,18 @@ interface AccountGateProps {
   busy: boolean;
   onLogin: (accountId: string, password: string) => void;
   onRegister: (displayName: string, password: string) => void;
+  /** 切换登录/注册表单时清理上一轮操作的错误（错误属于那一次操作，不属于新表单）。 */
+  onClearError?: () => void;
 }
 
 /**
  * 账号门：左氛围区 + 右表单卡。
  * 登录 = 账号单选卡点选后输密码；注册 = 同卡片内表单切换，不换页。
+ *
+ * 密码是否为空由后端校验判定：种子默认账号（password_hash 为空）以空密码登录，
+ * 前端不猜哪天账号没密码、也不为任何账号放宽校验——输错就是后端的「密码错误」。
  */
-export function AccountGate({ accounts, error, busy, onLogin, onRegister }: AccountGateProps) {
+export function AccountGate({ accounts, error, busy, onLogin, onRegister, onClearError }: AccountGateProps) {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [selectedId, setSelectedId] = useState<string>(
     accounts.find((account) => account.isLastLogin)?.accountId ?? accounts[0]?.accountId ?? "",
@@ -33,6 +40,8 @@ export function AccountGate({ accounts, error, busy, onLogin, onRegister }: Acco
       </div>
 
       <div className="account-gate-card">
+        {/* V039-S4-002：首次运行若 Sidecar 自报演示模式，账号门上就要看见 */}
+        <DemoModeNotice />
         <h1>{mode === "login" ? "欢迎回来" : "注册新账号"}</h1>
 
         {mode === "login" ? (
@@ -40,7 +49,9 @@ export function AccountGate({ accounts, error, busy, onLogin, onRegister }: Acco
             className="account-gate-form"
             onSubmit={(event) => {
               event.preventDefault();
-              if (selectedId && password) onLogin(selectedId, password);
+              // 空密码照常提交：未设密码的账号只能以空密码进入，
+              // 有密码的账号由后端如实报「密码错误」。
+              if (selectedId) onLogin(selectedId, password);
             }}
           >
             <div className="account-list" role="radiogroup" aria-label="选择账号">
@@ -67,6 +78,7 @@ export function AccountGate({ accounts, error, busy, onLogin, onRegister }: Acco
                 type="button"
                 className="account-option account-option-new"
                 onClick={() => {
+                  onClearError?.();
                   setMode("register");
                   setPassword("");
                 }}
@@ -85,7 +97,7 @@ export function AccountGate({ accounts, error, busy, onLogin, onRegister }: Acco
               />
             </label>
             {error ? <p className="field-error" role="alert">{error}</p> : null}
-            <button type="submit" className="btn btn-primary" disabled={busy || !selectedId || !password}>
+            <button type="submit" className="btn btn-primary" disabled={busy || !selectedId}>
               {busy ? "正在进入…" : "进入"}
             </button>
           </form>
@@ -125,7 +137,14 @@ export function AccountGate({ accounts, error, busy, onLogin, onRegister }: Acco
               <button type="submit" className="btn btn-primary" disabled={busy || registerInvalid}>
                 {busy ? "正在注册…" : "注册并进入"}
               </button>
-              <button type="button" className="btn btn-outline" onClick={() => setMode("login")}>
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={() => {
+                  onClearError?.();
+                  setMode("login");
+                }}
+              >
                 返回登录
               </button>
             </div>

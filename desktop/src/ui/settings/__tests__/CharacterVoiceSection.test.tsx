@@ -57,10 +57,6 @@ function createMockActions(overrides: Partial<HarnessActions> = {}): HarnessActi
     setConfig: vi.fn().mockResolvedValue(undefined),
     testConnection: vi.fn().mockResolvedValue("ok"),
     dismissToast: vi.fn(),
-    codexOauthStart: vi.fn().mockResolvedValue(undefined),
-    codexOauthStatus: vi.fn().mockResolvedValue({ status: "not_started" }),
-    codexApiLogin: vi.fn().mockResolvedValue(undefined),
-    codexLogout: vi.fn().mockResolvedValue(undefined),
     voicePreview: vi.fn().mockResolvedValue(undefined),
     provisionVoices: vi.fn().mockResolvedValue({}),
     listCards: vi.fn().mockResolvedValue(undefined),
@@ -445,18 +441,19 @@ describe("CharacterVoiceSection", () => {
     await waitFor(() => {
       expect(screen.getByTestId("create-mode-design")).toBeInTheDocument();
     });
+    // cardDetail 到达后的 effect 会把 createMode 重置为 clone、prefix 种子化为「card」；
+    // 必须等 effect 落定后再切 design 模式，否则这次重置会覆盖切换结果：createMode 回到
+    // clone 且 prefix 合法，按钮变可用，「禁用」断言永不成立，只能等超时失败（CI 慢 runner
+    // 上曾偶发）。与下方「design 模式提交声音描述词与试听文本」同一处理。
+    await waitFor(() => {
+      expect(screen.getByTestId<HTMLInputElement>("prefix-input")).toHaveValue("card");
+    });
 
     fireEvent.click(screen.getByTestId("create-mode-design"));
 
-    // 全量套件并行线程竞争下 jsdom 渲染可能远超默认 waitFor 窗口（曾放宽
-    // 1000→5000ms 后 CI 慢 runner 仍偶发超时）；断言本身同步派生、不依赖
-    // 真实时钟，放宽至 15s 只为吞掉 CI 渲染排队抖动，不改变断言语义。
-    await waitFor(
-      () => {
-        expect(screen.getByTestId("create-voice-btn")).toBeDisabled();
-      },
-      { timeout: 15000 },
-    );
+    await waitFor(() => {
+      expect(screen.getByTestId("create-voice-btn")).toBeDisabled();
+    });
     expect(actions.voiceCardCreate).not.toHaveBeenCalled();
   });
 
@@ -811,8 +808,10 @@ describe("CharacterVoiceSection", () => {
       />,
     );
 
+    // 详情提交后重置效应还会异步补写默认前缀；等它落地再输入，否则这次补写会覆盖
+    // 用户刚输入的非法值（断言强度不变，仅消除时序竞争）。
     await waitFor(() => {
-      expect(screen.getByTestId("prefix-input")).toBeInTheDocument();
+      expect(screen.getByTestId("prefix-input")).not.toHaveValue("");
     });
 
     fireEvent.change(screen.getByTestId("prefix-input"), { target: { value: "ABC!" } });

@@ -1,0 +1,16 @@
+Traceback (most recent call last):
+  File "E:\AI\HSR-Partner-Harness-v0.3.9-logic\evidence\retest-20260910\tools\run_014_015_config.py", line 227, in <module>
+    sys.exit(asyncio.run(main()))
+             ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\JonahWu\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "C:\Users\JonahWu\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\JonahWu\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 653, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "E:\AI\HSR-Partner-Harness-v0.3.9-logic\evidence\retest-20260910\tools\run_014_015_config.py", line 116, in main
+    raise RuntimeError("探测账号登录失败，无法执行 015 的真实失败回合")
+RuntimeError: 探测账号登录失败，无法执行 015 的真实失败回合

@@ -13,6 +13,9 @@ TTS 播放期间暂停向 VAD 喂帧（采集继续、帧丢弃），播放结�
 
 下行（V0.2 M2-4）：播放器持有长期输出流与有界缓冲，句间/块间不断流；
 ``skip_playing()`` 跳过当前句继续播队列下一句（队列空则停止）；tts 状态
+V0.3.9（契约 §6）：SpeechQueue 单调 epoch——用户发送、新角色完整消息、
+显式停止/跳过/切换/远程认领都先递增 epoch 再停播放器，旧 epoch 的迟到
+PCM 永不写入；partial delta 只触发抢占反馈，不进入 TTS。
 机经 ``on_tts_state`` 上报（idle/synthesizing/playing/skipping/failed），
 vad 状态保持既有语义。V0.2 M4：合成开始置 synthesizing、首个 PCM 块写入
 播放器才置 playing；合成失败置 failed 并清空待播队列（停止消费，等待重播）。
@@ -79,6 +82,9 @@ class VoiceRuntime:
         on_asr_partial: Callable[[str], None] = lambda _t: None,
         on_error: Callable[[str], None] = lambda _m: None,
         on_tts_state: Callable[[str], None] = lambda _s: None,
+        on_interrupted: Callable[[str, str | None, str], None] = (
+            lambda _conversation_id, _message_id, _reason: None
+        ),
         on_text_input: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> None:
         self._orchestrator = orchestrator
@@ -94,6 +100,8 @@ class VoiceRuntime:
         self._on_asr_partial = on_asr_partial
         self._on_error = on_error
         self._on_tts_state = on_tts_state
+        # V0.3.9 契约 §6：抢占反馈回调（conversation_id, message_id, reason）。
+        self._on_interrupted = on_interrupted
         # 桌面端把语音文本交给后台 Turn 链；未注入时保留核心测试/CLI 的
         # 直接编排器路径。
         self._on_text_input = on_text_input
@@ -121,6 +129,8 @@ class VoiceRuntime:
         self._vad_enabled = False
         # V0.2 M2-4：跳过当前句的标记，由播放循环消费（见 skip_playing）
         self._skip = False
+        # V0.3.9 契约 §6：正在播放的 message_id，供 voice.playback_interrupted。
+        self._current_message_id: str | None = None
         # V0.2 M4：当前句合成失败标记——失败后 tts 保持 failed，直到下次播放成功
         self._tts_failed = False
         # 古代机械语音默认关闭；由账号级语音设置显式开启。
@@ -430,7 +440,8 @@ class VoiceRuntime:
             return
         if not is_tts_eligible(message.source, message.kind):
             return
-        self._enqueue_for_playback(message)
+        # V0.3.9 契约 §6：新角色完整消息抢占旧朗读；partial delta 不进入本入口。
+        self._enqueue_for_playback(message, preempt=True)
 
     def replay_message(self, message: Message) -> None:
         """逐条朗读（voice.tts_play）：用户主动指定重播，无视 tts_eligible。
@@ -445,7 +456,8 @@ class VoiceRuntime:
             return
         if message.source == MessageSource.ASSISTANT:
             return
-        self._enqueue_for_playback(message)
+        # 用户主动重播：排队播放，不抢占正在朗读的当前句。
+        self._enqueue_for_playback(message, preempt=False)
 
     def enqueue_text(self, text: str, *, voice_id: str | None = None) -> None:
         """直接按文本入队（voice.preview 试听）；voice_id 缺省取角色音色。
@@ -464,26 +476,31 @@ class VoiceRuntime:
             SpeechRequest(text=text, voice_id=effective_voice, message_id="preview")
         )
 
-    def _enqueue_for_playback(self, message: Message) -> None:
+    def _enqueue_for_playback(self, message: Message, *, preempt: bool) -> bool:
         """角色/用户消息全文入队（助手消息已被上层拦截，不再按分段朗读）。
 
         V0.3.2 M6：说话方有效音色为空（账号未生成且无开发机作者 Key）时
         跳过该消息——TTS 未开通，不得拿空 ID 或作者 ID 调 DashScope。
+        V0.3.9 契约 §6：preempt=True 时先递增 epoch 抢占旧朗读再入队；
+        返回是否真的入队（未入队时不得触发抢占，避免无音频却打断当前播放）。
         """
         voice_id = self._pair_config.character.voice_id
         if not voice_id:
-            return
+            return False
         text = message.text.strip()
         if not is_readable_text(text):
-            return
+            return False
+        if preempt:
+            self.interrupt("new_message")
         self._queue.enqueue(
             SpeechRequest(text=text, voice_id=voice_id, message_id=message.message_id)
         )
+        return True
 
 
     def set_context(self, conversation_id: str, pair_config: PairConfig) -> None:
-        """切换语音所属聊天与搭档，并停止旧聊天的待播语音。"""
-        self.stop_speaking()
+        """切换语音所属聊天与搭档，并抢占旧聊天的待播语音。"""
+        self.interrupt("context_switch")
         self._conversation_id = conversation_id
         self._pair_config = pair_config
 
@@ -494,34 +511,72 @@ class VoiceRuntime:
             and self._pair_config == pair_config
         ):
             return
-        await self.stop_speaking_async()
+        await self.interrupt_async("context_switch")
         self._conversation_id = conversation_id
         self._pair_config = pair_config
 
-    async def stop_speaking_async(self) -> None:
-        """在事件循环中更新队列，再在线程中完成 PortAudio 停止。"""
-        self._queue.stop()
-        self._skip = False
-        await asyncio.to_thread(self._player.stop)
+    async def stop_speaking_async(self, reason: str = "manual_stop") -> None:
+        """停止播放并清空待播队列；PortAudio 停流在线程中完成。"""
+        await self.interrupt_async(reason)
 
-    def stop_speaking(self) -> None:
+    def stop_speaking(self, reason: str = "manual_stop") -> None:
         """停止播放并清空待播队列（同步入口，供 UI 信号直接调用）。
 
         V0.2 M2-4：立即清空播放器缓冲并停止写流，当前句即刻无声；
         播放循环在下一个块检查时退出合成并重开 VAD。
+        V0.3.9 契约 §6：停止即一次中断——epoch 递增，旧 epoch 的迟到 PCM
+        永不写入（AudioPlayer.stop 同时作废在途原生写）。
         """
-        self._player.stop()
+        self.interrupt(reason)
+
+    def interrupt(self, reason: str) -> str | None:
+        """抢占桌面朗读：epoch 递增 → 清队列 → 停播放器（契约 §6）。
+
+        返回被中断的 message_id：优先正在播放的条目，否则队首待播条目，
+        都没有时为 None。只有确实存在播放或待播条目时才停播放器并发出
+        voice.playback_interrupted，避免无音频时的假抢占反馈。
+        """
+        interrupted = self._interrupted_message_id()
+        had_activity = self._queue.playing or self._queue.pending > 0
         self._queue.stop()
         self._skip = False
+        self._current_message_id = None
+        if not had_activity:
+            return interrupted
+        self._player.stop()
+        self._on_interrupted(self._conversation_id, interrupted, reason)
+        return interrupted
+
+    async def interrupt_async(self, reason: str) -> str | None:
+        """异步抢占：epoch 与队列立即生效，PortAudio 停流移出事件循环。"""
+        interrupted = self._interrupted_message_id()
+        had_activity = self._queue.playing or self._queue.pending > 0
+        self._queue.stop()
+        self._skip = False
+        self._current_message_id = None
+        if not had_activity:
+            return interrupted
+        await asyncio.to_thread(self._player.stop)
+        self._on_interrupted(self._conversation_id, interrupted, reason)
+        return interrupted
+
+    def _interrupted_message_id(self) -> str | None:
+        """被中断条目的 message_id：正在播放的优先，否则队首待播项。"""
+        if self._queue.playing and self._current_message_id is not None:
+            return self._current_message_id
+        return self._queue.pending_message_id
 
     def skip_playing(self) -> None:
-        """跳过当前句：立即停声并放弃当前合成，继续播队列下一句。
+        """跳过当前句：epoch 递增放弃当前合成，继续播队列下一句。
 
-        队列已空时播放循环自然停止（tts 回 idle、VAD 重开）；未在播放时
-        无句可跳，待播项由播放循环自行消费。
+        V0.3.9 契约 §6：跳过同样递增 epoch（当前句的迟到 PCM 不得写入），
+        但待播项改挂新 epoch，不清空队列。队列已空时播放循环自然停止
+        （tts 回 idle、VAD 重开）；未在播放时无句可跳。
         """
         if not self._queue.playing:
             return
+        self._queue.skip_current()
+        self._current_message_id = None
         self._player.stop()
         self._skip = True
         self._on_tts_state("skipping")
@@ -530,6 +585,8 @@ class VoiceRuntime:
         """异步跳过当前句，避免等待 PortAudio 停流阻塞事件循环。"""
         if not self._queue.playing:
             return
+        self._queue.skip_current()
+        self._current_message_id = None
         self._skip = True
         await asyncio.to_thread(self._player.stop)
         self._on_tts_state("skipping")
@@ -541,13 +598,16 @@ class VoiceRuntime:
             if request is None:
                 await asyncio.sleep(0.05)
                 continue
+            # 出队瞬间的 epoch：本次播放只写该 epoch 的 PCM（契约 §6）。
+            epoch = self._queue.epoch
+            self._current_message_id = request.message_id
             self._queue.begin_playback()
             self._on_vad_state("playing")
             # V0.2 M4：tts 状态机补 synthesizing 过渡态——出队开始合成置
             # synthesizing，首个 PCM 块写入播放器才置 playing（见 _play_request）
             self._on_tts_state("synthesizing")
             try:
-                await self._play_request(request)
+                await self._play_request(request, epoch)
                 # 合成迭代器结束时，播放器输出缓冲可能仍有音频。等实际
                 # 输出排空后再回到 idle，停止按钮覆盖真实播报阶段。
                 if self._queue.playing and not self._skip:
@@ -562,6 +622,7 @@ class VoiceRuntime:
             skipped = self._skip
             self._skip = False
             self._queue.end_playback()
+            self._current_message_id = None
             if skipped and self._queue.pending:
                 # 跳过当前句：不重开 VAD，直接消费下一句（连续播放）
                 continue
@@ -580,13 +641,16 @@ class VoiceRuntime:
         if isawaitable(result):
             await result
 
-    async def _play_request(self, request: SpeechRequest) -> None:
-        """合成一条请求并把 PCM 写入播放器；stop/skip 由块循环检查。"""
+    async def _play_request(self, request: SpeechRequest, epoch: int) -> None:
+        """合成一条请求并把 PCM 写入播放器；epoch/stop/skip 由块循环检查。"""
         agen = self._synthesizer.synthesize(request)
         wrote_first_block = False
         try:
             async for chunk in agen:
                 if chunk.final:
+                    break
+                if epoch != self._queue.epoch:
+                    # 抢占/跳过之后旧 epoch 的迟到分片一律丢弃（契约 §6）
                     break
                 if not self._queue.playing:
                     # stop_speaking 已清队列并复位 playing：中断合成

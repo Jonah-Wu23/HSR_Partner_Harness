@@ -1,0 +1,196 @@
+{
+  "batch": "batch-2026-09-10",
+  "generated_at": "2026-09-10T06:09:52.922858+00:00",
+  "scope": "桌面/非移动专项；A05 与移动平台矩阵（A10/A11）不在本批次范围",
+  "candidate": {
+    "commit": "897193a2fb983cd39c8328e98f7e225963a1ee64",
+    "branch": "feat/v0.3.9-logic",
+    "contract": "contract-v1（5dae7017810fc893ccf0b3552e85994e077788f0 + effa4f3144e57dd43b76ab5a5215980d767081c5）",
+    "worktree": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic"
+  },
+  "hashes": {
+    "exe": {
+      "path": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+      "size": 11200512,
+      "sha256": "d068bbf86df17770caa82185f02f39a42d881775cdd3fdac8a66b91171d17897"
+    },
+    "sidecar_exe": {
+      "path": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+      "size": 11290728,
+      "sha256": "34d8325bc2ea53993aa2dda235de8f7ca7acbbc16917f3db755fc14bef0eb04f"
+    },
+    "desktop_dist": {
+      "root": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\dist",
+      "exists": true,
+      "file_count": 10,
+      "files": {
+        "assets/assistant-C7ywZek9.png": "1f7ed3045c7a20f16ad7dc8214e1e4a0d73226ab09beaeb71b4f30de315419e4",
+        "assets/assistant-D_D-Q8yQ.png": "a7ac6726f6279fbfbb4f4f989f2159b7eefb8cec00cdeb535057fd9540da0c0e",
+        "assets/assistant-lQBU-p6n.png": "2e607c731b634f87ac879a46d6f3510f231ced1083bbf56b3a80d251da140fee",
+        "assets/character-B4aoLtFp.png": "767f29270338075a26071913c328c049d35688b034b926ed8275df546e0d9a45",
+        "assets/character-BCcwxPlU.png": "7e6b7eca23d3ed21e55f10d3070b213e081c7382d3db150631d373d47659887e",
+        "assets/character-D2GKzZ1w.png": "ebeb7bcb0185e385d4362e55d9de863dc4d118abb93c07bc045f7369f5aeff34",
+        "assets/index-CB2d9PTR.css": "c5e0991d675416faac625b05d5e4e9a57a9142bbe3d9892d99c07ded435e490e",
+        "assets/index-DNhLTL90.js": "e81a2966ac5a3efb49b64255d503398a1d6741b58be48bd86c081d2221c7c301",
+        "assets/webview-B6XVhYfX.js": "56c6a093e6d9e0154bd584295e5a7e6b89a0a0f28ebdf2dae0dea3056c7bd1fa",
+        "index.html": "04845bd00b7a65d7b39ebd1e1370eeeb5c1f5e2c3c7c6aa21cfbb2e385f5b3a1"
+      },
+      "digest": "31c7e2b6eceb61504fc0f4ebcfe3bef5aa3be7ea1efa17979eb9d3df101e75a4"
+    },
+    "mobile_dist": {
+      "root": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\mobile-dist",
+      "exists": true,
+      "file_count": 3,
+      "files": {
+        "assets/index-e5tQBhbx.css": "781d29ae44b759ef50e2bbd43088e4658721a2c25a0942561cc572bef3bb3dca",
+        "assets/index-qXWdcEJV.js": "699c238f3dcd3fa30f235eae544ee1ecbab122966b1c8ae0f74a4549d6f997e5",
+        "index.html": "3fe3cdb2f7a244e2f72162364723d2d98e7f3f7823d47925225f94eb03e40d66"
+      },
+      "digest": "127934bf61915c9f3101b2e8d5b4b289de302ab4022c6d6c75b8467319dcb9e2"
+    },
+    "bundled_codex": {
+      "root": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\codex",
+      "exists": true,
+      "file_count": 7,
+      "files": {
+        "bin/codex-code-mode-host.exe": "37c23a542037e1bcfd0fa7eb4a150c697229d7ff31bf675c519d5bff7226b191",
+        "bin/codex.exe": "935a1911ed2556e4ffcec995f4886ac2ac425863ba26fed264df62e30272ad9d",
+        "ci-placeholder.txt": "daa4432155a086438c6a6e7416dec03991933848b4129e7834b9d6d1d4c211a9",
+        "codex-package.json": "ff573dd4c010f62fb40e3ed64c710622cf990b7b0a2be4bf20ff1d1f7b7c59b5",
+        "codex-path/rg.exe": "14231169855ec5205cf5a1b6f1db358ff4aed4247c86b69ce8aae647c77f6680",
+        "codex-resources/codex-command-runner.exe": "3a70491d8d588afa459a42816f05b8c2fdd6bddb0ef318f3dfccc963a30b420a",
+        "codex-resources/codex-windows-sandbox-setup.exe": "a4df86996dfbb218d96d73a80606d89b742dfa4ddd3470614e90dde89e3250a3"
+      },
+      "digest": "ba52327318a57580b37f13e92594a2212273a0398b7bd65f9b73568b9aaa50bd"
+    },
+    "bundled_reasonix": {
+      "root": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\reasonix",
+      "exists": true,
+      "file_count": 2,
+      "files": {
+        "bin/reasonix.exe": "917b868721975019fd176ea6a643ab8af0715dc06199fd7422b8299be3301073",
+        "ci-placeholder.txt": "daa4432155a086438c6a6e7416dec03991933848b4129e7834b9d6d1d4c211a9"
+      },
+      "digest": "7cfb33ba2900fe7cde633bfd53b82d5d42ddb1c0910a024402bf045929346178"
+    },
+    "apk": {
+      "path": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\gen\\android\\app\\build\\outputs\\apk\\arm64\\debug\\app-arm64-debug.apk",
+      "exists": true,
+      "sha256": "103d4933b2895521b137d31e846a2662fe09e9f2b2d308cde2f9873104ca3558"
+    },
+    "fixtures": {
+      "generated_at": "2026-09-10T06:03:30.662191+00:00",
+      "script": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\evidence\\batch-2026-09-10\\tools\\make_fixtures.py",
+      "source": {
+        "path": "E:\\Tavern\\崩铁-匹诺康尼補充版.json",
+        "size": 402315,
+        "sha256": "b5846ccdf7ff578474d3b92b818cddbb84972f5c56911a0b0c923213cb7e0629",
+        "kind": "SillyTavern world info export",
+        "entry_count": 85
+      },
+      "fixtures": [
+        {
+          "id": "fix-a",
+          "path": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\evidence\\batch-2026-09-10\\fixtures\\fix-a-single-msg.txt",
+          "size": 402315,
+          "sha256": "b5846ccdf7ff578474d3b92b818cddbb84972f5c56911a0b0c923213cb7e0629",
+          "usage": "作为一条消息正文发送；402,315 B > 256 KiB，直接触发正文阈值",
+          "import": "协议写入：chat.submit(text=整篇原文)"
+        },
+        {
+          "id": "fix-b",
+          "path": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\evidence\\batch-2026-09-10\\fixtures\\fix-b-chunks.json",
+          "size": 1703158,
+          "sha256": "949294013b4b87bf9793a42dc84817974947eb38c2d95c7fdb9743d8648e3f9e",
+          "usage": "80 条 × 3655~7675 B（均值 5054 B），四套（chat1..chat4）；单套正文合计 404377 B > 256 KiB",
+          "import": "协议写入：chat.submit 逐条提交，标记 FIXTURE-PINOCONY-{chat}-{seq}"
+        },
+        {
+          "id": "fix-c",
+          "path": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\evidence\\batch-2026-09-10\\fixtures\\fix-c-worldbook-card.json",
+          "size": 164169,
+          "sha256": "259789979aec19beb9faf37b97865e34f60822dd134b749e27e3c556a85b5b40",
+          "usage": "长世界书/角色卡体，绑定两个项目、四个聊天",
+          "import": "协议写入：card.import_json(path=该文件)"
+        }
+      ],
+      "conversion_note": "酒馆原生字段 key/keysecondary/order/disable → v3 keys/secondary_keys/insertion_order/enabled；position 归一化到契约支持的 0/1/4。"
+    }
+  },
+  "device": {
+    "os": "Windows 10.0.26200",
+    "os_caption": "",
+    "os_build": "26200",
+    "cpu": "AMD Ryzen 7 7840H  w/ Radeon 780M Graphics",
+    "memory_gb": 15.3,
+    "display": "2560x1440",
+    "scaling": "150%",
+    "audio": {
+      "devices": [
+        {
+          "Name": "Realtek High Definition Audio",
+          "Status": "OK",
+          "Manufacturer": "Realtek"
+        },
+        {
+          "Name": "NVIDIA High Definition Audio",
+          "Status": "OK",
+          "Manufacturer": "NVIDIA"
+        },
+        {
+          "Name": "AMD Audio Device",
+          "Status": "OK",
+          "Manufacturer": "AMD"
+        },
+        {
+          "Name": "AMD High Definition Audio Device",
+          "Status": "OK",
+          "Manufacturer": "Advanced Micro Devices"
+        },
+        {
+          "Name": "NVIDIA Virtual Audio Device (Wave Extensible) (WDM)",
+          "Status": "OK",
+          "Manufacturer": "NVIDIA"
+        }
+      ],
+      "endpoints": []
+    }
+  },
+  "services": {
+    "dialogue": {
+      "provider": "deepseek",
+      "base_url": "https://api.deepseek.com",
+      "model": "deepseek-v4-flash"
+    },
+    "coding_engine": {
+      "configured": "deepseek（Reasonix/ACP）",
+      "bundled_codex_version": "0.147.0（EXE 内置，未用于本批次）"
+    },
+    "voice": {
+      "provider": "DashScope",
+      "asr_model": "qwen-audio-3.0-asr-flash-streaming",
+      "tts_model": "qwen-audio-3.0-tts-flash",
+      "base_url": "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1"
+    },
+    "secrets": "不记录密钥；对话与语音密钥分别存于账号 secret_refs"
+  },
+  "network": {
+    "local_http": "sidecar --serve 0.0.0.0:8765（PWA 静态 + /ws）",
+    "tailscale_https": "本批次未配置，未执行"
+  },
+  "config_identifiers": {
+    "env_file": "%LOCALAPPDATA%\\PairHarness\\.env（真实模式入口，内容不记录）",
+    "account": "验收账号（account_id 见 result.json 的 ids 字段）",
+    "project": "project-alpha / project-beta（E:\\AI\\HSR-v039-acceptance）",
+    "protocol_token": "WS 真实鉴权 token 由 remote.pair 换取；只记录 SHA256 前 16 位"
+  },
+  "upgrade_recovery_data": {
+    "backup_path": "%APPDATA%\\com.jonahwu.hsr-partner-harness\\projects\\initial-project",
+    "note": "升级恢复样本未单独构造；本批次未执行升级路径用例"
+  },
+  "evidence_root": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\evidence\\batch-2026-09-10",
+  "integrity_check": {
+    "policy": "每次批次开始核对 exe/sidecar/dist 哈希；不一致立即停止并上报",
+    "checked_at": "2026-09-10T06:10:00.831872+00:00"
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "batch": "batch-2026-09-10",
+  "case_id": "A02",
+  "title": "压缩触发（字节/条数）、真实摘要、保留最近 12 条与原文永久保存",
+  "candidate_commit": "897193a2fb983cd39c8328e98f7e225963a1ee64",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "exe_sha256": "d068bbf86df17770caa82185f02f39a42d881775cdd3fdac8a66b91171d17897",
+    "sidecar_sha256": "34d8325bc2ea53993aa2dda235de8f7ca7acbbc16917f3db755fc14bef0eb04f"
+  },
+  "device": "Windows 11 10.0.26200 / Ryzen 7 7840H / 2560x1440 / 缩放150% / 本机桌面会话",
+  "network": "本机直连公网；局域网 sidecar --serve 0.0.0.0:8765（Tailscale 未配置）",
+  "preconditions": {
+    "fixtures": "fix-a（402,315 B 单条）、fix-b2（80 条 × 约 1 KB，合计 77,246 B，隔离条数路径）",
+    "note": "压缩触发为硬阈值：80 条或正文 256 KiB，任一先到"
+  },
+  "steps": [
+    "会话 A02-bytes 提交 fix-a 原文作为一条消息正文（单条即超 256 KiB）",
+    "等待 summary.started → summary.completed → 读取会话核对原文保留",
+    "会话 A02-count 逐条提交 80 条 1KB 夹具（前 79 条提交后立即 task.cancel），第 80 条走真实模型完整回合",
+    "等待条数阈值触发与真实摘要完成，核对消息与夹具留存",
+    "尝试用 summary.get 读取摘要记录"
+  ],
+  "expected": "80 条或 256 KiB 任一触发；保留最近 12 条原文；原文永久保存；摘要正文由真实模型生成；摘要可通过只读命令读回",
+  "actual": "两条路径均真实触发并由真实模型生成摘要：字节路径 covers_message_count=1、条数路径 covers_message_count=80，status 均为 completed；落库摘要 content 为模型对该语料的概括（含「崩坏：星穹铁道」世界观要点）；会话 A02-bytes 原文保留（用户消息长度与夹具逐字符一致）；最近 12 条窗口由 role_context_window 实现（ROLE_CONTEXT_LIMIT_AFTER_SUMMARY=12）；但 summary.get 无法读回：空摘要会话返回 {\"summaries\": []} 正常，只要存在摘要记录即无响应并在 30 秒后超时（V039-S4-001）",
+  "timestamps": {
+    "batch": "batch-2026-09-10",
+    "recorded_at": "2026-09-10T11:05:00Z"
+  },
+  "ids": {
+    "A02-bytes": "10014344-d00d-40be-8fc4-9ba57bb81e55",
+    "A02-count": "b3b1bc41-67c7-4b69-baa3-ffc1923e9109"
+  },
+  "evidence": [
+    "A02/a02-run.json",
+    "A02/ws-frames.log",
+    "A02/ws-frames-assembly.log",
+    "A02/events.log",
+    "A02/sidecar.log",
+    "A02/commands.ps1",
+    "A02/http.log",
+    "fixtures/fixtures-manifest.json"
+  ],
+  "severity": "P1（读取链路）",
+  "frequency": "必现",
+  "impact": "摘要生成正常但用户与界面无法读回；压缩后的上下文对用户不可见",
+  "status": "失败",
+  "blocker": "",
+  "owner": "Sidecar Python / 前端诊断",
+  "next_action": "修复 V039-S4-001 后复验 summary.get 读回与诊断面板展示"
+}

@@ -1,0 +1,46 @@
+{
+  "generated_at": "2026-09-10T10:21:00.656684+00:00",
+  "script": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\evidence\\batch-2026-09-10\\tools\\make_fixtures.py",
+  "source": {
+    "path": "E:\\Tavern\\崩铁-匹诺康尼補充版.json",
+    "size": 402315,
+    "sha256": "b5846ccdf7ff578474d3b92b818cddbb84972f5c56911a0b0c923213cb7e0629",
+    "kind": "SillyTavern world info export",
+    "entry_count": 85
+  },
+  "fixtures": [
+    {
+      "id": "fix-a",
+      "path": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\evidence\\batch-2026-09-10\\fixtures\\fix-a-single-msg.txt",
+      "size": 402315,
+      "sha256": "b5846ccdf7ff578474d3b92b818cddbb84972f5c56911a0b0c923213cb7e0629",
+      "usage": "作为一条消息正文发送；402,315 B > 256 KiB，直接触发正文阈值",
+      "import": "协议写入：chat.submit(text=整篇原文)"
+    },
+    {
+      "id": "fix-b",
+      "path": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\evidence\\batch-2026-09-10\\fixtures\\fix-b-chunks.json",
+      "size": 1703158,
+      "sha256": "949294013b4b87bf9793a42dc84817974947eb38c2d95c7fdb9743d8648e3f9e",
+      "usage": "80 条 × 3655~7675 B（均值 5054 B），四套（chat1..chat4）；单套正文合计 404377 B > 256 KiB",
+      "import": "协议写入：chat.submit 逐条提交，标记 FIXTURE-PINOCONY-{chat}-{seq}"
+    },
+    {
+      "id": "fix-b2",
+      "path": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\evidence\\batch-2026-09-10\\fixtures\\fix-b2-count-only.json",
+      "size": 82387,
+      "sha256": "9941d72a4dea94ec541be12514c2cd8be83a11dc0023d45f056b3514a97cff19",
+      "usage": "80 条 × 637~1573 B，合计 77246 B < 256 KiB，专门隔离\"条数≥80\"触发路径",
+      "import": "协议写入：chat.submit 逐条提交后立即 task.cancel（不产生 80 轮真实模型往返）"
+    },
+    {
+      "id": "fix-c",
+      "path": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\evidence\\batch-2026-09-10\\fixtures\\fix-c-worldbook-card.json",
+      "size": 164169,
+      "sha256": "259789979aec19beb9faf37b97865e34f60822dd134b749e27e3c556a85b5b40",
+      "usage": "长世界书/角色卡体，绑定两个项目、四个聊天",
+      "import": "协议写入：card.import_json(path=该文件)"
+    }
+  ],
+  "conversion_note": "酒馆原生字段 key/keysecondary/order/disable → v3 keys/secondary_keys/insertion_order/enabled；position 归一化到契约支持的 0/1/4。"
+}

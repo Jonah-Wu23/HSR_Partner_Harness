@@ -1,0 +1,48 @@
+{
+  "started_at": "2026-09-10T10:19:58.212Z",
+  "phase": "in-flight-cut-v2",
+  "conversation_id": "706a6188-3632-4206-afde-d4c74301901f",
+  "request_reached_server_before_cut": true,
+  "cut_delay_ms": 62.0,
+  "in_flight_outcome": {
+    "accepted": true
+  },
+  "server_side_after_cut": {
+    "texts": [
+      "A14-INFLIGHT2 只回复一个词：断",
+      "断"
+    ],
+    "marker_count": 1,
+    "character_finals": [
+      "断"
+    ],
+    "active_task": null,
+    "turns": [
+      {
+        "turn_id": "895e4be7-1645-4e3a-bea7-d8e346c8a5f5",
+        "account_id": "",
+        "project_id": "4577124a-20f7-4b21-a39d-546f0ce4078c",
+        "conversation_id": "706a6188-3632-4206-afde-d4c74301901f",
+        "target": "character",
+        "source_message_id": "0f9afc53-b021-4669-a197-0ed01249bb3b",
+        "status": "completed",
+        "created_at": "2026-09-10T10:19:58.261253Z",
+        "updated_at": "2026-09-10T10:19:58.938637+00:00"
+      }
+    ]
+  },
+  "new_turn_after_link_loss": {
+    "texts": [
+      "A14-INFLIGHT2 只回复一个词：断",
+      "断",
+      "A14-INFLIGHT2-RECOVERED 只回复一个词：续",
+      "续"
+    ],
+    "character_finals": [
+      "断",
+      "续"
+    ]
+  },
+  "finished_at": "2026-09-10T10:20:01.452Z",
+  "sidecar_new_lines": 8
+}

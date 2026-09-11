@@ -1,0 +1,36 @@
+{
+  "batch": "retest-20260910",
+  "case_id": "V039-S4-015",
+  "title": "回合失败原因非空复验",
+  "candidate_commit": "工作树快照 @ cc4077c + uncommitted fixes",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "exe_sha256": "2ce327a197ae91385560e9b037ffb7acaea5ce83cd66d4beedf84babf6482cf8",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "sidecar_sha256": "52366696c30e83dad5f19bce1a0d520a5c035e13b0c0b37f0b1bc549d32e82b6"
+  },
+  "device": "Windows 11 10.0.26200 / 2560x1440 / 缩放150% / 本地桌面会话",
+  "network": "本机直连公网（无 Tailscale）",
+  "preconditions": {},
+  "steps": [],
+  "expected": "",
+  "actual": "错误 Key 的真实失败回合产生可见系统提示「本次回复失败：Client error '401 Authorization Required' for url ...」，不再是空壳「本次回复失败：」；用户消息标记 failed；该回合的未过滤 sidecar 日志保留了 httpx 的 401 记录。本轮观察到的是异常自述非空路径，_failure_reason 的「自述为空回落」分支未在真实链路上构造（仅离线覆盖），如实记录。",
+  "timestamps": {
+    "started_at": "2026-09-10T13:03:14.146Z",
+    "finished_at": "2026-09-10T13:03:14.147Z"
+  },
+  "ids": {},
+  "evidence": [
+    "failure-run.json",
+    "sidecar.log",
+    "sidecar-info.log"
+  ],
+  "severity": "",
+  "frequency": "",
+  "impact": "",
+  "status": "通过",
+  "blocker": "",
+  "owner": "",
+  "next_action": "无"
+}

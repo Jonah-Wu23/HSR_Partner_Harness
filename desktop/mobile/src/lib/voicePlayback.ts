@@ -99,8 +99,11 @@ export function resampleLinear(
 export interface VoicePlaybackEngineOptions {
   /** end 信号后最后一个分片真实播完，整体收尾时回调。 */
   onFinished(): void;
-  /** 播放异常（resume 失败/结束信号超时/解码失败），如实上报给 store。 */
-  onFailed(error: Error): void;
+  /**
+   * 播放异常（resume 失败/结束信号超时/解码失败/PCM 超限），如实上报给 store。
+   * V0.3.9 §6：errorCode 携带真实失败码（pcm_overflow 等），无则为 null。
+   */
+  onFailed(error: Error, errorCode: string | null): void;
   /** 测试可缩小；生产与 store 共用同一 PCM 缓冲上限。 */
   maxQueuedPcmBytes?: number;
 }
@@ -143,14 +146,14 @@ export function createVoicePlaybackEngine(options: VoicePlaybackEngineOptions): 
     }
   }
 
-  function fail(error: Error): void {
+  function fail(error: Error, errorCode: string | null = null): void {
     if (finished) return;
     finished = true;
     clearEndTimer();
     queue.length = 0;
     queuedPcmBytes = 0;
     stopActiveSources();
-    onFailed(error);
+    onFailed(error, errorCode);
   }
 
   function stopActiveSources(): void {
@@ -232,13 +235,18 @@ export function createVoicePlaybackEngine(options: VoicePlaybackEngineOptions): 
         return;
       }
       if (queuedPcmBytes + samples.byteLength > maxQueuedPcmBytes) {
-        fail(new Error(
-          "播放待播队列超过内存上限：" +
-            (queuedPcmBytes + samples.byteLength) +
-            " > " +
-            maxQueuedPcmBytes +
-            " 字节",
-        ));
+        // V0.3.9 §6：整条播放真实失败（error_code=pcm_overflow），
+        // 清空队列与在途音源，不丢旧片段后继续播放。
+        fail(
+          new Error(
+            "播放待播队列超过内存上限：" +
+              (queuedPcmBytes + samples.byteLength) +
+              " > " +
+              maxQueuedPcmBytes +
+              " 字节",
+          ),
+          "pcm_overflow",
+        );
         return;
       }
       queue.push({ seq, samples });
@@ -284,6 +292,8 @@ export function useVoicePlayback(_conversationId: string): {
   playbackMessageId: string;
   playbackState: string;
   playbackError: string | null;
+  /** V0.3.9 §6：真实失败码（pcm_overflow 等）；非失败状态为 null。 */
+  playbackErrorCode: string | null;
 } {
   const playback = useMobileStore((state) => state.voice.playback);
   const ttsChunks = useMobileStore((state) => state.voice.ttsChunks);
@@ -337,9 +347,9 @@ export function useVoicePlayback(_conversationId: string): {
             currentMessageIdRef.current = null;
           }
         },
-        onFailed: (error) => {
+        onFailed: (error, errorCode) => {
           if (currentMessageIdRef.current === messageId) {
-            failVoicePlayback(messageId, error.message);
+            failVoicePlayback(messageId, error.message, errorCode);
             engineRef.current = null;
             currentMessageIdRef.current = null;
           }
@@ -385,5 +395,6 @@ export function useVoicePlayback(_conversationId: string): {
     playbackMessageId: playback.messageId ?? "",
     playbackState: playback.state,
     playbackError: playback.state === "failed" ? playback.error : null,
+    playbackErrorCode: playback.state === "failed" ? (playback.errorCode ?? null) : null,
   };
 }

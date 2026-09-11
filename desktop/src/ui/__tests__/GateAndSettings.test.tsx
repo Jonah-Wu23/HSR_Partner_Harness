@@ -100,10 +100,10 @@ describe("Onboarding", () => {
     fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
 
     expect(await screen.findByRole("heading", { name: "都准备好了" })).toBeInTheDocument();
-    expect(onSaveModelConfig).toHaveBeenCalledWith({ provider: "DeepSeek", apiKey: "sk-test" });
+    expect(onSaveModelConfig).toHaveBeenCalledWith({ provider: "deepseek", apiKey: "sk-test" });
   });
 
-  it("首次引导提供 DeepSeek、OpenAI 兼容 API 与 OpenAI OAuth", () => {
+  it("首次引导只提供 DeepSeek 与 OpenAI 兼容 API，不出现已剥离的 OAuth 入口", () => {
     render(
       <Onboarding
         onCreateProject={vi.fn().mockResolvedValue(true)}
@@ -113,17 +113,20 @@ describe("Onboarding", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "跳过" }));
     const provider = screen.getByLabelText("模型来源");
-    expect(provider).toHaveValue("DeepSeek");
-    expect(screen.getByRole("option", { name: "OpenAI 兼容 API（包括 OpenAI API）" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "OpenAI OAuth" })).toBeInTheDocument();
+    expect(provider).toHaveValue("deepseek");
+    expect(screen.getByRole("option", { name: "DeepSeek" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "OpenAI 兼容 API" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /OAuth/ })).not.toBeInTheDocument();
 
-    fireEvent.change(provider, { target: { value: "OpenAI 兼容 API（包括 OpenAI API）" } });
+    // DeepSeek 只要 Key；切到通用兼容端点才需要 Base URL 与模型
+    expect(screen.queryByLabelText("Base URL")).not.toBeInTheDocument();
+    fireEvent.change(provider, { target: { value: "openai_compatible" } });
     expect(screen.getByLabelText("Base URL")).toHaveValue("https://api.openai.com/v1");
     expect(screen.getByLabelText("模型")).toHaveValue("gpt-5.6-sol");
+    expect(screen.getByRole("button", { name: "保存并测试" })).toBeDisabled();
 
-    fireEvent.change(provider, { target: { value: "OpenAI OAuth" } });
-    expect(screen.getByText("使用 OpenAI 账号登录，角色与助手共用 gpt-5.6-sol。")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "启动并继续" })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "sk-test" } });
+    expect(screen.getByRole("button", { name: "保存并测试" })).toBeEnabled();
   });
 });
 
@@ -134,13 +137,14 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsCenter>[0]>
     onPageChange: vi.fn(),
     onClose: vi.fn(),
     account: { displayName: "吴 Jonah" },
-    coding: { engine: "codex", codex: { status: "logged_out" } },
     model: {
       provider: "DeepSeek",
       model: "deepseek-reasoner",
       baseUrl: "https://api.deepseek.com",
       apiKeyMasked: "sk-····",
       reasoningEffort: "medium",
+      providerSupported: true,
+      providerUnavailable: null,
     },
     voice: {
       enabled: true,
@@ -157,9 +161,6 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsCenter>[0]>
     onSaveProfile: vi.fn(),
     onChangePassword: vi.fn(),
     onLogout: vi.fn(),
-    onCodexOAuthStart: vi.fn(),
-    onCodexLogout: vi.fn(),
-    onCodexApiLogin: vi.fn(),
     onSaveModel: vi.fn(),
     onTestModel: vi.fn(),
     onSaveVoice: vi.fn(),
@@ -214,34 +215,133 @@ describe("SettingsCenter", () => {
     expect(props.onTestModel).toHaveBeenCalled();
   });
 
-  it("模型页切到 OpenAI OAuth 时先保存并启动登录，不测试未登录连接", async () => {
+  it("模型页切回 DeepSeek 时落 *.deepseek.com 端点与默认模型（后端端点一致性契约）", async () => {
+    const onSaveModel = vi.fn().mockResolvedValue(undefined);
+    renderSettings({
+      onSaveModel,
+      model: {
+        provider: "openai_compatible",
+        model: "gpt-5.6-sol",
+        baseUrl: "https://gateway.example.com/v1",
+        apiKeyMasked: "",
+        reasoningEffort: "auto",
+        providerSupported: true,
+        providerUnavailable: null,
+      },
+    });
+
+    fireEvent.change(screen.getByLabelText("服务商"), { target: { value: "deepseek" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
+
+    await waitFor(() =>
+      expect(onSaveModel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: "deepseek",
+          baseUrl: "https://api.deepseek.com",
+          model: "deepseek-v4-flash",
+        }),
+      ),
+    );
+  });
+
+  it("模型页服务商下拉只有 DeepSeek 与 OpenAI 兼容 API", () => {
+    renderSettings();
+    const provider = screen.getByLabelText("服务商");
+    expect(provider).toHaveValue("deepseek");
+    expect(screen.getByRole("option", { name: "DeepSeek" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "OpenAI 兼容 API" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /OAuth/ })).not.toBeInTheDocument();
+  });
+
+  it("模型页切到 OpenAI 兼容 API 用默认端点保存并测试连接", async () => {
     const onSaveModel = vi.fn().mockResolvedValue(undefined);
     const onTestModel = vi.fn();
-    const props = renderSettings({ onSaveModel, onTestModel });
+    renderSettings({ onSaveModel, onTestModel });
 
     fireEvent.change(screen.getByLabelText("服务商"), {
-      target: { value: "openai_oauth" },
+      target: { value: "openai_compatible" },
     });
     fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
 
     await waitFor(() =>
       expect(onSaveModel).toHaveBeenCalledWith(
         expect.objectContaining({
-          provider: "openai_oauth",
+          provider: "openai_compatible",
           baseUrl: "https://api.openai.com/v1",
           model: "gpt-5.6-sol",
           apiKey: undefined,
         }),
       ),
     );
-    expect(onTestModel).not.toHaveBeenCalled();
+    expect(onTestModel).toHaveBeenCalled();
   });
 
-  it("编程助手页未登录时提供浏览器登录与 API Key 两条路", () => {
-    const props = renderSettings({ page: "coding" });
-    expect(screen.getByRole("button", { name: "通过浏览器登录" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "通过浏览器登录" }));
-    expect(props.onCodexOAuthStart).toHaveBeenCalled();
+  const unavailableMessage = "该供应商不可用，请重新选择 DeepSeek 或 OpenAI 兼容 API。";
+
+  it("历史 openai_oauth 按后端 provider_supported=false 显示不可用：不改写、不许保存，改选后恢复", async () => {
+    const onSaveModel = vi.fn().mockResolvedValue(undefined);
+    renderSettings({
+      model: {
+        provider: "openai_oauth",
+        model: "gpt-5.6-sol",
+        baseUrl: "https://api.openai.com/v1",
+        apiKeyMasked: "",
+        reasoningEffort: "auto",
+        providerSupported: false,
+        providerUnavailable: { code: "provider_unavailable", message: unavailableMessage },
+      },
+      onSaveModel,
+    });
+
+    expect(screen.getByLabelText("服务商")).toHaveValue("openai_oauth");
+    // 占位与提示文案都来自后端 provider_unavailable.message
+    expect(screen.getByRole("option", { name: unavailableMessage })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(unavailableMessage);
+
+    const save = screen.getByRole("button", { name: "保存并测试" });
+    // 只改模型字段仍算「未改选服务商」，不许在不可用供应商上保存
+    fireEvent.change(screen.getByLabelText("模型"), { target: { value: "gpt-5.6" } });
+    expect(save).toBeDisabled();
+
+    // 显式选择可用服务商后立即恢复保存，不需要重进设置页
+    fireEvent.change(screen.getByLabelText("服务商"), { target: { value: "openai_compatible" } });
+    expect(save).toBeEnabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.click(save);
+
+    await waitFor(() =>
+      expect(onSaveModel).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: "openai_compatible" }),
+      ),
+    );
+    expect(onSaveModel).not.toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "openai_oauth" }),
+    );
+  });
+
+  it("后端只给 code 不给 message 时不编造文案，但保存仍然拦住", () => {
+    renderSettings({
+      model: {
+        provider: "openai_oauth",
+        model: "gpt-5.6-sol",
+        baseUrl: "https://api.openai.com/v1",
+        apiKeyMasked: "",
+        reasoningEffort: "auto",
+        providerSupported: false,
+        providerUnavailable: null,
+      },
+    });
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("模型"), { target: { value: "gpt-5.6" } });
+    expect(screen.getByRole("button", { name: "保存并测试" })).toBeDisabled();
+  });
+
+  it("编程助手页只说明复用角色模型配置，不再有登录入口", () => {
+    renderSettings({ page: "coding" });
+    expect(screen.getByText(/编程助手不单独配置账号/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /登录/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/OAuth/)).not.toBeInTheDocument();
   });
 
   it("语音页显示用户 BYOK 配置与固定模型，不显示赞助内容与助手语音", () => {

@@ -1,0 +1,83 @@
+/* V0.3.9 V06：租约面板。状态色沿用 -status-<state> 约定。 */
+
+.lease-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lease-panel-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.lease-state {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.lease-state.lease-status-free {
+  color: var(--muted);
+}
+
+.lease-state.lease-status-held {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.lease-state.lease-status-grace {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.lease-detail {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.lease-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.lease-row dt {
+  color: var(--muted);
+  flex: none;
+}
+
+.lease-row dd {
+  margin: 0;
+  text-align: right;
+  word-break: break-all;
+  font-variant-numeric: tabular-nums;
+}
+
+.lease-lost {
+  margin: 0;
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: oklch(0.24 0.04 85);
+  color: var(--warn);
+}
+
+/* 窄屏（≤360px）：键值对改为上下排列，长 device_key 不挤压标题。 */
+@media (max-width: 360px) {
+  .lease-row {
+    flex-direction: column;
+    gap: 2px;
+  }
+  .lease-row dd {
+    text-align: left;
+  }
+}

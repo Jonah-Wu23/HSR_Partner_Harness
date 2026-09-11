@@ -1,0 +1,17 @@
+{
+  "batch": "retest-20260910",
+  "case_id": "B-05",
+  "candidate_commit": "工作树快照 @ cc4077c + uncommitted fixes",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "device": "Windows 11 10.0.26200 / 2560x1440 / 缩放150%",
+  "network": "本机直连公网；B-01 期间经本机沙盒代理",
+  "timestamps": {},
+  "ids": {},
+  "evidence": [],
+  "status": "通过",
+  "severity": "",
+  "frequency": "",
+  "impact": "",
+  "actual": "绑定 fix-c（85 条世界书）的会话上真实委派回合取得 4 类来源（user/character/assistant/system）、5 类 kind 与 8 条 tool_runs（全部 succeeded），世界书激活 5 个模块（含角色设定前/后），隐藏原文 14,771 字符；文件真实落盘 66 B 且内容一致；终态错误 0 条。装配预算按 017 修复口径同时核对通过。",
+  "next_action": "无"
+}

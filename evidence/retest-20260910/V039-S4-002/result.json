@@ -1,0 +1,17 @@
+{
+  "batch": "retest-20260910",
+  "case_id": "V039-S4-002",
+  "candidate_commit": "工作树快照 @ cc4077c + uncommitted fixes",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "device": "Windows 11 10.0.26200 / 2560x1440 / 缩放150%",
+  "network": "本机直连公网；B-01 期间经本机沙盒代理",
+  "timestamps": {},
+  "ids": {},
+  "evidence": [],
+  "status": "通过",
+  "severity": "",
+  "frequency": "",
+  "impact": "",
+  "actual": "不带任何模式标志启动 Sidecar：demo=False、mode_source=default_real；backend.ready 帧同源。以 --demo 启动：demo=True、mode_source=explicit_demo，前端顶部出现「演示模式：未调用真实模型」标识，config.test_connection 如实返回 ok=false 并说明演示模式不生效（不再给出「连接正常」）。",
+  "next_action": "无"
+}

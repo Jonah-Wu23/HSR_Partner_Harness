@@ -46,10 +46,8 @@ DESKTOP_COMMANDS = frozenset(
         "config.get",
         "config.set",
         "config.test_connection",
-        "codex.oauth_start",
-        "codex.oauth_status",
-        "codex.logout",
-        "codex.api_login",
+        # B-03：codex.* 仅保留为历史兼容入口——oauth_start / api_login 一律以
+        # codex_login_removed 拒绝，oauth_status / logout 只读/清理本地遗留数据。
         "codex.oauth_start",
         "codex.oauth_status",
         "codex.logout",
@@ -88,6 +86,17 @@ DESKTOP_COMMANDS = frozenset(
         "remote.revoke",
         "remote.claim_control",
         "remote.release_control",
+        # V0.3.9 契约 §6/§7：只读控制租约状态（TTL/宽限/持有设备）。
+        "remote.control_status",
+        # V0.3.9 契约 §5/§7：摘要、记忆、指标与装配诊断的显式命令。
+        "summary.regenerate",
+        "summary.get",
+        "memory.create",
+        "memory.list",
+        "memory.update",
+        "memory.delete",
+        "metrics.query",
+        "diagnostics.prompt_assembly",
     }
 )
 
@@ -113,6 +122,9 @@ class DesktopCommand:
     connection_key: str | None = None
     # 传输层从已鉴权 token 派生的稳定标识，重连不变，不接受 params 注入。
     remote_device_key: str | None = None
+    # V0.3.9 §5：鉴权决定里的设备名（ws_server 注入），仅用于指标如实
+    # 呈现来源设备；同样不接受 params 注入。
+    remote_device_name: str | None = None
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> "DesktopCommand":

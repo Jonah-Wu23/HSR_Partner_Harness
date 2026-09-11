@@ -10,7 +10,6 @@ from typing import Any
 import pytest
 
 from pair_harness.adapters.acp.engine import AcpCodingEngine
-from pair_harness.adapters.codex.engine import CodexAppServerEngine
 from pair_harness.adapters.demo import ScriptedCodingEngine
 from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDialogueModel
 from pair_harness.adapters.audio.qwen_voice_customization import CustomizationResult
@@ -1290,7 +1289,7 @@ async def test_config_get_set_masks_secrets(tmp_path: Path) -> None:
                 "set-1",
                 "config.set",
                 updates={
-                    "engine": "deepseek",
+                    # B-03：前端不再发送 engine（由后端按 provider 推导）。
                     "dialogue.base_url": "https://api.deepseek.com",
                     "dialogue.model": "deepseek-chat",
                     "dialogue.api_key": "sk-super-secret-123456",
@@ -1302,10 +1301,13 @@ async def test_config_get_set_masks_secrets(tmp_path: Path) -> None:
                 },
             )
         )
-        assert updated["config"]["engine"] == "deepseek"
+        # B-03：引擎由后端推导，产品只有 reasonix acp 一条路径。
+        assert updated["config"]["engine"] == "reasonix"
         assert updated["config"]["dialogue"]["model"] == "deepseek-chat"
+        assert updated["config"]["dialogue"]["provider_supported"] is True
+        assert updated["config"]["dialogue"]["provider_unavailable"] is None
         config = await service.handle_command(command("get-1", "config.get"))
-        assert config["engine"] == "deepseek"
+        assert config["engine"] == "reasonix"
         assert config["dialogue"]["model"] == "deepseek-chat"
         assert config["dialogue"]["api_key_masked"] == "sk-s…3456"
         assert "sk-super-secret" not in config["dialogue"]["api_key_masked"]
@@ -1704,36 +1706,54 @@ async def test_config_test_connection_without_credentials_reports_failure(
         database=tmp_path / "data" / "pair_harness.db",
         project_root=tmp_path,
     )
+    # V039-S4-002：演示模式拒绝给出任何连接结论，本用例验证的是真实模式下
+    # 「环境无凭据」分支；缺配置在校验阶段即返回，不发起任何网络请求。
+    service._demo = False
     try:
         result = await service.handle_command(command("t-1", "config.test_connection"))
         assert result["ok"] is False
         assert "缺少对话服务配置" in result["message"]
     finally:
+        service._demo = True
         await service.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_codex_login_state_machine(tmp_path: Path) -> None:
-    """V0.2 M3：codex.oauth_* 与 api_login 按当前账号隔离。"""
+async def test_codex_login_commands_are_removed(tmp_path: Path) -> None:
+    """B-03：OpenAI OAuth / Codex 登录入口已移除，且不留下假成功。
+
+    - oauth_start / api_login 一律以 codex_login_removed 拒绝，不写配置、
+      不启动登录进程（这里桩掉 start_login 以证明它从未被调用）；
+    - oauth_status / logout 保留：只读磁盘上的历史残留状态 / 清理本地文件，
+      不启动任何登录流程、也不声明 OAuth 可用（离线可验证）。
+    """
+    from pair_harness.desktop_backend.application_service import ServiceError
+
     service = build_demo_service(
         database=tmp_path / "data" / "pair_harness.db",
         project_root=tmp_path,
     )
+    started: list[str] = []
+    if not hasattr(service.codex_auth, "start_login"):
+        raise AssertionError("CodexAuthService.start_login 应仍存在（仅不再被产品调用）")
+    service.codex_auth.start_login = lambda *args, **kwargs: started.append("called")
     try:
+        before = service._load_account_config()
+        with pytest.raises(ServiceError) as oauth_exc:
+            await service.handle_command(command("s-2", "codex.oauth_start"))
+        assert oauth_exc.value.code == "codex_login_removed"
+        with pytest.raises(ServiceError) as api_exc:
+            await service.handle_command(
+                command("s-4", "codex.api_login", api_key="sk-codex-123")
+            )
+        assert api_exc.value.code == "codex_login_removed"
+        assert started == [], "拒绝路径不得启动任何登录进程"
+        assert service._load_account_config() == before, "拒绝路径不得写配置"
+
+        # 保留的只读/清理命令：如实反映本地残留状态，不伪造登录态。
         status = await service.handle_command(command("s-1", "codex.oauth_status"))
         assert status["status"] in {"logged_out", "waiting", "logged_in"}
-
-        await service.handle_command(command("s-2", "codex.oauth_start"))
-        status = await service.handle_command(command("s-3", "codex.oauth_status"))
-        assert status["status"] == "waiting"
-
-        logged = await service.handle_command(
-            command("s-4", "codex.api_login", api_key="sk-codex-123")
-        )
-        assert logged["status"] == "logged_in"
-        status = await service.handle_command(command("s-5", "codex.oauth_status"))
-        assert status["status"] == "logged_in"
-
+        assert status["account_id"] == service.current_account_id
         out = await service.handle_command(command("s-6", "codex.logout"))
         assert out["status"] == "logged_out"
     finally:
@@ -1741,10 +1761,12 @@ async def test_codex_login_state_machine(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_oauth_switch_from_deepseek_persists_before_starting_login(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_oauth_provider_selection_is_rejected_without_writing_config(
+    tmp_path: Path,
 ) -> None:
-    """DeepSeek → OAuth 必须先切统一供应商，再启动浏览器登录。"""
+    """B-03：不可用的 OAuth 供应商不能被写入，且不留半写入状态。"""
+    from pair_harness.desktop_backend.application_service import ServiceError
+
     service = build_demo_service(
         database=tmp_path / "data" / "pair_harness.db",
         project_root=tmp_path,
@@ -1755,7 +1777,6 @@ async def test_oauth_switch_from_deepseek_persists_before_starting_login(
                 "deepseek-config",
                 "config.set",
                 updates={
-                    "engine": "deepseek",
                     "dialogue.provider": "deepseek",
                     "dialogue.base_url": "https://api.deepseek.com",
                     "dialogue.model": "deepseek-v4-flash",
@@ -1763,28 +1784,31 @@ async def test_oauth_switch_from_deepseek_persists_before_starting_login(
                 },
             )
         )
-        seen_config: list[dict[str, str]] = []
-
-        def fake_start_login() -> dict[str, object]:
-            seen_config.append(service._load_account_config())
-            return {"status": "waiting", "note": "test login"}
-
-        monkeypatch.setattr(service.codex_auth, "start_login", fake_start_login)
-        result = await service.handle_command(command("oauth-start", "codex.oauth_start"))
-
-        assert seen_config == [
-            {
-                "engine": "codex",
-                "dialogue.provider": "openai_oauth",
-                "dialogue.base_url": "https://api.openai.com/v1",
-                "dialogue.model": "gpt-5.6-sol",
-                # 切换供应商时显式清空上一家已保存的 Key，防止环境变量补回。
-                "dialogue.api_key": "",
-            }
-        ]
-        assert service.store.get_secret(service.current_account_id, "dialogue.api_key") == ""
-        assert result["config"]["engine"] == "codex"
-        assert result["config"]["dialogue"]["provider"] == "openai_oauth"
+        with pytest.raises(ServiceError) as exc:
+            await service.handle_command(
+                command(
+                    "oauth-config",
+                    "config.set",
+                    updates={
+                        "dialogue.provider": "openai oauth",
+                        "dialogue.base_url": "https://api.openai.com/v1",
+                        "dialogue.model": "gpt-5.6-sol",
+                    },
+                )
+            )
+        assert exc.value.code == "provider_unavailable"
+        # 拒绝就是拒绝：旧配置原样保留，没有被静默迁移或改写成别的端点。
+        assert (
+            service.store.get_config(service.current_account_id, "dialogue.provider")
+            == "deepseek"
+        )
+        assert (
+            service.store.get_config(service.current_account_id, "dialogue.base_url")
+            == "https://api.deepseek.com"
+        )
+        assert service.store.get_secret(
+            service.current_account_id, "dialogue.api_key"
+        ) == "sk-deepseek-test"
     finally:
         await service.shutdown()
 
@@ -2008,11 +2032,12 @@ async def test_voice_runtime_receives_created_messages_via_listener_wiring(tmp_p
 
 @pytest.mark.asyncio
 async def test_rebuild_runtime_for_account_switches_engine_immediately(tmp_path: Path) -> None:
-    """F3：切换引擎后下一个任务立即生效——重建路径真实替换引擎引用。
+    """F3：切换供应商后下一个任务立即生效——重建路径真实替换引擎/模型引用。
 
     demo 模式下 ``_rebuild_runtime_for_account`` 首行跳过（生产行为），
-    这里按真实模式驱动重建：codex → CodexAppServerEngine，
-    deepseek → AcpCodingEngine，且编排器与审查器依赖同步替换。
+    这里按真实模式驱动重建。B-03：产品只有 reasonix acp 一条引擎路径，
+    通用 Chat Completions 兼容端点与 DeepSeek 端点都装配 AcpCodingEngine，
+    且编排器与审查器依赖同步替换。
     """
     service = build_demo_service(
         database=tmp_path / "data" / "pair_harness.db",
@@ -2024,21 +2049,20 @@ async def test_rebuild_runtime_for_account_switches_engine_immediately(tmp_path:
         service._demo = False
         base_config = {
             "dialogue.provider": "openai_compatible",
-            # V0.3.8 T4：codex 引擎只允许 Responses API 后端（OpenAI 官方），
-            # 通用第三方 Chat Completions 端点在装配层被显式拒绝。
-            "dialogue.base_url": "https://api.openai.com/v1",
+            # B-03：通用第三方 Chat Completions 端点不再被拒绝（含不可解析域名），
+            # 装配期不联网、不校验端点协议形态。
+            "dialogue.base_url": "https://no-such-host-s4.invalid/v1",
             "dialogue.api_key": "sk-test",
             "dialogue.model": "gpt-5.6-sol",
         }
 
-        await service._rebuild_runtime_for_account({**base_config, "engine": "codex"})
-        assert isinstance(service.coding_engine, CodexAppServerEngine)
-        assert isinstance(service.orchestrator.coding_engine, CodexAppServerEngine)
+        await service._rebuild_runtime_for_account(base_config)
+        assert isinstance(service.coding_engine, AcpCodingEngine)
+        assert isinstance(service.orchestrator.coding_engine, AcpCodingEngine)
         assert isinstance(service.dialogue_model, OpenAICompatibleDialogueModel)
         assert isinstance(service.orchestrator.dialogue_model, OpenAICompatibleDialogueModel)
 
         deepseek_config = {
-            "engine": "deepseek",
             "dialogue.provider": "deepseek",
             "dialogue.base_url": "https://api.deepseek.com",
             "dialogue.api_key": "sk-deepseek-test",
@@ -2368,7 +2392,6 @@ async def test_config_set_failure_keeps_database_old_values(
                     "set-bad",
                     "config.set",
                     updates={
-                        "engine": "deepseek",
                         "dialogue.provider": "deepseek",
                         "dialogue.base_url": "https://api.deepseek.com",
                         "dialogue.model": "deepseek-v4-flash",

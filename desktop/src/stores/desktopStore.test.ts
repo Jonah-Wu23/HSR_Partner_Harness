@@ -1,9 +1,30 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import type { DesktopEvent, DesktopSnapshot, PendingApproval, PowerStatusPayload, ToolRun } from "../contracts/protocol";
+import type {
+  ActiveTask,
+  ConversationOpenResult,
+  ConversationSummary,
+  DesktopEvent,
+  DesktopSnapshot,
+  MemoryWirePayload,
+  PairMemory,
+  PendingApproval,
+  PowerStatusPayload,
+  RemoteControlState,
+  ToolRun,
+  TurnMetric,
+} from "../contracts/protocol";
 import { createMockScenario } from "../mocks/scenarios";
 import { presentAppShell } from "../presenters/presenters";
-import { desktopStore } from "./desktopStore";
+import {
+  desktopStore,
+  selectActiveMemories,
+  selectApprovalCountByConversation,
+  selectApprovalsForConversation,
+  selectBackendDemoMode,
+  selectLatestSummary,
+  type PromptAssemblyDiagnostics,
+} from "./desktopStore";
 
 describe("desktopStore event projection", () => {
   beforeEach(() => {
@@ -280,7 +301,8 @@ describe("desktopStore event projection", () => {
       port: 8765,
     });
 
-    // 载荷缺 port：协议违规，不本地猜测地址，保持原值
+    // 载荷缺 port：协议违规必须如实暴露——地址此刻不可知，不得继续展示
+    // 上一次的二维码成功态（V039-S4-004 复核）。
     desktopStore.getState().applyEvents([
       {
         kind: "event",
@@ -289,10 +311,9 @@ describe("desktopStore event projection", () => {
         payload: { host: "192.168.1.99" },
       },
     ]);
-    expect(desktopStore.getState().remotePairing.serveAddress).toEqual({
-      host: "192.168.1.42",
-      port: 8765,
-    });
+    const violated = desktopStore.getState().remotePairing;
+    expect(violated.serveAddress).toBeNull();
+    expect(violated.serveFailure).toContain("缺少 port");
   });
 
   it("error.reported recoverable 入 Toast 队列（同 code+message 去重，最多 5 条）", () => {
@@ -1394,5 +1415,717 @@ describe("desktopStore power slice（V0.3.7 U5）", () => {
     desktopStore.getState().applyEvents([powerEvent(1, unsupported)]);
 
     expect(desktopStore.getState().powerStatus).toEqual(unsupported);
+  });
+});
+
+describe("V0.3.9 契约消费（摘要/记忆/租约/指标/诊断/审批终态）", () => {
+  const baseSnapshot = (): DesktopSnapshot => createMockScenario("single-project").snapshot;
+
+  function summary(overrides: Partial<ConversationSummary> = {}): ConversationSummary {
+    return {
+      summary_id: "s1",
+      conversation_id: "conv-1",
+      status: "running",
+      covers_from_message_id: "message-1",
+      covers_to_message_id: "message-2",
+      covers_message_count: 2,
+      content: null,
+      provider: null,
+      model: null,
+      error_code: null,
+      error: null,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      ...overrides,
+    };
+  }
+
+  /** 前端记录（快照/只读装载路径直接携带记录，非线缆载荷）。 */
+  function memory(overrides: Partial<PairMemory> = {}): PairMemory {
+    return {
+      memory_id: "mem-1",
+      scope: {
+        account_id: "acc-1",
+        project_id: "project-1",
+        pair_id: "phainon_ancient_machine",
+        character_ref: "builtin:phainon",
+        assistant_identity: "ancient_machine",
+      },
+      content: { text: "用户喜欢安静的训练场" },
+      status: "active",
+      updated_at: "2026-01-01T00:00:00Z",
+      ...overrides,
+    };
+  }
+
+  /** 线缆载荷：服务端 _memory_payload 恒为扁平五分量（无嵌套 scope）。 */
+  function memoryPayload(overrides: Partial<MemoryWirePayload> = {}): MemoryWirePayload {
+    return {
+      memory_id: "mem-1",
+      account_id: "acc-1",
+      project_id: "project-1",
+      pair_id: "phainon_ancient_machine",
+      character_ref: "builtin:phainon",
+      assistant_identity: "ancient_machine",
+      content: { text: "用户喜欢安静的训练场" },
+      status: "active",
+      updated_at: "2026-01-01T00:00:00Z",
+      ...overrides,
+    };
+  }
+
+  function event(
+    name: DesktopEvent["event"],
+    payload: object,
+    sequence: number,
+  ): DesktopEvent {
+    return { kind: "event", event: name, sequence, payload: payload as Record<string, unknown> };
+  }
+
+  beforeEach(() => {
+    desktopStore.setState({
+      toasts: [],
+      configSnapshot: null,
+      lastSequence: -1,
+      needsBootstrap: false,
+      eventBuffer: [],
+      streamId: null,
+      summariesByConversation: {},
+      memories: [],
+      remoteControl: null,
+      approvalsByConversation: {},
+      approvalOutcomesById: {},
+      turnMetrics: [],
+      metricsCursor: null,
+      metricsLoading: false,
+      metricsError: null,
+      promptAssembly: null,
+      promptAssemblyLoading: false,
+      promptAssemblyError: null,
+      promptAssemblyRevealed: false,
+      playbackInterruption: null,
+    });
+    desktopStore.getState().hydrate(baseSnapshot());
+  });
+
+  it("summary 事件按 summary_id 覆盖，failed 保留原始错误且不生成空摘要", () => {
+    desktopStore.getState().applyEvents([
+      event("summary.started", { ...summary(), status: "running" }, 1),
+    ]);
+    expect(selectLatestSummary(desktopStore.getState(), "conv-1")?.status).toBe("running");
+
+    desktopStore.getState().applyEvents([
+      event(
+        "summary.failed",
+        {
+          conversation_id: "conv-1",
+          summary_id: "s1",
+          status: "failed",
+          error_code: "summary_timeout",
+          error: "provider timeout",
+        },
+        2,
+      ),
+    ]);
+
+    const failed = selectLatestSummary(desktopStore.getState(), "conv-1");
+    expect(failed?.status).toBe("failed");
+    expect(failed?.error_code).toBe("summary_timeout");
+    expect(failed?.error).toBe("provider timeout");
+    // 契约 §9：失败后投影仍引用原消息区间，不被清空。
+    expect(failed?.covers_to_message_id).toBe("message-2");
+    expect(failed?.content).toBeNull();
+  });
+
+  it("summary.completed 写入模型内容，未被事件覆盖的字段保持 null", () => {
+    desktopStore.getState().applyEvents([
+      event(
+        "summary.completed",
+        {
+          summary_id: "s2",
+          conversation_id: "conv-1",
+          status: "completed",
+          content: { text: "角色与用户确认了训练计划" },
+          provider: "deepseek",
+          model: "deepseek-chat",
+          covers_message_count: 80,
+          created_at: "2026-01-02T00:00:00Z",
+          updated_at: "2026-01-02T00:00:00Z",
+        },
+        1,
+      ),
+    ]);
+
+    const completed = selectLatestSummary(desktopStore.getState(), "conv-1");
+    expect(completed?.status).toBe("completed");
+    expect(completed?.model).toBe("deepseek-chat");
+    expect(completed?.covers_from_message_id).toBeNull();
+  });
+
+  it("memory.updated 按扁平线缆载荷落库，五分量解码为作用域；未知 id 不造记录", () => {
+    desktopStore.getState().applyEvents([
+      event("memory.updated", memoryPayload(), 1),
+      event("memory.updated", memoryPayload({ memory_id: "mem-2" }), 2),
+      event("memory.updated", memoryPayload({ memory_id: "mem-3", content: { text: "第二版" } }), 3),
+    ]);
+
+    const state = desktopStore.getState();
+    expect(state.memories).toHaveLength(3);
+    // 内容原样落库（不筛选、不改写）
+    expect(state.memories.find((item) => item.memory_id === "mem-3")?.content).toEqual({
+      text: "第二版",
+    });
+    // 作用域来自服务端下发的扁平五分量，界面按嵌套 scope 消费（此前恒为 undefined）
+    const first = selectActiveMemories(state).find((item) => item.memory_id === "mem-1");
+    expect(first?.scope).toEqual({
+      account_id: "acc-1",
+      project_id: "project-1",
+      pair_id: "phainon_ancient_machine",
+      character_ref: "builtin:phainon",
+      assistant_identity: "ancient_machine",
+    });
+  });
+
+  it("memory.deleted 带完整记录按记录落库；只带 id 时标记 deleted，未知 id 不造记录", () => {
+    desktopStore.getState().applyEvents([
+      event("memory.updated", memoryPayload({ memory_id: "mem-2" }), 1),
+      event("memory.deleted", { memory_id: "mem-2" }, 2),
+      event("memory.deleted", { memory_id: "mem-unknown" }, 3),
+      event("memory.updated", memoryPayload({ memory_id: "mem-4" }), 4),
+      event(
+        "memory.deleted",
+        memoryPayload({ memory_id: "mem-4", status: "deleted" }),
+        5,
+      ),
+    ]);
+
+    const state = desktopStore.getState();
+    expect(state.memories.find((item) => item.memory_id === "mem-2")?.status).toBe("deleted");
+    expect(state.memories.some((item) => item.memory_id === "mem-unknown")).toBe(false);
+    // 完整记录删除：status 与内容都按服务端下发落库
+    const deleted = state.memories.find((item) => item.memory_id === "mem-4");
+    expect(deleted?.status).toBe("deleted");
+    expect(deleted?.scope.assistant_identity).toBe("ancient_machine");
+  });
+
+  it("remote.control_changed 非法载荷保持 null，不伪造 free", () => {
+    const held: RemoteControlState = {
+      state: "held",
+      device_key: "device-a",
+      expires_at: "2026-01-01T00:00:45Z",
+      grace_expires_at: null,
+      reason: null,
+    };
+    desktopStore.getState().applyEvents([
+      event("remote.control_changed", { ...held } as unknown as Record<string, unknown>, 1),
+    ]);
+    expect(desktopStore.getState().remoteControl).toEqual(held);
+
+    desktopStore.getState().applyEvents([event("remote.control_changed", {}, 2)]);
+    expect(desktopStore.getState().remoteControl).toBeNull();
+
+    desktopStore.getState().applyEvents([
+      event("remote.control_changed", { state: "unknown-state" }, 3),
+    ]);
+    expect(desktopStore.getState().remoteControl).toBeNull();
+  });
+
+  it("approval.resolved 超时终态保留 timeout/system 与 error_code，缺失来源不伪造成 desktop", () => {
+    desktopStore.getState().applyEvents([
+      event(
+        "approval.requested",
+        {
+          approval_id: "a1",
+          conversation_id: "conv-1",
+          task_id: "t1",
+          operation: {
+            tool_kind: "file_write",
+            command: null,
+            paths: ["a.txt"],
+            patch_file_count: null,
+            summary: "写入文件",
+          },
+          reason: "需要确认",
+        },
+        1,
+      ),
+    ]);
+    expect(selectApprovalsForConversation(desktopStore.getState(), "conv-1")).toHaveLength(1);
+
+    desktopStore.getState().applyEvents([
+      event(
+        "approval.resolved",
+        {
+          approval_id: "a1",
+          conversation_id: "conv-1",
+          task_id: "t1",
+          decision: "timeout",
+          resolved_by: "system",
+          actor: "system",
+          reason: "等待审批超时",
+          resolved_at: "2026-01-01T00:00:00Z",
+          error_code: "approval_timeout",
+        },
+        2,
+      ),
+    ]);
+
+    const state = desktopStore.getState();
+    expect(selectApprovalsForConversation(state, "conv-1")).toHaveLength(0);
+    expect(state.approvalOutcomesById.a1).toEqual({
+      approval_id: "a1",
+      conversation_id: "conv-1",
+      task_id: "t1",
+      decision: "timeout",
+      resolved_by: "system",
+      actor: "system",
+      reason: "等待审批超时",
+      resolved_at: "2026-01-01T00:00:00Z",
+      error_code: "approval_timeout",
+    });
+
+    // 迟到点击的幂等终态：缺失来源字段保持 null，不得伪造 desktop。
+    desktopStore.getState().applyEvents([
+      event("approval.resolved", { approval_id: "a2", conversation_id: "conv-1", decision: "deny" }, 3),
+    ]);
+    expect(desktopStore.getState().approvalOutcomesById.a2).toEqual({
+      approval_id: "a2",
+      conversation_id: "conv-1",
+      task_id: null,
+      decision: "deny",
+      resolved_by: null,
+      actor: null,
+      reason: null,
+      resolved_at: "",
+      error_code: null,
+    });
+    expect(
+      desktopStore.getState().resolvedApprovals.some((item) => item.approval_id === "a2"),
+    ).toBe(false);
+  });
+
+  it("conversation.card_missing 作为真实失败进入 Toast，不静默吞掉", () => {
+    desktopStore.getState().applyEvents([
+      event("conversation.card_missing", { conversation_id: "conv-1", character_card_id: "card-x" }, 1),
+    ]);
+    const toast = desktopStore.getState().toasts.at(-1);
+    expect(toast?.kind).toBe("warning");
+    expect(toast?.text).toContain("card-x");
+  });
+
+  it("voice.playback_interrupted 保留 null 字段，不补默认来源", () => {
+    desktopStore.getState().applyEvents([
+      event("voice.playback_interrupted", { conversation_id: "conv-1" }, 1),
+    ]);
+    expect(desktopStore.getState().playbackInterruption).toEqual({
+      conversation_id: "conv-1",
+      message_id: null,
+      reason: null,
+      occurred_at: null,
+    });
+  });
+
+  it("hydrate 消费快照的 summaries/memories/remote_control，缺字段即空/ null", () => {
+    desktopStore.getState().hydrate({
+      ...baseSnapshot(),
+      summaries: [summary({ status: "completed" })],
+      memories: [memory()],
+      remote_control: {
+        state: "grace",
+        device_key: "device-a",
+        expires_at: "2026-01-01T00:00:45Z",
+        grace_expires_at: "2026-01-01T00:01:00Z",
+        reason: "disconnected",
+      },
+    });
+    const state = desktopStore.getState();
+    expect(selectLatestSummary(state, "conv-1")?.status).toBe("completed");
+    expect(state.memories).toHaveLength(1);
+    expect(state.remoteControl?.state).toBe("grace");
+
+    desktopStore.getState().hydrate(baseSnapshot());
+    expect(desktopStore.getState().summariesByConversation).toEqual({});
+    expect(desktopStore.getState().memories).toEqual([]);
+    expect(desktopStore.getState().remoteControl).toBeNull();
+  });
+
+  it("conversation.open 消费全量 active_tasks 与摘要/记忆/审批/租约", () => {
+    const snapshot = baseSnapshot();
+    const conversation = snapshot.projects[0].conversations[0];
+    const result: ConversationOpenResult & { active_tasks?: ActiveTask[] } = {
+      conversation,
+      project: snapshot.projects[0],
+      pair: snapshot.pair,
+      messages: snapshot.messages,
+      tool_runs: snapshot.tool_runs,
+      turns: snapshot.turns,
+      queue_items: [],
+      active_task: null,
+      approvals: [
+        {
+          approval_id: "open-a1",
+          conversation_id: conversation.conversation_id,
+          operation: {
+            tool_kind: "shell",
+            command: "ls",
+            paths: [],
+            patch_file_count: null,
+            summary: "列出目录",
+          },
+          reason: "需要确认",
+        },
+      ],
+      summaries: [summary({ conversation_id: conversation.conversation_id })],
+      memories: [memory()],
+      remote_control: {
+        state: "held",
+        device_key: "device-b",
+        expires_at: null,
+        grace_expires_at: null,
+        reason: null,
+      },
+      active_tasks: [
+        {
+          project_id: "project-1",
+          conversation_id: conversation.conversation_id,
+          task_id: "task-1",
+          engine_turn_id: null,
+        },
+      ],
+      sequence: 5,
+    };
+    desktopStore.getState().hydrateConversationView(result);
+
+    const state = desktopStore.getState();
+    expect(state.activeTasksByConversation[conversation.conversation_id]?.task_id).toBe("task-1");
+    expect(selectApprovalsForConversation(state, conversation.conversation_id)).toHaveLength(1);
+    expect(state.summariesByConversation[conversation.conversation_id]).toHaveLength(1);
+    expect(state.memories).toHaveLength(1);
+    expect(state.remoteControl?.device_key).toBe("device-b");
+  });
+
+  it("metrics 与诊断保留 null/0 差异，关闭诊断抽屉清除隐藏内容", () => {
+    const metric: TurnMetric = {
+      metric_id: "m1",
+      account_id: "acc-1",
+      project_id: "project-1",
+      conversation_id: "conv-1",
+      pair_id: "phainon_ancient_machine",
+      character_ref: "builtin:phainon",
+      assistant_identity: "character",
+      turn_kind: "character_turn",
+      turn_id: "turn-1",
+      task_id: null,
+      engine_turn_id: null,
+      provider: null,
+      model: null,
+      engine_type: null,
+      reasoning_effort: null,
+      status: "completed",
+      started_at: "2026-01-01T00:00:00Z",
+      first_event_at: null,
+      completed_at: null,
+      duration_ms: null,
+      input_tokens: null,
+      output_tokens: null,
+      total_tokens: null,
+      tool_rounds: 0,
+      compression_count: 0,
+      approval_count: 0,
+      failure_type: null,
+      failure_message: null,
+      origin: "desktop",
+      remote_device_key: null,
+      remote_device_name: null,
+    };
+    desktopStore.getState().setMetricsPage({ metrics: [metric], cursor: null });
+    const stored = desktopStore.getState().turnMetrics[0];
+    expect(stored.input_tokens).toBeNull();
+    expect(stored.tool_rounds).toBe(0);
+
+    const diagnostics: PromptAssemblyDiagnostics = {
+      conversation_id: "conv-1",
+      modules: [
+        {
+          name: "character_frame",
+          kind: "description",
+          source_field: "description",
+          title: "角色设定",
+          char_count: 12,
+          char_start: 0,
+          char_end: 12,
+          hash: "abc",
+          diagnostics: null,
+          hidden_content: "隐藏提示原文",
+        },
+      ],
+      summary_injected: true,
+      memory_injected: false,
+      diagnostics: { unexpanded_macros: [] },
+      hidden_content_included: true,
+    };
+    desktopStore.getState().setPromptAssembly(diagnostics);
+    expect(desktopStore.getState().promptAssemblyRevealed).toBe(true);
+    desktopStore.getState().closePromptAssembly();
+    expect(desktopStore.getState().promptAssembly).toBeNull();
+    expect(desktopStore.getState().promptAssemblyRevealed).toBe(false);
+
+    // 未请求隐藏内容时不展开。
+    desktopStore.getState().setPromptAssembly({ ...diagnostics, hidden_content_included: false });
+    expect(desktopStore.getState().promptAssemblyRevealed).toBe(false);
+  });
+
+  it("setMetricsPage append 追加第二页并去重，replace 整体覆盖", () => {
+    const metricRecord = (metricId: string): TurnMetric => ({
+      metric_id: metricId,
+      account_id: "acc-1",
+      project_id: "project-1",
+      conversation_id: "conv-1",
+      pair_id: "phainon_ancient_machine",
+      character_ref: "builtin:phainon",
+      assistant_identity: "character",
+      turn_kind: "character_turn",
+      turn_id: `turn-${metricId}`,
+      task_id: null,
+      engine_turn_id: null,
+      provider: null,
+      model: null,
+      engine_type: null,
+      reasoning_effort: null,
+      status: "completed",
+      started_at: "2026-01-01T00:00:00Z",
+      first_event_at: null,
+      completed_at: null,
+      duration_ms: null,
+      input_tokens: null,
+      output_tokens: null,
+      total_tokens: null,
+      tool_rounds: 0,
+      compression_count: 0,
+      approval_count: 0,
+      failure_type: null,
+      failure_message: null,
+      origin: "desktop",
+      remote_device_key: null,
+      remote_device_name: null,
+    });
+
+    // 第一页（首屏，replace）：2 条且有下一页。
+    desktopStore.getState().setMetricsPage({
+      metrics: [metricRecord("m1"), metricRecord("m2")],
+      cursor: "c1",
+    });
+    // 第二页（加载更多，append）：新增 1 条并重复 1 条已读记录。
+    desktopStore.getState().setMetricsPage(
+      { metrics: [metricRecord("m3"), metricRecord("m2")], cursor: null },
+      "append",
+    );
+
+    const appended = desktopStore.getState();
+    // 旧页在前，重复的 m2 只保留第一次出现的一条。
+    expect(appended.turnMetrics.map((m) => m.metric_id)).toEqual(["m1", "m2", "m3"]);
+    expect(appended.metricsCursor).toBeNull();
+
+    // replace 对照：整体覆盖，不保留旧行。
+    desktopStore.getState().setMetricsPage({ metrics: [metricRecord("m9")], cursor: "c2" });
+    expect(desktopStore.getState().turnMetrics.map((m) => m.metric_id)).toEqual(["m9"]);
+    expect(desktopStore.getState().metricsCursor).toBe("c2");
+  });
+
+  it("selectApprovalCountByConversation 只给计数，不泄露其他聊天内容", () => {
+    desktopStore.getState().applyEvents([
+      event(
+        "approval.requested",
+        {
+          approval_id: "a-other",
+          conversation_id: "other-conversation",
+          operation: {
+            tool_kind: "shell",
+            command: "ls",
+            paths: [],
+            patch_file_count: null,
+            summary: "列出目录",
+          },
+          reason: "需要确认",
+        },
+        1,
+      ),
+    ]);
+    expect(selectApprovalCountByConversation(desktopStore.getState())).toEqual({
+      "other-conversation": 1,
+    });
+    expect(selectApprovalsForConversation(desktopStore.getState(), "conv-1")).toEqual([]);
+  });
+});
+
+describe("本地服务连接状态与远程地址（V039-S4-007 / V039-S4-004）", () => {
+  const disconnectNotice = {
+    code: "backend_disconnected",
+    message: "Python Sidecar 已断开，正在重连…",
+    severity: "recoverable",
+    source: "sidecar",
+  };
+
+  function event(
+    name: DesktopEvent["event"],
+    payload: object,
+    sequence: number,
+  ): DesktopEvent {
+    return { kind: "event", event: name, sequence, payload: payload as Record<string, unknown> };
+  }
+
+  beforeEach(() => {
+    desktopStore.setState({
+      status: "ready",
+      error: null,
+      toasts: [],
+      needsBootstrap: false,
+      eventBuffer: [],
+      streamId: null,
+      lastSequence: -1,
+    });
+  });
+
+  it("V039-S4-007：断连错误本身即把连接状态落为断开（两路同源，任一路被丢弃都不能让药丸说谎）", () => {
+    desktopStore.getState().applyEvents([
+      event("error.reported", disconnectNotice, 1),
+    ]);
+
+    const state = desktopStore.getState();
+    expect(state.status).toBe("disconnected");
+    expect(state.needsBootstrap).toBe(false);
+    expect(state.error).toBe("Python Sidecar 已断开，正在重连…");
+    expect(state.toasts).toHaveLength(1);
+  });
+
+  it("V039-S4-007：恢复后撤回「正在重连…」瞬时通知，不再与「已连接」同屏矛盾", () => {
+    desktopStore.getState().applyEvents([
+      event("connection.status", { status: "disconnected" }, 1),
+      event("error.reported", disconnectNotice, 2),
+      event("connection.status", { status: "connected" }, 3),
+    ]);
+
+    const state = desktopStore.getState();
+    expect(state.status).toBe("booting");
+    expect(state.needsBootstrap).toBe(true);
+    expect(state.toasts).toHaveLength(0);
+    expect(state.error).toBeNull();
+  });
+
+  it("V039-S4-007：恢复只撤回断连通知，其他真实错误继续留在队列里", () => {
+    desktopStore.getState().applyEvents([
+      event("error.reported", disconnectNotice, 1),
+      event(
+        "error.reported",
+        { code: "voice.tts", message: "语音合成失败：服务无响应", severity: "recoverable" },
+        2,
+      ),
+      event("connection.status", { status: "connected" }, 3),
+    ]);
+
+    const state = desktopStore.getState();
+    expect(state.toasts.map((toast) => toast.text)).toEqual(["语音合成失败：服务无响应"]);
+    expect(state.error).toBe("语音合成失败：服务无响应");
+  });
+
+  it("V039-S4-004：serve.started 的 host=null 如实记为「已监听但无局域网地址」并保留端口与原因", () => {
+    desktopStore.getState().applyEvents([
+      event("serve.started", { host: null, port: 8765, reason: "no_lan_address" }, 1),
+    ]);
+
+    const remote = desktopStore.getState().remotePairing;
+    expect(remote.serveAddress).toBeNull();
+    expect(remote.servePort).toBe(8765);
+    expect(remote.serveUnavailableReason).toBe("no_lan_address");
+  });
+
+  it("V039-S4-004：serve_start_failed 的真实报文进远程页，随后成功的 serve.started 清除它", () => {
+    desktopStore.getState().applyEvents([
+      event(
+        "error.reported",
+        {
+          code: "serve_start_failed",
+          message: "远程服务启动失败（端口 8765）：[WinError 10048] 地址已在使用",
+          severity: "error",
+          source: "sidecar",
+        },
+        1,
+      ),
+    ]);
+    expect(desktopStore.getState().remotePairing.serveFailure).toBe(
+      "远程服务启动失败（端口 8765）：[WinError 10048] 地址已在使用",
+    );
+
+    desktopStore.getState().applyEvents([
+      event("serve.started", { host: "192.168.1.7", port: 8765 }, 2),
+    ]);
+    const remote = desktopStore.getState().remotePairing;
+    expect(remote.serveFailure).toBeNull();
+    expect(remote.serveAddress).toEqual({ host: "192.168.1.7", port: 8765 });
+    expect(remote.serveUnavailableReason).toBeNull();
+  });
+
+  it("V039-S4-004：remote.issue_code 同形的 serve_address 也能合并（一次性事件错过时仍可出二维码）", () => {
+    desktopStore.getState().setServeAddress({ host: "192.168.1.9", port: 8765 });
+
+    expect(desktopStore.getState().remotePairing.serveAddress).toEqual({
+      host: "192.168.1.9",
+      port: 8765,
+    });
+
+    // host=null：服务在监听但无局域网地址，地址清空、端口与原因保留
+    desktopStore.getState().setServeAddress({ host: null, port: 8765, reason: "no_lan_address" });
+    const remote = desktopStore.getState().remotePairing;
+    expect(remote.serveAddress).toBeNull();
+    expect(remote.servePort).toBe(8765);
+    expect(remote.serveUnavailableReason).toBe("no_lan_address");
+  });
+
+  it("V039-S4-004：serve_address 缺 port 时清空地址并暴露协议违规", () => {
+    desktopStore.getState().setServeAddress({ host: "192.168.1.9", port: 8765 });
+    desktopStore.getState().setServeAddress({ host: "192.168.1.99" });
+
+    const remote = desktopStore.getState().remotePairing;
+    expect(remote.serveAddress).toBeNull();
+    expect(remote.serveFailure).toContain("缺少 port");
+  });
+
+  it("V039-S4-002：backend.ready 保留 Sidecar 自报的演示模式与来源，未上报即未知", () => {
+    desktopStore.getState().applyEvents([
+      event(
+        "backend.ready",
+        { pid: 4321, demo: true, mode_source: "flag" },
+        1,
+      ),
+    ]);
+
+    expect(selectBackendDemoMode(desktopStore.getState())).toBe(true);
+    expect(desktopStore.getState().backendInfo).toEqual({
+      pid: 4321,
+      demo: true,
+      modeSource: "flag",
+    });
+  });
+
+  it("V039-S4-002：backend.ready 未带 demo 字段时为未知，绝不默认成真实模式", () => {
+    desktopStore.getState().applyEvents([event("backend.ready", { pid: 77 }, 1)]);
+
+    expect(desktopStore.getState().backendInfo).toEqual({
+      pid: 77,
+      demo: null,
+      modeSource: null,
+    });
+    expect(selectBackendDemoMode(desktopStore.getState())).toBeNull();
+  });
+
+  it("V039-S4-004：host 为空串时按未获得地址处理，不伪造可达地址", () => {
+    desktopStore.getState().applyEvents([
+      event("serve.started", { host: "", port: 8765 }, 1),
+    ]);
+
+    const remote = desktopStore.getState().remotePairing;
+    expect(remote.serveAddress).toBeNull();
+    expect(remote.serveUnavailableReason).toBeNull();
+    expect(remote.servePort).toBe(8765);
   });
 });

@@ -1,0 +1,93 @@
+{
+  "batch": "mobile-20260910",
+  "case_id": "mobile-platform-matrix-android",
+  "title": "移动平台矩阵：Android 壳与 Android 浏览器（仅局域网远程连接）",
+  "candidate_commit": "工作树快照 @ cc4077c + S4-R2 uncommitted fixes",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "apk": {
+      "path": "desktop\\src-tauri\\gen\\android\\app\\build\\outputs\\apk\\arm64\\debug\\app-arm64-debug.apk",
+      "bytes": 249566546,
+      "sha256": "cb23957c…（完整值见 evidence/retest-r2-20260910/batch-manifest.json）",
+      "mtime": "2026-09-10T22:13:00+08:00",
+      "built_by": "desktop/scripts/build-android.ps1",
+      "not_assets_only": {
+        "apk_assets_index_html_sha256": "1eb7cc6a457207bad6cbb44d7c09436c36f493a3056d62c11d157b0b396c1d60",
+        "mobile_dist_index_html_sha256": "1eb7cc6a457207bad6cbb44d7c09436c36f493a3056d62c11d157b0b396c1d60",
+        "identical": true,
+        "apk_lib_sha256": "8542693d37bf1b1d2f6c90f672bf204429c402070ed7cdab8e657540c13c0e07",
+        "cargo_output_sha256": "8542693d37bf1b1d2f6c90f672bf204429c402070ed7cdab8e657540c13c0e07",
+        "lib_bytes": 120382200
+      },
+      "installed_as": "versionCode=1 / versionName=1.0（安装时需 -d 允许降级，见 V039-R2-002）"
+    },
+    "desktop_exe_sha256": "2f58c825…",
+    "sidecar_sha256": "356c8ce5…"
+  },
+  "device": {
+    "model": "24129PN74C (dada, Xiaomi)",
+    "os": "Android 16 / SDK 36",
+    "abi": "arm64-v8a",
+    "screen": "1200x2670 / 520 dpi → 逻辑宽约 369 dp（另以 wm density 560 模拟 342.9 dp 后已还原）",
+    "ip": "10.81.140.245",
+    "connection": "无线 ADB（adb pair + adb connect）"
+  },
+  "network": "局域网 10.81.0.0/16：手机 10.81.140.245 ↔ PC 10.81.102.166:8765（HTTP，非 HTTPS）。非局域网（HTTPS / Tailscale）按用户指示不测",
+  "preconditions": {
+    "desktop_sidecar": "以 --serve 8765 运行，lan_host=10.81.102.166",
+    "pairing": "配对码由桌面端「设置 → 远程设备 → 生成配对码」签发（本项目实现），手机侧手动填入服务地址与六位配对码",
+    "phone_app_data": "Android 壳以 pm clear 复位，复现首次进入的配对流程",
+    "notification_permission": "初始为 denied（POST_NOTIFICATIONS granted=false），后经 pm grant 授予以验证常驻通知"
+  },
+  "results_by_platform": {
+    "android_shell": {
+      "网络(局域网HTTP)": "通过",
+      "并发": "通过",
+      "安全": "通过",
+      "通知与电源": "通过（有条件：权限未授予时如实提示；授予后常驻通知与后台任务通知均成立）",
+      "交互与负载": "部分通过（软键盘、≤360dp 小屏、长列表通过；Safe Area / 弱网 / 四聊天交互负载未执行）",
+      "语音": "未执行"
+    },
+    "android_browser": {
+      "网络(局域网HTTP)": "通过",
+      "其他维度": "未执行（页面自身声明浏览器端无系统通知与 Web Push；本批仅验证连通与配对）"
+    },
+    "ios_safari": {"状态": "受阻", "原因": "无 iOS 设备可用"},
+    "ios_pwa": {"状态": "受阻", "原因": "无 iOS 设备可用"}
+  },
+  "expected": "各平台 × 各维度单独登记，不以一条总评覆盖；非法请求被拒且不执行命令；后台与锁屏可收提醒；小屏可读可操作",
+  "actual": "Android 壳：清数据首启 → 手填 ws://10.81.102.166:8765/ws + 配对码 → 「开始配对」成功（Sidecar 记 `远程连接鉴权完成 device='我的手机'`，配对码 claimed=true），显示桌面真实聊天列表；从手机发出消息并收到角色真实回复（14:30:35 → 14:30:36）。安全：missing_token / invalid_token 拒绝且未执行命令；撤销后连接被断开、后续 revoked_token，手机如实显示「配对已失效或设备已被撤销」+「会话装载失败：revoked_token」+「语音不可用：与桌面端连接已断开」，提供重新配对入口。并发：移动端（局域网）与桌面端（回环）双连接对 4 会话并发提交，发送差值 0.0 s，四会话各自只收到自己的回复，零串线。通知：未授权时应用如实提示「尚未获得系统通知权限」；授予后投递常驻通知「保持连接中」，且应用在后台时收到桌面提交回合的「任务完成 / 「R2-B01-请求悬挂」已完成」通知。浏览器：打开 http://10.81.102.166:8765/ 得到与冻结候选逐字节相同的 index.html，如实提示不支持原生扫码，手填配对码后配对成功并显示同一份真实数据。",
+  "timestamps": {
+    "started_at": "2026-09-10T14:23:00Z",
+    "finished_at": "2026-09-10T15:05:00Z",
+    "recorded_at": "2026-09-10T15:05:00Z"
+  },
+  "ids": {
+    "shell_device_label": "我的手机",
+    "conversations_used": [
+      "615f444e-9bd3-4d9f-85cd-6527e47643d7",
+      "1df32ef7-f30d-4605-b0d5-4c0e507d433e",
+      "7e6a5061-3045-45c6-a60b-ff967b7f4623",
+      "588c8fdd-369e-4a04-bb31-260ec83fe586",
+      "22cb4a59-cd13-4829-8296-cad038d4ebf0"
+    ]
+  },
+  "evidence": [
+    "shell/01-launch.png ... shell/21-small-screen-343dp.png",
+    "shell/ui-*.xml（各状态的控件树）",
+    "shell/notifications.txt（权限未授予：0 条应用通知）",
+    "shell/notifications-after-grant.txt（常驻通知「保持连接中」）",
+    "shell/notifications-bg-task.txt（后台「任务完成」通知）",
+    "browser-20260910/01-load.png ... 08-paired.png",
+    "00-precheck/desktop-pairing-code*.png",
+    "../retest-r2-20260910/mobile-security-concurrency/",
+    "../retest-r2-20260910/batch-manifest.json"
+  ],
+  "severity": "",
+  "frequency": "必现",
+  "impact": "移动平台矩阵（Android 两平台 × 局域网维度）",
+  "status": "通过（Android 壳与 Android 浏览器；iOS 受阻，未执行项见验收记录）",
+  "blocker": "iOS Safari / iOS PWA 无设备可用",
+  "owner": "移动端",
+  "next_action": "补 iOS 平台矩阵；补移动端语音、弱网/断网重连、A10 关闭与崩溃恢复、A11 缓冲溢出；A10/A11 整例不作通过判定"
+}

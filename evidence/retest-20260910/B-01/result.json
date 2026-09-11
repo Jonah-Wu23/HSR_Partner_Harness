@@ -1,0 +1,38 @@
+{
+  "batch": "retest-20260910",
+  "case_id": "B-01",
+  "title": "断网注入（进程级网络沙盒）与错误可定位性复验",
+  "candidate_commit": "工作树快照 @ cc4077c + uncommitted fixes",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "exe_sha256": "2ce327a197ae91385560e9b037ffb7acaea5ce83cd66d4beedf84babf6482cf8",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "sidecar_sha256": "52366696c30e83dad5f19bce1a0d520a5c035e13b0c0b37f0b1bc549d32e82b6"
+  },
+  "device": "Windows 11 10.0.26200 / 2560x1440 / 缩放150% / 本地桌面会话",
+  "network": "本机直连公网（无 Tailscale）",
+  "preconditions": {},
+  "steps": [],
+  "expected": "",
+  "actual": "进程级网络沙盒（本机 HTTP CONNECT 代理 + HTTPS_PROXY）自检四形态全部可用，候真实出站确认经代理（沙盒记录 client_request + tunnel_established）。候选侧注入：连接被拒 →「All connection attempts failed」；传输中断 → 收到响应字节后切断 →「ReadError」；请求悬挂 → 30.3 秒后「ReadTimeout」；三种失败原因互不相同、可定位。名称解析失败形态受阻：改写 .env 端点为 RFC 6761 保留域后，Sidecar 启动期即因 _require_responses_backend 抛错退出（退出码 2 → Rust 判为致命配置错误），候选无法进入可用运行态。",
+  "timestamps": {
+    "started_at": "2026-09-10T13:13:31.936Z",
+    "finished_at": "2026-09-10T13:14:08.726Z"
+  },
+  "ids": {},
+  "evidence": [
+    "network-run.json",
+    "ws-frames.log",
+    "events.log",
+    "sidecar.log",
+    "sandbox.injection.log"
+  ],
+  "severity": "P3",
+  "frequency": "必现",
+  "impact": "名称解析失败形态无法注入；出站故障类注入已达成",
+  "status": "受阻",
+  "blocker": "候选启动期端点校验（B-03 未交付的连带效果）使非 OpenAI Responses 端点无法进入可用运行态",
+  "owner": "",
+  "next_action": "B-03 交付后重跑名称解析失败形态"
+}

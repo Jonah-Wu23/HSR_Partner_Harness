@@ -18,8 +18,6 @@ import type {
   VoiceSpeakerStatus,
 } from "../ui/settings/types";
 
-type CodingAssistantCodexStatus = "logged_out" | "waiting" | "logged_in" | "expired";
-
 function messagesFor(state: DesktopRenderState, conversationId: string): Message[] {
   return (state.messageIdsByConversation[conversationId] ?? [])
     .map((id) => state.messagesById[id])
@@ -145,11 +143,32 @@ function presentAccountGate(state: DesktopRenderState): AppShellViewModel["accou
   return { accounts, error: null, busy: state.status !== "ready" };
 }
 
+interface DialogueConfigShape {
+  provider?: string;
+  model?: string;
+  base_url?: string;
+  api_key_masked?: string;
+  reasoning_effort?: string;
+  /** B-03：后端判定当前服务商是否可用及其不可用原因（前端只做展示）。 */
+  provider_supported?: boolean;
+  provider_unavailable?: { code?: string; message?: string } | null;
+}
+
 interface ConfigShape {
-  engine?: string;
-  dialogue?: Record<string, string>;
+  dialogue?: DialogueConfigShape;
   voice?: Record<string, unknown>;
-  codex?: Record<string, string | null>;
+}
+
+/** 后端 dialogue.provider_unavailable 投影：只有带非空 message 的对象才是可用文案，
+    其余（null / 缺字段 / 空 message）一律为 null，前端不编造替代文案。 */
+function presentProviderUnavailable(
+  value: { code?: string; message?: string } | null | undefined,
+): { code: string; message: string } | null {
+  if (!value || typeof value.message !== "string" || !value.message) return null;
+  return {
+    code: typeof value.code === "string" ? value.code : "",
+    message: value.message,
+  };
 }
 
 /** V0.2 M4：设置中心四页视图——configSnapshot 映射，无数据给默认空值。 */
@@ -157,7 +176,6 @@ function presentSettings(state: DesktopRenderState): AppShellViewModel["settings
   const config = state.configSnapshot as ConfigShape | null;
   const dialogue = config?.dialogue ?? {};
   const voiceConfig = config?.voice ?? {};
-  const codex = config?.codex ?? {};
   const reasoningEffort =
     typeof dialogue.reasoning_effort === "string" ? dialogue.reasoning_effort : "auto";
 
@@ -253,22 +271,15 @@ function presentSettings(state: DesktopRenderState): AppShellViewModel["settings
       displayName: state.currentAccount?.display_name ?? "",
       avatarUrl: state.currentAccount?.avatar || null,
     },
-    coding: {
-      engine: config?.engine === "deepseek" ? "deepseek" : "codex",
-      codex: {
-        status:
-          codex.status === "logged_in" || codex.status === "expired" || codex.status === "waiting"
-            ? (codex.status as CodingAssistantCodexStatus)
-            : "logged_out",
-        accountLabel: typeof codex.account_label === "string" ? codex.account_label : null,
-      },
-    },
     model: {
       provider: String(dialogue.provider ?? ""),
       model: String(dialogue.model ?? ""),
       baseUrl: String(dialogue.base_url ?? ""),
       apiKeyMasked: String(dialogue.api_key_masked ?? ""),
       reasoningEffort,
+      // 只有后端明确给出 false 才判定不可用；未上报该字段不当作不可用。
+      providerSupported: dialogue.provider_supported !== false,
+      providerUnavailable: presentProviderUnavailable(dialogue.provider_unavailable),
     },
     voice,
     // V0.3.5：语音页「角色音色」区数据（卡列表+账号语音配置完备性）；

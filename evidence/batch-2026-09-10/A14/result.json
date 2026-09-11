@@ -1,0 +1,82 @@
+{
+  "batch": "batch-2026-09-10",
+  "case_id": "A14",
+  "title": "鉴权失败、链路中断、真实休眠恢复与恢复后新 turn",
+  "candidate_commit": "897193a2fb983cd39c8328e98f7e225963a1ee64",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "exe_sha256": "d068bbf86df17770caa82185f02f39a42d881775cdd3fdac8a66b91171d17897",
+    "sidecar_sha256": "34d8325bc2ea53993aa2dda235de8f7ca7acbbc16917f3db755fc14bef0eb04f"
+  },
+  "device": "Windows 11 10.0.26200 / Ryzen 7 7840H / 2560x1440 / 缩放150% / 本机桌面会话",
+  "network": "本机直连公网；局域网 sidecar --serve 0.0.0.0:8765（Tailscale 未配置）",
+  "preconditions": {
+    "auth": "错误 token / 缺失 token / 由桌面签发配对码换取的真实 token",
+    "standby": "Windows Modern Standby（Kernel-Power 506→507）"
+  },
+  "steps": [
+    "错误 token 与缺失 token 调用业务命令",
+    "签发配对码 → 配对新设备 → remote.revoke → 观察连接关闭与后续请求",
+    "经本机 TCP 代理切断在途请求（先确认请求已达服务端）",
+    "重连后核对无重复消息并跑通新 turn",
+    "真实休眠：注册 WakeToRun 计划任务 → 提权 SetSuspendState → 唤醒后核对状态与新 turn"
+  ],
+  "expected": "双端状态准确；恢复入口真实有效；恢复后新 turn 成功；撤销 token 立即生效",
+  "actual": "错误 token → unauthorized/invalid_token；缺失 token → unauthorized/missing_token；撤销：devices 列出 s4-a14-revoke（revoked_tokens=1），撤销后设备 revoked=true、已建立连接在 15 秒内收到关闭帧，随后同 token 请求 → unauthorized/revoked_token；在途断链：确认用户消息已落库后切断代理，发起方永久收不到响应（client_timeout_no_response），服务端照常完成该回合（角色回复「断」），重连后标记恰好 1 条（无重复），新 turn 回复「续」；真实休眠：Kernel-Power Id 506 于 18:54:30 进入 Modern Standby、Id 507 于 18:59:23 恢复（约 4 分 53 秒，符合 2–5 分钟要求），唤醒后应用与 sidecar 均为原进程（PID 25152/13984），无残留 active_task/approval，新 turn 完成（角色回复「醒」，turn status=completed）",
+  "timestamps": {
+    "batch": "batch-2026-09-10",
+    "recorded_at": "2026-09-10T11:05:00Z"
+  },
+  "ids": {
+    "revoke_device": "s4-a14-revoke（token sha256[:16]=91c76fa0551dbd12）",
+    "netcut_conversation": "ff5a2fd2-79a9-4896-a63c-b4e284dcbb50",
+    "inflight_conversation": "05e63c46-cef3-4063-ad34-928520c03760",
+    "standby_conversation": "A14-standby-resume（见 a14-standby.json）"
+  },
+  "evidence": [
+    "A14/01-settings-account.png",
+    "A14/02-remote-devices-page.png",
+    "A14/03-pairing-code-issued.png",
+    "A14/04-sidecar-killed.png",
+    "A14/05-after-reconnect.png",
+    "A14/a14-inflight-slow.json",
+    "A14/a14-inflight.json",
+    "A14/a14-run.json",
+    "A14/a14-sleep.json",
+    "A14/a14-standby.json",
+    "A14/commands.ps1",
+    "A14/events-controller.log",
+    "A14/events-inflight-recovered.log",
+    "A14/events-recovered.log",
+    "A14/events-sleep.log",
+    "A14/events-standby.log",
+    "A14/events-victim.log",
+    "A14/http.log",
+    "A14/result.json",
+    "A14/sidecar-inflight.log",
+    "A14/sidecar-sleep.log",
+    "A14/sidecar-standby.log",
+    "A14/sidecar.log",
+    "A14/ws-frames-bad-token.log",
+    "A14/ws-frames-controller.log",
+    "A14/ws-frames-inflight-recovered.log",
+    "A14/ws-frames-inflight-slow.log",
+    "A14/ws-frames-inflight.log",
+    "A14/ws-frames-no-token.log",
+    "A14/ws-frames-proxy.log",
+    "A14/ws-frames-recovered.log",
+    "A14/ws-frames-revoked-retry.log",
+    "A14/ws-frames-sleep.log",
+    "A14/ws-frames-standby.log",
+    "A14/ws-frames-victim.log"
+  ],
+  "severity": "P2（附带发现）",
+  "frequency": "—",
+  "impact": "远程设备页地址就绪判定错误（V039-S4-004）",
+  "status": "通过",
+  "blocker": "",
+  "owner": "Sidecar Python（服务地址探测）",
+  "next_action": "修复 V039-S4-004 后复验二维码入口"
+}

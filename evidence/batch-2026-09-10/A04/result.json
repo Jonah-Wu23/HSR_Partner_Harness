@@ -1,0 +1,44 @@
+{
+  "batch": "batch-2026-09-10",
+  "case_id": "A04",
+  "title": "后台运行、导航切换与重启恢复",
+  "candidate_commit": "897193a2fb983cd39c8328e98f7e225963a1ee64",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "exe_sha256": "d068bbf86df17770caa82185f02f39a42d881775cdd3fdac8a66b91171d17897",
+    "sidecar_sha256": "34d8325bc2ea53993aa2dda235de8f7ca7acbbc16917f3db755fc14bef0eb04f"
+  },
+  "device": "Windows 11 10.0.26200 / Ryzen 7 7840H / 2560x1440 / 缩放150% / 本机桌面会话",
+  "network": "本机直连公网；局域网 sidecar --serve 0.0.0.0:8765（Tailscale 未配置）",
+  "preconditions": {
+    "note": "本用例在 GUI 批次已完成，按补充测试 §最高指令只做交付物规范化，不重复执行"
+  },
+  "steps": [
+    "协作模式下达真实委派，在任务运行期间切换聊天、打开设置与诊断抽屉",
+    "正常关闭候选应用（窗口关闭按钮）",
+    "重新启动候选 EXE 并核对恢复结果"
+  ],
+  "expected": "最后活跃聊天与时间线正确恢复，无错位",
+  "actual": "委派在后台持续运行，期间切换导航与设置抽屉均正常；关闭后重启，最后活跃会话（镜子）连同 4 条审批结果、委派卡片终态「已完成」、角色终局回复与工作台工具记录全部正确恢复，无错位",
+  "timestamps": {
+    "batch": "batch-2026-09-10",
+    "recorded_at": "2026-09-10T11:05:00Z"
+  },
+  "ids": {
+    "conversation": "e5e91b6f-722a-4cd6-8557-989760491aee（镜子）"
+  },
+  "evidence": [
+    "A04/01-after-restart.png",
+    "A04/notes.md",
+    "A04/result.json"
+  ],
+  "severity": "—",
+  "frequency": "—",
+  "impact": "—",
+  "status": "通过",
+  "blocker": "",
+  "owner": "—",
+  "next_action": ""
+}

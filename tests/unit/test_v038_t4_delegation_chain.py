@@ -1,23 +1,30 @@
 """V0.3.8 T4：委派执行链修复的回归测试（真机验收 C4）。
 
 覆盖（docs/plans/V0.3.8-修复实施计划.md §2 T4、契约 §14.1/§14.6）：
-- 模型供给断点（方案 B）：codex 引擎拒绝非 Responses 兼容后端；OPENAI_BASE_URL
-  误配注入移除（codex-cli 不跟随该变量，注入只会静默打向不可达端点）。
+- B-03（V0.3.9）：产品只支持 OpenAI Chat Completions 兼容端点，任意 http(s)
+  端点（含不可解析域名）都装配 reasonix ACP 引擎，端点真实写入账号私有的
+  Reasonix 配置；Responses 校验与 Codex 引擎已从产品路径移除。
 - 可观测性：回合无进展 60s 节流 diagnostic.warning；idle 超时错误携带
   app-server stderr 摘要；codec 未识别 method 结构化 WARNING。
 - 审批超时（approval_timeout）：释放 pending，迟到应答如实报不存在。
 - 队列前进（契约 §14.1）：cancelled/failed 终态后队列立即派发下一条，
   排队项不回退 queued；task.cancel 不清空队列。
+
+注：本文件后半段的 CodexAppServerEngine 用例是 **适配器模块自身** 的回归
+（adapters/codex 仍留在仓库供其单元测试使用），产品装配路径只有 ACP。
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import tomllib
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from pair_harness.adapters.codex.auth import CodexAuthService
 from pair_harness.adapters.codex.codec import CodexCodec, EventBinding
 from pair_harness.adapters.codex.engine import (
     NO_PROGRESS_ALERT_INTERVAL_S,
@@ -28,112 +35,101 @@ from pair_harness.core.contracts import EngineEventType, PendingOperation
 from pair_harness.desktop_backend import application_service as app_service_module
 from pair_harness.desktop_backend.application_service import ServiceError
 from pair_harness.desktop_backend.engine_factory import (
-    build_codex_transport,
     build_coding_engine,
+    ensure_reasonix_home,
 )
 
 # 复用 test_v035_wiring 的 command 辅助与 service 夹具（pytest 同目录导入）
 from test_v035_wiring import command, service  # noqa: F401
 
 
-# ---- 模型供给断点（方案 B） ----
+# ---- B-03：产品只有 reasonix ACP 一条编程助手引擎路径 ----
 
 
-class _RecordingCreate:
-    """捕获 SubprocessJsonLineConnection.create 的调用参数。"""
+def test_compatible_endpoint_assembles_acp_engine_without_responses_check() -> None:
+    """任意 http(s) 兼容端点（含不可解析域名）都装配 AcpCodingEngine。
 
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
-
-    async def __call__(self, executable: str, args=None, env=None, **kwargs: Any):
-        self.calls.append({"executable": executable, "args": args, "env": env})
-
-        class _FakeConnection:
-            async def read_line(self) -> bytes:
-                await asyncio.sleep(3600)
-                return b""
-
-            async def write_line(self, data: bytes) -> None:
-                return None
-
-            async def close(self) -> None:
-                return None
-
-        return _FakeConnection()
-
-
-def test_codex_engine_rejects_non_responses_backend() -> None:
-    """codex 引擎 × DeepSeek 端点必须装配失败并说明处置建议，不得静默误配。"""
-    with pytest.raises(RuntimeError) as excinfo:
-        build_coding_engine(
-            engine_choice="codex",
-            codex_auth=_FakeCodexAuth(),
-            model="deepseek-v4-flash",
-            base_url="https://api.deepseek.com",
-            api_key="sk-test",
-        )
-    message = str(excinfo.value)
-    assert "Responses" in message
-    assert "reasonix" in message
-
-
-def test_codex_engine_allows_openai_official_backend() -> None:
-    """OpenAI 官方端点（Responses 兼容）不拦截。"""
+    B-03：不再有 Responses 校验，也不再有 Codex 引擎分支；端点只被写进
+    账号私有的 Reasonix 配置，装配期不联网。
+    """
     engine = build_coding_engine(
-        engine_choice="codex",
         codex_auth=_FakeCodexAuth(),
-        base_url="https://api.openai.com/v1",
-    )
-    assert isinstance(engine, CodexAppServerEngine)
-
-
-def test_codex_engine_allows_empty_base_url_for_oauth() -> None:
-    """base_url 为空表示走 codex 自身 OAuth 登录态，放行。"""
-    engine = build_coding_engine(engine_choice="codex", codex_auth=_FakeCodexAuth())
-    assert isinstance(engine, CodexAppServerEngine)
-
-
-@pytest.mark.asyncio
-async def test_codex_transport_no_longer_injects_openai_env(monkeypatch) -> None:
-    """OPENAI_BASE_URL/OPENAI_API_KEY 不再注入（codex 0.147 不跟随，纯误导）。"""
-    recorder = _RecordingCreate()
-    monkeypatch.setattr(
-        "pair_harness.adapters.codex.transport.SubprocessJsonLineConnection.create",
-        recorder,
-    )
-    transport = build_codex_transport(
-        codex_auth=_FakeCodexAuth(),
-        base_url="https://api.deepseek.com",
+        model="deepseek-v4-flash",
+        base_url="https://no-such-host-s4.invalid/v1",
         api_key="sk-test",
     )
-    await transport.start()
-    env = recorder.calls[0]["env"]
-    assert "OPENAI_BASE_URL" not in env
-    assert "OPENAI_API_KEY" not in env
+    assert isinstance(engine, AcpCodingEngine)
 
 
-def test_build_coding_engine_forwards_diagnostic_callback() -> None:
-    """诊断回调从装配方透传到 CodexAppServerEngine（契约 §14.6）。"""
+def test_openai_official_endpoint_also_assembles_acp_engine() -> None:
+    """OpenAI 官方端点同样走 ACP 引擎（不存在 codex app-server 分支）。"""
+    engine = build_coding_engine(
+        codex_auth=_FakeCodexAuth(),
+        model="gpt-5.6-sol",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-test",
+    )
+    assert isinstance(engine, AcpCodingEngine)
+
+
+def test_compatible_endpoint_is_written_into_reasonix_config(tmp_path: Path) -> None:
+    """通用端点必须真的写入 Reasonix 配置，而不是删掉校验后仍走别的引擎。
+
+    依据（本机 reasonix 二进制内嵌文档 §3.1）：``kind = "openai"`` 即 OpenAI
+    兼容 ``/chat/completions`` 实现，供应商实例只由
+    base_url / model / api_key_env 区分。
+    """
+    home = ensure_reasonix_home(
+        CodexAuthService(tmp_path, "default-local"),
+        base_url="https://no-such-host-s4.invalid/v1",
+        model="glm-4.6",
+        api_key="sk-compat",
+    )
+    config = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
+    assert config["default_model"] == "openai_compatible/glm-4.6"
+    provider = config["providers"][0]
+    assert provider["name"] == "openai_compatible"
+    assert provider["kind"] == "openai"
+    assert provider["base_url"] == "https://no-such-host-s4.invalid/v1"
+    assert provider["model"] == "glm-4.6"
+    assert provider["api_key_env"] == "PAIR_HARNESS_DIALOGUE_API_KEY"
+    assert provider["effort"] == "auto"
+    # 通用端点不写未证实的上下文窗口能力值。
+    assert "context_window" not in provider
+    assert (home / ".env").read_text(encoding="utf-8") == (
+        "PAIR_HARNESS_DIALOGUE_API_KEY=sk-compat\n"
+    )
+
+
+def test_deepseek_endpoint_keeps_proven_reasonix_config(tmp_path: Path) -> None:
+    """DeepSeek 端点保持既有（真机已通过）的 Reasonix 配置形态不变。"""
+    home = ensure_reasonix_home(
+        CodexAuthService(tmp_path, "default-local"),
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-flash",
+        api_key="sk-deepseek",
+        reasoning_effort="max",
+    )
+    config = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
+    assert config["default_model"] == "deepseek/deepseek-v4-flash"
+    provider = config["providers"][0]
+    assert provider["name"] == "deepseek"
+    assert provider["kind"] == "openai"
+    assert provider["api_key_env"] == "DEEPSEEK_API_KEY"
+    assert provider["context_window"] == 1000000
+    assert provider["effort"] == "max"
+    assert (home / ".env").read_text(encoding="utf-8") == "DEEPSEEK_API_KEY=sk-deepseek\n"
+
+
+def test_acp_engine_forwards_diagnostic_callback() -> None:
+    """诊断回调从装配方透传到 ACP 引擎（契约 §14.6）。"""
     received: list[dict[str, Any]] = []
     engine = build_coding_engine(
-        engine_choice="codex",
         codex_auth=_FakeCodexAuth(),
         diagnostic_callback=received.append,
+        idle_timeout=123.0,
     )
-    assert isinstance(engine, CodexAppServerEngine)
-    engine.diagnostic_callback({"code": "engine_no_progress", "message": "x"})
-    assert received == [{"code": "engine_no_progress", "message": "x"}]
-
-
-def test_deepseek_engine_forwards_diagnostic_callback() -> None:
-    """DeepSeek 实际装配路径同样透传无进展诊断出口。"""
-    received: list[dict[str, Any]] = []
-    engine = build_coding_engine(
-        engine_choice="deepseek",
-        codex_auth=_FakeCodexAuth(),
-        diagnostic_callback=received.append,
-        codex_idle_timeout=123.0,
-    )
+    assert isinstance(engine, AcpCodingEngine)
     engine.diagnostic_callback({"code": "engine_no_progress", "message": "x"})
     assert received == [{"code": "engine_no_progress", "message": "x"}]
     assert engine.idle_timeout == 123.0
@@ -384,7 +380,11 @@ def test_codec_mismatched_turn_id_stays_silent(caplog) -> None:
 
 @pytest.mark.asyncio
 async def test_approval_request_times_out_and_releases_pending(monkeypatch, service) -> None:
-    """审批无裁决满 600s（测试压缩为 0.1s）如实失败，pending 释放、迟到应答报错。"""
+    """审批无裁决满 600s（测试压缩为 0.1s）如实失败，pending 释放。
+
+    V0.3.9 契约 §6：超时是终态——广播 approval.resolved(timeout)，迟到应答
+    拿到带真实终态的 approval_already_resolved（不再是笼统的 not_found）。
+    """
     monkeypatch.setattr(app_service_module, "APPROVAL_TIMEOUT_S", 0.1)
     operation = PendingOperation(
         tool_kind="shell", command="echo hi", paths=(), summary="测试操作"
@@ -402,9 +402,21 @@ async def test_approval_request_times_out_and_releases_pending(monkeypatch, serv
     assert "审批超时未裁决" in str(excinfo.value)
     assert "appr-1" not in service.approval_broker.pending
 
+    resolved = service.event_log.payloads("approval.resolved")
+    assert len(resolved) == 1
+    assert resolved[0]["approval_id"] == "appr-1"
+    assert resolved[0]["decision"] == "timeout"
+    assert resolved[0]["resolved_by"] == "system"
+    assert resolved[0]["actor"] == "system"
+    assert resolved[0]["error_code"] == "approval_timeout"
+    assert resolved[0]["resolved_at"]
+
     with pytest.raises(ServiceError) as late:
         service.approval_broker.resolve("appr-1", "allow")
-    assert late.value.code == "approval_not_found"
+    assert late.value.code == "approval_already_resolved"
+    assert late.value.details["decision"] == "timeout"
+    assert late.value.details["resolved_by"] == "system"
+    assert late.value.details["error_code"] == "approval_timeout"
 
 
 @pytest.mark.asyncio

@@ -297,10 +297,14 @@
 
 /* ========== 聊天输入区（V0.3.4：模式/目标切换 + 通用输入） ========== */
 
+/* V0.3.9 V08：安全区留白只由 .app-shell 的 padding-bottom: var(--safe-bottom)
+   承担（styles.css）。此前这里再叠一次 max(10px, var(--safe-bottom))，iPhone
+   上底部出现双倍留白。跨文件协同：styles.css 归 V-D，若 V-D 改动
+   .app-shell 的安全区内边距，需要同步确认本处不再重复。 */
 .mobile-composer {
   background: var(--surface);
   border-top: 1px solid var(--border);
-  padding: 10px 12px max(10px, var(--safe-bottom));
+  padding: 10px 12px;
   flex: none;
   z-index: 10;
 }
@@ -406,19 +410,23 @@
   min-width: 0;
 }
 
+/* V0.3.9 V08：长文本自增高——JS 按内容设置 height（上限
+   --mobile-composer-textarea-max，默认 160px），超过上限由 overflow-y 内部
+   滚动。font-size 16px 避免 iOS Safari 聚焦时自动放大页面。 */
 .mobile-composer-textarea {
   width: 100%;
   min-height: 44px;
-  max-height: 120px;
+  max-height: var(--mobile-composer-textarea-max, 160px);
   padding: 10px 12px;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 12px;
   color: var(--fg);
   font-family: inherit;
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1.4;
   resize: none;
+  overflow-y: hidden;
 }
 
 .mobile-composer-textarea:focus-visible {
@@ -442,6 +450,99 @@
 
 .mobile-composer-submit-label {
   display: inline;
+}
+
+/* ========== V0.3.9 V07：页级播放错误与抢占反馈 ========== */
+
+/* 朗读失败：气泡内提示受 tts_ready 与虚拟化渲染窗口限制，真实错误码与原文
+   必须在页级可见（pcm_overflow 等错误不因消息滚出窗口而消失）。 */
+.mobile-playback-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: none;
+  margin: 8px 12px 0;
+  padding: 8px 10px;
+  background: oklch(0.2 0.05 25);
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+}
+
+.mobile-playback-error-label {
+  font-weight: 600;
+  color: var(--danger);
+  flex: none;
+}
+
+.mobile-playback-error-code {
+  padding: 1px 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--fg);
+  flex: none;
+}
+
+.mobile-playback-error-text {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.mobile-playback-interrupted {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: none;
+  margin: 8px 12px 0;
+  padding: 6px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.mobile-playback-interrupted-text {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.mobile-playback-interrupted-reason {
+  word-break: break-word;
+}
+
+/* ========== V0.3.9 V07：审批 resolve 的真实错误 / 幂等终态 ========== */
+
+.mobile-approval-error {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  background: oklch(0.2 0.05 25);
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+  word-break: break-word;
+}
+
+.mobile-approval-notice {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+  word-break: break-word;
 }
 
 /* ========== 语音输入区（V0.3.5） ========== */
@@ -547,7 +648,9 @@
   font-weight: 600;
   cursor: pointer;
   user-select: none;
-  touch-action: manipulation;
+  /* V0.3.9 P1：按住说话靠 pointer 事件维持采集时长，浏览器不得把手势抢去
+     滚动 / 缩放，否则长按过程中会被 pointercancel 提前打断。 */
+  touch-action: none;
 }
 
 .mobile-voice-hold-btn:active {
@@ -682,7 +785,8 @@
   color: var(--danger);
 }
 
-/* 窄屏 (≤ 360px) 优化 */
+/* 窄屏 (≤ 360px) 优化：核对项——审批三按钮同行不溢出、语音面板与状态条不撑破
+   视口、输入区左右留白与消息区一致（安全区仍由 .app-shell 承担）。 */
 @media (max-width: 360px) {
   .mobile-chat-header {
     padding: 0 8px;
@@ -694,7 +798,34 @@
     max-width: 90%;
   }
   .mobile-composer {
-    padding: 8px 8px max(8px, var(--safe-bottom));
+    padding: 8px;
+  }
+  .mobile-chat-approvals {
+    padding: 8px 8px 0;
+  }
+  .mobile-approval-mode {
+    margin: 8px 8px 0;
+  }
+  .mobile-playback-error,
+  .mobile-playback-interrupted {
+    margin: 8px 8px 0;
+  }
+  /* 审批操作三按钮（拒绝 / 本会话批准 / 批准）在 320–360px 下压缩内边距，
+     保持 40px 触控高度不换行溢出。 */
+  .mobile-approval-actions {
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .mobile-approval-actions button {
+    padding: 0 10px;
+    font-size: 13px;
+  }
+  .mobile-voice-mode-btn {
+    padding: 0 8px;
+  }
+  .mobile-composer-submit-btn {
+    padding: 0 12px;
+    font-size: 13px;
   }
 }
 

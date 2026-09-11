@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { ChatComposer } from "../ChatComposer";
+import {
+  ChatComposer,
+  COMPOSER_MAX_TEXTAREA_HEIGHT_PX,
+  computeTextareaHeight,
+} from "../ChatComposer";
 
 afterEach(cleanup);
 
@@ -55,6 +59,22 @@ describe("ChatComposer (V0.3.4 手机端聊天输入区)", () => {
       );
     });
     expect(input).toHaveValue("启动构建");
+  });
+
+  it("V0.3.9 V08：聚焦输入回调（页级配合软键盘把最新消息贴底）", () => {
+    const onInputFocus = vi.fn();
+    render(<ChatComposer target="character" onSubmit={vi.fn()} onInputFocus={onInputFocus} />);
+    fireEvent.focus(screen.getByTestId("chat-input"));
+    expect(onInputFocus).toHaveBeenCalledTimes(1);
+  });
+
+  it("V0.3.9 V08：自增高计算——未布局返回 null、未超限按内容、超限封顶", () => {
+    // jsdom 未布局时 scrollHeight=0：不设置高度，避免把输入框压成 0px
+    expect(computeTextareaHeight(0)).toBeNull();
+    expect(computeTextareaHeight(Number.NaN)).toBeNull();
+    expect(computeTextareaHeight(96)).toBe(96);
+    expect(computeTextareaHeight(300)).toBe(COMPOSER_MAX_TEXTAREA_HEIGHT_PX);
+    expect(computeTextareaHeight(300, 240)).toBe(240);
   });
 
   it("前置禁用：disabled 时不提交并展示禁用说明", () => {

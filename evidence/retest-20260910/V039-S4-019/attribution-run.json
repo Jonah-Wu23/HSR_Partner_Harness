@@ -1,0 +1,61 @@
+{
+  "started_at": "2026-09-10T13:26:24.533Z",
+  "normal_turn": {
+    "conversation_id": "f5f09c26-1ccd-423a-9470-253c9c20a888",
+    "messages": [
+      {
+        "source": "user",
+        "status": "done",
+        "text": "复测 019：请只回复两个字：首发。"
+      },
+      {
+        "source": "character",
+        "status": "done",
+        "text": "首发。"
+      }
+    ]
+  },
+  "retry_turn": {
+    "conversation_id": "8eb1862e-f4c2-4ddf-aedf-db684d0c94bf",
+    "injection": "沙盒在首次响应传输 256 字节后切断（单次），随后自动恢复 forward",
+    "control_reply": "OK cut_soon connections=3 tunnels=2",
+    "elapsed_seconds": 1.06,
+    "messages": [
+      {
+        "source": "user",
+        "kind": "user.text",
+        "status": "failed",
+        "text": "复测 019：请只回复两个字：重试。"
+      },
+      {
+        "source": "system",
+        "kind": "system.status",
+        "status": "done",
+        "text": "本次回复失败：ReadError"
+      }
+    ]
+  },
+  "finished_at": "2026-09-10T13:26:27.818Z",
+  "sidecar_new_lines": 46,
+  "attribution_lines": [
+    "INFO:pair_harness.adapters.dialogue.openai_compatible:角色对话回合输出来源：首次请求，attempt=0，speech 字符数=3，delegation=无，memory 条数=0"
+  ],
+  "assertions": {
+    "has_unusable_output_warning": true,
+    "has_retry_decision_info": true,
+    "has_final_source_info": true,
+    "countable_fields_present": true,
+    "distinguishes_retry_success_from_failure": true,
+    "no_retry_path_constructed": false
+  },
+  "attribution_excerpt": {
+    "source": "%APPDATA%/com.jonahwu.hsr-partner-harness/sidecar.stderr.log（PAIR_HARNESS_LOG_LEVEL=INFO，未按级别过滤）",
+    "total_lines": 261,
+    "turn_source_lines": 97,
+    "first_request": 16,
+    "retry_nth": 81,
+    "unusable_warning": 82,
+    "retry_decision_retry": 82,
+    "retry_decision_no_retry": 0
+  }
+}

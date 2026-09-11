@@ -1,0 +1,39 @@
+{
+  "batch": "retest-20260910",
+  "case_id": "V039-S4-016",
+  "title": "播放控制守卫的调用方身份判定复验",
+  "candidate_commit": "工作树快照 @ cc4077c + uncommitted fixes",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "build": {
+    "exe": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\hsr-partner-harness.exe",
+    "exe_sha256": "2ce327a197ae91385560e9b037ffb7acaea5ce83cd66d4beedf84babf6482cf8",
+    "sidecar": "E:\\AI\\HSR-Partner-Harness-v0.3.9-logic\\desktop\\src-tauri\\target\\release\\resources\\sidecar\\pair-harness-sidecar\\pair-harness-sidecar.exe",
+    "sidecar_sha256": "52366696c30e83dad5f19bce1a0d520a5c035e13b0c0b37f0b1bc549d32e82b6"
+  },
+  "device": "Windows 11 10.0.26200 / 2560x1440 / 缩放150% / 本地桌面会话",
+  "network": "本机直连公网（无 Tailscale）",
+  "preconditions": {},
+  "steps": [],
+  "expected": "",
+  "actual": "无租约时三个共享守卫的方法（voice.tts_play / voice.preview / voice.card_preview）对桌面与远程均放行；租约有效期内持权端三者全部放行（修复核心，修复前被拒），另一台远程设备三者全部被拒且文案点名「另一台远程设备正在控制语音」；释放后两端恢复放行。持权端真实试听成功（tts=playing，1 条合成，随后停止）。",
+  "timestamps": {
+    "started_at": "2026-09-10T13:01:47.674Z",
+    "finished_at": "2026-09-10T13:01:51.014Z"
+  },
+  "ids": {},
+  "evidence": [
+    "guard-run.json",
+    "ws-frames-a.log",
+    "ws-frames-b.log",
+    "events-a.log",
+    "sidecar.log",
+    "sidecar-info.log"
+  ],
+  "severity": "",
+  "frequency": "",
+  "impact": "",
+  "status": "通过",
+  "blocker": "",
+  "owner": "",
+  "next_action": "无"
+}

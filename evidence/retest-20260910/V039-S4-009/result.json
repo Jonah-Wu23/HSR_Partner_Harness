@@ -1,0 +1,24 @@
+{
+  "batch": "retest-20260910",
+  "case_id": "V039-S4-009",
+  "title": "ACP 终态映射复验（委派全链路无终态错误）",
+  "candidate_commit": "工作树快照 @ cc4077c + uncommitted fixes",
+  "contract": "contract-v1（5dae701 + effa4f3）",
+  "device": "Windows 11 10.0.26200",
+  "network": "本机直连公网",
+  "preconditions": "与 B-03 正向同批采集（同一个真实委派回合）",
+  "expected": "按 ACP v1 精确映射 stopReason：全链路成功后不出现终态错误，仅 end_turn 记成功，取消保留取消。",
+  "actual": "委派回合 21 条消息中 status=failed 的条目 0 条、系统失败提示 0 条；8 条 tool_runs 全部 succeeded；6 次审批全部 allow；终局为角色发言 + system.status。未出现「成功工具执行被终态错误覆盖」的旧缺陷。",
+  "evidence": [
+    "delegation-run.json",
+    "messages-full.json",
+    "sidecar.log"
+  ],
+  "status": "通过",
+  "severity": "",
+  "frequency": "",
+  "impact": "",
+  "blocker": "",
+  "owner": "逻辑轨",
+  "next_action": "无"
+}

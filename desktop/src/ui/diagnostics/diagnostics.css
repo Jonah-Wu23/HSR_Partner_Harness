@@ -1,0 +1,232 @@
+/* V0.3.9 V03 诊断抽屉样式：全部引用 tokens.css 语义变量。 */
+
+.diag-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--mask);
+  z-index: var(--z-dialog-backdrop);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.diag-drawer {
+  width: 720px;
+  max-width: 94vw;
+  height: 100%;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--separator);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  animation: diag-drawer-in var(--dur-drawer) var(--ease-out);
+}
+
+@keyframes diag-drawer-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.diag-drawer-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: none;
+}
+.diag-drawer-head h2 {
+  font-size: var(--text-t2-size);
+  font-weight: 600;
+  margin-right: auto;
+}
+
+.diag-tabs {
+  display: inline-flex;
+  gap: var(--space-1);
+  padding: 2px;
+  border-radius: var(--radius-full);
+  background: var(--bg-card);
+  border: 1px solid var(--separator);
+}
+.diag-tab {
+  padding: 2px var(--space-3);
+  border-radius: var(--radius-full);
+  font-size: var(--text-c1-size);
+  color: var(--text-secondary);
+}
+.diag-tab.is-selected {
+  background: var(--fill-selected);
+  color: var(--text-primary);
+}
+
+.diag-drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.diag-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.diag-panel-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+.diag-panel-title { flex: 1; min-width: 0; }
+.diag-panel-title h3 {
+  font-size: var(--text-title-size);
+  font-weight: 600;
+}
+.diag-panel-hint {
+  font-size: var(--text-c1-size);
+  color: var(--text-muted);
+  overflow-wrap: break-word;
+}
+
+.diag-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-lg);
+}
+.diag-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-c1-size);
+}
+.diag-table th,
+.diag-table td {
+  padding: var(--space-2);
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--separator);
+}
+.diag-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.diag-table tbody tr:last-child td { border-bottom: none; }
+
+.diag-metric-row.is-failed td { background: color-mix(in srgb, var(--danger) 8%, transparent); }
+.diag-metric-row.is-running td { background: color-mix(in srgb, var(--running) 6%, transparent); }
+
+.diag-metric-toggle {
+  color: var(--accent);
+  font-size: var(--text-c1-size);
+  text-decoration: underline;
+  margin-right: var(--space-2);
+}
+.diag-metric-kind { font-weight: 600; margin-right: var(--space-2); }
+.diag-metric-id {
+  display: block;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.diag-metric-sub {
+  display: block;
+  color: var(--text-muted);
+  font-size: var(--text-c1-size);
+  overflow-wrap: anywhere;
+}
+.diag-metric-failure { color: var(--danger); }
+
+.diag-status { font-weight: 600; }
+.diag-status-running { color: var(--running); }
+.diag-status-completed { color: var(--success); }
+.diag-status-failed { color: var(--danger); }
+.diag-status-cancelled { color: var(--warning); }
+.diag-status-queued { color: var(--queued); }
+
+.diag-metric-detail-row td { background: var(--reasoning-bg); }
+.diag-metric-detail {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-2) var(--space-3);
+}
+.diag-metric-detail dt {
+  color: var(--text-muted);
+  font-size: var(--text-c1-size);
+}
+.diag-metric-detail dd {
+  margin: 0;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-c1-size);
+  overflow-wrap: anywhere;
+}
+
+.diag-module-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.diag-module {
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-card);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.diag-module-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-3);
+  font-size: var(--text-c1-size);
+}
+.diag-module-name { font-weight: 600; color: var(--text-primary); }
+.diag-module-fact { color: var(--text-muted); font-family: var(--font-mono); }
+.diag-module-memory { color: var(--text-muted); }
+.diag-module-memory.is-injected { color: var(--pair-assistant); font-weight: 600; }
+.diag-module-summary {
+  font-size: var(--text-c1-size);
+  color: var(--text-secondary);
+  overflow-wrap: break-word;
+}
+.diag-module-actions { display: flex; gap: var(--space-2); }
+.diag-module-hidden {
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  padding: var(--space-2);
+  background: var(--reasoning-bg);
+  border: 1px solid var(--reasoning-border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-c1-size);
+  color: var(--reasoning-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.diag-assembly-diagnostics h4 {
+  font-size: var(--text-c1-size);
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-1);
+}
+.diag-assembly-diagnostics ul {
+  list-style: disc;
+  padding-left: var(--space-4);
+  font-size: var(--text-c1-size);
+  color: var(--text-muted);
+}
+
+/* 抽屉内按钮收一档，复用 .btn 原语，不新建按钮体系。 */
+.diag-btn {
+  height: 28px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-c1-size);
+  flex: none;
+}

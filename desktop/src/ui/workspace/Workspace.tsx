@@ -1,4 +1,5 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import type { PairRecord } from "../../contracts/protocol";
 import type { WorkspaceViewModel } from "../../contracts/view-models";
 import { MessageBubble, MessageList } from "./MessageList";
@@ -33,6 +34,53 @@ export function Workspace({
   const [workbenchPct, setWorkbenchPct] = useState(45);
   const [dragging, setDragging] = useState(false);
   const workbenchOpen = workspace.mode === "collaboration";
+
+  const workbenchScrollRef = useRef<HTMLDivElement>(null);
+  const [workbenchPinned, setWorkbenchPinned] = useState(true);
+  const shouldVirtualizeWorkbench = workspace.assistant.items.length > 40;
+
+  const workbenchVirtualizer = useVirtualizer({
+    count: workspace.assistant.items.length,
+    getScrollElement: () => workbenchScrollRef.current,
+    estimateSize: () => 80,
+    overscan: 8,
+    getItemKey: (index) => {
+      const item = workspace.assistant.items[index];
+      if (!item) return index;
+      return item.kind === "message" ? item.message.message_id : item.run.tool_call_id;
+    },
+  });
+
+  const checkWorkbenchPinned = () => {
+    const node = workbenchScrollRef.current;
+    if (!node) return;
+    setWorkbenchPinned(node.scrollHeight - node.scrollTop - node.clientHeight < 80);
+  };
+
+  useEffect(() => {
+    const node = workbenchScrollRef.current;
+    if (!node || !workbenchPinned || workspace.assistant.items.length === 0) return;
+    if (shouldVirtualizeWorkbench) {
+      workbenchVirtualizer.scrollToIndex(workspace.assistant.items.length - 1, { align: "end" });
+    } else {
+      node.scrollTop = node.scrollHeight;
+    }
+  }, [
+    workspace.assistant.items.length,
+    workspace.assistant.busy,
+    workbenchPinned,
+    shouldVirtualizeWorkbench,
+    workbenchVirtualizer,
+  ]);
+
+  const prevWorkbenchLengthRef = useRef(workspace.assistant.items.length);
+  useEffect(() => {
+    if (!shouldVirtualizeWorkbench) return;
+    if (workspace.assistant.items.length !== prevWorkbenchLengthRef.current) {
+      prevWorkbenchLengthRef.current = workspace.assistant.items.length;
+      workbenchVirtualizer.measure();
+    }
+  }, [workspace.assistant.items.length, shouldVirtualizeWorkbench, workbenchVirtualizer]);
 
   const onHandlePointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -141,30 +189,60 @@ export function Workspace({
               </button>
             ) : null}
           </div>
-          <div className="message-scroll">
-            <div className="message-column">
-              {workspace.assistant.items.map((item) =>
-                item.kind === "message" ? (
-                  <MessageBubble key={item.message.message_id} message={item.message} pair={pair} />
-                ) : (
-                  <ToolCard key={item.run.tool_call_id} run={item.run} />
-                ),
-              )}
-              {workbenchEmpty ? (
-                <div className="workbench-empty">
-                  <p>把任务交给 {pair.assistant.name}，执行记录会出现在这里</p>
-                  {onQuickTask ? (
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      onClick={() => onQuickTask("介绍一下这个项目")}
+          <div
+            className="message-scroll"
+            ref={workbenchScrollRef}
+            onScroll={checkWorkbenchPinned}
+          >
+            {shouldVirtualizeWorkbench ? (
+              <div
+                className="message-column message-column-virtual"
+                style={{ height: `${workbenchVirtualizer.getTotalSize()}px` }}
+              >
+                {workbenchVirtualizer.getVirtualItems().map((vItem) => {
+                  const item = workspace.assistant.items[vItem.index];
+                  return item ? (
+                    <div
+                      key={vItem.key}
+                      ref={workbenchVirtualizer.measureElement}
+                      data-index={vItem.index}
+                      className="message-virtual-row"
+                      style={{ transform: `translateY(${vItem.start}px)` }}
                     >
-                      试试：让它介绍一下这个项目
-                    </button>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
+                      {item.kind === "message" ? (
+                        <MessageBubble message={item.message} pair={pair} />
+                      ) : (
+                        <ToolCard run={item.run} />
+                      )}
+                    </div>
+                  ) : null;
+                })}
+              </div>
+            ) : (
+              <div className="message-column">
+                {workspace.assistant.items.map((item) =>
+                  item.kind === "message" ? (
+                    <MessageBubble key={item.message.message_id} message={item.message} pair={pair} />
+                  ) : (
+                    <ToolCard key={item.run.tool_call_id} run={item.run} />
+                  ),
+                )}
+                {workbenchEmpty ? (
+                  <div className="workbench-empty">
+                    <p>把任务交给 {pair.assistant.name}，执行记录会出现在这里</p>
+                    {onQuickTask ? (
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={() => onQuickTask("介绍一下这个项目")}
+                      >
+                        试试：让它介绍一下这个项目
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            )}
           </div>
         </div>
       </section>

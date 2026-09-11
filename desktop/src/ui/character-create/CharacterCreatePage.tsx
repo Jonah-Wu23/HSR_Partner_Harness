@@ -26,6 +26,8 @@ interface CharacterCreatePageProps {
   /** V0.3.5：Tauri 文件选择桥（头像需要真实绝对路径）；浏览器 mock 环境缺省，
       此时退化为 HTML 文件选择（仅能拿到文件名，见 BasicInfoSection 注释）。 */
   onPickFile?: (options?: { title?: string; filters?: FileFilter[] }) => Promise<string | null>;
+  /** V0.3.9 V04：回到聊天回调（优先返回正在运行的聊天） */
+  onReturnToChat?: () => void;
 }
 
 function formatTime(d = new Date()): string {
@@ -33,7 +35,7 @@ function formatTime(d = new Date()): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-export function CharacterCreatePage({ vm, actions, onPickFile }: CharacterCreatePageProps) {
+export function CharacterCreatePage({ vm, actions, onPickFile, onReturnToChat }: CharacterCreatePageProps) {
   const [formData, setFormData] = useState<CharacterFormData>(() => extractFormData(vm.card));
   const [currentCardId, setCurrentCardId] = useState<string | null>(vm.cardId);
   const [cardDetails, setCardDetails] = useState<CardGetResult | null>(null);
@@ -357,6 +359,19 @@ export function CharacterCreatePage({ vm, actions, onPickFile }: CharacterCreate
             lastSavedTime={lastSavedTime}
             errorMessage={saveError}
           />
+          <button
+            type="button"
+            className="char-btn char-btn-ghost"
+            onClick={() =>
+              confirmLeave(() => {
+                if (onReturnToChat) onReturnToChat();
+                else actions.openChat();
+              })
+            }
+            title="回到聊天（优先返回正在运行的聊天）"
+          >
+            回到聊天
+          </button>
           <button
             type="button"
             className="char-btn char-btn-outline"

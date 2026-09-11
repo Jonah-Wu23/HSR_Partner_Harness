@@ -5,20 +5,26 @@ import type {
   AccountListItem,
   AccountRecord,
   ActiveTask,
+  ApprovalResolvedPayload,
   CharacterVoiceState,
   ConversationOpenResult,
   ConversationRecord,
+  ConversationSummary,
   DesktopEvent,
   DesktopSnapshot,
+  MemoryWirePayload,
   Message,
+  PairMemory,
   PairRecord,
   PairSummary,
   PendingApproval,
   PowerStatusPayload,
   ProjectRecord,
   QueueItem,
+  RemoteControlState,
   ToolRun,
   Turn,
+  TurnMetric,
   VoiceState,
 } from "../contracts/protocol";
 import type {
@@ -27,8 +33,13 @@ import type {
   MainView,
   RemotePairingViewModel,
 } from "../contracts/view-models";
+// 线缆解码是运行期函数（不是类型）：memory.* 的扁平载荷在这里转成前端记录。
+import { pairMemoryFromPayload } from "../contracts/protocol";
 
 export type DesktopStatus = "booting" | "ready" | "disconnected" | "error";
+
+/** error.reported 中描述「本地服务已断开」的协议错误码；toast id 以它为前缀。 */
+const DISCONNECT_TOAST_PREFIX = "backend_disconnected:";
 
 /** V0.2 M4：Toast 队列项——store 层用协议无关的最小结构，
     与 ui/status/types.ts 的 ToastItem 形状一致，由 presenters 透传。 */
@@ -37,6 +48,67 @@ export interface StoreToast {
   kind: "error" | "warning" | "info" | "success";
   text: string;
   hasDetails?: boolean;
+}
+
+/**
+ * V0.3.9 契约 §5：diagnostics.prompt_assembly 的只读结果。
+ *
+ * 默认只含模块名称/字符范围/hash/摘要与记忆注入标记及既有 diagnostics；
+ * `hidden_content` 仅在用户显式请求原文时由服务端下发，关闭抽屉必须清除。
+ * 该形状尚未写入 protocol.ts（不在本任务的文件归属内），故在 store 侧声明。
+ */
+export interface PromptAssemblyModule {
+  name: string;
+  kind?: string;
+  source_field?: string;
+  title?: string;
+  char_count?: number;
+  char_start: number | null;
+  char_end: number | null;
+  hash: string | null;
+  summary?: string | null;
+  memory_injected?: boolean | null;
+  diagnostics?: Record<string, unknown> | null;
+  hidden_content?: string | null;
+}
+
+export interface PromptAssemblyDiagnostics {
+  conversation_id: string | null;
+  modules: PromptAssemblyModule[];
+  summary_injected?: boolean;
+  memory_injected?: boolean;
+  diagnostics?: Record<string, unknown> | string[] | null;
+  hidden_content_included: boolean;
+  generated_at?: string | null;
+}
+
+/** V039-S4-002：Sidecar 自报的运行模式信息（backend.ready 载荷）。 */
+export interface BackendInfo {
+  pid: number | null;
+  /** Sidecar 自报是否运行在演示模式；null 表示未上报（不等于「真实模式」）。 */
+  demo: boolean | null;
+  /** 模式判定来源（V039-S4-002 定型）：explicit_real | explicit_demo | default_real；
+      未上报为 null，未知取值原样保留，不归一化也不改写。 */
+  modeSource: string | null;
+}
+
+/** V0.3.9 §2：设置中心「长期记忆」页的读取状态（真实 memory.list 结果，非推导值）。 */
+export interface MemoryPanelState {
+  /** 本次读取针对的会话（作用域由服务端按该会话解析）；null 表示尚未读取。 */
+  conversationId: string | null;
+  loading: boolean;
+  /** memory.list 的真实失败原文；成功读取后清除。 */
+  error: string | null;
+  /** 至少完成过一次真实 memory.list（区分「未读取」与「真实零条」）。 */
+  loaded: boolean;
+}
+
+/** V0.3.9 契约 §6：语音抢占反馈（voice.playback_interrupted）。 */
+export interface PlaybackInterruption {
+  conversation_id: string;
+  message_id: string | null;
+  reason: string | null;
+  occurred_at: string | null;
 }
 
 export interface DesktopState {
@@ -101,6 +173,66 @@ export interface DesktopState {
   /** V0.3.2 M5：本窗口当前标签所属项目；不随 Sidecar 全局导航指针变化。 */
   activeProjectId: string | null;
 
+  /* —— V0.3.9 契约 §2/§3/§5/§6：摘要、记忆、审批、租约、指标与诊断 —— */
+  /** V0.3.9 §2：按聊天存放的摘要记录（summary.* 事件与快照/只读装载驱动）。 */
+  summariesByConversation: Record<string, ConversationSummary[]>;
+  /** V0.3.9 §2：配对长期记忆（服务端按冻结作用域过滤后下发，store 不自行拼接作用域）。 */
+  memories: PairMemory[];
+  /** V0.3.9 §2：按聊天存放的长期记忆记录。 */
+  memoriesByConversation: Record<string, PairMemory[]>;
+  /** V0.3.9 §2：记忆页读取状态（memory.list 的真实结果与失败原文）。 */
+  memoryPanel: MemoryPanelState;
+  /** V039-S4-002：Sidecar 自报的运行模式（显式演示模式必须有可见标识）。 */
+  backendInfo: BackendInfo | null;
+  /** V0.3.9 §2：摘要触发详情，键为 conversation_id -> summary_id。 */
+  summaryTriggersByConversation: Record<string, Record<string, import("../contracts/view-models").SummaryTriggerInfo>>;
+  /** V0.3.9 §2：真实存在的恢复目标。 */
+  summaryRegenerateTarget: import("../contracts/view-models").SummaryRegenerateTarget | null;
+  /** V0.3.9 §6：远程控制租约快照；无数据保持 null，不由前端推导。 */
+  remoteControl: RemoteControlState | null;
+  /** V0.3.9 §3：按聊天存放的待审批（审批栏只显示当前聊天；其他聊天用计数与导航）。 */
+  approvalsByConversation: Record<string, PendingApproval[]>;
+  /** V0.3.9 §6：approval.resolved 的原始终态（字段缺失保持 null，不伪造来源）。 */
+  approvalOutcomesById: Record<string, ApprovalResolvedPayload>;
+  /** V0.3.9 §5：metrics.query 结果（缺失指标为 null，真实零值为 0）。 */
+  turnMetrics: TurnMetric[];
+  metricsCursor: string | null;
+  metricsLoading: boolean;
+  metricsError: string | null;
+  /** V0.3.9 §5：diagnostics.prompt_assembly 结果；隐藏内容只在显式请求后驻留。 */
+  promptAssembly: PromptAssemblyDiagnostics | null;
+  promptAssemblyLoading: boolean;
+  promptAssemblyError: string | null;
+  promptAssemblyRevealed: boolean;
+  /** V0.3.9 §6：最近一次 voice.playback_interrupted（抢占反馈；无则 null）。 */
+  playbackInterruption: PlaybackInterruption | null;
+  setSummaries(conversationId: string, summaries: ConversationSummary[]): void;
+  upsertSummary(summary: ConversationSummary): void;
+  setMemories(memories: PairMemory[]): void;
+  setMemoriesForConversation(conversationId: string, memories: PairMemory[]): void;
+  upsertMemory(memory: PairMemory, conversationId?: string): void;
+  setMemoryPanel(patch: Partial<MemoryPanelState>): void;
+  setSummaryTriggers(conversationId: string, triggers: Record<string, import("../contracts/view-models").SummaryTriggerInfo>): void;
+  setSummaryRegenerateTarget(target: import("../contracts/view-models").SummaryRegenerateTarget | null): void;
+  regenerateSummary(summaryIdOrTarget: string | { summary_id: string; conversation_id?: string; reason?: "failed_record" | "user_request" }): Promise<void>;
+  queryMetrics(params?: { conversation_id?: string; cursor?: string | null; limit?: number }): Promise<{ metrics: TurnMetric[]; next_cursor: string | null }>;
+  queryPromptAssembly(params?: { conversation_id?: string; includeHidden?: boolean }): Promise<PromptAssemblyDiagnostics>;
+  setRemoteControl(state: RemoteControlState | null): void;
+  /** 写入一页指标。replace（缺省）= 整体覆盖；append = keyset 分页追加并按 metric_id 去重。 */
+  setMetricsPage(
+    page: { metrics: TurnMetric[]; cursor: string | null },
+    mode?: "replace" | "append",
+  ): void;
+  setMetricsError(message: string | null): void;
+  setMetricsLoading(loading: boolean): void;
+  setPromptAssembly(diagnostics: PromptAssemblyDiagnostics | null): void;
+  setPromptAssemblyLoading(loading: boolean): void;
+  setPromptAssemblyError(message: string | null): void;
+  revealPromptAssembly(): void;
+  /** 关闭诊断抽屉：隐藏内容必须随关闭清除。 */
+  closePromptAssembly(): void;
+  setPlaybackInterruption(interruption: PlaybackInterruption | null): void;
+
   /* —— V0.3.3 角色卡与远程配对 slice（形状见 contracts/view-models.ts）—— */
   /** 主工作区视图：聊天 / 角色库 / 角色创作。 */
   mainView: MainView;
@@ -127,6 +259,8 @@ export interface DesktopState {
   setCharacterLibrary(partial: Partial<CharacterLibraryViewModel>): void;
   setCharacterCreate(partial: Partial<CharacterCreateViewModel>): void;
   setRemotePairing(partial: Partial<RemotePairingViewModel>): void;
+  /** V039-S4-004：合并 serve 地址载荷（serve.started 事件与 remote.issue_code 返回同形）。 */
+  setServeAddress(payload: unknown): void;
   hydrate(snapshot: DesktopSnapshot): void;
   applyEvents(events: DesktopEvent[]): void;
   /** V0.3.2 M5：装载 conversation.open 的只读结果并打开对应标签（不改全局当前聊天）。 */
@@ -194,6 +328,25 @@ export type DesktopRenderState = Pick<
   | "characterLibrary"
   | "characterCreate"
   | "remotePairing"
+  | "summariesByConversation"
+  | "memories"
+  | "memoriesByConversation"
+  | "memoryPanel"
+  | "backendInfo"
+  | "summaryTriggersByConversation"
+  | "summaryRegenerateTarget"
+  | "remoteControl"
+  | "approvalsByConversation"
+  | "approvalOutcomesById"
+  | "turnMetrics"
+  | "metricsCursor"
+  | "metricsLoading"
+  | "metricsError"
+  | "promptAssembly"
+  | "promptAssemblyLoading"
+  | "promptAssemblyError"
+  | "promptAssemblyRevealed"
+  | "playbackInterruption"
 >;
 
 const emptyVoice: VoiceState = {
@@ -249,10 +402,32 @@ function createInitialState(): Omit<
   | "setCharacterLibrary"
   | "setCharacterCreate"
   | "setRemotePairing"
+  | "setServeAddress"
   | "setPowerStatus"
   | "setPowerError"
   | "setPowerQueryInFlight"
   | "dismissPowerPrompt"
+  | "setSummaries"
+  | "upsertSummary"
+  | "setMemories"
+  | "setMemoriesForConversation"
+  | "upsertMemory"
+  | "setMemoryPanel"
+  | "setSummaryTriggers"
+  | "setSummaryRegenerateTarget"
+  | "regenerateSummary"
+  | "queryMetrics"
+  | "queryPromptAssembly"
+  | "setRemoteControl"
+  | "setMetricsPage"
+  | "setMetricsError"
+  | "setMetricsLoading"
+  | "setPromptAssembly"
+  | "setPromptAssemblyLoading"
+  | "setPromptAssemblyError"
+  | "revealPromptAssembly"
+  | "closePromptAssembly"
+  | "setPlaybackInterruption"
 > {
   return {
     status: "booting",
@@ -308,11 +483,33 @@ function createInitialState(): Omit<
       loading: false,
       error: null,
       serveAddress: null,
+      servePort: null,
+      serveUnavailableReason: null,
+      serveFailure: null,
     },
     powerStatus: null,
     powerError: null,
     powerQueryInFlight: false,
     powerPromptDismissed: false,
+    summariesByConversation: {},
+    memories: [],
+    memoriesByConversation: {},
+    memoryPanel: { conversationId: null, loading: false, error: null, loaded: false },
+    backendInfo: null,
+    summaryTriggersByConversation: {},
+    summaryRegenerateTarget: null,
+    remoteControl: null,
+    approvalsByConversation: {},
+    approvalOutcomesById: {},
+    turnMetrics: [],
+    metricsCursor: null,
+    metricsLoading: false,
+    metricsError: null,
+    promptAssembly: null,
+    promptAssemblyLoading: false,
+    promptAssemblyError: null,
+    promptAssemblyRevealed: false,
+    playbackInterruption: null,
   };
 }
 
@@ -476,6 +673,59 @@ function pushToast(toasts: StoreToast[], toast: StoreToast): StoreToast[] {
   return [...toasts, toast].slice(-5);
 }
 
+/** V0.3.9 §2：按 conversation_id 归组摘要（同一 summary_id 后到覆盖先到）。 */
+function groupSummaries(
+  summaries: ConversationSummary[] | undefined,
+): Record<string, ConversationSummary[]> {
+  const grouped: Record<string, ConversationSummary[]> = {};
+  for (const summary of summaries ?? []) {
+    const list = grouped[summary.conversation_id] ?? [];
+    grouped[summary.conversation_id] = [
+      ...list.filter((item) => item.summary_id !== summary.summary_id),
+      summary,
+    ];
+  }
+  return grouped;
+}
+
+/** V0.3.9 §3：按 conversation_id 归组待审批；无归属的项不塞进任何聊天。 */
+function groupApprovals(
+  approvals: PendingApproval[] | undefined,
+): Record<string, PendingApproval[]> {
+  const grouped: Record<string, PendingApproval[]> = {};
+  for (const approval of approvals ?? []) {
+    const conversationId = approval.conversation_id;
+    if (!conversationId) continue;
+    const list = grouped[conversationId] ?? [];
+    grouped[conversationId] = [
+      ...list.filter((item) => item.approval_id !== approval.approval_id),
+      approval,
+    ];
+  }
+  return grouped;
+}
+
+/**
+ * V0.3.9 §6：租约快照的 null 归一化。
+ *
+ * state 缺失或非法时整体按 null 处理（不伪造 free）；其余字段缺什么就是 null。
+ */
+function normalizeRemoteControl(value: unknown): RemoteControlState | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const state = raw.state;
+  if (state !== "free" && state !== "held" && state !== "grace") return null;
+  const asStringOrNull = (input: unknown): string | null =>
+    typeof input === "string" && input.length > 0 ? input : null;
+  return {
+    state,
+    device_key: asStringOrNull(raw.device_key),
+    expires_at: asStringOrNull(raw.expires_at),
+    grace_expires_at: asStringOrNull(raw.grace_expires_at),
+    reason: asStringOrNull(raw.reason),
+  };
+}
+
 function snapshotMode(snapshot: DesktopSnapshot): "chat" | "collaboration" {
   return snapshot.current_conversation.last_mode === "collaboration" ? "collaboration" : "chat";
 }
@@ -607,7 +857,17 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
     pairs,
     // V0.3.2 M5：活动任务集合按快照全量替换；busy/activeTask 由本窗口活动聊天推导。
     activeTasksByConversation: activeTasksFromSnapshot(snapshot),
-    approvals: snapshot.approvals,
+    approvals: snapshot.approvals ?? [],
+    approvalsByConversation: groupApprovals(snapshot.approvals),
+    // V0.3.9 §2/§6：摘要、记忆与租约随快照全量替换；缺字段即空/ null，不沿用旧值。
+    summariesByConversation: groupSummaries(snapshot.summaries),
+    memories: snapshot.memories ?? [],
+    memoriesByConversation: snapshot.current_conversation_id
+      ? { [snapshot.current_conversation_id]: snapshot.memories ?? [] }
+      : {},
+    summaryTriggersByConversation: state.summaryTriggersByConversation ?? {},
+    summaryRegenerateTarget: state.summaryRegenerateTarget ?? null,
+    remoteControl: normalizeRemoteControl(snapshot.remote_control),
     approvalResolvingById: {},
     reviewActive: false,
     reviewText: null,
@@ -635,6 +895,18 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
   return { ...hydrated, ...refreshWindowTask(hydrated) };
 }
 
+/**
+ * memory.updated / memory.deleted 事件载荷 → 前端记录。
+ *
+ * 完整记录携带 status（服务端 `_memory_payload` 恒为完整载荷）时按线缆解码；
+ * 只带 memory_id 的载荷返回 null，由调用方按 id 处理既有记录（不凭空造记录）。
+ */
+function memoryRecordFromEventPayload(raw: MemoryWirePayload | undefined): PairMemory | null {
+  if (!raw || typeof raw.memory_id !== "string" || !raw.memory_id) return null;
+  if (raw.status !== "active" && raw.status !== "deleted") return null;
+  return pairMemoryFromPayload(raw);
+}
+
 function applyErrorReported(state: DesktopState, event: DesktopEvent): DesktopState {
   // V0.2 错误分级（问题 9）：fatal 接管整屏；recoverable/info 保留已加载
   // 内容，入 Toast 队列（同 code+message 去重，最多 5 条）。
@@ -648,9 +920,18 @@ function applyErrorReported(state: DesktopState, event: DesktopEvent): DesktopSt
     };
   }
   const text = String(payload.message ?? "");
+  // V039-S4-007：Rust 的 publish_disconnected 在同一次调用里先发
+  // connection.status{disconnected}，再发这条 error.reported（lib.rs:520-548）。
+  // 两路描述同一个事实；只要这条错误上屏，连接就确实已经断开，因此连接状态
+  // 也如实落到 disconnected，避免药丸显示「已连接」而与通知互相矛盾。
+  const disconnected = payload.code === "backend_disconnected";
   return {
     ...state,
+    ...(disconnected
+      ? { status: "disconnected" as DesktopStatus, needsBootstrap: false }
+      : {}),
     error: text,
+    remotePairing: remotePairingWithServeFailure(state.remotePairing, payload.code, text),
     toasts: pushToast(state.toasts, {
       id: `${payload.code ?? "error"}:${text}`,
       kind: severity === "info" ? "info" : "warning",
@@ -660,14 +941,84 @@ function applyErrorReported(state: DesktopState, event: DesktopEvent): DesktopSt
   };
 }
 
+/** V039-S4-002：backend.ready 的运行模式字段；整批缺失时保持上一次的真实值。 */
+function readBackendInfo(payload: unknown, previous: BackendInfo | null): BackendInfo | null {
+  const raw = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+  const pid = typeof raw.pid === "number" ? raw.pid : null;
+  const demo = typeof raw.demo === "boolean" ? raw.demo : null;
+  const modeSource =
+    typeof raw.mode_source === "string" && raw.mode_source ? raw.mode_source : null;
+  if (pid === null && demo === null && modeSource === null) return previous;
+  return { pid, demo, modeSource };
+}
+
+/**
+ * V039-S4-004：合并 serve 地址载荷（serve.started 事件与 remote.issue_code 的
+ * serve_address 同形：{host: string|null, port: number, reason?: "no_lan_address"}）。
+ *
+ * 缺 port 属协议违规，保持原值不本地猜测；host 为 null 表示服务已监听但没有可用的
+ * 局域网地址，此时清空地址并保留真实端口与原因码。
+ */
+function remotePairingWithServeAddress(
+  remotePairing: DesktopState["remotePairing"],
+  payload: unknown,
+): DesktopState["remotePairing"] {
+  const raw = (payload && typeof payload === "object" ? payload : null) as
+    | { host?: unknown; port?: unknown; reason?: unknown }
+    | null;
+  if (!raw) return remotePairing;
+  if (typeof raw.port !== "number") {
+    // 缺 port 是协议违规：地址此刻不可知，不得继续展示上一次的二维码成功态。
+    return {
+      ...remotePairing,
+      serveAddress: null,
+      serveUnavailableReason: null,
+      serveFailure: "远程服务地址报文不符合协议：缺少 port",
+    };
+  }
+  const host = typeof raw.host === "string" && raw.host ? raw.host : null;
+  const reason = typeof raw.reason === "string" && raw.reason ? raw.reason : null;
+  return {
+    ...remotePairing,
+    serveAddress: host ? { host, port: raw.port } : null,
+    servePort: raw.port,
+    serveUnavailableReason: host ? null : reason,
+    // 服务已启动：上一次「启动失败」的报文条件已结束。
+    serveFailure: null,
+  };
+}
+
+/** V039-S4-004：远程服务启动失败的真实报文进远程设备页（二维码不可用的真实原因）。 */
+function remotePairingWithServeFailure(
+  remotePairing: DesktopState["remotePairing"],
+  code: string | undefined,
+  text: string,
+): DesktopState["remotePairing"] {
+  if (code !== "serve_start_failed") return remotePairing;
+  return { ...remotePairing, serveFailure: text };
+}
+
+/** 连接恢复后撤回描述「已断开/正在重连」的瞬时通知：该条件已经结束。
+    只按协议错误码匹配（backend_disconnected），不解析、不猜测通知文案。 */
+function retractDisconnectNotices(state: DesktopState): DesktopState {
+  const toasts = state.toasts.filter((toast) => !toast.id.startsWith(DISCONNECT_TOAST_PREFIX));
+  if (toasts.length === state.toasts.length) return state;
+  const retracted = state.toasts.filter((toast) => toast.id.startsWith(DISCONNECT_TOAST_PREFIX));
+  const errorWasDisconnect = retracted.some((toast) => toast.text === state.error);
+  return { ...state, toasts, error: errorWasDisconnect ? null : state.error };
+}
+
 function applyConnectionStatus(state: DesktopState, event: DesktopEvent): DesktopState {
   const streamId = normalizeStreamId(event.stream_id);
   const status = String(event.payload.status ?? "");
   // connected 总是权威：新代次到达时用它切换 streamId。
   // disconnected 只接受当前代次；旧 reader 迟到的 disconnected 不能覆盖新连接。
   if (status === "connected") {
+    // V039-S4-007：恢复即事实——「正在重连…」这类瞬时通知随恢复撤回，
+    // 不再与「已连接」同屏矛盾（toast 无 TTL，必须显式撤回）。
+    const recovered = retractDisconnectNotices(state);
     return {
-      ...state,
+      ...recovered,
       streamId: streamId ?? state.streamId,
       status: "booting",
       needsBootstrap: true,
@@ -780,6 +1131,9 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
     case "backend.ready":
       // M5.4：backend.ready 是新的 stream bootstrap 起点；等 state.snapshot
       // 水合前先暂存业务事件，AppController 看到 needsBootstrap 会重新拉快照。
+      // V039-S4-002：同时保留 Sidecar 自报的运行模式与来源，未上报的字段保持
+      // null（未知），绝不默认成「真实模式」。
+      next.backendInfo = readBackendInfo(event.payload, state.backendInfo);
       next.status = "booting";
       next.needsBootstrap = true;
       next.eventBuffer = [];
@@ -926,29 +1280,72 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
         ...next.approvals.filter((item) => item.approval_id !== approval.approval_id),
         approval,
       ];
+      // V0.3.9 §3：审批栏按聊天取数，待审批必须同时进入其归属聊天的分组。
+      if (approval.conversation_id) {
+        const list = next.approvalsByConversation[approval.conversation_id] ?? [];
+        next.approvalsByConversation = {
+          ...next.approvalsByConversation,
+          [approval.conversation_id]: [
+            ...list.filter((item) => item.approval_id !== approval.approval_id),
+            approval,
+          ],
+        };
+      }
       break;
     }
     case "approval.resolved": {
-      const payload = event.payload as {
-        approval_id?: string;
-        conversation_id?: string;
-        decision?: string;
-        resolved_by?: string;
-        task_id?: string;
-      };
+      // V0.3.9 §6：终态形状冻结为 decision(allow|allow_for_conversation|deny|timeout)
+      // + resolved_by/actor/reason/resolved_at/error_code；缺失字段保持 null，
+      // 绝不伪造 desktop/remote 来源。首个终态获胜，重复事件按 approval_id 覆盖。
+      const payload = event.payload as Partial<ApprovalResolvedPayload>;
       const approvalId = String(payload.approval_id ?? "");
+      if (!approvalId) break;
+      const conversationId = payload.conversation_id ?? "";
       next.approvals = next.approvals.filter((item) => item.approval_id !== approvalId);
-      next.resolvedApprovals = [
-        ...next.resolvedApprovals.filter((item) => item.approval_id !== approvalId),
-        {
-          approval_id: approvalId,
-          conversation_id: payload.conversation_id,
-          // 真实协议 approval.resolved 总带合法 decision；缺失不伪造方向。
-          decision: payload.decision ?? "",
-          resolved_by: payload.resolved_by ?? "desktop",
-          task_id: payload.task_id,
-        },
-      ];
+      if (conversationId) {
+        const list = next.approvalsByConversation[conversationId] ?? [];
+        next.approvalsByConversation = {
+          ...next.approvalsByConversation,
+          [conversationId]: list.filter((item) => item.approval_id !== approvalId),
+        };
+      }
+      if (payload.decision) {
+        next.approvalOutcomesById = {
+          ...next.approvalOutcomesById,
+          [approvalId]: {
+            approval_id: approvalId,
+            conversation_id: conversationId,
+            task_id: payload.task_id ?? null,
+            decision: payload.decision,
+            resolved_by: payload.resolved_by ?? null,
+            actor: payload.actor ?? null,
+            reason: payload.reason ?? null,
+            resolved_at: payload.resolved_at ?? "",
+            error_code: payload.error_code ?? null,
+          },
+        };
+      }
+      // 兼容视图：只保留字段齐全的终态，缺失时不写入，避免以空串冒充来源。
+      if (payload.decision && payload.resolved_by) {
+        next.resolvedApprovals = [
+          ...next.resolvedApprovals.filter((item) => item.approval_id !== approvalId),
+          {
+            approval_id: approvalId,
+            conversation_id: conversationId || undefined,
+            decision: payload.decision,
+            resolved_by: payload.resolved_by,
+            task_id: payload.task_id ?? undefined,
+            ...(payload.actor ? { actor: payload.actor } : {}),
+            ...(payload.reason ? { resolved_reason: payload.reason } : {}),
+            ...(payload.error_code ? { error_code: payload.error_code } : {}),
+            ...(payload.resolved_at ? { resolved_at: payload.resolved_at } : {}),
+          },
+        ];
+      } else {
+        next.resolvedApprovals = next.resolvedApprovals.filter(
+          (item) => item.approval_id !== approvalId,
+        );
+      }
       const { [approvalId]: _resolved, ...remaining } = next.approvalResolvingById;
       next.approvalResolvingById = remaining;
       break;
@@ -1216,6 +1613,170 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
       }
       break;
     }
+    case "summary.started":
+    case "summary.completed":
+    case "summary.failed": {
+      // V0.3.9 §2：摘要状态事件按 summary_id 覆盖；失败保留原始错误与 error_code，
+      // 不生成空摘要、不改写模型内容。缺 conversation_id 的事件不猜归属。
+      const payload = event.payload as Partial<ConversationSummary>;
+      const conversationId = payload.conversation_id ?? "";
+      const summaryId = payload.summary_id ?? "";
+      if (conversationId && summaryId) {
+        const list = next.summariesByConversation[conversationId] ?? [];
+        const previous = list.find((item) => item.summary_id === summaryId);
+        const status: ConversationSummary["status"] =
+          event.event === "summary.started"
+            ? "running"
+            : event.event === "summary.completed"
+              ? "completed"
+              : "failed";
+        const summary: ConversationSummary = {
+          summary_id: summaryId,
+          conversation_id: conversationId,
+          status,
+          covers_from_message_id:
+            payload.covers_from_message_id ?? previous?.covers_from_message_id ?? null,
+          covers_to_message_id:
+            payload.covers_to_message_id ?? previous?.covers_to_message_id ?? null,
+          covers_message_count:
+            payload.covers_message_count ?? previous?.covers_message_count ?? 0,
+          content: payload.content ?? previous?.content ?? null,
+          provider: payload.provider ?? previous?.provider ?? null,
+          model: payload.model ?? previous?.model ?? null,
+          error_code: payload.error_code ?? null,
+          error: payload.error ?? null,
+          created_at: payload.created_at ?? previous?.created_at ?? "",
+          updated_at: payload.updated_at ?? previous?.updated_at ?? "",
+        };
+        next.summariesByConversation = {
+          ...next.summariesByConversation,
+          [conversationId]: [
+            ...list.filter((item) => item.summary_id !== summaryId),
+            summary,
+          ],
+        };
+        if (status === "failed") {
+          next.summaryRegenerateTarget = {
+            summary_id: summaryId,
+            conversation_id: conversationId,
+            reason: "failed_record",
+          };
+        } else if (next.summaryRegenerateTarget?.summary_id === summaryId) {
+          next.summaryRegenerateTarget = null;
+        }
+      }
+      break;
+    }
+    case "memory.updated": {
+      // V0.3.9 §2：记忆内容由模型负责；store 只按 memory_id 存原始记录，
+      // 不按关键词筛选、不静默截断。作用域由服务端下发，客户端不自行拼接。
+      // 线缆载荷是扁平五分量（见 protocol.MemoryWirePayload），这里只做形状解码。
+      const payload = event.payload as unknown as MemoryWirePayload & {
+        memory?: MemoryWirePayload;
+      };
+      const memory = memoryRecordFromEventPayload(payload.memory ?? payload);
+      const conversationId = memory?.conversation_id ?? next.activeConversationId ?? "";
+      if (memory) {
+        next.memories = [
+          ...next.memories.filter((item) => item.memory_id !== memory.memory_id),
+          memory,
+        ];
+        if (conversationId) {
+          const list = next.memoriesByConversation[conversationId] ?? [];
+          next.memoriesByConversation = {
+            ...next.memoriesByConversation,
+            [conversationId]: [
+              ...list.filter((item) => item.memory_id !== memory.memory_id),
+              memory,
+            ],
+          };
+        }
+      }
+      break;
+    }
+    case "memory.deleted": {
+      // V0.3.9 §2：删除必须真实持久化——事件带完整记录时按记录落库，
+      // 只带 id 时把已知记录标记为 deleted（状态枚举 active|deleted），
+      // 未知 id 不凭空造记录。
+      const payload = event.payload as unknown as MemoryWirePayload & {
+        memory?: MemoryWirePayload;
+      };
+      const memory = memoryRecordFromEventPayload(payload.memory ?? payload);
+      const memoryId =
+        memory?.memory_id ?? (typeof payload.memory_id === "string" ? payload.memory_id : "");
+      const conversationId = memory?.conversation_id ?? next.activeConversationId ?? "";
+      if (memory && memoryId) {
+        next.memories = [
+          ...next.memories.filter((item) => item.memory_id !== memoryId),
+          memory,
+        ];
+        if (conversationId) {
+          const list = next.memoriesByConversation[conversationId] ?? [];
+          next.memoriesByConversation = {
+            ...next.memoriesByConversation,
+            [conversationId]: [
+              ...list.filter((item) => item.memory_id !== memoryId),
+              memory,
+            ],
+          };
+        }
+      } else if (memoryId) {
+        next.memories = next.memories.map((item) =>
+          item.memory_id === memoryId ? { ...item, status: "deleted" } : item,
+        );
+        if (conversationId && next.memoriesByConversation[conversationId]) {
+          next.memoriesByConversation = {
+            ...next.memoriesByConversation,
+            [conversationId]: next.memoriesByConversation[conversationId].map((item) =>
+              item.memory_id === memoryId ? { ...item, status: "deleted" } : item,
+            ),
+          };
+        }
+      }
+      break;
+    }
+    case "remote.control_changed": {
+      // V0.3.9 §6：租约快照以服务端为准；非法或缺失 state 时保持 null，
+      // 不伪造 free，也不沿用旧租约。
+      next.remoteControl = normalizeRemoteControl(event.payload);
+      break;
+    }
+    case "voice.playback_interrupted": {
+      // V0.3.9 §6：抢占反馈（用户发送/新角色消息/显式停止）。payload 原样保留，
+      // 缺字段为 null，不补默认来源。
+      const payload = event.payload as {
+        conversation_id?: string;
+        message_id?: string | null;
+        reason?: string | null;
+        occurred_at?: string | null;
+      };
+      next.playbackInterruption = {
+        conversation_id: payload.conversation_id ?? "",
+        message_id: payload.message_id ?? null,
+        reason: payload.reason ?? null,
+        occurred_at: payload.occurred_at ?? null,
+      };
+      break;
+    }
+    case "conversation.card_missing": {
+      // V0.3.9 §1：角色卡已删除时原作用域保留为孤立数据并明确提示，
+      // 不静默并入内置角色。事件是真实失败，进 Toast 队列而不是被吞掉。
+      const payload = event.payload as {
+        conversation_id?: string;
+        character_card_id?: string | null;
+        message?: string;
+      };
+      const text =
+        payload.message ??
+        `角色卡已不存在（${payload.character_card_id ?? "未知"}），该聊天的角色装配已失效`;
+      next.toasts = pushToast(next.toasts, {
+        id: `card_missing:${payload.conversation_id ?? ""}:${payload.character_card_id ?? ""}`,
+        kind: "warning",
+        text,
+        hasDetails: true,
+      });
+      break;
+    }
     case "connection.status": {
       // V0.2 M2-5 连接恢复（问题 12）：断线保留已加载内容（不整屏接管），
       // 恢复后进入 booting 并请求重新 bootstrap 水合最新快照。
@@ -1238,14 +1799,10 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
       break;
     }
     case "serve.started": {
-      // V0.3.4 缺陷 6：Sidecar --serve 上报真实监听地址，二维码按它生成。
-      const payload = event.payload as { host?: unknown; port?: unknown };
-      if (typeof payload.host === "string" && typeof payload.port === "number") {
-        next.remotePairing = {
-          ...next.remotePairing,
-          serveAddress: { host: payload.host, port: payload.port },
-        };
-      }
+      // V0.3.4 缺陷 6 / V039-S4-004：Sidecar --serve 上报真实监听地址，二维码按它生成。
+      // host 为 null 表示服务确实已在监听、但未探测到可用的局域网地址；原因随
+      // reason 一并下发（如 no_lan_address），前端不再自行编造不可达地址或原因。
+      next.remotePairing = remotePairingWithServeAddress(next.remotePairing, event.payload);
       break;
     }
     case "power.status_changed": {
@@ -1312,7 +1869,11 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
             loading: false,
             error: null,
             serveAddress: null,
+            servePort: null,
+            serveUnavailableReason: null,
+            serveFailure: null,
           };
+          next.memoryPanel = { conversationId: null, loading: false, error: null, loaded: false };
           // 设置页重新打开后从新账号 config.get 和 remote.list_devices 水合。
           next.configSnapshot = null;
         }
@@ -1329,7 +1890,7 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
   return next;
 }
 
-export const desktopStore = createStore<DesktopState>((set) => ({
+export const desktopStore = createStore<DesktopState>((set, get) => ({
   ...createInitialState(),
   hydrate(snapshot) {
     set((state) => {
@@ -1405,13 +1966,46 @@ export const desktopStore = createStore<DesktopState>((set) => ({
         ...state.queueItemsByConversation,
         [conversationId]: result.queue_items ?? [],
       };
-      // 活动任务集合只更新本会话条目；其余聊天的运行中任务不受影响。
-      const activeTasksByConversation = { ...state.activeTasksByConversation };
-      if (result.active_task) {
+      // 活动任务集合：新协议 conversation.open 携带全量 active_tasks 时整体采纳；
+      // 只带单值 active_task 时仅更新本会话条目，其余聊天的运行中任务不受影响。
+      let activeTasksByConversation = { ...state.activeTasksByConversation };
+      const openResult = result as ConversationOpenResult & { active_tasks?: ActiveTask[] };
+      if (Array.isArray(openResult.active_tasks)) {
+        activeTasksByConversation = {};
+        for (const task of openResult.active_tasks) {
+          activeTasksByConversation[task.conversation_id] = task;
+        }
+      } else if (result.active_task) {
         activeTasksByConversation[conversationId] = result.active_task;
       } else {
         delete activeTasksByConversation[conversationId];
       }
+      // V0.3.9 §3：只读装载带待审批时，用目标聊天的权威列表替换该聊天条目；
+      // 扁平列表同步剔除旧条目，避免已裁决项残留。
+      let approvals = state.approvals;
+      let approvalsByConversation = state.approvalsByConversation;
+      if (Array.isArray(result.approvals)) {
+        approvalsByConversation = {
+          ...state.approvalsByConversation,
+          [conversationId]: result.approvals,
+        };
+        approvals = [
+          ...state.approvals.filter((item) => item.conversation_id !== conversationId),
+          ...result.approvals,
+        ];
+      }
+      // V0.3.9 §2/§6：摘要、记忆与租约只在服务端显式下发时覆盖，缺字段保持现状。
+      const summariesByConversation = result.summaries
+        ? { ...state.summariesByConversation, [conversationId]: result.summaries }
+        : state.summariesByConversation;
+      const memories = result.memories ?? state.memories;
+      const memoriesByConversation = result.memories
+        ? { ...state.memoriesByConversation, [conversationId]: result.memories }
+        : state.memoriesByConversation;
+      const remoteControl =
+        result.remote_control === undefined
+          ? state.remoteControl
+          : normalizeRemoteControl(result.remote_control);
       // 打开本窗口标签并聚焦；模式随该会话的 last_mode 采纳。
       const openConversationIds = state.openConversationIds.includes(conversationId)
         ? state.openConversationIds
@@ -1430,6 +2024,12 @@ export const desktopStore = createStore<DesktopState>((set) => ({
         turnIdsByConversation,
         queueItemsByConversation,
         activeTasksByConversation,
+        approvals,
+        approvalsByConversation,
+        summariesByConversation,
+        memories,
+        memoriesByConversation,
+        remoteControl,
         openConversationIds,
         activeConversationId: conversationId,
         activeProjectId: projectId || null,
@@ -1576,6 +2176,11 @@ export const desktopStore = createStore<DesktopState>((set) => ({
   setRemotePairing(patch) {
     set((state) => ({ remotePairing: { ...state.remotePairing, ...patch } }));
   },
+  setServeAddress(payload) {
+    set((state) => ({
+      remotePairing: remotePairingWithServeAddress(state.remotePairing, payload),
+    }));
+  },
   setPowerStatus(payload) {
     set((state) => ({
       powerStatus: payload,
@@ -1593,16 +2198,249 @@ export const desktopStore = createStore<DesktopState>((set) => ({
   dismissPowerPrompt() {
     set({ powerPromptDismissed: true });
   },
+  setSummaries(conversationId, summaries) {
+    set((state) => ({
+      summariesByConversation: { ...state.summariesByConversation, [conversationId]: summaries },
+    }));
+  },
+  upsertSummary(summary) {
+    set((state) => {
+      const list = state.summariesByConversation[summary.conversation_id] ?? [];
+      return {
+        summariesByConversation: {
+          ...state.summariesByConversation,
+          [summary.conversation_id]: [
+            ...list.filter((item) => item.summary_id !== summary.summary_id),
+            summary,
+          ],
+        },
+      };
+    });
+  },
+  setMemories(memories) {
+    set({ memories });
+  },
+  setMemoriesForConversation(conversationId, memories) {
+    set((state) => ({
+      memoriesByConversation: {
+        ...state.memoriesByConversation,
+        [conversationId]: memories,
+      },
+    }));
+  },
+  setMemoryPanel(patch) {
+    set((state) => ({ memoryPanel: { ...state.memoryPanel, ...patch } }));
+  },
+  upsertMemory(memory, conversationId) {
+    set((state) => {
+      const convId = conversationId ?? state.activeConversationId;
+      const nextMemories = [
+        ...state.memories.filter((item) => item.memory_id !== memory.memory_id),
+        memory,
+      ];
+      const nextByConv = { ...state.memoriesByConversation };
+      if (convId) {
+        const list = nextByConv[convId] ?? [];
+        nextByConv[convId] = [
+          ...list.filter((item) => item.memory_id !== memory.memory_id),
+          memory,
+        ];
+      }
+      return {
+        memories: nextMemories,
+        memoriesByConversation: nextByConv,
+      };
+    });
+  },
+  setSummaryTriggers(conversationId, triggers) {
+    set((state) => ({
+      summaryTriggersByConversation: {
+        ...state.summaryTriggersByConversation,
+        [conversationId]: triggers,
+      },
+    }));
+  },
+  setSummaryRegenerateTarget(target) {
+    set({ summaryRegenerateTarget: target });
+  },
+  async regenerateSummary(summaryIdOrTarget) {
+    const summaryId =
+      typeof summaryIdOrTarget === "string"
+        ? summaryIdOrTarget
+        : summaryIdOrTarget.summary_id;
+    const conversationId =
+      typeof summaryIdOrTarget === "object" && summaryIdOrTarget.conversation_id
+        ? summaryIdOrTarget.conversation_id
+        : get().activeConversationId ?? "";
+    set((state) => {
+      const list = state.summariesByConversation[conversationId] ?? [];
+      const previous = list.find((s) => s.summary_id === summaryId);
+      if (previous) {
+        return {
+          summariesByConversation: {
+            ...state.summariesByConversation,
+            [conversationId]: list.map((s) =>
+              s.summary_id === summaryId
+                ? { ...s, status: "running" as const, error: null, error_code: null }
+                : s,
+            ),
+          },
+          summaryRegenerateTarget: null,
+        };
+      }
+      return {
+        summaryRegenerateTarget: {
+          summary_id: summaryId,
+          conversation_id: conversationId,
+          reason:
+            typeof summaryIdOrTarget === "object" && summaryIdOrTarget.reason
+              ? summaryIdOrTarget.reason
+              : "user_request",
+        },
+      };
+    });
+  },
+  async queryMetrics(params) {
+    set({ metricsLoading: true, metricsError: null });
+    const convId = params?.conversation_id ?? get().activeConversationId;
+    let metrics = get().turnMetrics;
+    if (convId) {
+      metrics = metrics.filter((m) => m.conversation_id === convId);
+    }
+    const cursor = get().metricsCursor;
+    set({ metricsLoading: false });
+    return { metrics, next_cursor: cursor };
+  },
+  async queryPromptAssembly(params) {
+    set({ promptAssemblyLoading: true, promptAssemblyError: null });
+    const includeHidden = params?.includeHidden === true;
+    const current = get().promptAssembly;
+    set({
+      promptAssemblyLoading: false,
+      promptAssemblyRevealed: includeHidden,
+    });
+    return (
+      current ?? {
+        conversation_id: params?.conversation_id ?? get().activeConversationId ?? null,
+        modules: [],
+        diagnostics: [],
+        summary_injected: false,
+        memory_injected: false,
+        hidden_content_included: includeHidden,
+        generated_at: new Date().toISOString(),
+      }
+    );
+  },
+  setRemoteControl(remoteControl) {
+    set({ remoteControl });
+  },
+  setMetricsPage(page, mode = "replace") {
+    set((state) => {
+      if (mode === "replace") {
+        return {
+          turnMetrics: page.metrics,
+          metricsCursor: page.cursor,
+          metricsLoading: false,
+          metricsError: null,
+        };
+      }
+      // append：keyset 分页追加，旧页在前；已出现的 metric_id 跳过（含本页内部重复）。
+      const seen = new Set(state.turnMetrics.map((metric) => metric.metric_id));
+      const merged = [...state.turnMetrics];
+      for (const metric of page.metrics) {
+        if (seen.has(metric.metric_id)) continue;
+        seen.add(metric.metric_id);
+        merged.push(metric);
+      }
+      return {
+        turnMetrics: merged,
+        metricsCursor: page.cursor,
+        metricsLoading: false,
+        metricsError: null,
+      };
+    });
+  },
+  setMetricsError(message) {
+    set({ metricsError: message, metricsLoading: false });
+  },
+  setMetricsLoading(loading) {
+    set({ metricsLoading: loading });
+  },
+  setPromptAssembly(diagnostics) {
+    set({
+      promptAssembly: diagnostics,
+      promptAssemblyLoading: false,
+      promptAssemblyError: null,
+      // 只有服务端确实下发了隐藏原文才允许展示；否则保持关闭。
+      promptAssemblyRevealed: diagnostics?.hidden_content_included === true,
+    });
+  },
+  setPromptAssemblyLoading(loading) {
+    set({ promptAssemblyLoading: loading });
+  },
+  setPromptAssemblyError(message) {
+    set({ promptAssemblyError: message, promptAssemblyLoading: false });
+  },
+  revealPromptAssembly() {
+    set((state) => (state.promptAssembly ? { promptAssemblyRevealed: true } : state));
+  },
+  closePromptAssembly() {
+    // 契约 §5：关闭抽屉必须清除隐藏内容，不留驻内存。
+    set({
+      promptAssembly: null,
+      promptAssemblyRevealed: false,
+      promptAssemblyLoading: false,
+      promptAssemblyError: null,
+    });
+  },
+  setPlaybackInterruption(playbackInterruption) {
+    set({ playbackInterruption });
+  },
 }));
 
 export function useDesktopStore<T>(selector: (state: DesktopState) => T): T {
   return useStore(desktopStore, selector);
 }
 
-export const selectCurrentProject = (state: DesktopState) =>
-  state.projectsById[state.currentProjectId];
-export const selectCurrentConversation = (state: DesktopState) =>
-  state.conversationsById[state.currentConversationId];
+/** V0.3.9 §3：审批栏按聊天取数——其他聊天的待审批只用于计数与导航入口。 */
+export const selectApprovalsForConversation = (
+  state: DesktopState,
+  conversationId: string | null,
+): PendingApproval[] =>
+  conversationId ? (state.approvalsByConversation[conversationId] ?? []) : [];
+
+/** V0.3.9 §3：全部聊天的待审批计数（不暴露其他聊天的审批内容）。 */
+export const selectApprovalCountByConversation = (
+  state: DesktopState,
+): Record<string, number> => {
+  const counts: Record<string, number> = {};
+  for (const [conversationId, list] of Object.entries(state.approvalsByConversation)) {
+    if (list.length > 0) counts[conversationId] = list.length;
+  }
+  return counts;
+};
+
+/** V0.3.9 §2：某聊天的最新摘要（按 updated_at 取最近一条；无记录为 null）。 */
+export const selectLatestSummary = (
+  state: DesktopState,
+  conversationId: string | null,
+): ConversationSummary | null => {
+  if (!conversationId) return null;
+  const list = state.summariesByConversation[conversationId] ?? [];
+  return list.reduce<ConversationSummary | null>(
+    (latest, item) =>
+      latest === null || item.updated_at > latest.updated_at ? item : latest,
+    null,
+  );
+};
+
+/** V0.3.9 §2：仍在生效的配对记忆（deleted 记录不参与展示与共享）。 */
+export const selectActiveMemories = (state: DesktopState): PairMemory[] =>
+  state.memories.filter((item) => item.status === "active");
+
+/** V039-S4-002：Sidecar 自报的演示模式；null 表示未上报，调用方不得当 false 处理。 */
+export const selectBackendDemoMode = (state: DesktopState): boolean | null =>
+  state.backendInfo?.demo ?? null;
 
 /** V0.3.2 M5：本窗口当前聊天只由活动标签决定；无标签时返回 null。 */
 export const selectWindowConversationId = (state: DesktopState): string | null =>
@@ -1654,4 +2492,23 @@ export const selectDesktopRenderState = (state: DesktopState): DesktopRenderStat
   characterLibrary: state.characterLibrary,
   characterCreate: state.characterCreate,
   remotePairing: state.remotePairing,
+  summariesByConversation: state.summariesByConversation,
+  memories: state.memories,
+  memoriesByConversation: state.memoriesByConversation,
+  memoryPanel: state.memoryPanel,
+  backendInfo: state.backendInfo,
+  summaryTriggersByConversation: state.summaryTriggersByConversation,
+  summaryRegenerateTarget: state.summaryRegenerateTarget,
+  remoteControl: state.remoteControl,
+  approvalsByConversation: state.approvalsByConversation,
+  approvalOutcomesById: state.approvalOutcomesById,
+  turnMetrics: state.turnMetrics,
+  metricsCursor: state.metricsCursor,
+  metricsLoading: state.metricsLoading,
+  metricsError: state.metricsError,
+  promptAssembly: state.promptAssembly,
+  promptAssemblyLoading: state.promptAssemblyLoading,
+  promptAssemblyError: state.promptAssemblyError,
+  promptAssemblyRevealed: state.promptAssemblyRevealed,
+  playbackInterruption: state.playbackInterruption,
 });

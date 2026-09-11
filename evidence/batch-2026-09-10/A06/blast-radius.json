@@ -1,0 +1,127 @@
+{
+  "started_at": "2026-09-10T10:22:45.267Z",
+  "purpose": "只读命令序列化爆炸半径探测",
+  "results": [
+    {
+      "method": "app.bootstrap",
+      "ok": true,
+      "elapsed_s": 0.047,
+      "result_keys": [
+        "accounts",
+        "active_task",
+        "active_tasks",
+        "approvals",
+        "busy",
+        "current_account",
+        "current_account_id",
+        "current_conversation"
+      ]
+    },
+    {
+      "method": "project.create",
+      "ok": false,
+      "elapsed_s": 0.0,
+      "code": "invalid_params",
+      "message": "project.create 需要 root_path"
+    },
+    {
+      "method": "conversation.open",
+      "ok": true,
+      "elapsed_s": 0.031,
+      "result_keys": [
+        "active_task",
+        "conversation",
+        "messages",
+        "pair",
+        "project",
+        "queue_items",
+        "sequence",
+        "stream_id"
+      ]
+    },
+    {
+      "method": "metrics.query",
+      "ok": false,
+      "elapsed_s": 35.016,
+      "code": "client_timeout_35s",
+      "note": "服务端未回响应（疑似响应体不可序列化）"
+    },
+    {
+      "method": "summary.get",
+      "ok": false,
+      "elapsed_s": 35.0,
+      "code": "client_timeout_35s",
+      "note": "服务端未回响应（疑似响应体不可序列化）"
+    },
+    {
+      "method": "memory.list",
+      "ok": false,
+      "elapsed_s": 0.0,
+      "code": "memory_invalid",
+      "message": "4 validation errors for MemoryScope\nproject_id\n  Value error, project_id 必须是非空字符串 [type=value_error, input_value='', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/value_error\npair_id\n  Value error, pair_id 必须是非空字符串 [type=value_error, input_value='', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/value_error\ncharacter_ref\n  Value error, character_ref 必须是非空字符串 [type=value_error, input_value='', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/value_error\nassistant_identity\n  Value error, assistant_identity 必须是非空字符串 [type=value_error, input_value='', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/value_error"
+    },
+    {
+      "method": "card.list",
+      "ok": true,
+      "elapsed_s": 0.0,
+      "result_keys": [
+        "cards"
+      ]
+    },
+    {
+      "method": "power.get_status",
+      "ok": true,
+      "elapsed_s": 0.047,
+      "result_keys": [
+        "ac_sleep_timeout_seconds",
+        "at_risk",
+        "checked_at",
+        "dc_sleep_timeout_seconds",
+        "plan_name",
+        "platform",
+        "reason",
+        "remote_serve_enabled"
+      ]
+    },
+    {
+      "method": "remote.list_devices",
+      "ok": true,
+      "elapsed_s": 0.0,
+      "result_keys": [
+        "devices"
+      ]
+    },
+    {
+      "method": "remote.control_status",
+      "ok": true,
+      "elapsed_s": 0.0,
+      "result_keys": [
+        "device_key",
+        "expires_at",
+        "grace_expires_at",
+        "reason",
+        "state"
+      ]
+    },
+    {
+      "method": "account.list",
+      "ok": true,
+      "elapsed_s": 0.0,
+      "result_keys": [
+        "accounts",
+        "current_account_id"
+      ]
+    },
+    {
+      "method": "config.get",
+      "ok": true,
+      "elapsed_s": 0.016,
+      "result_keys": [
+        "codex",
+        "dialogue",
+        "engine",
+        "voice"
+      ]
+    }
+  ]
+}

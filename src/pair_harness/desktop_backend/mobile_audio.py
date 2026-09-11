@@ -57,6 +57,21 @@ class MobileAudioError(ValueError):
         self.code = code
 
 
+class MobileTtsInterrupted(asyncio.CancelledError):
+    """正在下发的 TTS 消息被 ``stop()`` 回收（抢占或手机端停止）。
+
+    这不是失败：抢占与停止是正常控制流，生产者应停止下发。继承
+    ``asyncio.CancelledError`` 是为了复用调用方既有的取消语义——中继任务在
+    ``except asyncio.CancelledError: raise`` 路径静默收尾，不广播
+    ``voice.mobile_tts_failed``（V039-S4-018）。未知 ``message_id`` 仍按
+    协议错误抛 ``MobileAudioError("voice_tts_message_not_found")``。
+    """
+
+    def __init__(self, message_id: str) -> None:
+        super().__init__(f"TTS 消息已中断：{message_id}")
+        self.message_id = message_id
+
+
 class RecognizerPort(Protocol):
     """与 ``qwen_asr.QwenStreamingRecognizer`` 真实接口对齐的端口。
 
@@ -302,37 +317,58 @@ async def _feed_stream(
         yield item  # type: ignore[misc]
 
 
+#: 已中断（stop）条目的保留上限：按唯一 message_id 记账，只保留最近这些
+#: 墓碑，供尚未观察到取消的在途中继任务如实收尾；再早的中断记录按未知
+#: message_id 处理（协议错误），不会无限增长。
+_MAX_STOPPED_TTS_ENTRIES = 128
+
+
 @dataclass
 class _TtsEntry:
     message_id: str
     conversation_id: str
     next_seq: int = 0
     closed: bool = False
+    stopped: bool = False
 
 
 class MobileTtsSequencer:
     """下行 TTS 分片编目（契约 §5.2）。
 
     生命周期：``begin(message_id, conversation_id)`` → ``feed*`` →
-    ``end``；``stop``（对应 ``voice.mobile_tts_stop``）随时中断并清除条目。
+    ``end``；``stop``（对应 ``voice.mobile_tts_stop``）随时中断。
 
     重入语义：
-    - 重复 ``begin`` 同一 message_id（条目存在，含已 ``end``）→
-      ``MobileAudioError("voice_tts_message_exists")``；
+    - 重复 ``begin`` 同一 message_id 一律抛
+      ``MobileAudioError("voice_tts_message_exists")``——包括被 ``stop``
+      中断之后。**不支持在旧生产者可能仍在途时重用同一 message_id**：
+      重用会让旧任务的 ``feed()`` 写进新一代条目（分片序号与内容错配）。
+      生产路径上每条消息只中继一次、抢占用的是新消息的新 id，因此不需要重用；
+      确实需要重发时请用新的 message_id。
     - ``end`` 幂等（重复调用返回相同 payload）；``end`` 后继续 ``feed`` →
       ``voice_tts_message_closed``；
-    - ``stop`` 清除条目（幂等）；``stop`` 后继续 ``feed`` →
-      ``voice_tts_message_not_found``，可重新 ``begin`` 同一 message_id；
-    - 未知 message_id 的 ``feed``/``end`` → ``voice_tts_message_not_found``。
+    - ``stop`` 幂等（重复 stop 不重复记账）；被 ``stop`` 中断的
+      message_id 继续 ``feed``/``end`` → ``MobileTtsInterrupted``
+      （正常中断，不是协议错误）；
+    - 未知 message_id 的 ``feed``/``end`` → ``voice_tts_message_not_found``
+      （真实协议错误照旧暴露，不被中断语义吞掉）。
 
     单事件循环内使用即可，不要求线程安全（本类无后台线程）。
     """
 
     def __init__(self) -> None:
         self._entries: dict[str, _TtsEntry] = {}
+        #: 已中断 message_id 的墓碑账（按唯一 id 计，先中断的在前；上限见
+        #: _MAX_STOPPED_TTS_ENTRIES）。重复 stop 同一 id 不重复记账。
+        self._stopped: dict[str, None] = {}
 
     def begin(self, message_id: str, conversation_id: str) -> None:
-        """登记一条下行 TTS 消息（``conversation_id`` 在此传入）。"""
+        """登记一条下行 TTS 消息（``conversation_id`` 在此传入）。
+
+        同一 message_id 已登记过（进行中、已 ``end`` 或被 ``stop`` 中断）
+        一律抛 ``voice_tts_message_exists``：中断墓碑仍在，说明旧生产者可能
+        还会 ``feed()``，重用会把它写进新条目。
+        """
         if message_id in self._entries:
             raise MobileAudioError(
                 "voice_tts_message_exists", f"TTS 消息已存在：{message_id}"
@@ -346,12 +382,11 @@ class MobileTtsSequencer:
 
         ``seq`` 从 0 单调递增；``mime`` 固定 ``audio/pcm;rate=24000``；
         ``data`` = base64(pcm)。
+
+        已被 ``stop`` 中断的消息抛 ``MobileTtsInterrupted``：生产者按正常
+        中断收尾，不产生失败事件（V039-S4-018）。
         """
-        entry = self._entries.get(message_id)
-        if entry is None:
-            raise MobileAudioError(
-                "voice_tts_message_not_found", f"TTS 消息不存在：{message_id}"
-            )
+        entry = self._live_entry(message_id)
         if entry.closed:
             raise MobileAudioError(
                 "voice_tts_message_closed", f"TTS 消息已结束：{message_id}"
@@ -369,19 +404,52 @@ class MobileTtsSequencer:
     def end(self, message_id: str) -> dict[str, str]:
         """结束一条 TTS 消息，返回 ``voice.mobile_tts_end`` 事件 payload。
 
-        幂等：重复调用返回相同 payload。
+        幂等：重复调用返回相同 payload。已被 ``stop`` 中断的消息抛
+        ``MobileTtsInterrupted``（不得为已中断的合成补一个“完成”事件）。
         """
+        entry = self._live_entry(message_id)
+        entry.closed = True
+        return {"conversation_id": entry.conversation_id, "message_id": message_id}
+
+    def stop(self, message_id: str) -> None:
+        """中断（``voice.mobile_tts_stop``）：标记条目已中断，不再接受 ``feed``。
+
+        幂等：未知 message_id 直接返回（不制造“已中断”记录——未知仍是未知，
+        不把真实协议错误变成静默中断）。
+
+        条目保留为墓碑而不再立即删除：抢占旧消息时上层先 ``task.cancel()`` 再
+        ``stop()``，而取消可能被已就绪的等待吞掉（Python 3.11
+        ``asyncio.wait_for`` 在 future 已完成时返回结果而不抛
+        ``CancelledError``），在途的中继任务因此还会走到下一次
+        ``feed()``/``end()``。此时必须按“已中断”如实收尾，而不是报
+        “消息不存在”并被上层记成合成失败（V039-S4-018）。
+
+        重复 stop 同一 id 幂等：墓碑按唯一 message_id 记账，不会因为重复
+        调用而挤掉其他仍在窗口内的中断记录。
+        """
+        entry = self._entries.get(message_id)
+        if entry is None or entry.stopped:
+            return
+        entry.stopped = True
+        self._stopped[message_id] = None
+        self._prune_stopped()
+
+    def _live_entry(self, message_id: str) -> _TtsEntry:
+        """取在进行中的条目；未知消息 = 协议错误，已中断 = 正常中断。"""
         entry = self._entries.get(message_id)
         if entry is None:
             raise MobileAudioError(
                 "voice_tts_message_not_found", f"TTS 消息不存在：{message_id}"
             )
-        entry.closed = True
-        return {"conversation_id": entry.conversation_id, "message_id": message_id}
+        if entry.stopped:
+            raise MobileTtsInterrupted(message_id)
+        return entry
 
-    def stop(self, message_id: str) -> None:
-        """中断（``voice.mobile_tts_stop``）：清除条目，不再接受 ``feed``。
-
-        幂等：未知 message_id 直接返回。
-        """
-        self._entries.pop(message_id, None)
+    def _prune_stopped(self) -> None:
+        """限制“已中断”墓碑数量：超限后最早的按未知 message_id 处理。"""
+        while len(self._stopped) > _MAX_STOPPED_TTS_ENTRIES:
+            oldest = next(iter(self._stopped))
+            del self._stopped[oldest]
+            entry = self._entries.get(oldest)
+            if entry is not None and entry.stopped:
+                del self._entries[oldest]

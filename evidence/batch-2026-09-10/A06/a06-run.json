@@ -1,0 +1,265 @@
+{
+  "started_at": "2026-09-10T10:42:16.338Z",
+  "account_before": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+  "assembly_hidden_rule": {
+    "normal_ok": true,
+    "normal_module_count": 5,
+    "normal_all_hidden_null": true,
+    "hidden_ok": true,
+    "hidden_module_count": 5,
+    "hidden_nonempty_count": 5,
+    "hidden_chars_total": 14771,
+    "memory_injected_flags": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "hidden_text_absent_from_dialogue": true
+  },
+  "readonly_commands": {
+    "metrics_query": {
+      "ok": false,
+      "code": "client_timeout",
+      "note": "服务端未回响应（响应体不可序列化）"
+    },
+    "summary_get": {
+      "ok": true,
+      "result": {
+        "summaries": []
+      }
+    },
+    "memory_list": {
+      "ok": true,
+      "result": {
+        "memories": []
+      }
+    },
+    "power_get_status": {
+      "ok": true,
+      "result": {
+        "supported": true,
+        "platform": "win32",
+        "plan_name": "平衡",
+        "ac_sleep_timeout_seconds": 1800,
+        "dc_sleep_timeout_seconds": 180,
+        "remote_serve_enabled": true,
+        "threshold_seconds": 900,
+        "at_risk": true,
+        "reason": "DC 睡眠超时 180 秒低于阈值 900 秒",
+        "checked_at": "2026-09-10T18:42:56+08:00",
+        "warnings": []
+      }
+    }
+  },
+  "probe_account_register": {
+    "ok": true,
+    "result": {
+      "account": {
+        "account_id": "0b0ce9d0-806e-4ef0-b3a6-d6a7dc0b3a54",
+        "username": "A06-error-probe",
+        "display_name": "A06-error-probe",
+        "avatar": "",
+        "last_login_at": "2026-09-10T10:42:57.066910+00:00",
+        "onboarding_complete": false,
+        "theme": "dark"
+      },
+      "accounts": [
+        {
+          "account_id": "default-local",
+          "username": "default",
+          "display_name": "默认账号",
+          "avatar": "",
+          "last_login_at": null,
+          "onboarding_complete": false,
+          "theme": "dark",
+          "is_last_login": false
+        },
+        {
+          "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+          "username": "验收账号",
+          "display_name": "验收账号",
+          "avatar": "",
+          "last_login_at": "2026-09-10T04:55:33.287974+00:00",
+          "onboarding_complete": true,
+          "theme": "dark",
+          "is_last_login": false
+        },
+        {
+          "account_id": "0b0ce9d0-806e-4ef0-b3a6-d6a7dc0b3a54",
+          "username": "A06-error-probe",
+          "display_name": "A06-error-probe",
+          "avatar": "",
+          "last_login_at": "2026-09-10T10:42:57.066910+00:00",
+          "onboarding_complete": false,
+          "theme": "dark",
+          "is_last_login": true
+        }
+      ]
+    }
+  },
+  "probe_account_login": {
+    "ok": false,
+    "code": "invalid_params",
+    "message": "缺少 account_id 或 username",
+    "details": null
+  },
+  "probe_account_id": null,
+  "service_failures": {
+    "bad_api_key": {
+      "config_set": true,
+      "test_connection": {
+        "ok": true,
+        "result": {
+          "ok": false,
+          "message": "服务返回 401：{\"error\":{\"message\":\"Authentication Fails, Your api key: ****0000 is invalid\",\"type\":\"authentication_error\",\"param\":null"
+        }
+      },
+      "at": "2026-09-10T10:42:57.240Z",
+      "turn": {
+        "error": "no project"
+      }
+    },
+    "refused_base_url": {
+      "config_set": false,
+      "test_connection": {
+        "ok": true,
+        "result": {
+          "ok": false,
+          "message": "服务返回 401：{\"error\":{\"message\":\"Authentication Fails, Your api key: ****0000 is invalid\",\"type\":\"authentication_error\",\"param\":null"
+        }
+      },
+      "at": "2026-09-10T10:42:57.424Z",
+      "turn": {
+        "error": "no project"
+      }
+    },
+    "dns_failure": {
+      "config_set": false,
+      "test_connection": {
+        "ok": true,
+        "result": {
+          "ok": false,
+          "message": "服务返回 401：{\"error\":{\"message\":\"Authentication Fails, Your api key: ****0000 is invalid\",\"type\":\"authentication_error\",\"param\":null"
+        }
+      },
+      "at": "2026-09-10T10:42:57.604Z",
+      "turn": {
+        "error": "no project"
+      }
+    }
+  },
+  "firewall_block": {
+    "rc": 1,
+    "stdout": "",
+    "stderr": "",
+    "target_ips": "119.188.175.46,221.204.163.76"
+  },
+  "firewall_test_connection": {
+    "ok": true,
+    "result": {
+      "ok": false,
+      "message": "服务返回 401：{\"error\":{\"message\":\"Authentication Fails, Your api key: ****0000 is invalid\",\"type\":\"authentication_error\",\"param\":null"
+    }
+  },
+  "firewall_restore": {
+    "rc": 0,
+    "stdout": "0",
+    "stderr": ""
+  },
+  "firewall_rule_removed": {
+    "rc": 0,
+    "stdout": "0",
+    "stderr": ""
+  },
+  "accounts": {
+    "accounts": [
+      {
+        "account_id": "default-local",
+        "username": "default",
+        "display_name": "默认账号",
+        "avatar": "",
+        "last_login_at": null,
+        "onboarding_complete": false,
+        "theme": "dark",
+        "is_last_login": false
+      },
+      {
+        "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+        "username": "验收账号",
+        "display_name": "验收账号",
+        "avatar": "",
+        "last_login_at": "2026-09-10T04:55:33.287974+00:00",
+        "onboarding_complete": true,
+        "theme": "dark",
+        "is_last_login": false
+      },
+      {
+        "account_id": "0b0ce9d0-806e-4ef0-b3a6-d6a7dc0b3a54",
+        "username": "A06-error-probe",
+        "display_name": "A06-error-probe",
+        "avatar": "",
+        "last_login_at": "2026-09-10T10:42:57.066910+00:00",
+        "onboarding_complete": false,
+        "theme": "dark",
+        "is_last_login": true
+      }
+    ],
+    "current_account_id": "0b0ce9d0-806e-4ef0-b3a6-d6a7dc0b3a54"
+  },
+  "account_restore": {
+    "ok": true,
+    "result": {
+      "account": {
+        "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+        "username": "验收账号",
+        "display_name": "验收账号",
+        "avatar": "",
+        "last_login_at": "2026-09-10T04:55:33.287974+00:00",
+        "onboarding_complete": true,
+        "theme": "dark"
+      },
+      "accounts": [
+        {
+          "account_id": "default-local",
+          "username": "default",
+          "display_name": "默认账号",
+          "avatar": "",
+          "last_login_at": null,
+          "onboarding_complete": false,
+          "theme": "dark",
+          "is_last_login": false
+        },
+        {
+          "account_id": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+          "username": "验收账号",
+          "display_name": "验收账号",
+          "avatar": "",
+          "last_login_at": "2026-09-10T04:55:33.287974+00:00",
+          "onboarding_complete": true,
+          "theme": "dark",
+          "is_last_login": true
+        },
+        {
+          "account_id": "0b0ce9d0-806e-4ef0-b3a6-d6a7dc0b3a54",
+          "username": "A06-error-probe",
+          "display_name": "A06-error-probe",
+          "avatar": "",
+          "last_login_at": "2026-09-10T10:42:57.066910+00:00",
+          "onboarding_complete": false,
+          "theme": "dark",
+          "is_last_login": false
+        }
+      ]
+    }
+  },
+  "account_after": "0b38c054-d2f1-4d1d-80c5-c06ac05c1cd6",
+  "firewall_cleanup_check": {
+    "rc": 0,
+    "stdout": "0",
+    "stderr": ""
+  },
+  "finished_at": "2026-09-10T10:43:07.115Z",
+  "sidecar_new_lines": 46
+}

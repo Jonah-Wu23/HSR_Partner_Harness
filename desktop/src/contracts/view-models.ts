@@ -10,6 +10,9 @@ import type {
   ProjectRecord,
   ToolRun,
   VoiceState,
+  ConversationSummary,
+  PairMemory,
+  TurnMetric,
 } from "./protocol";
 // V0.2 M4：视图类型按视觉线冻结的形状走（ui/*/types.ts 是唯一权威），
 // 这里只做类型级引用（import type 编译期擦除，无运行时依赖）。
@@ -20,7 +23,6 @@ import type { AccountListItem } from "../ui/gate/types";
 import type {
   AccountPageView,
   CharacterModelPageView,
-  CodingAssistantPageView,
   TestResult,
   VoicePageView,
 } from "../ui/settings/types";
@@ -87,12 +89,55 @@ export interface AssistantWorkbenchViewModel {
   activeTask: ActiveTask | null;
 }
 
+export type SummaryTriggerReason = "message_count" | "byte_size" | "manual";
+
+export interface SummaryTriggerInfo {
+  reason: SummaryTriggerReason;
+  observed: number | null;
+  threshold: number | null;
+}
+
+export interface SummaryRegenerateTarget {
+  summary_id: string;
+  conversation_id: string;
+  reason: "failed_record" | "user_request";
+}
+
+export interface PromptAssemblyModule {
+  name: string;
+  char_start: number | null;
+  char_end: number | null;
+  hash: string | null;
+  summary: string | null;
+  memory_injected: boolean | null;
+  hidden_content: string | null;
+}
+
+export interface PromptAssemblyView {
+  conversation_id: string | null;
+  modules: PromptAssemblyModule[];
+  diagnostics: string[];
+  generated_at: string | null;
+}
+
 export interface WorkspaceViewModel {
   mode: "chat" | "collaboration";
   character: ConversationTimelineViewModel;
   assistant: AssistantWorkbenchViewModel;
   /** V0.2 M4：委派卡（角色区与工作台之间的视觉桥梁）；无委派时为 null。 */
   delegation: DelegationCardView | null;
+  /** V0.3.9 V02：当前聊天摘要列表（按 conversation_id） */
+  summaries?: ConversationSummary[] | null;
+  /** V0.3.9 V02：当前生效的长期记忆（按 conversation_id 作用域解析） */
+  memories?: PairMemory[] | null;
+  /** V0.3.9 V02：摘要触发详情，键为 summary_id */
+  summaryTriggers?: Record<string, SummaryTriggerInfo> | null;
+  /** V0.3.9 V02：真实存在的恢复目标 */
+  summaryRegenerateTarget?: SummaryRegenerateTarget | null;
+  /** V0.3.9 V03：回合指标列表 */
+  metrics?: TurnMetric[] | null;
+  /** V0.3.9 V03：提示词装配诊断视图 */
+  promptAssembly?: PromptAssemblyView | null;
 }
 
 export interface ComposerViewModel {
@@ -112,8 +157,12 @@ export interface ApprovalViewModel {
     approval_id: string;
     conversation_id?: string;
     decision: string;
-    resolved_by: string;
+    resolved_by: string | null;
     task_id?: string;
+    actor?: string | null;
+    resolved_reason?: string | null;
+    error_code?: string | null;
+    resolved_at?: string | null;
   }>;
   reviewActive: boolean;
   reviewText: string | null;
@@ -133,7 +182,6 @@ export interface AccountGateViewModel {
 /** V0.2 M4：设置中心四个页 + 测试结果（modelTest/voicePreview 初值 idle）。 */
 export interface SettingsViewModel {
   account: AccountPageView;
-  coding: CodingAssistantPageView;
   model: CharacterModelPageView;
   voice: VoicePageView;
   /** V0.3.5：语音页「角色音色」区数据（卡列表 + 账号语音配置完备性）。 */
@@ -236,8 +284,15 @@ export interface RemotePairingViewModel {
   loading: boolean;
   error: string | null;
   /** V0.3.4：Sidecar --serve 实际监听地址（serve.started 事件上报），
-      二维码按它生成；null 表示远程服务未就绪（serve 未启动/启动失败）。 */
+      二维码按它生成；null 表示没有可用的局域网接入地址（未上报 / 上报为 null）。 */
   serveAddress: { host: string; port: number } | null;
+  /** V039-S4-004：serve.started 上报的监听端口（host 为 null 时端口依然真实）。 */
+  servePort?: number | null;
+  /** V039-S4-004：服务已监听但无可用局域网地址时，服务端给出的真实原因码
+      （如 no_lan_address）；未上报该字段即 null，不本地推断。 */
+  serveUnavailableReason?: string | null;
+  /** V039-S4-004：error.reported(serve_start_failed) 的真实报文（启动失败原因）。 */
+  serveFailure?: string | null;
 }
 
 export interface AppShellViewModel {
@@ -272,4 +327,11 @@ export interface AppShellViewModel {
   characterCreate: CharacterCreateViewModel;
   /** V0.3.3：设置中心「远程设备」页数据源。 */
   remotePairing: RemotePairingViewModel;
+  /** V0.3.9 V02/V03：当前聊天摘要、记忆、诊断视图模型 */
+  summaries?: ConversationSummary[] | null;
+  memories?: PairMemory[] | null;
+  summaryTriggers?: Record<string, SummaryTriggerInfo> | null;
+  summaryRegenerateTarget?: SummaryRegenerateTarget | null;
+  metrics?: TurnMetric[] | null;
+  promptAssembly?: PromptAssemblyView | null;
 }

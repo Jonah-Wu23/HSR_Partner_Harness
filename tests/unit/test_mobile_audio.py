@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import threading
 from collections.abc import AsyncIterable, AsyncIterator
@@ -14,8 +15,10 @@ import pytest
 
 from pair_harness.core.contracts import AsrEvent
 from pair_harness.desktop_backend.mobile_audio import (
+    _MAX_STOPPED_TTS_ENTRIES,
     MobileAsrSessionManager,
     MobileAudioError,
+    MobileTtsInterrupted,
     MobileTtsSequencer,
 )
 
@@ -288,19 +291,79 @@ def test_sequencer_feed_after_end_raises() -> None:
     assert ei.value.code == "voice_tts_message_closed"
 
 
-def test_sequencer_stop_then_feed_raises_and_rebegin_allowed() -> None:
+def test_sequencer_stop_then_feed_is_interrupted_and_reuse_rejected() -> None:
+    """V039-S4-018：stop 之后的 feed/end 是「已中断」，不是「消息不存在」。
+
+    抢占时上层先 cancel 再 stop，而在途任务的取消可能被已就绪的等待吞掉，
+    因此它还会走到下一次 feed。此处必须按正常中断收尾，不得报协议错误，
+    否则中继任务会把正常抢占记成 voice.mobile_tts_failed。
+    """
     seq = MobileTtsSequencer()
     seq.begin("m1", "conv-1")
     seq.feed("m1", b"x")
     seq.stop("m1")
-    with pytest.raises(MobileAudioError) as ei:
+    with pytest.raises(MobileTtsInterrupted) as ei:
         seq.feed("m1", b"y")
-    assert ei.value.code == "voice_tts_message_not_found"
-    # stop 清理后可重建同一 message_id
-    seq.begin("m1", "conv-1")
-    assert seq.feed("m1", b"z")["seq"] == 0
+    # 中断信号走取消语义：上层 except asyncio.CancelledError 路径静默收尾
+    assert isinstance(ei.value, asyncio.CancelledError)
+    assert ei.value.message_id == "m1"
+    # 已中断的消息不得再补一个「完成」事件
+    with pytest.raises(MobileTtsInterrupted):
+        seq.end("m1")
+    # 旧生产者可能仍在途：重用同一 id 会把旧分片写进新代，必须如实拒绝
+    with pytest.raises(MobileAudioError) as reuse:
+        seq.begin("m1", "conv-1")
+    assert reuse.value.code == "voice_tts_message_exists"
     seq.stop("m1")
     seq.stop("m1")  # 幂等
+
+
+def test_sequencer_unknown_message_still_reports_protocol_error() -> None:
+    """中断语义只覆盖 stop 过的条目；未知 message_id 仍暴露真实协议错误。"""
+    seq = MobileTtsSequencer()
+    seq.begin("stopped", "conv-1")
+    seq.stop("stopped")
+    with pytest.raises(MobileTtsInterrupted):
+        seq.feed("stopped", b"x")
+    for call in (lambda: seq.feed("never-begun", b"x"), lambda: seq.end("never-begun")):
+        with pytest.raises(MobileAudioError) as ei:
+            call()
+        assert ei.value.code == "voice_tts_message_not_found"
+
+
+def test_sequencer_stopped_ledger_counts_unique_ids() -> None:
+    """墓碑账按唯一 id 计：刚好达上限不淘汰，超出才淘汰最早的一个。"""
+    seq = MobileTtsSequencer()
+    for index in range(_MAX_STOPPED_TTS_ENTRIES):
+        message_id = f"m{index}"
+        seq.begin(message_id, "conv-1")
+        seq.stop(message_id)
+    with pytest.raises(MobileTtsInterrupted):
+        seq.feed("m0", b"x")  # 达上限仍在窗口内
+    seq.begin("m-extra", "conv-1")
+    seq.stop("m-extra")
+    with pytest.raises(MobileAudioError) as ei:
+        seq.feed("m0", b"x")  # 超限后最早的按未知消息处理
+    assert ei.value.code == "voice_tts_message_not_found"
+    with pytest.raises(MobileTtsInterrupted):
+        seq.feed("m-extra", b"x")
+
+
+def test_sequencer_repeated_stop_keeps_other_tombstones() -> None:
+    """复核确证2：重复 stop 幂等、不重复记账，不挤掉仍在窗口内的中断记录。"""
+    seq = MobileTtsSequencer()
+    seq.begin("m-earlier", "conv-1")
+    seq.stop("m-earlier")
+    seq.begin("m-repeat", "conv-1")
+    ledger_before = len(seq._stopped)
+    for _ in range(200):
+        seq.stop("m-repeat")
+    # 墓碑按唯一 id 记账：200 次重复 stop 只增加 1 条账目（否则会挤掉其他墓碑）
+    assert len(seq._stopped) == ledger_before + 1
+    with pytest.raises(MobileTtsInterrupted):
+        seq.feed("m-repeat", b"x")
+    with pytest.raises(MobileTtsInterrupted):
+        seq.feed("m-earlier", b"x")
 
 
 def test_sequencer_unknown_message_errors() -> None:

@@ -1,0 +1,224 @@
+{
+  "started_at": "2026-09-10T13:09:14.013Z",
+  "conversation_id": "9b27d0bb-8c93-4d07-95a9-f73d3b8a7b87",
+  "proxy_env": {
+    "HTTPS_PROXY": "http://127.0.0.1:8767",
+    "NO_PROXY": "127.0.0.1,localhost",
+    "note": "候选 EXE 及其 Sidecar 在启动时继承该环境（复测计划 §4.1）"
+  },
+  "forward_baseline": {
+    "label": "forward 基线",
+    "conversation_id": "7b17fde5-82fa-4af1-a51a-706d656a75d7",
+    "sandbox_action": "SET forward",
+    "control_reply": "OK forward connections=14 tunnels=12",
+    "cut_reply": null,
+    "submit": {
+      "ok": true,
+      "result": {
+        "message_id": "e0f314f5-2ff9-4d9c-b52d-73cf4f2ad6c4",
+        "conversation_id": "7b17fde5-82fa-4af1-a51a-706d656a75d7",
+        "status": "received",
+        "target": "character",
+        "turn_id": "7e7ceb0c-c04b-46df-bbb0-fe8c40c03ffd"
+      }
+    },
+    "elapsed_seconds": 1.55,
+    "turn": {
+      "message_count": 2,
+      "messages": [
+        {
+          "source": "user",
+          "kind": "user.text",
+          "status": "done",
+          "text": "复测 B-01：请只回复两个字：通路。"
+        },
+        {
+          "source": "character",
+          "kind": "character.speech",
+          "status": "done",
+          "text": "通路。"
+        }
+      ],
+      "failure_notice": null
+    },
+    "sandbox_events": [
+      {
+        "event": "mode_changed",
+        "mode": "forward",
+        "request": null,
+        "error": null
+      },
+      {
+        "event": "client_request",
+        "mode": "forward",
+        "request": "CONNECT api.deepseek.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "tunnel_established",
+        "mode": "forward",
+        "request": "CONNECT api.deepseek.com:443 HTTP/1.1",
+        "error": null
+      }
+    ]
+  },
+  "reject": {
+    "label": "连接被拒",
+    "conversation_id": "9ce7a00f-9cb8-403c-bcab-ceab07c84db9",
+    "sandbox_action": "SET reject",
+    "control_reply": "OK reject connections=15 tunnels=13",
+    "cut_reply": null,
+    "submit": {
+      "ok": true,
+      "result": {
+        "message_id": "7495fe6d-e559-41f3-bb5b-ddabd5d00b1a",
+        "conversation_id": "9ce7a00f-9cb8-403c-bcab-ceab07c84db9",
+        "status": "received",
+        "target": "character",
+        "turn_id": "bca2a87c-a5ef-48e5-9a39-c32c1a131cac"
+      }
+    },
+    "elapsed_seconds": 3.06,
+    "turn": {
+      "message_count": 2,
+      "messages": [
+        {
+          "source": "user",
+          "kind": "user.text",
+          "status": "failed",
+          "text": "复测 B-01：请只回复两个字：拒绝。"
+        },
+        {
+          "source": "system",
+          "kind": "system.status",
+          "status": "done",
+          "text": "本次回复失败：All connection attempts failed"
+        }
+      ],
+      "failure_notice": "本次回复失败：All connection attempts failed"
+    },
+    "sandbox_events": [
+      {
+        "event": "listen_stopped",
+        "mode": "forward",
+        "request": null,
+        "error": null
+      },
+      {
+        "event": "mode_changed",
+        "mode": "reject",
+        "request": null,
+        "error": null
+      }
+    ]
+  },
+  "cut": {
+    "label": "传输中断",
+    "conversation_id": "da2b518b-214e-48c3-9205-f44003d7e47f",
+    "sandbox_action": "SET forward",
+    "control_reply": "OK forward connections=15 tunnels=13",
+    "cut_reply": "OK forward connections=16 tunnels=14",
+    "submit": {
+      "ok": true,
+      "result": {
+        "message_id": "9ce8077e-23d4-4920-93b6-3be074b1a962",
+        "conversation_id": "da2b518b-214e-48c3-9205-f44003d7e47f",
+        "status": "received",
+        "target": "character",
+        "turn_id": "3c198677-7459-40b5-8626-8aae8b9c5ca7"
+      }
+    },
+    "elapsed_seconds": 2.05,
+    "turn": {
+      "message_count": 2,
+      "messages": [
+        {
+          "source": "user",
+          "kind": "user.text",
+          "status": "done",
+          "text": "复测 B-01：请用大约 400 字描述一次通路的建立与中断，句子完整、不要分行。"
+        },
+        {
+          "source": "character",
+          "kind": "character.speech",
+          "status": "done",
+          "text": "搭档，我这边看不了项目文件，聊天模式里我碰不到那些东西。你要测通路、看日志，得切到协作模式，我才能让古代机械去跑。现在我只能陪你干聊，讲讲奥赫玛练剑的事倒是可以。"
+        }
+      ],
+      "failure_notice": null
+    },
+    "sandbox_events": [
+      {
+        "event": "mode_changed",
+        "mode": "forward",
+        "request": null,
+        "error": null
+      },
+      {
+        "event": "client_request",
+        "mode": "forward",
+        "request": "CONNECT api.deepseek.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "tunnel_established",
+        "mode": "forward",
+        "request": "CONNECT api.deepseek.com:443 HTTP/1.1",
+        "error": null
+      },
+      {
+        "event": "tunnels_cut",
+        "mode": "forward",
+        "request": null,
+        "error": null
+      }
+    ]
+  },
+  "hang": {
+    "label": "请求悬挂",
+    "conversation_id": "e42d25a6-8df1-453a-a8ff-50b4da6f46c3",
+    "sandbox_action": "SET hang",
+    "control_reply": "OK hang connections=16 tunnels=14",
+    "cut_reply": null,
+    "submit": {
+      "ok": true,
+      "result": {
+        "message_id": "577766ad-3ed9-4e14-a763-c83cec9fba4a",
+        "conversation_id": "e42d25a6-8df1-453a-a8ff-50b4da6f46c3",
+        "status": "received",
+        "target": "character",
+        "turn_id": "12ba541c-60df-49e1-adae-400e6d22c5ec"
+      }
+    },
+    "elapsed_seconds": 30.28,
+    "turn": {
+      "message_count": 2,
+      "messages": [
+        {
+          "source": "user",
+          "kind": "user.text",
+          "status": "failed",
+          "text": "复测 B-01：请只回复两个字：悬挂。"
+        },
+        {
+          "source": "system",
+          "kind": "system.status",
+          "status": "done",
+          "text": "本次回复失败：ReadTimeout"
+        }
+      ],
+      "failure_notice": "本次回复失败：ReadTimeout"
+    },
+    "sandbox_events": [
+      {
+        "event": "mode_changed",
+        "mode": "hang",
+        "request": null,
+        "error": null
+      },
+      {
+        "event": "client_request",
+        "mode": "hang",
+        "request": "CONNECT api.deepseek.com:443 HTTP/1.1",
+        "error": null
+ 

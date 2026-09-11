@@ -1,0 +1,21 @@
+conversation_id | pair_id | title
+d9fb9d15-8e29-4b55-b8d3-f9f70d4f5f72 | phainon_ancient_machine | 新聊天
+61bc818e-cab6-45f6-9f35-c6c7fdb82d3d | phainon_ancient_machine | 关于你好，今天过得怎么样
+be2434fe-6ddd-452b-b5da-13ce5c6c11e9 | phainon_ancient_machine | 守望
+e5e91b6f-722a-4cd6-8557-989760491aee | march7_fourth_mirror | 镜子
+a0a39a5e-c342-4862-a6fb-2d818772097b | firefly_sam | 萤火
+----------------------------------------
+conversation_id | source | text | ts | status
+61bc818e-cab6-45f6-9f35-c6c7fdb82d3d | user | 你好，今天过得怎么样？ | 2026-09-10T04:57:10.306279Z | done
+61bc818e-cab6-45f6-9f35-c6c7fdb82d3d | character | 我听着呢。先在这里陪你把这件事慢慢说清楚。 | 2026-09-10T04:57:10.311664Z | done
+61bc818e-cab6-45f6-9f35-c6c7fdb82d3d | user | 用一句话介绍一下你自己，并说明现在的心情。 | 2026-09-10T04:58:30.587311Z | done
+61bc818e-cab6-45f6-9f35-c6c7fdb82d3d | character | 我叫白厄，从哀丽秘榭的麦田里出来的，平时爱练剑，也爱跟着西塔罗斯先生看老物件。今天心情挺好，刚才在训练场活动过一阵。 | 2026-09-10T04:58:32.644766Z | done
+a0a39a5e-c342-4862-a6fb-2d818772097b | user | 【流萤】请只回一个词：萤火 | 2026-09-10T05:00:56.962472Z | done
+a0a39a5e-c342-4862-a6fb-2d818772097b | character | 萤火。 | 2026-09-10T05:00:57.564312Z | done
+61bc818e-cab6-45f6-9f35-c6c7fdb82d3d | user | 【白厄】请只回一个词：黎明 | 2026-09-10T05:01:07.656982Z | done
+61bc818e-cab6-45f6-9f35-c6c7fdb82d3d | character | 黎明 | 2026-09-10T05:01:09.572767Z | done
+be2434fe-6ddd-452b-b5da-13ce5c6c11e9 | user | 【白厄二】请只回一个词：守望 | 2026-09-10T05:01:20.923678Z | done
+be2434fe-6ddd-452b-b5da-13ce5c6c11e9 | character | 守望。 | 2026-09-10T05:01:21.686955Z | done
+e5e91b6f-722a-4cd6-8557-989760491aee | user | 【三月七】请只回一个词：镜子 | 2026-09-10T05:01:29.753555Z | done
+e5e91b6f-722a-4cd6-8557-989760491aee | character | 镜子 | 2026-09-10T05:01:30.446673Z | done
+----------------------------------------

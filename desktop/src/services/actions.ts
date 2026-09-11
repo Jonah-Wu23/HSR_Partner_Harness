@@ -1,5 +1,4 @@
 import type {
-  CodexOAuthStatus,
   HarnessActions,
   SubmitMessageResult,
   VoiceProvisionResult,
@@ -37,10 +36,17 @@ import type {
   VoiceCardUnbindResult,
   VoiceMobilePttStartResult,
   VoiceMobilePttStopResult,
+  TurnMetric,
+  MemoryListResult,
+  MemoryWriteResult,
+  PairMemory,
 } from "../contracts/protocol";
+import { pairMemoryFromPayload } from "../contracts/protocol";
 import type {
   CharacterCardSummaryView,
   RemoteDeviceView,
+  PromptAssemblyView,
+  PromptAssemblyModule,
 } from "../contracts/view-models";
 import type { DesktopBackend } from "./backend";
 import { RequestIdFactory } from "./backend";
@@ -75,6 +81,25 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     const result = await backend.request<T>(command);
     if (isDesktopSnapshot(result)) desktopStore.getState().hydrate(result);
     return result;
+  }
+
+  /** 记忆命令一律按会话下发，作用域由服务端解析；没有会话上下文时如实失败。 */
+  function resolveMemoryConversationId(explicit?: string | null): string {
+    const conversationId = explicit ?? selectWindowConversationId(desktopStore.getState());
+    if (!conversationId) {
+      throw new Error("没有当前聊天，无法解析长期记忆作用域（需要会话上下文）");
+    }
+    return conversationId;
+  }
+
+  /** 写命令返回体 → store 中的记录（响应与 memory.updated/deleted 事件同形，按 memory_id 幂等）。 */
+  function recordMemoryWrite(result: MemoryWriteResult, conversationId: string): PairMemory {
+    if (!result?.memory) {
+      throw new Error("记忆命令返回体缺少 memory 字段");
+    }
+    const memory = pairMemoryFromPayload(result.memory);
+    desktopStore.getState().upsertMemory(memory, memory.conversation_id ?? conversationId);
+    return memory;
   }
 
   const loadBootstrap = async () => {
@@ -377,19 +402,6 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       if (result?.ok === false) return result.message ?? "连接失败，请检查配置";
       return result?.message ?? "连接正常";
     },
-    async codexOauthStart() {
-      const result = await request<{ config?: Record<string, unknown> }>("codex.oauth_start");
-      if (result?.config) desktopStore.getState().setConfigSnapshot(result.config);
-    },
-    async codexOauthStatus() {
-      return request<CodexOAuthStatus>("codex.oauth_status");
-    },
-    async codexApiLogin(apiKey) {
-      await request("codex.api_login", { api_key: apiKey });
-    },
-    async codexLogout() {
-      await request("codex.logout");
-    },
     async voicePreview(text, voiceId) {
       await request("voice.preview", { text, ...(voiceId ? { voice_id: voiceId } : {}) });
     },
@@ -612,6 +624,9 @@ export function createActionController(backend: DesktopBackend): ActionControlle
           issuedAtEpochMs: Date.now(),
           loading: false,
         });
+        // V039-S4-004：返回体带当前 serve 地址（与 serve.started 同形），
+        // 即便这一次性事件在启动时被错过，二维码仍按真实监听地址生成。
+        desktopStore.getState().setServeAddress(result.serve_address ?? null);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         desktopStore.getState().setRemotePairing({ loading: false, error: message });
@@ -636,6 +651,147 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async revokeRemoteDevice(deviceName) {
       await request<RemoteRevokeResult>("remote.revoke", { device_name: deviceName });
       await this.listRemoteDevices();
+    },
+    /* —— V0.3.9 摘要、记忆与诊断（PM/视觉 V-B 2a1fccb）—— */
+    async regenerateSummary(summaryIdOrTarget) {
+      const summaryId =
+        typeof summaryIdOrTarget === "string"
+          ? summaryIdOrTarget
+          : summaryIdOrTarget.summary_id;
+      const conversationId =
+        typeof summaryIdOrTarget === "object" && summaryIdOrTarget.conversation_id
+          ? summaryIdOrTarget.conversation_id
+          : selectWindowConversationId(desktopStore.getState()) ?? "";
+      await request("summary.regenerate", {
+        summary_id: summaryId,
+        conversation_id: conversationId,
+      });
+      await desktopStore.getState().regenerateSummary(summaryIdOrTarget);
+    },
+    async queryMetrics(params) {
+      desktopStore.getState().setMetricsLoading(true);
+      try {
+        const conversationId =
+          params?.conversation_id ?? selectWindowConversationId(desktopStore.getState()) ?? undefined;
+        const result = await request<{ metrics?: TurnMetric[]; next_cursor?: string | null }>(
+          "metrics.query",
+          {
+            ...params,
+            conversation_id: conversationId,
+          },
+        );
+        const metrics = result?.metrics ?? [];
+        const next_cursor = result?.next_cursor ?? null;
+        // 无 cursor = 首屏/刷新，整体替换；带 cursor = 加载更多，追加到已读结果之后。
+        // 组件契约不变（MetricsPanel / DiagnosticsDrawer 的 props 不区分模式）。
+        desktopStore.getState().setMetricsPage(
+          { metrics, cursor: next_cursor },
+          params?.cursor ? "append" : "replace",
+        );
+        return { metrics, next_cursor };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        desktopStore.getState().setMetricsError(message);
+        throw error;
+      }
+    },
+    async queryPromptAssembly(params) {
+      desktopStore.getState().setPromptAssemblyLoading(true);
+      try {
+        const conversationId =
+          params?.conversation_id ?? selectWindowConversationId(desktopStore.getState()) ?? undefined;
+        const includeHidden = params?.includeHidden === true;
+        const raw = await request<unknown>("diagnostics.prompt_assembly", {
+          conversation_id: conversationId,
+          include_hidden: includeHidden,
+        });
+        const rawObj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+        const rawModules = Array.isArray(rawObj.modules) ? rawObj.modules : [];
+        const modules: PromptAssemblyModule[] = rawModules.map((item: any) => ({
+          name: typeof item?.name === "string" && item.name ? item.name : (item?.title ?? item?.kind ?? "未知模块"),
+          char_start: typeof item?.char_start === "number" ? item.char_start : null,
+          char_end: typeof item?.char_end === "number" ? item.char_end : null,
+          hash: typeof item?.hash === "string" ? item.hash : null,
+          summary: typeof item?.summary === "string" ? item.summary : null,
+          memory_injected: typeof item?.memory_injected === "boolean" ? item.memory_injected : null,
+          hidden_content: includeHidden && typeof item?.hidden_content === "string" ? item.hidden_content : null,
+        }));
+        const assembly = {
+          conversation_id: conversationId ?? null,
+          modules,
+          summary_injected: Boolean(rawObj.summary_injected),
+          memory_injected: Boolean(rawObj.memory_injected),
+          diagnostics: Array.isArray(rawObj.diagnostics)
+            ? (rawObj.diagnostics as string[])
+            : rawObj.diagnostics && typeof rawObj.diagnostics === "object"
+              ? Object.entries(rawObj.diagnostics).map(([k, v]) => `${k}: ${v}`)
+              : [],
+          hidden_content_included: includeHidden,
+          generated_at: typeof rawObj.generated_at === "string" ? rawObj.generated_at : new Date().toISOString(),
+        };
+        desktopStore.getState().setPromptAssembly(assembly);
+        if (includeHidden) {
+          desktopStore.getState().revealPromptAssembly();
+        }
+        return {
+          conversation_id: assembly.conversation_id,
+          modules: assembly.modules,
+          diagnostics: assembly.diagnostics,
+          generated_at: assembly.generated_at,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        desktopStore.getState().setPromptAssemblyError(message);
+        throw error;
+      }
+    },
+    /* —— V0.3.9 §2 长期记忆（memory.*）—— */
+    async listMemories(opts) {
+      const conversationId = resolveMemoryConversationId(opts?.conversationId);
+      desktopStore.getState().setMemoryPanel({ conversationId, loading: true, error: null });
+      try {
+        const result = await request<MemoryListResult>("memory.list", {
+          conversation_id: conversationId,
+          ...(opts?.status ? { status: opts.status } : {}),
+        });
+        const memories = (result?.memories ?? []).map(pairMemoryFromPayload);
+        // 服务端已按该会话的权威五分量作用域过滤；这里整批替换该聊天的条目，
+        // 不合并上一次结果，也不在客户端拼接作用域。
+        const store = desktopStore.getState();
+        store.setMemoriesForConversation(conversationId, memories);
+        if (store.activeConversationId === conversationId) store.setMemories(memories);
+        desktopStore.getState().setMemoryPanel({ loading: false, error: null, loaded: true });
+        return memories;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        desktopStore.getState().setMemoryPanel({ loading: false, error: message, loaded: true });
+        throw error;
+      }
+    },
+    async createMemory(content, opts) {
+      const conversationId = resolveMemoryConversationId(opts?.conversationId);
+      const result = await request<MemoryWriteResult>("memory.create", {
+        conversation_id: conversationId,
+        content,
+      });
+      return recordMemoryWrite(result, conversationId);
+    },
+    async updateMemory(memoryId, content, opts) {
+      const conversationId = resolveMemoryConversationId(opts?.conversationId);
+      const result = await request<MemoryWriteResult>("memory.update", {
+        conversation_id: conversationId,
+        memory_id: memoryId,
+        content,
+      });
+      return recordMemoryWrite(result, conversationId);
+    },
+    async deleteMemory(memoryId, opts) {
+      const conversationId = resolveMemoryConversationId(opts?.conversationId);
+      const result = await request<MemoryWriteResult>("memory.delete", {
+        conversation_id: conversationId,
+        memory_id: memoryId,
+      });
+      return recordMemoryWrite(result, conversationId);
     },
     dismissToast(id) {
       // V0.2 M4：Toast 是本地 UI 状态，不经过后端

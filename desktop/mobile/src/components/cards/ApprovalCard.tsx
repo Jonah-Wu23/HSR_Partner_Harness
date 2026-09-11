@@ -13,7 +13,17 @@ export interface ApprovalCardProps {
   /** V0.3.5：已决状态展示。 */
   status?: "pending" | "resolved";
   decision?: string;
-  resolvedBy?: string;
+  /** V0.3.9：审批终态来源（ApprovalResolvedPayload.resolved_by）。缺失传 null，
+      不伪造 desktop/remote/system。 */
+  resolvedBy?: string | null;
+  /** V0.3.9：处理者（ApprovalResolvedPayload.actor：user|reviewer|system）。缺失 null。 */
+  actor?: string | null;
+  /** V0.3.9：终态原因原文（如 timeout 的「等待审批超时」）。缺失 null。 */
+  resolvedReason?: string | null;
+  /** V0.3.9：终态错误码（如 approval_timeout）。缺失 null。 */
+  errorCode?: string | null;
+  /** V0.3.9：终态时间（ApprovalResolvedPayload.resolved_at）。缺失 null。 */
+  resolvedAt?: string | null;
 }
 
 const TOOL_KIND_LABELS: Record<string, string> = {
@@ -24,19 +34,49 @@ const TOOL_KIND_LABELS: Record<string, string> = {
 };
 
 const DECISION_LABELS: Record<string, string> = {
-  // 后端真实决策值（core/contracts.py ApprovalDecision）：allow / allow_for_conversation / deny。
+  // 后端真实决策值（contract-v1 §6）：allow / allow_for_conversation / deny / timeout。
   allow: "已批准",
   allow_for_conversation: "已批准（本会话）",
   deny: "已拒绝",
+  // timeout 只由服务端产生（600s 超时），不是用户决策。
+  timeout: "已超时",
 };
 
-const NEUTRAL_DECISION_LABEL = "已处理";
+/** decision 缺失（服务端未提供）时的如实文案：不写成中性「已处理」冒充终态。 */
+const DECISION_MISSING_LABEL = "已决（服务端未提供 decision）";
+
+/**
+ * V0.3.9：未知 decision 值必须展示服务端原文，不得落到中性文案。
+ */
+function decisionLabel(decision: string | null | undefined): string {
+  if (!decision) return DECISION_MISSING_LABEL;
+  return DECISION_LABELS[decision] ?? `未知决策：${decision}`;
+}
 
 const RESOLVED_BY_LABELS: Record<string, string> = {
   desktop: "桌面端",
   mobile: "手机端",
   remote: "手机端",
+  system: "系统",
+  reviewer: "审核者",
 };
+
+/** resolved_by 缺失保持 null 展示，不伪造处理端。 */
+function resolvedByLabel(resolvedBy: string | null | undefined): string {
+  if (!resolvedBy) return "来源未知";
+  return RESOLVED_BY_LABELS[resolvedBy] ?? `未知来源：${resolvedBy}`;
+}
+
+const ACTOR_LABELS: Record<string, string> = {
+  user: "用户",
+  reviewer: "审核者",
+  system: "系统",
+};
+
+function actorLabel(actor: string | null | undefined): string | null {
+  if (!actor) return null;
+  return ACTOR_LABELS[actor] ?? `未知处理者：${actor}`;
+}
 
 /**
  * V0.3.5 手机端审批操作卡片：
@@ -52,11 +92,16 @@ export function ApprovalCard({
   onReject,
   status = "pending",
   decision = "",
-  resolvedBy = "remote",
+  resolvedBy = null,
+  actor = null,
+  resolvedReason = null,
+  errorCode = null,
+  resolvedAt = null,
 }: ApprovalCardProps) {
   const { operation, reason } = approval;
   const kindLabel = TOOL_KIND_LABELS[operation.tool_kind] || operation.tool_kind;
   const isResolved = status === "resolved";
+  const actorText = actorLabel(actor);
 
   return (
     <section
@@ -74,8 +119,14 @@ export function ApprovalCard({
           </span>
         </div>
         {isResolved ? (
-          <span className="mobile-approval-status-badge" data-testid="approval-status">
-            {DECISION_LABELS[decision] || decision || NEUTRAL_DECISION_LABEL}
+          <span
+            className={`mobile-approval-status-badge${
+              decision ? ` is-${decision}` : ""
+            }`}
+            data-testid="approval-status"
+            data-decision={decision || "missing"}
+          >
+            {decisionLabel(decision)}
           </span>
         ) : null}
       </header>
@@ -127,10 +178,37 @@ export function ApprovalCard({
 
       <footer className="mobile-approval-footer">
         {isResolved ? (
-          <p className="mobile-approval-resolved-text" data-testid="approval-resolved-by">
-            由 {RESOLVED_BY_LABELS[resolvedBy] || resolvedBy}{" "}
-            {DECISION_LABELS[decision] || decision || NEUTRAL_DECISION_LABEL}
-          </p>
+          <div className="mobile-approval-resolved-block">
+            <p className="mobile-approval-resolved-text" data-testid="approval-resolved-by">
+              由 {resolvedByLabel(resolvedBy)} {decisionLabel(decision)}
+            </p>
+            {actorText ? (
+              <p className="mobile-approval-resolved-meta" data-testid="approval-resolved-actor">
+                处理者：{actorText}
+              </p>
+            ) : null}
+            {resolvedReason ? (
+              <p
+                className="mobile-approval-resolved-meta"
+                data-testid="approval-resolved-reason"
+              >
+                服务端说明：{resolvedReason}
+              </p>
+            ) : null}
+            {errorCode ? (
+              <p
+                className="mobile-approval-resolved-meta"
+                data-testid="approval-resolved-error-code"
+              >
+                error_code：{errorCode}
+              </p>
+            ) : null}
+            {resolvedAt ? (
+              <p className="mobile-approval-resolved-meta" data-testid="approval-resolved-at">
+                终态时间：{resolvedAt}
+              </p>
+            ) : null}
+          </div>
         ) : (
           <div className="mobile-approval-actions">
             <button

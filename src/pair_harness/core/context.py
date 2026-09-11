@@ -4,7 +4,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
-from .contracts import ApprovalMode, Message, MessageOrigin, MessageSource, ProjectRef
+from .contracts import ApprovalMode, Message, ProjectRef
+from .summary import role_messages
 
 
 def recent_roleplay_context(messages: Iterable[Message], limit: int = 12) -> tuple[Message, ...]:
@@ -12,14 +13,10 @@ def recent_roleplay_context(messages: Iterable[Message], limit: int = 12) -> tup
 
     委派卡（origin=character_delegation 的 user 镜像）是任务指令的副本，
     不是用户真实发言——把它留给模型会让模型误以为用户又发了一条要求。
+    V0.3.9 起过滤规则统一到 ``summary.role_messages``（契约 §2：额外要求
+    正文非空且已最终落库），避免窗口与摘要计数出现两套定义。
     """
-    eligible = [
-        message
-        for message in messages
-        if message.source in (MessageSource.USER, MessageSource.CHARACTER)
-        and message.origin != MessageOrigin.CHARACTER_DELEGATION
-    ]
-    return tuple(eligible[-limit:])
+    return role_messages(messages)[-limit:]
 
 
 @dataclass(frozen=True)

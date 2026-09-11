@@ -3,6 +3,12 @@ import { navigate } from "../../lib/router";
 import { useMobileStore } from "../../lib/mobileStore";
 import { NotificationPreferences } from "../../components/NotificationPreferences";
 import { PowerStatusBanner } from "../../components/PowerStatusBanner";
+import { ConversationBadgeRow } from "./ConversationBadges";
+import { ConnectionDetails } from "./ConnectionDetails";
+import {
+  deriveConversationBadges,
+  useConversationBadgeSource,
+} from "./useConversationBadges";
 import "./ChatListPage.css";
 
 function formatDateTime(isoString?: string | null): string {
@@ -37,6 +43,8 @@ export function ChatListPage() {
   const connection = useMobileStore((state) => state.connection);
   const reconnect = useMobileStore((state) => state.reconnect);
   const powerStatus = useMobileStore((state) => state.powerStatus);
+  // V0.3.9 V01：会话行徽章数据源（缺数据源时字段为 null，不渲染伪造零值）。
+  const badgeSource = useConversationBadgeSource();
   const [repairError, setRepairError] = useState<string | null>(null);
   const [repairing, setRepairing] = useState(false);
 
@@ -202,6 +210,13 @@ export function ChatListPage() {
                                   {timeText}
                                 </time>
                               )}
+                              <ConversationBadgeRow
+                                conversationId={conversation.conversation_id}
+                                badges={deriveConversationBadges(
+                                  conversation.conversation_id,
+                                  badgeSource,
+                                )}
+                              />
                             </div>
                             <span
                               className={`conversation-mode-tag ${
@@ -220,6 +235,9 @@ export function ChatListPage() {
             })}
           </div>
         )}
+
+        {/* V0.3.9 V06：连接详情抽屉（租约 + 远程设备），默认收起，显式点开才读取。 */}
+        {bootstrapped ? <ConnectionDetails /> : null}
 
         {/* V0.3.7 通知偏好（V8/V9）：Android 壳内可编辑；PWA 下组件如实说明
             「仅 Android 壳可用」，不渲染任何伪造开关。同步失败时依旧可查看，

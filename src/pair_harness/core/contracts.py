@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping as ABCMapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Literal, Mapping
 from uuid import uuid4
@@ -15,6 +15,19 @@ def new_id() -> str:
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def next_created_at(after: datetime | None) -> datetime:
+    """严格单调的消息创建时间戳：不早于 *after*，相同则前进 1µs。
+
+    同一回合内多条消息可能落在同一个微秒；持久化按 (created_at,
+    message_id) 排序，并列时间戳会让恢复后的顺序由随机的 message_id
+    决定，与内存创建顺序不一致（重开聊天会看到顺序交换）。
+    """
+    now = utc_now()
+    if after is not None and now <= after:
+        return after + timedelta(microseconds=1)
+    return now
 
 
 class FrozenModel(BaseModel):
@@ -65,6 +78,11 @@ class MessageKind(str, Enum):
     TOOL_RECORD = "tool.record"
     SYSTEM_STATUS = "system.status"
     APPROVAL = "system.approval"
+    # V0.3.9 契约 §2：摘要与记忆状态走非消息状态条展示。
+    # system.summary 只承载持久化投影引用的摘要记录，
+    # system.error 只承载真实消息级错误；两者都不得承载隐藏提示。
+    SYSTEM_SUMMARY = "system.summary"
+    SYSTEM_ERROR = "system.error"
     CODE = "assistant.code"
     COMMAND = "assistant.command"
 
@@ -166,9 +184,24 @@ class TaskAmendmentDraft(FrozenModel):
 DelegationDraft = TaskRequestDraft | TaskAmendmentDraft
 
 
+class MemoryDraft(FrozenModel):
+    """角色本轮要求写入的长期记忆条目（V039-S4-003）。
+
+    content 是模型给出的 JSON 对象，代码不改写、不摘要、不截断；作用域
+    由会话在持久化侧权威解析（account/project/pair/character_ref/
+    assistant_identity 五分量），模型无法指定归属。要不要记、记什么
+    完全由模型自己判断，代码只做协议一致性检查。
+    """
+
+    content: dict[str, Any] = Field(min_length=1)
+
+
 class CharacterTurn(FrozenModel):
     speech: str
     delegation: DelegationDraft | None = None
+    # V039-S4-003：模型声明的长期记忆条目；空元组表示本轮没有要记的内容，
+    # 不是失败。
+    memory: tuple[MemoryDraft, ...] = ()
     # 供应商实际返回、允许展示的思考文本。正文与思考分开持久化和渲染；
     # 不返回思考字段的供应商保持空字符串。
     reasoning: str = ""
@@ -252,6 +285,11 @@ class ProjectRuntimeContext(FrozenModel):
     local_time: str = ""
     timezone: str = ""
     conversation_mode: Literal["chat", "collaboration"] = "collaboration"
+    # V039-S4-003：只有绑定了项目的聊天才有长期记忆作用域
+    # （resolve_memory_scope 对 project_id 为空的日常聊天返回 None）。
+    # 运行时协议据此决定是否向模型提供 memory 字段——没有作用域就不提供，
+    # 避免模型写下无处归属的条目。
+    memory_enabled: bool = False
 
 
 class TurnStatus(str, Enum):
@@ -356,6 +394,8 @@ class EngineEventType(str, Enum):
     APPROVAL_RESOLVED = "approval.resolved"
     TURN_COMPLETED = "turn.completed"
     TURN_FAILED = "turn.failed"
+    # V0.3.9 §5：服务端真实 usage（input/output/total tokens）；未上报字段为 null。
+    USAGE = "usage.updated"
 
 
 class EngineEvent(FrozenModel):

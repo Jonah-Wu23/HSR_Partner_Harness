@@ -9,7 +9,7 @@ import signal
 import socket
 import sys
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 if __package__:
     from .application_service import ServiceError, build_configured_service
@@ -33,8 +33,10 @@ else:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Pair Harness Python desktop sidecar")
+    # 显式声明的模式互斥且优先；两者都没声明时默认真实接线（V039-S4-002）。
+    # 实际采用的模式与来源随 backend.ready 的 demo / mode_source 如实上报。
     parser.add_argument("--demo", action="store_true", help="使用不联网测试适配器")
-    parser.add_argument("--real", action="store_true", help="使用环境变量中的真实模型")
+    parser.add_argument("--real", action="store_true", help="使用真实模型（账号级配置优先于环境变量）")
     parser.add_argument("--pair", default="phainon_ancient_machine")
     parser.add_argument("--project", type=Path, default=Path.cwd())
     parser.add_argument("--data-dir", type=Path)
@@ -62,6 +64,32 @@ def _detect_lan_ip() -> str | None:
         return None
     finally:
         sock.close()
+
+
+
+def _resolve_startup_mode(args: argparse.Namespace) -> tuple[bool, str]:
+    """决定启动接线，返回 ``(demo, 来源)``。
+
+    V039-S4-002：接线只由显式声明决定，不按账号是否配置过供应商做启发式
+    判断（界面配置是否完整由运行期如实报错，不由启动模式兜底）：
+
+    - ``--real``：真实接线，来源 ``explicit_real``；
+    - ``--demo``：脚本化演示适配器，来源 ``explicit_demo``；
+    - 两者都没声明：默认真实接线，来源 ``default_real``——没有 Key 也能
+      启动并进入首次引导，配置缺失由请求如实失败。
+
+    同时声明两个模式是调用方的矛盾输入：如实报启动错误，不挑一个执行。
+    来源随 ``backend.ready`` 如实上报，界面据此标注演示模式。
+    """
+    if args.real and args.demo:
+        raise ServiceError(
+            "--real 与 --demo 不能同时声明", code="conflicting_start_mode"
+        )
+    if args.demo:
+        return True, "explicit_demo"
+    if args.real:
+        return False, "explicit_real"
+    return False, "default_real"
 
 
 def _install_sigint_stop(router: SidecarRouter) -> Callable[[], None]:
@@ -130,12 +158,18 @@ async def _run(args: argparse.Namespace) -> int:
         )
 
     try:
+        # V039-S4-002：接线只由显式声明决定，未声明即真实接线——没有 Key
+        # 也能启动并进入首次引导，配置缺失由请求如实失败，不退回演示数据。
+        demo, mode_source = _resolve_startup_mode(args)
+        logging.getLogger(__name__).info(
+            "启动接线 demo=%s 来源=%s", demo, mode_source
+        )
         service = build_configured_service(
             database=(args.data_dir / "pair_harness.db") if args.data_dir else None,
             project_root=args.project,
             pair_id=args.pair,
             event_sink=sink,
-            demo=not args.real,
+            demo=demo,
             stream_id=stream_id,
         )
     except ServiceError as exc:
@@ -146,9 +180,16 @@ async def _run(args: argparse.Namespace) -> int:
         report_startup_error("startup_error", str(exc))
         return 2
 
+    # V039-S4-004：远程服务地址的权威来源，供服务层按需读取（配对码响应等），
+    # 桌面端不必只依赖启动时的一次性 serve.started 事件。
+    # None = --serve 未启动；
+    # {"host": "<lan ip>", "port": N} = 可用接入地址；
+    # {"host": None, "port": N, "reason": "no_lan_address"} = 服务已监听但
+    # 探测不到局域网地址（与事件载荷同形，服务层可直接上报给界面）。
+    service.remote_serve_address: dict[str, Any] | None = None
     service.emitter.emit(
         "backend.ready",
-        {"pid": os.getpid(), "demo": not args.real},
+        {"pid": os.getpid(), "demo": demo, "mode_source": mode_source},
     )
     await service.start_voice()
     ws_server: WSServerMode | None = None
@@ -203,12 +244,17 @@ async def _run(args: argparse.Namespace) -> int:
                 logging.getLogger(__name__).info(
                     "WS 服务器模式已启动 port=%s lan_host=%s", args.serve, lan_host
                 )
-                if lan_host is not None:
-                    # 上报真实监听地址：桌面端二维码按它生成（V0.3.4 缺陷 6）。
-                    # 探测失败时如实不下发地址，桌面端保持「地址未就绪」占位，不伪造可达地址。
-                    service.emitter.emit(
-                        "serve.started", {"host": lan_host, "port": args.serve}
-                    )
+                # V0.3.4 缺陷 6 / V039-S4-004：远程服务已监听成功就如实上报。
+                # host 是真实局域网地址时桌面端按它生成二维码；探测不到局域网
+                # 地址时 host 为 null 且 reason="no_lan_address"——服务确已
+                # 监听，只是没有可用的接入地址。不伪造 127.0.0.1/0.0.0.0 之类
+                # 不可达地址，也不让桌面端把这种情况误判成「--serve 未启动或
+                # 启动失败」。
+                address: dict[str, Any] = {"host": lan_host, "port": args.serve}
+                if lan_host is None:
+                    address["reason"] = "no_lan_address"
+                service.remote_serve_address = address
+                service.emitter.emit("serve.started", dict(address))
                 # 撤销 token 时立即断开仍持有该 token 的已建立连接（V0.3.4 缺陷 7）。
                 service.pairing_service.add_revoke_listener(
                     ws_server.close_connections_for_token

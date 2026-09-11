@@ -26,6 +26,7 @@ from pair_harness.core.contracts import (
     DelegationDraft,
     DialogueEvent,
     DialogueRequest,
+    MemoryDraft,
     Message,
     MessageSource,
     ProjectRuntimeContext,
@@ -350,11 +351,20 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             delegation = OpenAICompatibleDialogueModel._parse_delegation(
                 obj.get("delegation")
             )
+            # 键是否存在即「模型是否声明了记忆」：缺省 → 本轮没有要记的内容；
+            # 显式 memory: null 属于「存在且不是数组」，交给解析器如实失败，
+            # 不与缺省等同。
+            memory = (
+                OpenAICompatibleDialogueModel._parse_memory(obj["memory"])
+                if "memory" in obj
+                else ()
+            )
             field_present = "delegate" in obj or delegation is not None
             declares = bool(obj.get("delegate", False)) or delegation is not None
             return CharacterTurn(
                 speech=speech,
                 delegation=delegation,
+                memory=memory,
                 declares_delegation=declares,
                 delegate_field_present=field_present,
             )
@@ -369,6 +379,8 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             raise UnusableSpeechError(
                 "角色模型输出为空或仅含占位标点，未返回可用 speech", category="empty"
             )
+        # 纯台词输出没有 JSON 结构可承载 memory，本轮按「没有要记的内容」
+        # 处理（契约默认值），不猜、不补。
         return CharacterTurn(speech=cleaned)
 
     @staticmethod
@@ -447,6 +459,31 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             )
         return None
 
+    @staticmethod
+    def _parse_memory(value: object) -> tuple[MemoryDraft, ...]:
+        """解析可选的 memory 字段（V039-S4-003）。
+
+        只做协议一致性检查，不猜语义：字段是否存在由调用点判定，缺省即本轮
+        没有要记的内容（空元组不是失败）；该键一旦存在，值必须是数组（显式
+        null 同样是「存在且非数组」，如实失败），每个元素是对象且 content 是
+        对象，内容原样交给 MemoryDraft（代码不改写、不摘要、不截断）。形状不
+        符时如实抛 ValueError——不跳过该条目、不把非法形状改写成合法形状、
+        不整体丢弃。
+        """
+        if not isinstance(value, list):
+            raise ValueError("角色模型输出的 memory 必须是数组")
+        drafts: list[MemoryDraft] = []
+        for index, item in enumerate(value):
+            if not isinstance(item, dict):
+                raise ValueError(f"角色模型输出的 memory[{index}] 必须是对象")
+            content = item.get("content")
+            if not isinstance(content, dict):
+                raise ValueError(
+                    f"角色模型输出的 memory[{index}].content 必须是对象"
+                )
+            drafts.append(MemoryDraft(content=content))
+        return tuple(drafts)
+
     # ---- 标题生成与流式对话 ----
 
     async def generate_title(
@@ -503,6 +540,51 @@ class OpenAICompatibleDialogueModel(DialogueModel):
                 return title
         return None
 
+    async def generate_summary(
+        self, *, pair_id: str, assistant_prompt: str, context_text: str
+    ) -> dict | None:
+        """用配置的真实模型生成聊天摘要结构化对象（契约 §2）。
+
+        摘要由模型负责语义：只要求输出一个 JSON 对象；解析失败如实返回
+        None（由调用方按真实失败处理），不合成摘要、不截断、不改写。
+        """
+        if not context_text.strip():
+            return None
+        config = load_pair_config(pair_id, root=self._config_root)
+        system = f"""你是{config.assistant.name}，当前只负责一项内部工作：把这段话聊生成一个结构化摘要。
+你只能做摘要，不能回答聊天、不能提出任务、不能调用工具。
+只输出一个 JSON 对象，不要输出其他内容。
+
+以下是你的身份与表达边界：
+{assistant_prompt}
+"""
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": context_text},
+        ]
+        for thinking, max_tokens in ((False, 2048), (True, 4096)):
+            body: dict[str, Any] = {
+                "model": self.model,
+                "messages": messages,
+                "stream": False,
+                "temperature": 0.4,
+                "max_tokens": max_tokens,
+            }
+            body.update(deepseek_request_extras(thinking=thinking, model=self.model))
+            response = await self._client_or_raise().post(
+                "/chat/completions", json=body
+            )
+            response.raise_for_status()
+            payload = response.json()
+            choices = payload.get("choices") or []
+            if not choices:
+                continue
+            content = (choices[0].get("message") or {}).get("content", "")
+            parsed = _parse_json_object(content)
+            if parsed is not None:
+                return parsed
+        return None
+
     def _request_extras(self, *, structured_dialogue: bool = False) -> dict[str, Any]:
         """B1：按后端识别注入推理请求形态。
 
@@ -529,6 +611,29 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         # 回合不启用 thinking，避免真实接口返回空白 content。
         extras["response_format"] = {"type": "json_object"}
         return extras
+
+    @staticmethod
+    def _empty_output_retry_block_reason(
+        *,
+        category: str,
+        deepseek_structured: bool,
+        attempt: int,
+        speech_started: bool,
+    ) -> str | None:
+        """空输出/截断 JSON 是否可重试：返回阻断原因，None 表示应当重试。
+
+        V0.3.9（V039-S4-019）：判定条件与既有行为一致，只把结论收敛到一处，
+        使日志能说清「为什么没重试」，而不是只留下一条无法归因的告警。
+        """
+        if category not in ("empty", "truncated"):
+            return f"输出形态不属于可重试类别（category={category}）"
+        if not deepseek_structured:
+            return "非 DeepSeek 结构化端点"
+        if attempt >= 2:
+            return "重试已达上限（初始请求 + 2 次重试）"
+        if speech_started:
+            return "已有 speech 增量上屏，不重放半截正文"
+        return None
 
     async def stream_reply(
         self,
@@ -613,12 +718,27 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             # 同机制，不合成结果）；不会用占位台词掩盖失败，也不会重放已经
             # 展示过的半截正文。重试后再失败才报错，报错文案区分「输出为空」
             # 与「JSON 截断」。
-            if (
-                deepseek_structured
-                and _attempt < 2
-                and not speech_started
-                and exc.category in ("empty", "truncated")
-            ):
+            #
+            # V0.3.9（V039-S4-019）：不可用输出、是否重试与最终来源必须可数。
+            # 解析处的 WARNING 只说「输出不可用」，无法区分「重试后成功」与
+            # 「直接失败」，一次真实计费往返因此无法归因；这里把判定结论与来源
+            # 按 INFO 落盘，只记录事实，不改判定、不改写结果。
+            block_reason = self._empty_output_retry_block_reason(
+                category=exc.category,
+                deepseek_structured=deepseek_structured,
+                attempt=_attempt,
+                speech_started=speech_started,
+            )
+            if block_reason is None:
+                logger.info(
+                    "角色对话模型输出不可用，重试真实模型：category=%s，"
+                    "attempt=%d→%d，原始输出字符数=%d，放宽 response_format=%s",
+                    exc.category,
+                    _attempt,
+                    _attempt + 1,
+                    len(raw_text),
+                    not _delegation_retry,
+                )
                 async for retry_event in self.stream_reply(
                     request,
                     _attempt=_attempt + 1,
@@ -626,6 +746,14 @@ class OpenAICompatibleDialogueModel(DialogueModel):
                 ):
                     yield retry_event
                 return
+            logger.info(
+                "角色对话模型输出不可用，不再重试：category=%s，attempt=%d，"
+                "原始输出字符数=%d，原因=%s",
+                exc.category,
+                _attempt,
+                len(raw_text),
+                block_reason,
+            )
             raise
         turn = turn.model_copy(update={"reasoning": "".join(reasoning_chunks).strip()})
         if (
@@ -642,6 +770,15 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             ):
                 yield retry_event
             return
+        logger.info(
+            "角色对话回合输出来源：%s，attempt=%d，speech 字符数=%d，"
+            "delegation=%s，memory 条数=%d",
+            _output_source_label(_attempt, _delegation_retry),
+            _attempt,
+            len(turn.speech),
+            "有" if turn.delegation is not None else "无",
+            len(turn.memory),
+        )
         yield DialogueEvent(type="character.final", turn=turn)
 
 
@@ -670,10 +807,30 @@ delegate 为 true 却漏了 delegation 属于协议违规，系统会要求你�
 
 {"speech": "角色台词", "delegate": true, "delegation": {"type": "amendment", "instructions": "修改内容", "target_task_id": "任务id", "revision": 2}}
 
+memory 是可选的长期记忆字段：本轮出现了值得长期记住的内容时，在同一个
+JSON 对象里加上 memory，值是数组，每个元素是对象且 content 是对象；字段与
+内容由你自己决定，要不要记也由你判断，没有要记的就省略 memory：
+
+{"speech": "角色台词", "delegate": false, "memory": [{"content": {"字段": "内容"}}]}
+
+memory 不是任务，也不需要搭档动手；它只表示你希望记住这件事。
+
 收到任务结果系统消息时只依据给定状态回应。任务失败时，可以立即重新返回
 delegation.type == "task" 重试一次；重试仍未成功就如实说明，不再继续委派。
 任务成功或已取消时，delegate 为 false 且不带 delegation。未收到成功结果前，
 不得把任务描述成已执行或已完成。"""
+
+
+def _output_source_label(attempt: int, delegation_retry: bool) -> str:
+    """V0.3.9（V039-S4-019）：这次可用输出来自哪一次真实请求。
+
+    只描述请求次数与重试类型，供成本与延迟归因，不参与任何判定。
+    """
+    if delegation_retry:
+        return "委派纠偏重试" if attempt == 1 else "委派纠偏后空输出重试"
+    if attempt == 0:
+        return "首次请求"
+    return f"空输出重试第 {attempt} 次"
 
 
 def _is_placeholder_speech(speech: str) -> bool:
@@ -721,6 +878,26 @@ def _normalize_title(value: object) -> str | None:
             text = text[len(prefix) :].strip()
     text = text.rstrip("。！？!?：:，,")
     return text[:16].strip() or None
+
+
+def _parse_json_object(content: str) -> dict | None:
+    """从模型输出中提取第一个 JSON 对象（容前后杂文与 ``` 围栏）。
+
+    只做结构提取，不改写内容；无法解析返回 None（调用方如实失败）。
+    """
+    text = content.strip()
+    if text.startswith("```") and text.endswith("```"):
+        text = text.strip("`").strip()
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        parsed = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _progress_summary_text(summary: CharacterProgressSummary) -> str:
