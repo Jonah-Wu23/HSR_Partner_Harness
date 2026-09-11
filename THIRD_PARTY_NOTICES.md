@@ -29,16 +29,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-## OpenAI Codex
-
-Source: https://github.com/openai/codex
-
-Previous release builds could include the Windows-native Codex app-server distributed
-through the `@openai/codex` package. Its package metadata identifies it as Apache-2.0;
-the bundled native directory retained the upstream `codex-package.json` metadata.
-
-The Codex runtime has since been removed under product decision B-03: current builds no
-longer bundle the app-server, and the coding assistant reuses the OpenAI-compatible Chat
-Completions endpoint configured for the dialogue model through the bundled DeepSeek-Reasonix
-ACP. This attribution is retained for the releases that shipped the component.
