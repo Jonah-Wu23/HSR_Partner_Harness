@@ -2,25 +2,60 @@ import { useEffect, useRef, useState } from "react";
 import type { RemotePairingViewModel } from "../../../contracts/view-models";
 import { QrCode } from "../../primitives/QrCode";
 
-interface RemotePairingPanelProps {
+export interface RemotePairingPanelProps {
   vm: RemotePairingViewModel;
   onIssuePairingCode: () => void;
   onListRemoteDevices: () => void;
   onRevokeRemoteDevice: (deviceName: string) => void;
+  onTunnelStart?: () => void | Promise<void>;
+  onTunnelStop?: () => void | Promise<void>;
+  onQueryTunnelStatus?: () => void | Promise<void>;
 }
 
 /**
  * 组装手机端接入地址 URL（PWA 静态伺服与 /ws 同端口）。
+ *
+ * 支持动态协议（V0.4.0）：
+ * - 如果 host 传入完整 URL（如公网隧道 https://xxx.trycloudflare.com），按其协议动态适配（https -> wss / http -> ws）
+ * - 如果以 wss:// 或 ws:// 开头，自动解析对应页面与 ws 协议
+ * - 如果指定 tls=true，采用 https:// 与 wss://
+ * - 默认局域网/回环使用 http:// 与 ws://
+ *
  * 形如 http://<局域网地址>:8765/?ws=ws://<局域网地址>:8765/ws&code=<配对码>
+ * 或 https://<公网隧道>/?ws=wss://<公网隧道>/ws&code=<配对码>
  */
 export function buildPairingUrl(
   code: string,
   host: string,
   port = 8765,
+  tls?: boolean,
 ): string {
+  if (/^https?:\/\//i.test(host)) {
+    const pageUrl = new URL(host);
+    const isHttps = pageUrl.protocol === "https:";
+    const wsProto = isHttps ? "wss:" : "ws:";
+    pageUrl.searchParams.set("ws", `${wsProto}//${pageUrl.host}/ws`);
+    pageUrl.searchParams.set("code", code);
+    return pageUrl.toString();
+  }
+
+  if (/^wss?:\/\//i.test(host)) {
+    const isWss = host.toLowerCase().startsWith("wss://");
+    const parsed = new URL(host.replace(/^ws/i, "http"));
+    const httpProto = isWss ? "https:" : "http:";
+    const wsProto = isWss ? "wss:" : "ws:";
+    const pageUrl = new URL(`${httpProto}//${parsed.host}${parsed.pathname}`);
+    pageUrl.searchParams.set("ws", `${wsProto}//${parsed.host}/ws`);
+    pageUrl.searchParams.set("code", code);
+    return pageUrl.toString();
+  }
+
+  const isHttps = Boolean(tls);
   const normalizedHost = host.startsWith("[") ? host : host.includes(":") ? `[${host}]` : host;
-  const pageUrl = new URL(`http://${normalizedHost}:${port}/`);
-  pageUrl.searchParams.set("ws", `ws://${normalizedHost}:${port}/ws`);
+  const proto = isHttps ? "https" : "http";
+  const wsProto = isHttps ? "wss" : "ws";
+  const pageUrl = new URL(`${proto}://${normalizedHost}:${port}/`);
+  pageUrl.searchParams.set("ws", `${wsProto}://${normalizedHost}:${port}/ws`);
   pageUrl.searchParams.set("code", code);
   return pageUrl.toString();
 }
@@ -61,7 +96,15 @@ function serveUnavailableReasonLabel(reason: string): string {
  * 已配对设备列表展示与设备 token 撤销确认。
  */
 export function RemotePairingPanel(props: RemotePairingPanelProps) {
-  const { vm, onIssuePairingCode, onListRemoteDevices, onRevokeRemoteDevice } = props;
+  const {
+    vm,
+    onIssuePairingCode,
+    onListRemoteDevices,
+    onRevokeRemoteDevice,
+    onTunnelStart,
+    onTunnelStop,
+    onQueryTunnelStatus,
+  } = props;
   const [now, setNow] = useState(() => Date.now());
   const [revokingDeviceName, setRevokingDeviceName] = useState<string | null>(null);
 
@@ -71,6 +114,13 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
   listDevicesRef.current = onListRemoteDevices;
   useEffect(() => {
     listDevicesRef.current();
+  }, []);
+
+  // 挂载时查询公网隧道状态。
+  const queryTunnelStatusRef = useRef(onQueryTunnelStatus);
+  queryTunnelStatusRef.current = onQueryTunnelStatus;
+  useEffect(() => {
+    queryTunnelStatusRef.current?.();
   }, []);
 
   // 驱动配对码倒计时
@@ -89,14 +139,35 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
   const remainingSeconds = Math.max(0, ttlSeconds - elapsedSeconds);
   const isExpired = vm.issuedAtEpochMs !== null && remainingSeconds <= 0;
 
-  // V0.3.4 缺陷 6：Tauri WebView 的 window.location.hostname 是内部地址，
-  // 二维码只能按 Sidecar serve.started 上报的真实局域网地址生成；
-  // 地址未知（serve 未启动/启动失败）时如实提示，不生成不可达地址。
+  // 隧道五态
+  const tunnel = vm.tunnel ?? {
+    state: "off",
+    publicUrl: null,
+    hostname: null,
+    error: null,
+  };
+  const isTunnelReady = tunnel.state === "ready" && Boolean(tunnel.publicUrl);
+
+  // 局域网暴露警示：后端处于 --lan 模式且未开公网隧道时常驻提示
+  const isLanMode = vm.serveAddress?.mode === "lan" || vm.serveMode === "lan";
+  const showLanWarning = isLanMode && !isTunnelReady;
+
+  // 二维码与配对链接生成：
+  // 1. 公网隧道就绪（ready）时直接采用公网隧道 URL（https://*.trycloudflare.com）
+  // 2. 否则按 Sidecar serve 监听地址生成；地址不可用时提示
   const serveAddress = vm.serveAddress;
-  const pairingUrl =
-    vm.code && serveAddress
-      ? buildPairingUrl(vm.code, serveAddress.host, serveAddress.port)
-      : "";
+  const pairingUrl = vm.code
+    ? isTunnelReady && tunnel.publicUrl
+      ? buildPairingUrl(vm.code, tunnel.publicUrl)
+      : serveAddress
+      ? buildPairingUrl(
+          vm.code,
+          serveAddress.host,
+          serveAddress.port,
+          serveAddress.tls ?? false,
+        )
+      : ""
+    : "";
 
   const formatCountdown = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -107,8 +178,27 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
   return (
     <section className="settings-page" data-testid="remote-pairing-panel">
       <p className="settings-hint">
-        将手机作为远程控制端连回 PC。配对经 Sidecar 鉴权完成，配对码一次性且短期有效。
+        将手机作为远程控制端连回 PC。配对经 Sidecar 鉴权完成，配对码一次性且短期有效；同时仅一枚配对码有效。
       </p>
+
+      {/* 局域网暴露警示 */}
+      {showLanWarning ? (
+        <div
+          className="field-warning"
+          role="alert"
+          data-testid="lan-exposure-warning"
+          style={{
+            padding: "8px 12px",
+            borderRadius: "6px",
+            background: "color-mix(in oklch, var(--warning, #ca8a04) 12%, transparent)",
+            border: "1px solid color-mix(in oklch, var(--warning, #ca8a04) 35%, transparent)",
+            marginBottom: "12px",
+            fontSize: "13px",
+          }}
+        >
+          当前处于局域网共享模式，请确保处于可信网络
+        </div>
+      ) : null}
 
       {vm.loading ? (
         <p className="settings-hint" role="status">
@@ -121,6 +211,106 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
           {vm.error}
         </p>
       ) : null}
+
+      {/* 公网接入控制区 */}
+      <h3 className="settings-subhead">公网接入</h3>
+      <div className="settings-status-card" data-testid="tunnel-control-section" style={{ gap: "10px", marginBottom: "16px" }}>
+        <div className="settings-row" style={{ alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <span className="field-label" style={{ fontWeight: 600 }}>Cloudflare Quick Tunnel</span>
+            <p className="settings-hint" style={{ fontSize: "12px", marginTop: "2px" }}>
+              无需公网 IP 或配置端口映射，直接建立安全 HTTPS/WSS 隧道供手机端在移动蜂窝网络下安全访问。
+            </p>
+          </div>
+          <div>
+            {tunnel.state === "ready" ? (
+              <button
+                type="button"
+                className="btn btn-outline"
+                data-testid="tunnel-stop-btn"
+                disabled={vm.loading || tunnel.loading}
+                onClick={onTunnelStop}
+              >
+                关闭公网接入
+              </button>
+            ) : tunnel.state === "downloading" ? (
+              <button
+                type="button"
+                className="btn btn-primary"
+                data-testid="tunnel-downloading-btn"
+                disabled
+              >
+                下载中…
+              </button>
+            ) : tunnel.state === "starting" ? (
+              <button
+                type="button"
+                className="btn btn-primary"
+                data-testid="tunnel-starting-btn"
+                disabled
+              >
+                启动中…
+              </button>
+            ) : tunnel.state === "failed" ? (
+              <button
+                type="button"
+                className="btn btn-primary"
+                data-testid="tunnel-retry-btn"
+                disabled={vm.loading || tunnel.loading}
+                onClick={onTunnelStart}
+              >
+                重试公网接入
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-primary"
+                data-testid="tunnel-start-btn"
+                disabled={vm.loading || tunnel.loading}
+                onClick={onTunnelStart}
+              >
+                开启公网接入
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* 隧道五态详情展示 */}
+        <div data-testid="tunnel-status-indicator" style={{ fontSize: "12px" }}>
+          {tunnel.state === "ready" ? (
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span
+                style={{
+                  fontSize: "11px",
+                  padding: "1px 6px",
+                  borderRadius: "999px",
+                  background: "var(--accent-soft)",
+                  color: "var(--accent)",
+                }}
+              >
+                已就绪
+              </span>
+              <span>
+                公网地址：<code>{tunnel.publicUrl}</code>
+              </span>
+            </div>
+          ) : tunnel.state === "downloading" ? (
+            <p className="settings-hint" role="status" style={{ color: "var(--accent)" }}>
+              正在下载 Cloudflare 隧道组件…
+            </p>
+          ) : tunnel.state === "starting" ? (
+            <p className="settings-hint" role="status" style={{ color: "var(--accent)" }}>
+              正在启动公网隧道…
+            </p>
+          ) : tunnel.state === "failed" ? (
+            <p className="field-error" role="alert" data-testid="tunnel-error">
+              公网隧道启动失败：{tunnel.error || "未知原因"}
+            </p>
+          ) : (
+            <p className="settings-hint">未开启公网接入，仅可通过本地局域网或回环连接。</p>
+          )}
+        </div>
+      </div>
 
       <h3 className="settings-subhead">手机配对</h3>
 
@@ -164,7 +354,10 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
                   用手机浏览器扫描二维码，或打开网页后输入配对码
                 </p>
                 <p className="settings-hint" style={{ fontSize: "12px", textAlign: "center" }}>
-                  接入地址：<code>{serveAddress ? `${serveAddress.host}:${serveAddress.port}` : ""}</code>
+                  接入地址：<code>{isTunnelReady ? tunnel.publicUrl : serveAddress ? `${serveAddress.host}:${serveAddress.port}` : ""}</code>
+                  {isTunnelReady ? (
+                    <span style={{ marginLeft: "6px", color: "var(--accent)" }}>（公网隧道）</span>
+                  ) : null}
                 </p>
               </>
             ) : (
@@ -175,7 +368,7 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
           </div>
 
           <p className="settings-hint" style={{ fontSize: "12px" }}>
-            二维码按 Sidecar --serve 实际监听地址生成；未开启 --serve 时手机端无法连接。
+            同时仅一枚配对码有效，生成新码将立即作废旧码与二维码。
           </p>
 
           <div className="settings-row">
@@ -185,7 +378,7 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
               disabled={vm.loading}
               onClick={onIssuePairingCode}
             >
-              重新生成配对码
+              作废旧码并生成新码
             </button>
           </div>
         </div>
@@ -195,7 +388,7 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
             已过期，请重新生成
           </p>
           <p className="settings-hint">
-            为保障连接安全，配对码超过有效时限后自动失效，旧配对码已无法使用。
+            为保障连接安全，配对码超过有效时限后自动失效，旧配对码已无法使用。同时仅一枚配对码有效。
           </p>
           <div className="settings-row">
             <button
@@ -204,7 +397,7 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
               disabled={vm.loading}
               onClick={onIssuePairingCode}
             >
-              重新生成配对码
+              作废旧码并生成新码
             </button>
           </div>
         </div>
@@ -273,6 +466,7 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
                 <div className="settings-hint" style={{ fontSize: "12px", display: "flex", gap: "12px", flexWrap: "wrap" }}>
                   <span>配对时间：{device.issuedAt || "未知"}</span>
                   <span>最近使用：{device.lastUsedAt || "未知"}</span>
+                  <span>到期时间：{device.expiresAt || "未知"}</span>
                 </div>
               </div>
 

@@ -272,7 +272,18 @@ export interface RemoteDeviceView {
   deviceName: string;
   issuedAt: string;
   lastUsedAt: string;
+  expiresAt?: string;
   revoked: boolean;
+}
+
+export type TunnelState = "off" | "downloading" | "starting" | "ready" | "failed";
+
+export interface TunnelViewModel {
+  state: TunnelState;
+  publicUrl: string | null;
+  hostname: string | null;
+  error: string | null;
+  loading?: boolean;
 }
 
 export interface RemotePairingViewModel {
@@ -285,14 +296,23 @@ export interface RemotePairingViewModel {
   error: string | null;
   /** V0.3.4：Sidecar --serve 实际监听地址（serve.started 事件上报），
       二维码按它生成；null 表示没有可用的局域网接入地址（未上报 / 上报为 null）。 */
-  serveAddress: { host: string; port: number } | null;
+  serveAddress: {
+    host: string;
+    port: number;
+    mode?: "loopback" | "lan" | null;
+    tls?: boolean | null;
+  } | null;
   /** V039-S4-004：serve.started 上报的监听端口（host 为 null 时端口依然真实）。 */
   servePort?: number | null;
+  /** V0.4.0：serve.started 上报的运行模式（loopback / lan）。 */
+  serveMode?: "loopback" | "lan" | null;
   /** V039-S4-004：服务已监听但无可用局域网地址时，服务端给出的真实原因码
       （如 no_lan_address）；未上报该字段即 null，不本地推断。 */
   serveUnavailableReason?: string | null;
   /** V039-S4-004：error.reported(serve_start_failed) 的真实报文（启动失败原因）。 */
   serveFailure?: string | null;
+  /** V0.4.0：Cloudflare Quick Tunnel 公网隧道状态。 */
+  tunnel?: TunnelViewModel;
 }
 
 export interface AppShellViewModel {

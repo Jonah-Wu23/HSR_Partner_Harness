@@ -32,7 +32,9 @@ class AuthDecision:
 
 
 class RemoteAuthenticator(Protocol):
-    def authorize(self, token: str | None, method: str) -> AuthDecision: ...
+    def authorize(
+        self, token: str | None, method: str, *, origin: str = "remote"
+    ) -> AuthDecision: ...
 
 
 def _extract_frame_id(payload: Any) -> str | None:
@@ -127,6 +129,7 @@ class WSServerMode:
         fanout: EventFanout,
         static_root: Path | None,
         port: int,
+        host: str = "127.0.0.1",
         on_disconnect: Callable[[str], None] | None = None,
     ) -> None:
         self.dispatch = dispatch
@@ -136,8 +139,8 @@ class WSServerMode:
         self.port = port
         # V0.3.5：连接断开回调（清理该连接未完成的手机语音转写会话）。
         self.on_disconnect = on_disconnect
-        # 手机经局域网/自组网接入，绑定全部接口；鉴权门保证未鉴权无法触发命令执行。
-        self._host = "0.0.0.0"
+        # V0.4.0（D2）：默认绑定 127.0.0.1 回环；--lan 时显式传入 0.0.0.0。
+        self._host = host
         self._app: web.Application | None = None
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
@@ -249,7 +252,10 @@ class WSServerMode:
         token = auth.get("token") if isinstance(auth, Mapping) else None
 
         try:
-            decision = self.authenticator.authorize(token, method)
+            try:
+                decision = self.authenticator.authorize(token, method, origin="remote")
+            except TypeError:
+                decision = self.authenticator.authorize(token, method)
         except Exception:  # noqa: BLE001 - 鉴权实现异常按未授权拒绝，不让服务器崩溃
             logger.exception("远程鉴权接口异常，拒绝该请求")
             conn.send(
@@ -258,8 +264,13 @@ class WSServerMode:
             return
 
         if not decision.allowed:
+            err_code = (
+                "forbidden_scope"
+                if decision.reason == "forbidden_scope"
+                else "unauthorized"
+            )
             conn.send(
-                response_error(_extract_frame_id(payload), "unauthorized", decision.reason)
+                response_error(_extract_frame_id(payload), err_code, decision.reason)
             )
             logger.warning("远程鉴权拒绝 method=%r reason=%r", method, decision.reason)
             return

@@ -352,9 +352,10 @@ where
         .any(|arg| matches!(arg.as_str(), "--debug-console" | "--console"))
 }
 
-/// 手机远程 WS 服务器端口。必须与前端 `RemotePairingPanel` 二维码 payload
-/// 中的 ws 端口保持一致；sidecar 侧端口被占时降级为桌面专用并上报
-/// `serve_start_failed`（见 `desktop_backend/__main__.py`）。
+/// 手机远程 WS 服务器端口（默认 8765）。
+/// V0.4.0（D2）：默认绑定 127.0.0.1 回环监听；传入 `--lan` 时绑定 0.0.0.0 供局域网直连。
+/// 必须与前端 RemotePairingPanel 缺省端口及 sidecar 监听端口保持一致；
+/// sidecar 侧端口被占时降级为桌面专用并上报 `serve_start_failed`（见 `desktop_backend/__main__.py`）。
 const REMOTE_SERVE_PORT: &str = "8765";
 
 fn pwa_static_dir(
@@ -581,6 +582,58 @@ fn detect_backend_mode(env_file: Option<&Path>) -> Result<BackendMode, String> {
     ))
 }
 
+/// 命令行显式请求局域网直连模式（--lan / --no-lan）。
+fn cli_lan_request<I>(args: I) -> Option<bool>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut result = None;
+    for arg in args {
+        match arg.as_str() {
+            "--lan" => result = Some(true),
+            "--no-lan" => result = Some(false),
+            _ => {}
+        }
+    }
+    result
+}
+
+/// 进程环境变量里的局域网直连显式声明（PAIR_HARNESS_LAN）。
+fn env_lan_request() -> Option<bool> {
+    env_flag("PAIR_HARNESS_LAN")
+}
+
+/// .env 内容里的局域网直连显式声明。
+fn env_content_lan_request(contents: &str) -> Option<bool> {
+    env_content_flag(contents, "PAIR_HARNESS_LAN")
+}
+
+/// 读取 .env 里的局域网直连显式声明；文件不存在返回 None，读取失败如实报错。
+fn env_file_lan_request(path: Option<&Path>) -> Result<Option<bool>, String> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    match std::fs::read_to_string(path) {
+        Ok(contents) => Ok(env_content_lan_request(&contents)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("读取 {} 失败：{error}", path.display())),
+    }
+}
+
+/// 局域网直连判定优先级：命令行 > 进程环境 > .env；未声明时默认关闭（回环监听）。
+fn resolve_lan_mode(cli: Option<bool>, env: Option<bool>, file: Option<bool>) -> bool {
+    cli.or(env).or(file).unwrap_or(false)
+}
+
+/// 从当前进程实参、环境变量与已定位到的 .env 解析局域网直连模式。
+fn detect_lan_mode(env_file: Option<&Path>) -> Result<bool, String> {
+    Ok(resolve_lan_mode(
+        cli_lan_request(std::env::args()),
+        env_lan_request(),
+        env_file_lan_request(env_file)?,
+    ))
+}
+
 fn stream_id_value(stream_id: u64) -> String {
     stream_id.to_string()
 }
@@ -617,6 +670,7 @@ fn launch_sidecar(
         .unwrap_or_else(|| python_command(&runtime_root));
     let env_file = configured_env_file(app, &runtime_root);
     let mode = detect_backend_mode(env_file.as_deref())?;
+    let lan = detect_lan_mode(env_file.as_deref())?;
     let stderr_log = sidecar_stderr_log_path(app);
     let mut command = Command::new(program);
     command.current_dir(&runtime_root);
@@ -624,22 +678,28 @@ fn launch_sidecar(
         command
             .arg(mode.as_arg())
             .arg("--serve")
-            .arg(REMOTE_SERVE_PORT)
-            .arg("--project")
-            .arg(&initial_project_root);
+            .arg(REMOTE_SERVE_PORT);
+        if lan {
+            command.arg("--lan");
+        }
+        command.arg("--project").arg(&initial_project_root);
     } else {
-        command
-            .args([
-                "-m",
-                "pair_harness.desktop_backend",
-                mode.as_arg(),
-                "--serve",
-                REMOTE_SERVE_PORT,
-                "--project",
-            ])
-            .arg(&initial_project_root);
+        command.args([
+            "-m",
+            "pair_harness.desktop_backend",
+            mode.as_arg(),
+            "--serve",
+            REMOTE_SERVE_PORT,
+        ]);
+        if lan {
+            command.arg("--lan");
+        }
+        command.arg("--project").arg(&initial_project_root);
     }
     command.env("PAIR_HARNESS_STREAM_ID", stream_id.to_string());
+    if lan {
+        command.env("PAIR_HARNESS_LAN", "1");
+    }
     if let Some(pwa_dir) = pwa_static_dir(
         packaged.is_some(),
         app.path().resource_dir().ok().as_deref(),
@@ -1227,11 +1287,12 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        backoff_delay, civil_from_days, classify_exit, cli_mode_request, debug_console_requested,
-        encode_request_line, env_content_mode_request, env_file_mode_request, fail_pending,
+        backoff_delay, civil_from_days, classify_exit, cli_lan_request, cli_mode_request,
+        debug_console_requested, encode_request_line, env_content_lan_request,
+        env_content_mode_request, env_file_lan_request, env_file_mode_request, fail_pending,
         open_sidecar_log, pwa_static_dir, request_timeout_secs, resolve_backend_mode,
-        rotate_sidecar_log, sidecar_log_backup_path, sidecar_log_session_header, stream_id_value,
-        utc_timestamp, BackendMode, ExitClass, PendingMap, REMOTE_SERVE_PORT,
+        resolve_lan_mode, rotate_sidecar_log, sidecar_log_backup_path, sidecar_log_session_header,
+        stream_id_value, utc_timestamp, BackendMode, ExitClass, PendingMap, REMOTE_SERVE_PORT,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -1497,6 +1558,101 @@ mod tests {
         );
         std::fs::write(&env_file, "PAIR_HARNESS_DIALOGUE_MODEL=deepseek-chat\n").unwrap();
         assert_eq!(env_file_mode_request(Some(&env_file)).unwrap(), None);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // ------------------------------------------------- V0.4.0（D2）局域网直连模式
+
+    #[test]
+    fn lan_mode_defaults_to_false_without_any_explicit_request() {
+        // 无 .env、无 --lan、无环境变量时默认关闭（回环监听）
+        assert_eq!(resolve_lan_mode(None, None, None), false);
+    }
+
+    #[test]
+    fn lan_mode_higher_priority_explicit_request_wins() {
+        assert_eq!(resolve_lan_mode(Some(true), Some(false), Some(false)), true);
+        assert_eq!(resolve_lan_mode(Some(false), Some(true), Some(true)), false);
+        assert_eq!(resolve_lan_mode(None, Some(true), Some(false)), true);
+        assert_eq!(resolve_lan_mode(None, Some(false), Some(true)), false);
+        assert_eq!(resolve_lan_mode(None, None, Some(true)), true);
+        assert_eq!(resolve_lan_mode(None, None, Some(false)), false);
+    }
+
+    #[test]
+    fn lan_mode_cli_request_respects_flag() {
+        assert_eq!(cli_lan_request(["--lan".to_string()]), Some(true));
+        assert_eq!(cli_lan_request(["--no-lan".to_string()]), Some(false));
+        assert_eq!(
+            cli_lan_request(["hsr-partner-harness.exe".to_string()]),
+            None
+        );
+        // 后出现的参数覆盖先出现的参数
+        assert_eq!(
+            cli_lan_request(["--lan".to_string(), "--no-lan".to_string()]),
+            Some(false)
+        );
+        assert_eq!(
+            cli_lan_request(["--no-lan".to_string(), "--lan".to_string()]),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn lan_mode_env_content_request_parses_values() {
+        assert_eq!(env_content_lan_request("# 没有局域网配置\n"), None);
+        assert_eq!(env_content_lan_request("PAIR_HARNESS_LAN=1\n"), Some(true));
+        assert_eq!(
+            env_content_lan_request("PAIR_HARNESS_LAN=true\n"),
+            Some(true)
+        );
+        assert_eq!(env_content_lan_request("PAIR_HARNESS_LAN=on\n"), Some(true));
+        assert_eq!(
+            env_content_lan_request("PAIR_HARNESS_LAN=yes\n"),
+            Some(true)
+        );
+        assert_eq!(
+            env_content_lan_request("export PAIR_HARNESS_LAN=\"true\"\n"),
+            Some(true)
+        );
+        assert_eq!(env_content_lan_request("PAIR_HARNESS_LAN=0\n"), Some(false));
+        assert_eq!(
+            env_content_lan_request("PAIR_HARNESS_LAN=false\n"),
+            Some(false)
+        );
+        assert_eq!(
+            env_content_lan_request("PAIR_HARNESS_LAN=off\n"),
+            Some(false)
+        );
+        assert_eq!(
+            env_content_lan_request("PAIR_HARNESS_LAN=no\n"),
+            Some(false)
+        );
+        assert_eq!(env_content_lan_request("PAIR_HARNESS_LAN=invalid\n"), None);
+    }
+
+    #[test]
+    fn lan_mode_env_file_request_reads_file() {
+        let base = std::env::temp_dir().join(format!("ph-lan-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let env_file = base.join(".env");
+
+        assert_eq!(env_file_lan_request(None).unwrap(), None);
+        assert_eq!(env_file_lan_request(Some(&env_file)).unwrap(), None);
+
+        std::fs::write(&env_file, "PAIR_HARNESS_LAN=1\n").unwrap();
+        assert_eq!(env_file_lan_request(Some(&env_file)).unwrap(), Some(true));
+
+        std::fs::write(&env_file, "PAIR_HARNESS_LAN=0\n").unwrap();
+        assert_eq!(env_file_lan_request(Some(&env_file)).unwrap(), Some(false));
+
+        std::fs::write(&env_file, "PAIR_HARNESS_OTHER=1\n").unwrap();
+        assert_eq!(env_file_lan_request(Some(&env_file)).unwrap(), None);
+
+        // 路径为目录导致读取失败时如实报错
+        assert!(env_file_lan_request(Some(&base)).is_err());
 
         let _ = std::fs::remove_dir_all(&base);
     }

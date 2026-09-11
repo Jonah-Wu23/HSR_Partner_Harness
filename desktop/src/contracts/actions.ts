@@ -153,6 +153,13 @@ export interface HarnessActions {
   listRemoteDevices(): Promise<void>;
   /** 按设备名撤销其全部 token 并刷新设备列表。 */
   revokeRemoteDevice(deviceName: string): Promise<void>;
+  /* —— V0.4.0 公网隧道（Cloudflare Quick Tunnel）—— */
+  /** 开启公网隧道。 */
+  tunnelStart(): Promise<void>;
+  /** 关闭公网隧道。 */
+  tunnelStop(): Promise<void>;
+  /** 查询公网隧道当前状态。 */
+  queryTunnelStatus(): Promise<void>;
   /* —— V0.3.9 摘要、记忆与诊断（PM/视觉 V-B 2a1fccb）—— */
   /** 重新生成摘要（summary.regenerate），调用真实模型；只针对真实失败记录或用户显式请求。 */
   regenerateSummary?(

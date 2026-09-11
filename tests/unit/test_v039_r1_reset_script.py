@@ -28,11 +28,17 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import subprocess
 import tempfile
 from pathlib import Path
 
 import pytest
+
+
+def _ps_output_encoding() -> str:
+    """PowerShell 5.1 管道输出跟随系统 ANSI 代码页；按其解码，跨编码环境不崩。"""
+    return "mbcs" if sys.platform == "win32" else "utf-8"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "desktop" / "scripts" / "tauri-with-first-run-reset.ps1"
@@ -73,7 +79,9 @@ def _run_script(
         cwd=str(script.parent),
         env=env,
         capture_output=True,
-        text=True,
+        text=False,
+        encoding=_ps_output_encoding(),
+        errors="replace",
         timeout=timeout,
     )
 
@@ -157,7 +165,9 @@ def _run_powershell(script: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [_require_powershell(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
         capture_output=True,
-        text=True,
+        text=False,
+        encoding=_ps_output_encoding(),
+        errors="replace",
         timeout=120.0,
     )
 
@@ -266,7 +276,9 @@ def test_powershell_51_parser_reports_no_syntax_error() -> None:
     result = subprocess.run(
         [_require_powershell(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
         capture_output=True,
-        text=True,
+        text=False,
+        encoding=_ps_output_encoding(),
+        errors="replace",
         timeout=120.0,
     )
 
@@ -401,7 +413,9 @@ def _delete_succeeds(path: Path) -> bool:
     result = subprocess.run(
         [_require_powershell(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
         capture_output=True,
-        text=True,
+        text=False,
+        encoding=_ps_output_encoding(),
+        errors="replace",
         timeout=120.0,
     )
     return "deleted" in result.stdout

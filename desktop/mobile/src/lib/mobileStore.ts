@@ -30,6 +30,7 @@ import {
   RemoteCommandError,
   saveCredentials,
 } from "./wsClient";
+import { navigate } from "./router";
 
 /**
  * 手机端业务 store：统一归并连接代次、事件序号、会话消息、工具与审批状态。
@@ -115,6 +116,7 @@ export function appendTtsChunk(
 
 export interface MobileState {
   connection: MobileConnectionState;
+  authFailureCode: string | null;
   deviceName: string | null;
   projects: ProjectRecord[];
   conversationsById: Record<string, ConversationRecord>;
@@ -1347,6 +1349,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
 
   return {
     connection: "disconnected",
+    authFailureCode: null,
     deviceName: getStoredDeviceName(),
     projects: [],
     conversationsById: {},
@@ -1384,7 +1387,15 @@ export const useMobileStore = create<MobileState>((set, get) => {
       if (wired) return;
       wired = true;
       client.onStateChange((connection) => {
-        set({ connection });
+        const failureCode = client.getAuthFailureCode();
+        set({
+          connection,
+          authFailureCode: connection === "auth_failed" ? failureCode : null,
+          ...(connection === "auth_failed" &&
+          (failureCode === "expired_token" || failureCode === "token_expired")
+            ? { deviceName: null }
+            : {}),
+        });
         if (connection === "disconnected" || connection === "reconnecting" || connection === "unreachable") {
           bootstrapGeneration += 1;
           bootstrapping = null;
@@ -1392,6 +1403,13 @@ export const useMobileStore = create<MobileState>((set, get) => {
         }
         if (connection === "connected" && getStoredToken() && !releasingControl) {
           void bootstrap().catch(reportBootstrapFailure);
+        }
+        if (
+          connection === "auth_failed" &&
+          (failureCode === "expired_token" || failureCode === "token_expired")
+        ) {
+          clearCredentials();
+          navigate({ name: "pair" });
         }
       });
       client.onEvent(handleEvent);
@@ -1417,6 +1435,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
     },
 
     async pairDevice(code, deviceName) {
+      set({ authFailureCode: null });
       client.connect();
       await waitForConnected();
       const result = await client.request<{ token: string }>(
@@ -1661,6 +1680,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
       clearCredentials();
       set({
         connection: "disconnected",
+        authFailureCode: null,
         deviceName: null,
         projects: [],
         conversationsById: {},

@@ -5,6 +5,7 @@ import {
   getStoredToken,
   INBOUND_STALE_MS,
   MobileWsClient,
+  normalizeWsUrl,
   PING_INTERVAL_MS,
   RemoteCommandError,
   resolveWsUrl,
@@ -74,12 +75,51 @@ afterEach(() => {
   window.localStorage.clear();
 });
 
+describe("normalizeWsUrl", () => {
+  it("公网隧道 https:// 自动映射为 wss:// 并补齐 /ws 路径", () => {
+    expect(normalizeWsUrl("https://foo-bar.trycloudflare.com")).toBe(
+      "wss://foo-bar.trycloudflare.com/ws",
+    );
+    expect(normalizeWsUrl("https://foo-bar.trycloudflare.com/")).toBe(
+      "wss://foo-bar.trycloudflare.com/ws",
+    );
+    expect(normalizeWsUrl("https://foo-bar.trycloudflare.com/ws")).toBe(
+      "wss://foo-bar.trycloudflare.com/ws",
+    );
+  });
+
+  it("公网隧道带二维码参数时清理并保留标准 /ws 握手地址", () => {
+    expect(
+      normalizeWsUrl("https://foo-bar.trycloudflare.com/?code=123456&ws=wss://foo-bar.trycloudflare.com/ws"),
+    ).toBe("wss://foo-bar.trycloudflare.com/ws");
+  });
+
+  it("wss:// 与 ws:// 地址如实保留并补齐 /ws", () => {
+    expect(normalizeWsUrl("wss://foo-bar.trycloudflare.com")).toBe(
+      "wss://foo-bar.trycloudflare.com/ws",
+    );
+    expect(normalizeWsUrl("ws://192.168.1.50:8765/ws")).toBe(
+      "ws://192.168.1.50:8765/ws",
+    );
+    expect(normalizeWsUrl("http://192.168.1.50:8765")).toBe(
+      "ws://192.168.1.50:8765/ws",
+    );
+  });
+});
+
 describe("resolveWsUrl", () => {
   it("?ws= 查询参数优先并写入缓存", () => {
     window.history.pushState({}, "", "/?ws=ws://192.168.1.5:8765/ws");
     expect(resolveWsUrl()).toBe("ws://192.168.1.5:8765/ws");
     window.history.pushState({}, "", "/");
     expect(resolveWsUrl()).toBe("ws://192.168.1.5:8765/ws");
+  });
+
+  it("公网隧道 https:// 地址在 ?ws= 或缓存中自动规范化为 wss://", () => {
+    window.history.pushState({}, "", "/?ws=https://tunnel.trycloudflare.com");
+    expect(resolveWsUrl()).toBe("wss://tunnel.trycloudflare.com/ws");
+    window.history.pushState({}, "", "/");
+    expect(resolveWsUrl()).toBe("wss://tunnel.trycloudflare.com/ws");
   });
 
   it("无参数无缓存时回退到当前站点 /ws", () => {
@@ -179,6 +219,27 @@ describe("MobileWsClient", () => {
     expect(error).toBeInstanceOf(RemoteCommandError);
     expect((error as RemoteCommandError).code).toBe("unauthorized");
     expect(client.getState()).toBe("auth_failed");
+  });
+
+  it("auth_failed: expired_token 响应清理本地失效 token 并记录细分错误码", async () => {
+    saveCredentials("tok-expired-30d", "我的手机");
+    const client = new MobileWsClient();
+    client.connect();
+    const ws = lastInstance();
+    ws.open();
+
+    const pending = client.request("app.bootstrap");
+    const frame = lastSentFrame(ws);
+    ws.emit({
+      kind: "response",
+      id: frame.id,
+      ok: false,
+      error: { code: "unauthorized", message: "expired_token" },
+    });
+    await expect(pending).rejects.toBeInstanceOf(RemoteCommandError);
+    expect(client.getState()).toBe("auth_failed");
+    expect(client.getAuthFailureCode()).toBe("expired_token");
+    expect(getStoredToken()).toBeNull();
   });
 
   it("连接未就绪时请求如实失败", async () => {

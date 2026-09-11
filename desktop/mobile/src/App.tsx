@@ -16,10 +16,8 @@ export function App() {
   // 守卫重渲染；直接 render 期读 localStorage 不会在配对成功后刷新。
   const deviceName = useMobileStore((state) => state.deviceName);
   const hasToken = deviceName !== null && getStoredToken() !== null;
-  // V0.3.9 V06：鉴权失败细分错误码（store 尚未提供时为 null，横幅回退通用文案）。
-  const authFailureCode = useMobileStore(
-    (state) => (state as unknown as { authFailureCode?: string | null }).authFailureCode ?? null,
-  );
+  // V0.3.9 V06 / V0.4.0 D5：鉴权失败细分错误码（过期/撤销等）。
+  const authFailureCode = useMobileStore((state) => state.authFailureCode);
 
   useEffect(() => {
     start();

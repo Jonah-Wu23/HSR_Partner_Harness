@@ -282,6 +282,13 @@ export class MockDesktopBackend implements DesktopBackend {
           device_name: String(command.params.device_name ?? ""),
           revoked_tokens: 1,
         } as T;
+      /* —— V0.4.0 公网隧道 —— */
+      case "remote.tunnel_start":
+        return { status: "starting" } as T;
+      case "remote.tunnel_stop":
+        return { status: "stopping" } as T;
+      case "remote.tunnel_status":
+        return { state: "off", public_url: null, hostname: null, error: null } as T;
       /* —— V0.3.7 电源状态 —— */
       case "power.get_status":
         return this.powerGetStatus() as T;

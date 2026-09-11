@@ -96,4 +96,9 @@ describe("AccountGate（V039-S4-005 / V039-S4-006）", () => {
     expect(screen.getByRole("button", { name: "正在进入…" })).toBeDisabled();
     expect(onLogin).not.toHaveBeenCalled();
   });
+
+  it("T8 / D8：渲染新标语「一条会话，两条工作轨。」", () => {
+    renderGate();
+    expect(screen.getByText("一条会话，两条工作轨。")).toBeInTheDocument();
+  });
 });

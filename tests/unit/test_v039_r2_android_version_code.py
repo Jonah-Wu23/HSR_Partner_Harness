@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import subprocess
 import tempfile
 from collections.abc import Iterator
@@ -38,6 +39,11 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+
+
+def _ps_output_encoding() -> str:
+    """PowerShell 5.1 管道输出跟随系统 ANSI 代码页；按其解码，跨编码环境不崩。"""
+    return "mbcs" if sys.platform == "win32" else "utf-8"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "desktop" / "scripts" / "build-android.ps1"
@@ -193,7 +199,9 @@ class _AndroidBuildSandbox:
             cwd=str(self.desktop),
             env=self.env,
             capture_output=True,
-            text=True,
+            text=False,
+            encoding=_ps_output_encoding(),
+            errors="replace",
             timeout=timeout,
         )
 
@@ -255,7 +263,9 @@ def test_script_parses_under_powershell_51() -> None:
     result = subprocess.run(
         [_require_powershell(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
         capture_output=True,
-        text=True,
+        text=False,
+        encoding=_ps_output_encoding(),
+        errors="replace",
         timeout=120.0,
     )
 

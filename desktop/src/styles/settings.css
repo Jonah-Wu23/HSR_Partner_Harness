@@ -40,6 +40,10 @@
   color: var(--danger);
   font-size: var(--text-c1-size);
 }
+.field-warning {
+  color: var(--warning);
+  font-size: var(--text-c1-size);
+}
 .field-ok {
   color: var(--success);
   font-size: var(--text-c1-size);

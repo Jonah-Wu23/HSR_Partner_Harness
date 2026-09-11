@@ -119,6 +119,9 @@ function createMockActions(overrides: Partial<HarnessActions> = {}): HarnessActi
     issuePairingCode: vi.fn().mockResolvedValue(undefined),
     listRemoteDevices: vi.fn().mockResolvedValue(undefined),
     revokeRemoteDevice: vi.fn().mockResolvedValue(undefined),
+    tunnelStart: vi.fn().mockResolvedValue(undefined),
+    tunnelStop: vi.fn().mockResolvedValue(undefined),
+    queryTunnelStatus: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }

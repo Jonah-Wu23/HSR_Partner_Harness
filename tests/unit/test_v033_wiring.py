@@ -186,7 +186,7 @@ async def test_remote_pair_full_flow(service) -> None:
         await service.handle_command(
             command("2", "remote.pair", code=code, device_name="第二台")
         )
-    assert excinfo.value.code == "pairing_used"
+    assert excinfo.value.code == "pairing_invalid_code"
 
     devices = await service.handle_command(command("3", "remote.list_devices"))
     assert [d["device_name"] for d in devices["devices"]] == ["我的手机"]

@@ -32,6 +32,8 @@ import type {
   CharacterLibraryViewModel,
   MainView,
   RemotePairingViewModel,
+  TunnelState,
+  TunnelViewModel,
 } from "../contracts/view-models";
 // 线缆解码是运行期函数（不是类型）：memory.* 的扁平载荷在这里转成前端记录。
 import { pairMemoryFromPayload } from "../contracts/protocol";
@@ -261,6 +263,16 @@ export interface DesktopState {
   setRemotePairing(partial: Partial<RemotePairingViewModel>): void;
   /** V039-S4-004：合并 serve 地址载荷（serve.started 事件与 remote.issue_code 返回同形）。 */
   setServeAddress(payload: unknown): void;
+  /** V0.4.0：更新公网隧道状态。 */
+  setTunnelStatus(status: {
+    state: TunnelState;
+    public_url?: string | null;
+    hostname?: string | null;
+    error?: string | null;
+  }): void;
+  setTunnelStarting(): void;
+  setTunnelStopping(): void;
+  setTunnelFailed(error: string): void;
   hydrate(snapshot: DesktopSnapshot): void;
   applyEvents(events: DesktopEvent[]): void;
   /** V0.3.2 M5：装载 conversation.open 的只读结果并打开对应标签（不改全局当前聊天）。 */
@@ -403,6 +415,10 @@ function createInitialState(): Omit<
   | "setCharacterCreate"
   | "setRemotePairing"
   | "setServeAddress"
+  | "setTunnelStatus"
+  | "setTunnelStarting"
+  | "setTunnelStopping"
+  | "setTunnelFailed"
   | "setPowerStatus"
   | "setPowerError"
   | "setPowerQueryInFlight"
@@ -484,8 +500,16 @@ function createInitialState(): Omit<
       error: null,
       serveAddress: null,
       servePort: null,
+      serveMode: null,
       serveUnavailableReason: null,
       serveFailure: null,
+      tunnel: {
+        state: "off",
+        publicUrl: null,
+        hostname: null,
+        error: null,
+        loading: false,
+      },
     },
     powerStatus: null,
     powerError: null,
@@ -964,7 +988,7 @@ function remotePairingWithServeAddress(
   payload: unknown,
 ): DesktopState["remotePairing"] {
   const raw = (payload && typeof payload === "object" ? payload : null) as
-    | { host?: unknown; port?: unknown; reason?: unknown }
+    | { host?: unknown; port?: unknown; mode?: unknown; tls?: unknown; reason?: unknown }
     | null;
   if (!raw) return remotePairing;
   if (typeof raw.port !== "number") {
@@ -978,10 +1002,20 @@ function remotePairingWithServeAddress(
   }
   const host = typeof raw.host === "string" && raw.host ? raw.host : null;
   const reason = typeof raw.reason === "string" && raw.reason ? raw.reason : null;
+  const mode = raw.mode === "lan" || raw.mode === "loopback" ? raw.mode : undefined;
+  const tls = typeof raw.tls === "boolean" ? raw.tls : undefined;
   return {
     ...remotePairing,
-    serveAddress: host ? { host, port: raw.port } : null,
+    serveAddress: host
+      ? {
+          host,
+          port: raw.port,
+          ...(mode !== undefined ? { mode } : {}),
+          ...(tls !== undefined ? { tls } : {}),
+        }
+      : null,
     servePort: raw.port,
+    serveMode: mode ?? remotePairing.serveMode,
     serveUnavailableReason: host ? null : reason,
     // 服务已启动：上一次「启动失败」的报文条件已结束。
     serveFailure: null,
@@ -1805,6 +1839,76 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
       next.remotePairing = remotePairingWithServeAddress(next.remotePairing, event.payload);
       break;
     }
+    case "tunnel.started": {
+      const payload = (event.payload && typeof event.payload === "object" ? event.payload : {}) as {
+        public_url?: string;
+        hostname?: string;
+      };
+      const currentTunnel = next.remotePairing.tunnel ?? {
+        state: "off",
+        publicUrl: null,
+        hostname: null,
+        error: null,
+        loading: false,
+      };
+      next.remotePairing = {
+        ...next.remotePairing,
+        tunnel: {
+          ...currentTunnel,
+          state: "ready",
+          publicUrl: payload.public_url ?? null,
+          hostname: payload.hostname ?? null,
+          error: null,
+          loading: false,
+        },
+      };
+      break;
+    }
+    case "tunnel.stopped": {
+      const currentTunnel = next.remotePairing.tunnel ?? {
+        state: "off",
+        publicUrl: null,
+        hostname: null,
+        error: null,
+        loading: false,
+      };
+      next.remotePairing = {
+        ...next.remotePairing,
+        tunnel: {
+          ...currentTunnel,
+          state: "off",
+          publicUrl: null,
+          hostname: null,
+          error: null,
+          loading: false,
+        },
+      };
+      break;
+    }
+    case "tunnel.failed": {
+      const payload = (event.payload && typeof event.payload === "object" ? event.payload : {}) as {
+        error?: string;
+      };
+      const currentTunnel = next.remotePairing.tunnel ?? {
+        state: "off",
+        publicUrl: null,
+        hostname: null,
+        error: null,
+        loading: false,
+      };
+      next.remotePairing = {
+        ...next.remotePairing,
+        tunnel: {
+          ...currentTunnel,
+          state: "failed",
+          publicUrl: null,
+          hostname: null,
+          error: payload.error ?? "公网隧道异常",
+          loading: false,
+        },
+      };
+      break;
+    }
     case "power.status_changed": {
       // V0.3.7 §2.1：payload 与 power.get_status result 完全同形；事件即权威读取，
       // 覆盖旧状态与旧查询错误。at_risk 消失时复位「本次持续期内不再提示」，
@@ -2180,6 +2284,94 @@ export const desktopStore = createStore<DesktopState>((set, get) => ({
     set((state) => ({
       remotePairing: remotePairingWithServeAddress(state.remotePairing, payload),
     }));
+  },
+  setTunnelStatus(status) {
+    set((state) => {
+      const currentTunnel = state.remotePairing.tunnel ?? {
+        state: "off",
+        publicUrl: null,
+        hostname: null,
+        error: null,
+        loading: false,
+      };
+      return {
+        remotePairing: {
+          ...state.remotePairing,
+          tunnel: {
+            ...currentTunnel,
+            state: status.state,
+            publicUrl: status.public_url ?? null,
+            hostname: status.hostname ?? null,
+            error: status.error ?? null,
+            loading: false,
+          },
+        },
+      };
+    });
+  },
+  setTunnelStarting() {
+    set((state) => {
+      const currentTunnel = state.remotePairing.tunnel ?? {
+        state: "off",
+        publicUrl: null,
+        hostname: null,
+        error: null,
+        loading: false,
+      };
+      return {
+        remotePairing: {
+          ...state.remotePairing,
+          tunnel: {
+            ...currentTunnel,
+            state: "starting",
+            error: null,
+            loading: true,
+          },
+        },
+      };
+    });
+  },
+  setTunnelStopping() {
+    set((state) => {
+      const currentTunnel = state.remotePairing.tunnel ?? {
+        state: "off",
+        publicUrl: null,
+        hostname: null,
+        error: null,
+        loading: false,
+      };
+      return {
+        remotePairing: {
+          ...state.remotePairing,
+          tunnel: {
+            ...currentTunnel,
+            loading: true,
+          },
+        },
+      };
+    });
+  },
+  setTunnelFailed(error) {
+    set((state) => {
+      const currentTunnel = state.remotePairing.tunnel ?? {
+        state: "off",
+        publicUrl: null,
+        hostname: null,
+        error: null,
+        loading: false,
+      };
+      return {
+        remotePairing: {
+          ...state.remotePairing,
+          tunnel: {
+            ...currentTunnel,
+            state: "failed",
+            error,
+            loading: false,
+          },
+        },
+      };
+    });
   },
   setPowerStatus(payload) {
     set((state) => ({

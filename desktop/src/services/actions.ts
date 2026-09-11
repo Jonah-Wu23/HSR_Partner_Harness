@@ -31,6 +31,9 @@ import type {
   RemoteIssueCodeResult,
   RemoteListDevicesResult,
   RemoteRevokeResult,
+  RemoteTunnelStartResult,
+  RemoteTunnelStopResult,
+  RemoteTunnelStatusResult,
   VoiceCardBindReferenceResult,
   VoiceCardCreateResult,
   VoiceCardUnbindResult,
@@ -640,6 +643,7 @@ export function createActionController(backend: DesktopBackend): ActionControlle
           deviceName: device.device_name,
           issuedAt: device.issued_at,
           lastUsedAt: device.last_used_at,
+          expiresAt: device.expires_at,
           revoked: device.revoked,
         }));
         desktopStore.getState().setRemotePairing({ devices, loading: false });
@@ -651,6 +655,34 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async revokeRemoteDevice(deviceName) {
       await request<RemoteRevokeResult>("remote.revoke", { device_name: deviceName });
       await this.listRemoteDevices();
+    },
+    /* —— V0.4.0 公网隧道（Cloudflare Quick Tunnel）—— */
+    async tunnelStart() {
+      desktopStore.getState().setTunnelStarting();
+      try {
+        await request<RemoteTunnelStartResult>("remote.tunnel_start");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        desktopStore.getState().setTunnelFailed(message);
+      }
+    },
+    async tunnelStop() {
+      desktopStore.getState().setTunnelStopping();
+      try {
+        await request<RemoteTunnelStopResult>("remote.tunnel_stop");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        desktopStore.getState().setTunnelFailed(message);
+      }
+    },
+    async queryTunnelStatus() {
+      try {
+        const result = await request<RemoteTunnelStatusResult>("remote.tunnel_status");
+        desktopStore.getState().setTunnelStatus(result);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        desktopStore.getState().setTunnelFailed(message);
+      }
     },
     /* —— V0.3.9 摘要、记忆与诊断（PM/视觉 V-B 2a1fccb）—— */
     async regenerateSummary(summaryIdOrTarget) {

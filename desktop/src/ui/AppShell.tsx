@@ -369,6 +369,9 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
         onIssuePairingCode={() => void actions.issuePairingCode()}
         onListRemoteDevices={() => void actions.listRemoteDevices()}
         onRevokeRemoteDevice={(deviceName) => void actions.revokeRemoteDevice(deviceName)}
+        onTunnelStart={() => void actions.tunnelStart()}
+        onTunnelStop={() => void actions.tunnelStop()}
+        onQueryTunnelStatus={() => void actions.queryTunnelStatus()}
         onSaveProfile={(displayName) => void actions.updateAccountProfile(displayName)}
         onChangePassword={(oldPassword, newPassword) =>
           void actions.changePassword(oldPassword, newPassword)

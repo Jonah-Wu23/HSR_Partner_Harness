@@ -219,9 +219,8 @@ async def test_serve_port_conflict_degrades_to_stdin_only(
     import pair_harness.desktop_backend.__main__ as backend_main
 
     blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # 与 WSServerMode 的 0.0.0.0 同地址族占用；绑 127.0.0.1 在 Windows 下
-    # 会被 0.0.0.0 叠加绑定而不报错，测不出端口冲突（测试刻意行为）。
-    blocker.bind(("0.0.0.0", 0))  # codeql[py/bind-socket-all-network-interfaces]
+    # 与 WSServerMode 默认的 127.0.0.1 同地址族占用测试端口冲突
+    blocker.bind(("127.0.0.1", 0))
     blocker.listen(1)
     port = int(blocker.getsockname()[1])
     try:
@@ -230,6 +229,7 @@ async def test_serve_port_conflict_degrades_to_stdin_only(
         monkeypatch.setattr(sys, "stdout", out)
         args = argparse.Namespace(
             serve=port,
+            lan=False,
             demo=True,
             real=False,
             pair="phainon_ancient_machine",
@@ -324,12 +324,20 @@ async def _wait_until(predicate, *, message: str, timeout: float = 10.0) -> None
     raise AssertionError(message)
 
 
-def _run_args(tmp_path, *, serve: int | None = None, demo: bool = True, real: bool = False):
+def _run_args(
+    tmp_path,
+    *,
+    serve: int | None = None,
+    lan: bool = False,
+    demo: bool = True,
+    real: bool = False,
+):
     """__main__._run 的启动参数（与 Rust 侧实际传入的字段一致）。"""
     import argparse
 
     return argparse.Namespace(
         serve=serve,
+        lan=lan,
         demo=demo,
         real=real,
         pair="phainon_ancient_machine",
@@ -356,7 +364,7 @@ def _capture_service(monkeypatch, backend_main) -> dict[str, Any]:
 
 @pytest.mark.asyncio
 async def test_serve_started_reports_lan_address(tmp_path, monkeypatch) -> None:
-    """V0.3.4 缺陷 6 / V039-S4-004：serve 启动成功后上报 serve.started（host/port），
+    """V0.3.4 缺陷 6 / V039-S4-004：--lan 开启后上报 serve.started（host/port/mode/tls），
     桌面端二维码按它生成；同一事实同时落在 service.remote_serve_address，
     服务层可按需读取（不必只依赖一次性事件）；stdin 正常 EOF 退出 0。"""
     import pair_harness.desktop_backend.__main__ as backend_main
@@ -367,24 +375,44 @@ async def test_serve_started_reports_lan_address(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(sys, "stdout", out)
     monkeypatch.setattr(backend_main, "_detect_lan_ip", lambda: "192.168.1.42")
     captured = _capture_service(monkeypatch, backend_main)
+    rc = await backend_main._run(_run_args(tmp_path, serve=port, lan=True))
+    assert rc == 0
+
+    lines = [json.loads(line) for line in out.getvalue().splitlines()]
+    serve_events = [m for m in lines if m.get("event") == "serve.started"]
+    assert len(serve_events) == 1
+    expected = {"host": "192.168.1.42", "port": port, "mode": "lan", "tls": False}
+    assert serve_events[0]["payload"] == expected
+    assert captured["service"].remote_serve_address == expected
+
+
+@pytest.mark.asyncio
+async def test_serve_started_default_loopback(tmp_path, monkeypatch) -> None:
+    """T1 / D2: 默认 --serve 不带 --lan 时绑定回环 127.0.0.1，
+    serve.started 上报 mode='loopback'，tls=False。"""
+    import pair_harness.desktop_backend.__main__ as backend_main
+
+    port = _free_port()
+    out = io.StringIO()
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    monkeypatch.setattr(sys, "stdout", out)
+    captured = _capture_service(monkeypatch, backend_main)
     rc = await backend_main._run(_run_args(tmp_path, serve=port))
     assert rc == 0
 
     lines = [json.loads(line) for line in out.getvalue().splitlines()]
     serve_events = [m for m in lines if m.get("event") == "serve.started"]
     assert len(serve_events) == 1
-    assert serve_events[0]["payload"] == {"host": "192.168.1.42", "port": port}
-    assert captured["service"].remote_serve_address == {
-        "host": "192.168.1.42",
-        "port": port,
-    }
+    expected = {"host": "127.0.0.1", "port": port, "mode": "loopback", "tls": False}
+    assert serve_events[0]["payload"] == expected
+    assert captured["service"].remote_serve_address == expected
 
 
 @pytest.mark.asyncio
 async def test_lan_ip_probe_failure_reports_started_without_address(
     tmp_path, monkeypatch
 ) -> None:
-    """V039-S4-004 事件契约：服务确已监听、只是探测不到局域网地址时，
+    """V039-S4-004 事件契约：--lan 模式下服务确已监听、只是探测不到局域网地址时，
     serve.started 仍下发且 host 为 null、reason 为 no_lan_address
     （不伪造 127.0.0.1 / 0.0.0.0 等不可达地址），同时不下发
     serve_start_failed——桌面端据此把「已启动但无局域网地址」与
@@ -397,13 +425,19 @@ async def test_lan_ip_probe_failure_reports_started_without_address(
     monkeypatch.setattr(sys, "stdout", out)
     monkeypatch.setattr(backend_main, "_detect_lan_ip", lambda: None)
     captured = _capture_service(monkeypatch, backend_main)
-    rc = await backend_main._run(_run_args(tmp_path, serve=port))
+    rc = await backend_main._run(_run_args(tmp_path, serve=port, lan=True))
     assert rc == 0
 
     lines = [json.loads(line) for line in out.getvalue().splitlines()]
     serve_events = [m for m in lines if m.get("event") == "serve.started"]
     assert len(serve_events) == 1
-    expected = {"host": None, "port": port, "reason": "no_lan_address"}
+    expected = {
+        "host": None,
+        "port": port,
+        "mode": "lan",
+        "tls": False,
+        "reason": "no_lan_address",
+    }
     assert serve_events[0]["payload"] == expected
     assert captured["service"].remote_serve_address == expected
     failures = [
@@ -636,6 +670,36 @@ async def test_remote_submit_metric_records_origin_and_device(tmp_path) -> None:
             token.encode("utf-8")
         ).hexdigest()
         assert record.remote_device_name == "指标手机"
+        await ws.close()
+    finally:
+        await session.close()
+        await harness.stop()
+
+
+@pytest.mark.asyncio
+async def test_remote_control_plane_calls_rejected_with_forbidden_scope(tmp_path) -> None:
+    """T4 / D6: 远程 WS 连接尝试调用控制面方法一律拒绝，返回 forbidden_scope。"""
+    harness = SidecarHarness(tmp_path, io.StringIO())
+    await harness.start()
+    session = aiohttp.ClientSession()
+    try:
+        code = harness.service.pairing_service.issue_code()
+        token = harness.service.pairing_service.claim(code, device_name="remote-phone")
+        ws = await session.ws_connect(f"http://127.0.0.1:{harness.port}/ws")
+
+        control_methods = [
+            "remote.issue_code",
+            "remote.list_devices",
+            "remote.revoke",
+            "remote.tunnel_start",
+            "remote.tunnel_stop",
+            "remote.tunnel_status",
+        ]
+        for idx, method in enumerate(control_methods):
+            response = await _request(ws, method, f"ctrl-{idx}", token=token)
+            assert response["ok"] is False
+            assert response["error"]["code"] == "forbidden_scope"
+
         await ws.close()
     finally:
         await session.close()

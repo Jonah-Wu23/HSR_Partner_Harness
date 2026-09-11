@@ -22,6 +22,11 @@ function fakeBackend(respond: (command: DesktopCommand) => unknown): DesktopBack
 describe("远程设备页服务地址（V039-S4-004）", () => {
   beforeEach(() => {
     desktopStore.setState({
+      status: "ready",
+      needsBootstrap: false,
+      lastSequence: -1,
+      streamId: null,
+      eventBuffer: [],
       remotePairing: {
         code: null,
         ttlSeconds: 300,
@@ -33,6 +38,13 @@ describe("远程设备页服务地址（V039-S4-004）", () => {
         servePort: null,
         serveUnavailableReason: null,
         serveFailure: null,
+        tunnel: {
+          state: "off",
+          publicUrl: null,
+          hostname: null,
+          error: null,
+          loading: false,
+        },
       },
     });
   });
@@ -89,5 +101,100 @@ describe("远程设备页服务地址（V039-S4-004）", () => {
       host: "192.168.1.7",
       port: 8765,
     });
+  });
+
+  it("listRemoteDevices 映射设备 expiresAt 字段", async () => {
+    const backend = fakeBackend(() => ({
+      devices: [
+        {
+          device_name: "iPhone 16",
+          issued_at: "2026-09-11T12:00:00Z",
+          last_used_at: "2026-09-11T12:01:00Z",
+          expires_at: "2026-09-18T12:01:00Z",
+          revoked: false,
+        },
+      ],
+    }));
+    const { actions } = createActionController(backend);
+
+    await actions.listRemoteDevices();
+
+    const devices = desktopStore.getState().remotePairing.devices;
+    expect(devices).toHaveLength(1);
+    expect(devices[0].deviceName).toBe("iPhone 16");
+    expect(devices[0].expiresAt).toBe("2026-09-18T12:01:00Z");
+  });
+
+  it("tunnelStart 与 queryTunnelStatus 正确派发并写入 store", async () => {
+    const backend = fakeBackend((cmd) => {
+      if (cmd.method === "remote.tunnel_start") {
+        return { status: "starting" };
+      }
+      if (cmd.method === "remote.tunnel_status") {
+        return {
+          state: "ready",
+          public_url: "https://actions-test.trycloudflare.com",
+          hostname: "actions-test.trycloudflare.com",
+          error: null,
+        };
+      }
+      return {};
+    });
+    const { actions } = createActionController(backend);
+
+    await actions.tunnelStart();
+    expect(desktopStore.getState().remotePairing.tunnel?.state).toBe("starting");
+
+    await actions.queryTunnelStatus();
+    expect(desktopStore.getState().remotePairing.tunnel?.state).toBe("ready");
+    expect(desktopStore.getState().remotePairing.tunnel?.publicUrl).toBe("https://actions-test.trycloudflare.com");
+  });
+
+  it("tunnel 事件流正确驱动 store 五态变更", () => {
+    // 初始状态
+    expect(desktopStore.getState().remotePairing.tunnel?.state).toBe("off");
+
+    // tunnel.started 事件
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "tunnel.started",
+        sequence: 1,
+        payload: {
+          public_url: "https://event-test.trycloudflare.com",
+          hostname: "event-test.trycloudflare.com",
+        },
+      },
+    ]);
+    expect(desktopStore.getState().remotePairing.tunnel?.state).toBe("ready");
+    expect(desktopStore.getState().remotePairing.tunnel?.publicUrl).toBe("https://event-test.trycloudflare.com");
+
+    // tunnel.failed 事件
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "tunnel.failed",
+        sequence: 2,
+        payload: {
+          error: "进程异常退出",
+        },
+      },
+    ]);
+    expect(desktopStore.getState().remotePairing.tunnel?.state).toBe("failed");
+    expect(desktopStore.getState().remotePairing.tunnel?.error).toBe("进程异常退出");
+
+    // tunnel.stopped 事件
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "tunnel.stopped",
+        sequence: 3,
+        payload: {
+          reason: "user_requested",
+        },
+      },
+    ]);
+    expect(desktopStore.getState().remotePairing.tunnel?.state).toBe("off");
+    expect(desktopStore.getState().remotePairing.tunnel?.publicUrl).toBeNull();
   });
 });

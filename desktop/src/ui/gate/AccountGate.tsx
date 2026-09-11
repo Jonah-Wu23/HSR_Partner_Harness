@@ -36,7 +36,7 @@ export function AccountGate({ accounts, error, busy, onLogin, onRegister, onClea
     <div className="account-gate">
       <div className="account-gate-ambience" aria-hidden>
         <span className="account-gate-brand">HSR Partner Harness</span>
-        <span className="account-gate-slogan">一间房，两盏灯。</span>
+        <span className="account-gate-slogan">一条会话，两条工作轨。</span>
       </div>
 
       <div className="account-gate-card">
