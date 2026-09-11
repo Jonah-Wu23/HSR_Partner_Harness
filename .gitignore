@@ -43,3 +43,9 @@ docs/promo/
 # notes.md、commands.ps1、manifest、日报与 blockers）随仓库提交。
 evidence/**/*.log
 evidence/**/*.wav
+# graphify 知识图谱。wiki 与审计报告入库：任何客户端克隆后即可按 AGENTS.md
+# 「知识图谱」一节的零依赖路径使用，无需安装 graphify。其余是本机工具数据，
+# graph.json 与 cache 各约 12MB，不入库。
+graphify-out/*
+!graphify-out/wiki/
+!graphify-out/GRAPH_REPORT.md

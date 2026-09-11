@@ -86,6 +86,37 @@ Python 包位于 `src/pair_harness/`。Sidecar 入口是 `pair_harness.desktop_b
 
 维护规则：新增文档放进对应子目录并更新该目录 `README.md`；移动或重命名 `docs/character-card/`、`docs/design/dashscope/` 下的文档时，同步更新 `src/` 代码注释中的路径引用。
 
+## 知识图谱
+
+`graphify-out/` 存有一份预构建的仓库知识图谱：7620 节点、18326 条边、311 个社区，覆盖 `src/`、`tests/`、`desktop/`、`docs/`、`config/`、`scripts/`。回答架构问题、判断符号归属、评估改动波及范围时先查它，比通读源码快得多。
+
+### 入口
+
+首选 `graphify-out/wiki/index.md`。它是纯 Markdown 加相对链接，322 篇文章共 1.4 MB。任何能读文件的客户端都能用，不需要 shell、Python 或安装 graphify。社区文章按领域列出关键概念、连接数和源文件路径，并列出相邻社区；节点文章按关系分类列出全部连接。
+
+能执行 shell 且本机装有 graphify 时，命令行查询更省上下文：
+
+```powershell
+graphify query "委派执行链怎么走的" --budget 2000   # BFS 遍历，输出受 token 上限约束
+graphify query "..." --dfs                          # 追单条路径
+graphify explain "ApprovalManager"                  # 符号讲解与邻接边
+graphify affected "SQLiteStore" --depth 2           # 反向：改动会波及谁
+graphify path "A" "B" --undirected                  # 两符号间最短路径
+graphify god-nodes --top 10                         # 连接度最高的核心抽象
+```
+
+`path` 默认走有向边，通常搜不到结果，加 `--undirected`。`query` 触及预算上限时会明确报出被截断的节点数，需要更全的结果就抬高 `--budget` 或收窄问题。
+
+### 前提、范围与新鲜度
+
+graphify 是机器级安装（当前在全局 Python 3.11），不在本仓库的 `.venv` 里。没有它就走 wiki 路径，结论一样可用，只是查询粒度粗一些。
+
+图谱只覆盖 534 个文件。`evidence/`、`output/`、`.playwright-cli/`、`desktop/src-tauri/gen/`、`assets/reference_voices/` 和全部图片未纳入：前四类是逐次运行的原始记录与生成物，图谱价值低；语音采样是 TTS 参考音频，不是文本。查询结果不代表整个仓库。
+
+代码改动后图谱会过期，重建要走 `/graphify .` 的完整范围裁剪流程，不要直接跑 `graphify update`。该命令按仓库根重新扫描，会把上面排除的目录重新纳入：实测节点数从 7620 涨到 8475、社区从 311 变成 366，55 个已命名社区标签随之丢失。
+
+`graphify-out/graph.json` 有 11.9 MB，是给工具消费的原始数据，不要整份读入上下文。
+
 ## 产品边界
 
 角色负责对话，也可以形成结构化委派。文件操作和命令执行由助手完成。
