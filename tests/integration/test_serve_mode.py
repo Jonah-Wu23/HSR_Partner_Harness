@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import socket
@@ -23,6 +24,7 @@ from pair_harness.desktop_backend.application_service import build_demo_service
 from pair_harness.desktop_backend.event_fanout import EventFanout
 from pair_harness.desktop_backend.router import JsonlWriter, SidecarRouter
 from pair_harness.desktop_backend.ws_server import WSServerMode
+from pair_harness.storage.records import TurnMetricQuery
 
 
 def _free_port() -> int:
@@ -577,4 +579,64 @@ async def test_sigint_routes_to_orderly_stop(tmp_path, monkeypatch) -> None:
         finally:
             signal.signal(signal.SIGINT, previous)
     finally:
+        await harness.stop()
+
+
+@pytest.mark.asyncio
+async def test_remote_submit_metric_records_origin_and_device(tmp_path) -> None:
+    """V0.3.9 §5：手机经 WS 提交的回合，指标如实记录 remote 来源与设备。
+
+    全链路：真实 WS 客户端 → WSServerMode 鉴权 → Router 注入
+    origin/device_key/device_name → chat.submit → TurnMetric。
+    """
+    harness = SidecarHarness(tmp_path, io.StringIO())
+    await harness.start()
+    session = aiohttp.ClientSession()
+    try:
+        code = harness.service.pairing_service.issue_code()
+        token = harness.service.pairing_service.claim(code, device_name="指标手机")
+        conversation_id = harness.service.current_conversation_id
+        ws = await session.ws_connect(f"http://127.0.0.1:{harness.port}/ws")
+        await ws.send_json(
+            {
+                "kind": "request",
+                "id": "m1",
+                "method": "chat.submit",
+                "params": {
+                    "conversation_id": conversation_id,
+                    "target": "character",
+                    "text": "来自手机的消息",
+                },
+                "auth": {"token": token},
+            }
+        )
+        # response 之前可能有本回合的事件先到，按 kind 过滤直到拿到 response。
+        deadline = asyncio.get_running_loop().time() + 5.0
+        response: dict[str, Any] | None = None
+        while response is None:
+            remaining = deadline - asyncio.get_running_loop().time()
+            assert remaining > 0, "未在超时内收到 chat.submit response"
+            message = await asyncio.wait_for(_recv_message(ws), timeout=remaining)
+            if message.get("kind") == "response":
+                response = message
+        assert response["ok"] is True, response
+        turn_id = response["result"]["turn_id"]
+
+        def metric():
+            page = harness.service.store.query_turn_metrics(
+                TurnMetricQuery(conversation_id=conversation_id, limit=50)
+            )
+            return next((m for m in page.items if m.turn_id == turn_id), None)
+
+        await _wait_until(lambda: metric() is not None, message="回合终态应写入指标")
+        record = metric()
+        assert record is not None
+        assert record.origin == "remote"
+        assert record.remote_device_key == hashlib.sha256(
+            token.encode("utf-8")
+        ).hexdigest()
+        assert record.remote_device_name == "指标手机"
+        await ws.close()
+    finally:
+        await session.close()
         await harness.stop()

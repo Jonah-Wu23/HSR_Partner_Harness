@@ -218,7 +218,11 @@ export interface DesktopState {
   queryMetrics(params?: { conversation_id?: string; cursor?: string | null; limit?: number }): Promise<{ metrics: TurnMetric[]; next_cursor: string | null }>;
   queryPromptAssembly(params?: { conversation_id?: string; includeHidden?: boolean }): Promise<PromptAssemblyDiagnostics>;
   setRemoteControl(state: RemoteControlState | null): void;
-  setMetricsPage(page: { metrics: TurnMetric[]; cursor: string | null }): void;
+  /** 写入一页指标。replace（缺省）= 整体覆盖；append = keyset 分页追加并按 metric_id 去重。 */
+  setMetricsPage(
+    page: { metrics: TurnMetric[]; cursor: string | null },
+    mode?: "replace" | "append",
+  ): void;
   setMetricsError(message: string | null): void;
   setMetricsLoading(loading: boolean): void;
   setPromptAssembly(diagnostics: PromptAssemblyDiagnostics | null): void;
@@ -2330,12 +2334,30 @@ export const desktopStore = createStore<DesktopState>((set, get) => ({
   setRemoteControl(remoteControl) {
     set({ remoteControl });
   },
-  setMetricsPage(page) {
-    set({
-      turnMetrics: page.metrics,
-      metricsCursor: page.cursor,
-      metricsLoading: false,
-      metricsError: null,
+  setMetricsPage(page, mode = "replace") {
+    set((state) => {
+      if (mode === "replace") {
+        return {
+          turnMetrics: page.metrics,
+          metricsCursor: page.cursor,
+          metricsLoading: false,
+          metricsError: null,
+        };
+      }
+      // append：keyset 分页追加，旧页在前；已出现的 metric_id 跳过（含本页内部重复）。
+      const seen = new Set(state.turnMetrics.map((metric) => metric.metric_id));
+      const merged = [...state.turnMetrics];
+      for (const metric of page.metrics) {
+        if (seen.has(metric.metric_id)) continue;
+        seen.add(metric.metric_id);
+        merged.push(metric);
+      }
+      return {
+        turnMetrics: merged,
+        metricsCursor: page.cursor,
+        metricsLoading: false,
+        metricsError: null,
+      };
     });
   },
   setMetricsError(message) {

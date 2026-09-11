@@ -122,7 +122,7 @@ class WSServerMode:
     def __init__(
         self,
         *,
-        dispatch: Callable[[str, ReplySink | None], None],
+        dispatch: Callable[..., None],
         authenticator: RemoteAuthenticator,
         fanout: EventFanout,
         static_root: Path | None,
@@ -283,5 +283,12 @@ class WSServerMode:
             logger.info("远程连接鉴权完成 device=%r", decision.device_name)
 
         # V0.3.5：远程命令标记 origin=remote 并携带连接 key，供审批
-        # 仲裁与手机语音会话归属使用。
-        self.dispatch(text, conn.send, origin="remote", connection_key=conn.key)
+        # 仲裁与手机语音会话归属使用。V0.3.9 §5：鉴权决定里的设备名一并
+        # 注入，回合指标据此如实呈现来源设备。
+        self.dispatch(
+            text,
+            conn.send,
+            origin="remote",
+            connection_key=conn.key,
+            device_name=decision.device_name,
+        )

@@ -982,6 +982,52 @@ async def test_mobile_audio_chunk_maps_manager_errors_verbatim(service) -> None:
     assert accepting.fed == [("sess-2", 0, "AAE=")]
 
 
+async def test_mobile_ptt_stop_carries_remote_origin_to_chat_submit(service) -> None:
+    """V0.3.9 §5：手机语音转写提交保留传输层注入的来源与设备。"""
+    captured: dict[str, Any] = {}
+
+    class FakeAsrManager:
+        def end_session(self, session_id: str) -> str:
+            del session_id
+            return "手机语音文本"
+
+    service._mobile_asr = FakeAsrManager()  # type: ignore[assignment]
+    service._mobile_asr_conversations["sess-9"] = service.current_conversation_id
+
+    async def fake_chat_submit(
+        params: Any,
+        *,
+        origin: str = "desktop",
+        device_key: str | None = None,
+        device_name: str | None = None,
+    ) -> None:
+        captured.update(
+            {
+                "params": dict(params),
+                "origin": origin,
+                "device_key": device_key,
+                "device_name": device_name,
+            }
+        )
+
+    service._chat_submit = fake_chat_submit  # type: ignore[method-assign]
+    result = await service.handle_command(
+        DesktopCommand(
+            request_id="ptt-9",
+            method="voice.mobile_ptt_stop",
+            params={"session_id": "sess-9"},
+            origin="remote",
+            remote_device_key="device-key-9",
+            remote_device_name="测试手机",
+        )
+    )
+    assert result == {"session_id": "sess-9", "transcript": "手机语音文本"}
+    assert captured["origin"] == "remote"
+    assert captured["device_key"] == "device-key-9"
+    assert captured["device_name"] == "测试手机"
+    assert captured["params"]["conversation_id"] == service.current_conversation_id
+
+
 # ---------------------------------------------------------------- V0.3.7 回归
 
 async def test_runtime_rebuild_keeps_character_resolver(tmp_path: Path, monkeypatch) -> None:

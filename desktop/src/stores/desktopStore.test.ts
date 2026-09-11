@@ -1875,6 +1875,63 @@ describe("V0.3.9 契约消费（摘要/记忆/租约/指标/诊断/审批终态�
     expect(desktopStore.getState().promptAssemblyRevealed).toBe(false);
   });
 
+  it("setMetricsPage append 追加第二页并去重，replace 整体覆盖", () => {
+    const metricRecord = (metricId: string): TurnMetric => ({
+      metric_id: metricId,
+      account_id: "acc-1",
+      project_id: "project-1",
+      conversation_id: "conv-1",
+      pair_id: "phainon_ancient_machine",
+      character_ref: "builtin:phainon",
+      assistant_identity: "character",
+      turn_kind: "character_turn",
+      turn_id: `turn-${metricId}`,
+      task_id: null,
+      engine_turn_id: null,
+      provider: null,
+      model: null,
+      engine_type: null,
+      reasoning_effort: null,
+      status: "completed",
+      started_at: "2026-01-01T00:00:00Z",
+      first_event_at: null,
+      completed_at: null,
+      duration_ms: null,
+      input_tokens: null,
+      output_tokens: null,
+      total_tokens: null,
+      tool_rounds: 0,
+      compression_count: 0,
+      approval_count: 0,
+      failure_type: null,
+      failure_message: null,
+      origin: "desktop",
+      remote_device_key: null,
+      remote_device_name: null,
+    });
+
+    // 第一页（首屏，replace）：2 条且有下一页。
+    desktopStore.getState().setMetricsPage({
+      metrics: [metricRecord("m1"), metricRecord("m2")],
+      cursor: "c1",
+    });
+    // 第二页（加载更多，append）：新增 1 条并重复 1 条已读记录。
+    desktopStore.getState().setMetricsPage(
+      { metrics: [metricRecord("m3"), metricRecord("m2")], cursor: null },
+      "append",
+    );
+
+    const appended = desktopStore.getState();
+    // 旧页在前，重复的 m2 只保留第一次出现的一条。
+    expect(appended.turnMetrics.map((m) => m.metric_id)).toEqual(["m1", "m2", "m3"]);
+    expect(appended.metricsCursor).toBeNull();
+
+    // replace 对照：整体覆盖，不保留旧行。
+    desktopStore.getState().setMetricsPage({ metrics: [metricRecord("m9")], cursor: "c2" });
+    expect(desktopStore.getState().turnMetrics.map((m) => m.metric_id)).toEqual(["m9"]);
+    expect(desktopStore.getState().metricsCursor).toBe("c2");
+  });
+
   it("selectApprovalCountByConversation 只给计数，不泄露其他聊天内容", () => {
     desktopStore.getState().applyEvents([
       event(

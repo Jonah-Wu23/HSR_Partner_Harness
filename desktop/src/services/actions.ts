@@ -682,7 +682,12 @@ export function createActionController(backend: DesktopBackend): ActionControlle
         );
         const metrics = result?.metrics ?? [];
         const next_cursor = result?.next_cursor ?? null;
-        desktopStore.getState().setMetricsPage({ metrics, cursor: next_cursor });
+        // 无 cursor = 首屏/刷新，整体替换；带 cursor = 加载更多，追加到已读结果之后。
+        // 组件契约不变（MetricsPanel / DiagnosticsDrawer 的 props 不区分模式）。
+        desktopStore.getState().setMetricsPage(
+          { metrics, cursor: next_cursor },
+          params?.cursor ? "append" : "replace",
+        );
         return { metrics, next_cursor };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

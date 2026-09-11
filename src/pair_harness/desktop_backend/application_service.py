@@ -88,6 +88,7 @@ from pair_harness.core.summary import (
     SUMMARY_INVALID,
     SUMMARY_PROVIDER_ERROR,
     SUMMARY_TIMEOUT,
+    ConversationSummary,
     SummaryError,
     is_final_message,
     messages_after_coverage,
@@ -103,6 +104,7 @@ from pair_harness.core.memory import (
     MEMORY_SCOPE_MISMATCH,
     ConversationIdentity,
     MemoryError,
+    MemoryScope,
     PairMemory,
     active_memories,
     require_memory_found,
@@ -355,6 +357,27 @@ def _memory_payload(memory: Any, *, conversation_id: str | None = None) -> dict:
     if conversation_id is not None:
         payload["conversation_id"] = conversation_id
     return payload
+
+
+def _core_memory(memory: Any) -> PairMemory:
+    """storage 层 PairMemory（扁平分量）→ core 装配用 ``PairMemory``。
+
+    作用域五分量与 core 同构（契约 §1）；``content`` 落库时是 JSON 对象
+    文本，解析回对象后交给 core 校验——形状不符如实失败，不静默跳过。
+    """
+    return PairMemory(
+        memory_id=memory.memory_id,
+        scope=MemoryScope(
+            account_id=memory.account_id,
+            project_id=memory.project_id,
+            pair_id=memory.pair_id,
+            character_ref=memory.character_ref,
+            assistant_identity=memory.assistant_identity,
+        ),
+        content=_json_load(memory.content),
+        status=memory.status,
+        updated_at=memory.updated_at,
+    )
 
 
 def _json_load(text: str) -> Any:
@@ -869,6 +892,9 @@ class DesktopApplicationService:
         # 快照随 bootstrap 水合；终态保留供前端历史展示。
         self._turns: dict[str, dict[str, Any]] = {}
         self._conversation_turn_ids: dict[str, list[str]] = {}
+        # V0.3.9 §5：会话当前运行中的 turn_id——首个真实引擎/流式事件回调
+        # 据此把 first_event_at 记到正确的回合上（无事件的回合保持 null）。
+        self._active_turn_ids: dict[str, str] = {}
         # V0.2 M3：当前登录账号（重启后从 app_state 恢复；默认账号兜底）。
         # 账号是项目/聊天/配置/Codex 数据的隔离边界。
         self.current_account_id = (
@@ -1770,10 +1796,28 @@ class DesktopApplicationService:
             return await self._approval_resolve(
                 command.params, origin=command.origin
             )
+        if command.method == "chat.submit":
+            # V0.3.9 §5：回合来源身份只能取传输层注入的 command 字段
+            # （params 里的同名字段不可信），否则手机回合在指标里会显示
+            # 成桌面。
+            return await self._chat_submit(
+                command.params,
+                origin=command.origin,
+                device_key=command.remote_device_key,
+                device_name=command.remote_device_name,
+            )
         if command.method == "voice.mobile_ptt_start":
             # V0.3.5：语音会话绑定传输层注入的连接 key，供断开清理。
             return await self._voice_mobile_ptt_start(
                 command.params, connection_key=command.connection_key
+            )
+        if command.method == "voice.mobile_ptt_stop":
+            # 手机语音转写提交走同一回合链；来源身份同样来自传输层。
+            return await self._voice_mobile_ptt_stop(
+                command.params,
+                origin=command.origin,
+                device_key=command.remote_device_key,
+                device_name=command.remote_device_name,
             )
         if command.method == "remote.claim_control":
             return await self._remote_claim_control(
@@ -2112,11 +2156,21 @@ class DesktopApplicationService:
             self.emitter.emit("conversation.changed", {"conversation_id": conversation_id})
         return self.bootstrap()
 
-    async def _chat_submit(self, params: Mapping[str, Any]) -> dict[str, Any]:
+    async def _chat_submit(
+        self,
+        params: Mapping[str, Any],
+        *,
+        origin: str = "desktop",
+        device_key: str | None = None,
+        device_name: str | None = None,
+    ) -> dict[str, Any]:
         """V0.2 快速接受（问题 1）：同步落库用户消息，立即返回真实 id。
 
         回合处理移到后台任务（``_run_submit_turn``），前端按真实
         ``message_id`` 即时回显并推进状态；处理失败后文字仍在可重试。
+        ``origin``/``device_key``/``device_name``（V0.3.9 §5）由
+        ``handle_command`` 从传输层注入的 DesktopCommand 透传，落进 Turn
+        payload，供终态指标如实记录来源。
         """
         conversation_id = str(params.get("conversation_id") or self.current_conversation_id)
         if not conversation_id:
@@ -2190,7 +2244,14 @@ class DesktopApplicationService:
                 )
                 # V0.2 M2：同步创建 Turn（accepted），随提交返回 turn_id 供前端追踪；
                 # 生命周期事件由后台任务按 started → completed/failed 推进。
-                turn = self._register_turn(conversation_id, user_message, target)
+                turn = self._register_turn(
+                    conversation_id,
+                    user_message,
+                    target,
+                    origin=origin,
+                    device_key=device_key,
+                    device_name=device_name,
+                )
                 task = asyncio.create_task(
                     self._run_submit_chain(
                         conversation_id,
@@ -2275,8 +2336,21 @@ class DesktopApplicationService:
 
         task.add_done_callback(_on_done)
 
-    def _register_turn(self, conversation_id: str, user_message: Any, target: str) -> dict[str, Any]:
-        """创建并登记 Turn（accepted 态），返回 payload。"""
+    def _register_turn(
+        self,
+        conversation_id: str,
+        user_message: Any,
+        target: str,
+        *,
+        origin: str = "desktop",
+        device_key: str | None = None,
+        device_name: str | None = None,
+    ) -> dict[str, Any]:
+        """创建并登记 Turn（accepted 态），返回 payload。
+
+        V0.3.9 §5：来源身份随 Turn payload 落到运行态记录，终态指标从
+        同一份记录取值，不再回落到硬编码的 desktop。
+        """
         project_id = ""
         try:
             project_id = self.store.get_conversation(conversation_id).project_id or ""
@@ -2290,6 +2364,9 @@ class DesktopApplicationService:
             status=TurnStatus.ACCEPTED,
         )
         payload = to_jsonable(turn)
+        payload["origin"] = origin
+        payload["remote_device_key"] = device_key
+        payload["remote_device_name"] = device_name
         self._turns[turn.turn_id] = payload
         ids = self._conversation_turn_ids.setdefault(conversation_id, [])
         if turn.turn_id not in ids:
@@ -2467,8 +2544,12 @@ class DesktopApplicationService:
         返回终态供派发链决定是否继续。
         """
         self._emit_turn_status(turn_id, "running")
+        # V0.3.9 §5：登记本会话当前运行的回合，供首个真实引擎/流式事件
+        # 回调把时间戳记到正确回合上。
+        self._active_turn_ids[conversation_id] = turn_id
         result = "completed"
         terminal_status = "completed"
+        failure_reason: str | None = None
         try:
             if target == "assistant":
                 outcome = await self.orchestrator.process_direct_input(
@@ -2507,6 +2588,7 @@ class DesktopApplicationService:
             # V039-S4-015：可见提示、消息失败原因与日志必须携带同一份真实
             # 原因，异常自述为空时回落到类型名，不产出空壳提示。
             reason = _failure_reason(exc)
+            failure_reason = reason
             self.orchestrator.mark_message_failed(
                 conversation_id, user_message.message_id, reason
             )
@@ -2530,27 +2612,30 @@ class DesktopApplicationService:
             self._record_turn_metric(
                 conversation_id,
                 turn_id,
-                user_message,
                 target,
                 terminal_status,
                 outcome=outcome if "outcome" in locals() else None,
+                failure_reason=failure_reason,
             )
+            self._active_turn_ids.pop(conversation_id, None)
         return result
 
     def _record_turn_metric(
         self,
         conversation_id: str,
         turn_id: str,
-        user_message: Any,
         target: str,
         status: str,
         *,
         outcome: Any = None,
+        failure_reason: str | None = None,
     ) -> None:
         """把回合终态写为 TurnMetric（幂等：同 turn 重复终态以首次写入为准）。
 
         契约 §5：未观测或供应商不提供的字段为 null 且键仍存在，真实零值
-        用 0；token 只接受服务端真实 usage，绝不估算。
+        用 0；token 只接受服务端真实 usage，绝不估算。``failure_reason``
+        是回合链捕获的真实失败原因——调用方持有的消息对象是 frozen 的不
+        可变原对象，失败原因只能由这里显式接收，不能从消息反查。
         """
         try:
             turn = self._turns.get(turn_id)
@@ -2599,13 +2684,25 @@ class DesktopApplicationService:
             started_at = turn.get("created_at") or utc_now().isoformat()
             completed_at = utc_now().isoformat()
             duration_ms = _duration_ms(started_at, completed_at)
-            first_event_at = turn.get("updated_at")
+            # V0.3.9 §5：first_event_at 只取回合链记录的首个真实引擎/流式
+            # 事件时间；没有事件（例如立即抛错的失败回合）保持 null，不回落
+            # 到被终态刷新过的 updated_at。
+            first_event_raw = turn.get("first_event_at")
+            first_event_at = (
+                datetime.fromisoformat(first_event_raw)
+                if isinstance(first_event_raw, str) and first_event_raw
+                else None
+            )
+            first_event_latency_ms = (
+                _duration_ms(started_at, first_event_raw)
+                if first_event_at is not None
+                else None
+            )
             failure_type = None
             failure_message = None
             if status == "failed":
                 failure_type = "turn_failed"
-                failure_message = self._turns.get(turn_id, {}).get("last_error") or \
-                    str(getattr(user_message, "error", "") or "")
+                failure_message = failure_reason
 
             metric = TurnMetric(
                 account_id=account_id,
@@ -2618,6 +2715,7 @@ class DesktopApplicationService:
                 turn_id=turn_id,
                 task_id=task_id,
                 engine_turn_id=engine_turn_id,
+                source_message_id=turn.get("source_message_id"),
                 provider=provider or None,
                 model=model or None,
                 engine_type=engine_type or None,
@@ -2627,6 +2725,7 @@ class DesktopApplicationService:
                 first_event_at=first_event_at,
                 completed_at=completed_at,
                 duration_ms=duration_ms,
+                first_event_latency_ms=first_event_latency_ms,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 total_tokens=total_tokens,
@@ -2635,7 +2734,10 @@ class DesktopApplicationService:
                 approval_count=0,
                 failure_type=failure_type,
                 failure_message=failure_message,
-                origin="desktop",
+                # 来源身份取 Turn payload 的运行态记录（提交时由传输层注入）。
+                origin=turn.get("origin") or "desktop",
+                remote_device_key=turn.get("remote_device_key"),
+                remote_device_name=turn.get("remote_device_name"),
             )
             self.store.upsert_turn_metric(metric)
         except Exception:  # noqa: BLE001 - 指标记录失败不得影响回合主链路
@@ -4067,8 +4169,15 @@ class DesktopApplicationService:
             return None
         return card_id
 
-    def _recent_completed_summary(self, conversation_id: str) -> Any:
-        """最近一条 completed 摘要（core 形状 content=dict）；无则 None。"""
+    def _recent_completed_summary(
+        self, conversation_id: str
+    ) -> ConversationSummary | None:
+        """最近一条 completed 摘要（core ``ConversationSummary``）；无则 None。
+
+        存储层 content 是 JSON 文本，这里解析回对象并按 core 契约构造：
+        装配器读的是 ``.status``/``.content`` 属性，dict 会在装配时抛
+        AttributeError（V0.3.9 §2 装配接缝）。
+        """
         try:
             records = self.store.list_summaries(conversation_id, status="completed")
         except ValueError:
@@ -4079,21 +4188,54 @@ class DesktopApplicationService:
         content = _json_load(latest.content)
         if not isinstance(content, dict):
             content = None
-        return {
-            "summary_id": latest.summary_id,
-            "conversation_id": latest.conversation_id,
-            "status": "completed",
-            "covers_from_message_id": latest.covers_from_message_id,
-            "covers_to_message_id": latest.covers_to_message_id,
-            "covers_message_count": latest.covers_message_count,
-            "content": content,
-            "provider": latest.provider,
-            "model": latest.model,
-            "error_code": None,
-            "error": None,
-            "created_at": latest.created_at,
-            "updated_at": latest.updated_at,
-        }
+        return ConversationSummary.model_validate(
+            {
+                "summary_id": latest.summary_id,
+                "conversation_id": latest.conversation_id,
+                "status": "completed",
+                "covers_from_message_id": latest.covers_from_message_id,
+                "covers_to_message_id": latest.covers_to_message_id,
+                "covers_message_count": latest.covers_message_count,
+                "content": content,
+                "provider": latest.provider,
+                "model": latest.model,
+                "error_code": None,
+                "error": None,
+                "created_at": latest.created_at,
+                "updated_at": latest.updated_at,
+            }
+        )
+
+    def _builtin_character_card(self, conversation: Any) -> CharacterCard:
+        """未绑定卡/卡已删除的会话：内置搭档角色提示词作为角色基座。
+
+        只读取该聊天搭档配置的角色提示词原文作为 ``description``，不改写、
+        不摘要；装配框架与模块标题与其他角色卡一致。
+        """
+        config = load_pair_config(conversation.pair_id)
+        return CharacterCard(
+            name=config.character.name,
+            description=load_prompt(config.character.prompt),
+        )
+
+    def _conversation_active_memories(
+        self, conversation_id: str
+    ) -> tuple[PairMemory, ...]:
+        """按会话作用域读取 active 长期记忆（core 形状）；无作用域返回空元组。
+
+        无项目会话没有长期记忆作用域（契约 §1）：装配按无记忆继续，不让
+        回合失败；记忆命令在同一会话上仍如实报错。其余作用域错误照常抛出。
+        """
+        try:
+            scope = self._conversation_scope(conversation_id)
+        except ServiceError as exc:
+            if exc.code != MEMORY_INVALID:
+                raise
+            return ()
+        return tuple(
+            _core_memory(record)
+            for record in self.store.list_memories(scope, status="active")
+        )
 
     def _resolve_character_prompt(
         self,
@@ -4101,40 +4243,53 @@ class DesktopApplicationService:
         recent_messages: tuple = (),
         turn_index: int = 0,
     ) -> "AssembledPrompt | None":
-        """按对话绑定的角色卡装配提示词；未绑定或卡已删除返回 None。
+        """按对话绑定的角色卡装配提示词；无角色基座返回 None。
 
         V0.3.7 契约 §4.5：resolver 三参 ``(conversation_id, recent_messages,
         turn_index)``。基座按 ``(card_id, updated_at)`` 缓存（世界书与
         depth_prompt 不进基座）；回合上下文（扫描文本与回合号）现算，
         叠加世界书激活、深度注入与确定性触发。``recent_messages`` /
         ``turn_index`` 带缺省值，兼容既有单参调用（等价空扫描的基座结果）。
+
+        V0.3.9 §2：最近成功摘要与 active 长期记忆都在这条接缝注入。未绑定卡
+        （或卡已删除）的会话只要确有摘要/记忆就用内置角色基座照常装配——
+        投影已按摘要覆盖把原文窗口收窄到 12 条，摘要再不注入等于旧历史丢失；
+        两者都没有时保持「未绑定 → None」的既有回退，交给内置 YAML 提示词。
         """
         try:
             conversation = self.store.get_conversation(conversation_id)
         except KeyError:
             return None
+        summary = self._recent_completed_summary(conversation_id)
+        memories = self._conversation_active_memories(conversation_id)
         card_id = conversation.character_card_id
-        if not card_id:
+        record = None
+        if card_id:
+            try:
+                record = self.card_repository.get_card(card_id)
+            except KeyError:
+                # 卡已被删除：回退内置角色；降级提示由 conversation.open 发出。
+                record = None
+        if record is None and summary is None and not memories:
             return None
-        try:
-            record = self.card_repository.get_card(card_id)
-        except KeyError:
-            # 卡已被删除：回退内置角色；降级提示由 conversation.open 发出。
-            return None
-        cached = self._assembled_cache.get(card_id)
-        if cached is not None and cached[0] == record.updated_at:
-            base = cached[1]
+        if record is not None:
+            cached = self._assembled_cache.get(card_id)
+            if cached is not None and cached[0] == record.updated_at:
+                base = cached[1]
+            else:
+                base = assemble_character_prompt(record.card)
+                self._assembled_cache[card_id] = (record.updated_at, base)
+            card = record.card
         else:
-            base = assemble_character_prompt(record.card)
-            self._assembled_cache[card_id] = (record.updated_at, base)
-        # V0.3.9 §2：装配消费最近成功摘要（契约：摘要+最近原文进角色上下文）。
-        summary_record = self._recent_completed_summary(conversation_id)
+            card = self._builtin_character_card(conversation)
+            base = None
         return assemble_turn_prompt(
-            record.card,
+            card,
             scan_texts=[m.text for m in recent_messages],
             turn_index=turn_index,
             base=base,
-            summary=summary_record,
+            summary=summary,
+            memories=memories,
         )
 
     def _insert_character_greeting(
@@ -4296,7 +4451,12 @@ class DesktopApplicationService:
         return {"message_id": message_id, "stopped": True}
 
     async def _voice_mobile_ptt_stop(
-        self, params: Mapping[str, Any]
+        self,
+        params: Mapping[str, Any],
+        *,
+        origin: str = "desktop",
+        device_key: str | None = None,
+        device_name: str | None = None,
     ) -> dict[str, Any]:
         session_id = self._required_string(params, "session_id")
         watchdog = self._mobile_asr_watchdogs.pop(session_id, None)
@@ -4320,7 +4480,10 @@ class DesktopApplicationService:
                 "转写会话已结束", code="voice_session_not_found"
             )
         await self._chat_submit(
-            {"conversation_id": conversation_id, "target": "character", "text": text}
+            {"conversation_id": conversation_id, "target": "character", "text": text},
+            origin=origin,
+            device_key=device_key,
+            device_name=device_name,
         )
         return {"session_id": session_id, "transcript": text}
 
@@ -6526,6 +6689,20 @@ class DesktopApplicationService:
             conversation_id = payload.get("conversation_id") or self.current_conversation_id
             self.emitter.emit(event, {"conversation_id": conversation_id, **payload})
 
+    def _note_turn_first_event(self, conversation_id: str) -> None:
+        """记下本回合首个真实引擎/流式事件的时间（只写首个，不覆盖）。
+
+        V0.3.9 §5：first_event_latency_ms 必须来自真实首事件；没有事件的
+        回合保持 null，不回落到被终态刷新过的 updated_at。
+        """
+        turn_id = self._active_turn_ids.get(conversation_id)
+        if turn_id is None:
+            return
+        turn = self._turns.get(turn_id)
+        if turn is None or turn.get("first_event_at"):
+            return
+        self._turns[turn_id] = {**turn, "first_event_at": utc_now().isoformat()}
+
     def _on_dialogue_event(
         self, conversation_id: str, user_message: Any, event: Any
     ) -> None:
@@ -6535,6 +6712,7 @@ class DesktopApplicationService:
         绝不进入消息气泡。思考与正文共用一个消息 id，前端才能把它们
         合成一个气泡，正文完成后再由最终消息覆盖临时流。
         """
+        self._note_turn_first_event(conversation_id)
         event_type = event.type
         message_id = f"speech:{conversation_id}:{user_message.message_id}"
         if event_type == "reasoning.started":
@@ -6628,6 +6806,7 @@ class DesktopApplicationService:
             return
 
     def _on_engine_event(self, event: EngineEvent) -> None:
+        self._note_turn_first_event(event.conversation_id)
         event_type = event.type
         if event_type == EngineEventType.ASSISTANT_DELTA:
             stream_key = (event.conversation_id, event.task_id)

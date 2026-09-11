@@ -51,10 +51,12 @@ class FakeDispatch:
         *,
         origin: str = "desktop",
         connection_key: str | None = None,
+        device_name: str | None = None,
     ) -> None:
         payload = json.loads(line)
         payload["_origin"] = origin
         payload["_connection_key"] = connection_key
+        payload["_device_name"] = device_name
         self.invoked.append(payload)
         if self.auto_reply and reply_sink is not None and payload.get("id"):
             self._reply(reply_sink, payload["id"], {"echo": payload["method"]})
@@ -193,6 +195,8 @@ async def test_authenticated_command_dispatched_and_response_back_on_same_connec
         assert resp["ok"] is True
         assert h.fake.invoked and h.fake.invoked[-1]["method"] == "chat.submit"
         assert resp["result"] == {"echo": "chat.submit"}
+        # V0.3.9 §5：鉴权决定里的设备名随命令注入 dispatch，供指标如实呈现。
+        assert h.fake.invoked[-1]["_device_name"] == "my-phone"
     finally:
         await h.server.stop()
 

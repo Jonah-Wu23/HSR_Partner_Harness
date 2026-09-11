@@ -122,6 +122,9 @@ class DesktopCommand:
     connection_key: str | None = None
     # 传输层从已鉴权 token 派生的稳定标识，重连不变，不接受 params 注入。
     remote_device_key: str | None = None
+    # V0.3.9 §5：鉴权决定里的设备名（ws_server 注入），仅用于指标如实
+    # 呈现来源设备；同样不接受 params 注入。
+    remote_device_name: str | None = None
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> "DesktopCommand":

@@ -19,6 +19,7 @@ from pair_harness.core.contracts import (
     MessageStatus,
     MessageTarget,
 )
+from pair_harness.core.summary import ConversationSummary
 from pair_harness.desktop_backend.application_service import build_demo_service
 from pair_harness.desktop_backend.commands import DesktopCommand
 
@@ -269,16 +270,11 @@ async def test_assembly_consumes_completed_summary(tmp_path: Path) -> None:
             lambda: any(e["event"] == "summary.completed" for e in events),
             message="摘要完成",
         )
-        # 摘要产出被装配消费：recent_completed_summary 返回 core 形状。
+        # 摘要产出被装配消费：recent_completed_summary 直接返回 core 模型，
+        # 不再以 dict 流入装配器（V0.3.9 §2 装配接缝）。
         latest = service._recent_completed_summary(conversation_id)
-        assert latest is not None
-        assert latest["status"] == "completed"
-        assert isinstance(latest["content"], dict)
-        # 装配器接受的 core ConversationSummary 校验通过（content=dict 形状）。
-        from pair_harness.core.summary import ConversationSummary
-
-        core_summary = ConversationSummary.model_validate(latest)
-        assert core_summary.status == "completed"
-        assert core_summary.content is not None
+        assert isinstance(latest, ConversationSummary)
+        assert latest.status == "completed"
+        assert isinstance(latest.content, dict) and latest.content
     finally:
         await service.shutdown()
