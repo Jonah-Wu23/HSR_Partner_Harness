@@ -451,6 +451,7 @@ export type DesktopEventName =
   | "voice.mobile_tts_failed"
   | "voice.playback_interrupted"
   | "remote.control_changed"
+  | "remote.paired"
   | "conversation.card_missing"
   | "connection.status"
   | "error.reported"

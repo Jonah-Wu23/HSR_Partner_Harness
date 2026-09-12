@@ -156,6 +156,11 @@ class PairingService:
         self._revoked_hashes: set[str] = set()
         # 审计日志
         self._audit: list[dict] = []
+        # R1-003：审计随写随持久化钩子。应用服务注入 _persist_pairing_state，
+        # 每条审计写入当刻落库；纯逻辑场景（独立构造、测试）保持 None，不碰存储。
+        # 没有它，scope_denied / expired_token / tunnel_started 等条目要等下一次
+        # 配对状态变更才落库，Sidecar 在此之前退出即丢失。
+        self.audit_persist_hook: Callable[[], None] | None = None
         # 撤销监听器：revoke 成功后以 (token, device_name) 回调，
         # 供 WS 服务器立即断开仍持有该 token 的已建立连接（V0.3.4 缺陷 7）。
         self._revoke_listeners: list[Callable[[str, str], None]] = []
@@ -163,7 +168,7 @@ class PairingService:
     # ── 审计 ────────────────────────────────────────────────
 
     def _audit_log(self, event: str, detail: str) -> None:
-        """记录一条审计条目。"""
+        """记录一条审计条目，并按注入的钩子当刻持久化。"""
         now = datetime.datetime.fromtimestamp(
             self._clock(), tz=datetime.timezone.utc
         ).isoformat()
@@ -172,6 +177,8 @@ class PairingService:
             "event": event,
             "detail": detail,
         })
+        if self.audit_persist_hook is not None:
+            self.audit_persist_hook()
 
     def record_audit(self, event: str, detail: str) -> None:
         """供应用服务或外部模块写入审计日志。"""

@@ -313,6 +313,9 @@ export interface RemotePairingViewModel {
   serveFailure?: string | null;
   /** V0.4.0：Cloudflare Quick Tunnel 公网隧道状态。 */
   tunnel?: TunnelViewModel;
+  /** R1-001：Sidecar 每次配对成功（remote.paired）推进 1；面板据变化重拉
+      设备列表，不再依赖面板打开时的一次性 remote.list_devices 拉取。 */
+  devicesRevision?: number;
 }
 
 export interface AppShellViewModel {

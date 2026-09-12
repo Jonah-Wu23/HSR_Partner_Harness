@@ -301,15 +301,22 @@ async def _run(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    faulthandler.enable(file=sys.stderr, all_threads=True)
+def _configure_logging() -> None:
     # 日志级别可经 PAIR_HARNESS_LOG_LEVEL 调高（INFO/DEBUG）：serve 验收
     # 需要观察 mobile-tts 等下发链路时不必改代码。默认 WARNING 保持安静。
     logging.basicConfig(
         stream=sys.stderr,
         level=getattr(logging, os.getenv("PAIR_HARNESS_LOG_LEVEL", "WARNING").upper(), logging.WARNING),
     )
+    # R1-004：隧道管理过程日志（下载、哈希校验、子进程启动、主机名解析）
+    # 固定 INFO 级别进 sidecar.stderr.log，故障排查有过程线索。
+    logging.getLogger("pair_harness.desktop_backend.tunnel").setLevel(logging.INFO)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    faulthandler.enable(file=sys.stderr, all_threads=True)
+    _configure_logging()
     return asyncio.run(_run(args))
 
 

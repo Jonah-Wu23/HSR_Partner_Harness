@@ -503,6 +503,7 @@ function createInitialState(): Omit<
       serveMode: null,
       serveUnavailableReason: null,
       serveFailure: null,
+      devicesRevision: 0,
       tunnel: {
         state: "off",
         publicUrl: null,
@@ -1117,6 +1118,20 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
     // 错误通道不参与业务序号过滤：bootstrap 期间/旧代次高序号之后都必须显示。
     return applyErrorReported(state, event);
   }
+  // R1-002（M10）/R1-001：隧道与配对通知按控制通道即时应用，不参与业务序号
+  // 缺口缓冲。remote-only 手机语音事件消费全局序号但不写桌面 stdout，桌面事件
+  // 流因此存在序号缺口；缺口走「缓冲 → 快照 → 按序号丢弃」路径会静默吞掉
+  // tunnel.failed，设置面板停留「已连接」。这些事件的状态只存在于 remotePairing
+  // slice（快照不携带），带代次隔离的即时应用不破坏快照一致性，也不推进
+  // lastSequence（与 error.reported 同语义）。
+  if (
+    event.event === "tunnel.started" ||
+    event.event === "tunnel.stopped" ||
+    event.event === "tunnel.failed" ||
+    event.event === "remote.paired"
+  ) {
+    return applyTunnelAndPairingNotice(state, event);
+  }
   // 新代次 bootstrap 或序号缺口期间：暂存业务事件，等快照水合后核对重放。
   if (state.needsBootstrap || state.status === "booting") {
     return { ...state, eventBuffer: [...state.eventBuffer, event] };
@@ -1157,6 +1172,97 @@ function eventTargetsConversation(event: DesktopEvent, conversationId: string): 
         (task as Record<string, unknown>).conversation_id === conversationId,
     )
   );
+}
+
+/**
+ * R1-002（M10）/R1-001：隧道与配对通知通道。事件即时应用、不缓冲、
+ * 不推进业务序号；状态只落在 remotePairing slice（快照不携带）。
+ */
+function applyTunnelAndPairingNotice(state: DesktopState, event: DesktopEvent): DesktopState {
+  const next: DesktopState = { ...state };
+  switch (event.event) {
+    case "tunnel.started": {
+      const payload = (event.payload && typeof event.payload === "object" ? event.payload : {}) as {
+        public_url?: string;
+        hostname?: string;
+      };
+      const currentTunnel = next.remotePairing.tunnel ?? {
+        state: "off",
+        publicUrl: null,
+        hostname: null,
+        error: null,
+        loading: false,
+      };
+      next.remotePairing = {
+        ...next.remotePairing,
+        tunnel: {
+          ...currentTunnel,
+          state: "ready",
+          publicUrl: payload.public_url ?? null,
+          hostname: payload.hostname ?? null,
+          error: null,
+          loading: false,
+        },
+      };
+      break;
+    }
+    case "tunnel.stopped": {
+      const currentTunnel = next.remotePairing.tunnel ?? {
+        state: "off",
+        publicUrl: null,
+        hostname: null,
+        error: null,
+        loading: false,
+      };
+      next.remotePairing = {
+        ...next.remotePairing,
+        tunnel: {
+          ...currentTunnel,
+          state: "off",
+          publicUrl: null,
+          hostname: null,
+          error: null,
+          loading: false,
+        },
+      };
+      break;
+    }
+    case "tunnel.failed": {
+      const payload = (event.payload && typeof event.payload === "object" ? event.payload : {}) as {
+        error?: string;
+      };
+      const currentTunnel = next.remotePairing.tunnel ?? {
+        state: "off",
+        publicUrl: null,
+        hostname: null,
+        error: null,
+        loading: false,
+      };
+      next.remotePairing = {
+        ...next.remotePairing,
+        tunnel: {
+          ...currentTunnel,
+          state: "failed",
+          publicUrl: null,
+          hostname: null,
+          error: payload.error ?? "公网隧道异常",
+          loading: false,
+        },
+      };
+      break;
+    }
+    case "remote.paired": {
+      // R1-001：配对成功通知；面板据 devicesRevision 变化重拉设备列表。
+      const payload = event.payload as { device_name?: string };
+      if (!payload?.device_name) break;
+      next.remotePairing = {
+        ...next.remotePairing,
+        devicesRevision: (next.remotePairing.devicesRevision ?? 0) + 1,
+      };
+      break;
+    }
+  }
+  return next;
 }
 
 function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopState {
@@ -1837,76 +1943,6 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
       // host 为 null 表示服务确实已在监听、但未探测到可用的局域网地址；原因随
       // reason 一并下发（如 no_lan_address），前端不再自行编造不可达地址或原因。
       next.remotePairing = remotePairingWithServeAddress(next.remotePairing, event.payload);
-      break;
-    }
-    case "tunnel.started": {
-      const payload = (event.payload && typeof event.payload === "object" ? event.payload : {}) as {
-        public_url?: string;
-        hostname?: string;
-      };
-      const currentTunnel = next.remotePairing.tunnel ?? {
-        state: "off",
-        publicUrl: null,
-        hostname: null,
-        error: null,
-        loading: false,
-      };
-      next.remotePairing = {
-        ...next.remotePairing,
-        tunnel: {
-          ...currentTunnel,
-          state: "ready",
-          publicUrl: payload.public_url ?? null,
-          hostname: payload.hostname ?? null,
-          error: null,
-          loading: false,
-        },
-      };
-      break;
-    }
-    case "tunnel.stopped": {
-      const currentTunnel = next.remotePairing.tunnel ?? {
-        state: "off",
-        publicUrl: null,
-        hostname: null,
-        error: null,
-        loading: false,
-      };
-      next.remotePairing = {
-        ...next.remotePairing,
-        tunnel: {
-          ...currentTunnel,
-          state: "off",
-          publicUrl: null,
-          hostname: null,
-          error: null,
-          loading: false,
-        },
-      };
-      break;
-    }
-    case "tunnel.failed": {
-      const payload = (event.payload && typeof event.payload === "object" ? event.payload : {}) as {
-        error?: string;
-      };
-      const currentTunnel = next.remotePairing.tunnel ?? {
-        state: "off",
-        publicUrl: null,
-        hostname: null,
-        error: null,
-        loading: false,
-      };
-      next.remotePairing = {
-        ...next.remotePairing,
-        tunnel: {
-          ...currentTunnel,
-          state: "failed",
-          publicUrl: null,
-          hostname: null,
-          error: payload.error ?? "公网隧道异常",
-          loading: false,
-        },
-      };
       break;
     }
     case "power.status_changed": {

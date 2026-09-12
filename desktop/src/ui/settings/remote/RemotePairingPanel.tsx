@@ -116,6 +116,17 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
     listDevicesRef.current();
   }, []);
 
+  // R1-001：手机配对成功（remote.paired）经 store 推进 devicesRevision；
+  // revision 变化时重拉设备列表。挂载时的首次拉取由上方 effect 负责，
+  // 这里只响应变化，不重复拉取。
+  const seenDevicesRevisionRef = useRef(vm.devicesRevision ?? 0);
+  useEffect(() => {
+    const revision = vm.devicesRevision ?? 0;
+    if (revision === seenDevicesRevisionRef.current) return;
+    seenDevicesRevisionRef.current = revision;
+    listDevicesRef.current();
+  }, [vm.devicesRevision]);
+
   // 挂载时查询公网隧道状态。
   const queryTunnelStatusRef = useRef(onQueryTunnelStatus);
   queryTunnelStatusRef.current = onQueryTunnelStatus;

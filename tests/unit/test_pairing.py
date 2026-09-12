@@ -840,3 +840,54 @@ class TestControlPlaneScope:
             decision = svc.authorize(token, method, origin="desktop")
             assert decision.allowed is True
             assert decision.device_name == "desktop"
+
+# ============================================================
+# R1-003: 审计随写随持久化钩子
+# ============================================================
+
+
+class TestAuditPersistHook:
+    def test_default_no_hook_and_pure_logic(self) -> None:
+        """未注入钩子（独立构造/测试）时审计只留内存，行为不变。"""
+        svc = PairingService()
+        assert svc.audit_persist_hook is None
+        svc.issue_code()
+        assert svc.audit_entries()[-1]["event"] == "pairing_code_issued"
+
+    def test_record_audit_triggers_persist_hook_per_write(self) -> None:
+        """R1-003：每条审计写入当刻触发持久化钩子。"""
+        svc = PairingService()
+        writes: list[str] = []
+        svc.audit_persist_hook = lambda: writes.append(svc.audit_entries()[-1]["event"])
+        svc.issue_code()
+        svc.record_audit("tunnel_started", "hostname=example.trycloudflare.com")
+        assert writes == ["pairing_code_issued", "tunnel_started"]
+
+    def test_authorize_denial_persists_scope_denied_immediately(self) -> None:
+        """R1-003：scope_denied 拒绝审计在写入当刻触发持久化，不等下一次状态变更。"""
+        svc = PairingService()
+        code = svc.issue_code()
+        token = svc.claim(code, device_name="phone")
+        persisted: list[str] = []
+        svc.audit_persist_hook = lambda: persisted.append(svc.audit_entries()[-1]["event"])
+        decision = svc.authorize(token, "remote.issue_code", origin="remote")
+        assert decision.allowed is False
+        assert decision.reason == "forbidden_scope"
+        assert persisted == ["scope_denied"]
+
+    def test_expired_token_denial_persists_immediately(self) -> None:
+        """R1-003：expired_token 拒绝审计同样当刻触发持久化（M08 同项）。"""
+        clock = {"now": 1000.0}
+        svc = PairingService(clock=lambda: clock["now"])
+        code = svc.issue_code()
+        token = svc.claim(code, device_name="phone")
+        persisted: list[str] = []
+        svc.audit_persist_hook = lambda: persisted.append(svc.audit_entries()[-1]["event"])
+        # 越过 30 天绝对有效期：expired_token
+        clock["now"] = 1000.0 + 31 * 24 * 3600
+        decision = svc.authorize(token, "app.bootstrap", origin="remote")
+        assert decision.allowed is False
+        assert decision.reason == "expired_token"
+        # 审计事件名统一为 auth_failed，拒绝原因在 detail
+        assert persisted == ["auth_failed"]
+        assert "expired_token" in svc.audit_entries()[-1]["detail"]

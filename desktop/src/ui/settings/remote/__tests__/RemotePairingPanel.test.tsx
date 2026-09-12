@@ -49,6 +49,24 @@ describe("RemotePairingPanel (V0.3.3 远程设备配对面板)", () => {
     expect(props.onListRemoteDevices).toHaveBeenCalledTimes(1);
   });
 
+  it("R1-001：devicesRevision 变化时重拉设备列表，重复渲染同值不重拉", () => {
+    const props = createMockPanelProps({ devicesRevision: 0 });
+    const { rerender } = render(<RemotePairingPanel {...props} />);
+    expect(props.onListRemoteDevices).toHaveBeenCalledTimes(1);
+
+    // 手机配对成功（remote.paired）推进 revision → 重拉列表
+    rerender(<RemotePairingPanel {...props} vm={{ ...props.vm, devicesRevision: 1 }} />);
+    expect(props.onListRemoteDevices).toHaveBeenCalledTimes(2);
+
+    // 同值重渲染（如倒计时 tick 触发的父级渲染）不再拉取
+    rerender(<RemotePairingPanel {...props} vm={{ ...props.vm, devicesRevision: 1 }} />);
+    expect(props.onListRemoteDevices).toHaveBeenCalledTimes(2);
+
+    // 再次配对成功 → 再拉
+    rerender(<RemotePairingPanel {...props} vm={{ ...props.vm, devicesRevision: 2 }} />);
+    expect(props.onListRemoteDevices).toHaveBeenCalledTimes(3);
+  });
+
   it("回调引用变化不触发重复拉取（防 AppShell 内联回调渲染循环）", () => {
     const props = createMockPanelProps();
     const { rerender } = render(<RemotePairingPanel {...props} />);

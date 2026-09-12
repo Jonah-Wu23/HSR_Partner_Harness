@@ -834,6 +834,9 @@ class DesktopApplicationService:
             store, store.database.parent / "character_assets"
         )
         self.pairing_service = PairingService()
+        # R1-003：审计随写随持久化——scope_denied、expired_token、
+        # tunnel_started 等条目在写入当刻落库，不随下一次配对状态变更才落库。
+        self.pairing_service.audit_persist_hook = self._persist_pairing_state
         self._restore_pairing_state()
         self.tunnel_manager = TunnelManager(
             data_dir=store.database.parent,
@@ -4779,6 +4782,9 @@ class DesktopApplicationService:
             )
             raise ServiceError(str(exc), code=f"pairing_{exc.code}", details=details) from exc
         self._persist_pairing_state()
+        # R1-001：配对成功即时广播，桌面端订阅该事件重拉设备列表，
+        # 不再依赖面板打开时的一次性 remote.list_devices 拉取。
+        self.emitter.emit("remote.paired", {"device_name": device_name})
         return {"token": token}
 
     async def _remote_list_devices(

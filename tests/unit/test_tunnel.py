@@ -139,6 +139,8 @@ class _MockProcess:
     def __init__(self, stderr_lines: list[bytes], stdout_lines: list[bytes] | None = None) -> None:
         self.stderr = _MockStream(stderr_lines)
         self.stdout = _MockStream(stdout_lines or [])
+        # R1-004 后 _run_tunnel_flow 会记录子进程 pid，mock 与真实 Process 同形
+        self.pid = 424242
         self.returncode: int | None = None
         self._exit_future: asyncio.Future[int] = asyncio.get_running_loop().create_future()
         self.killed = False
@@ -380,3 +382,24 @@ class TestTunnelServiceIntegration:
 
         await service.shutdown()
         assert "sidecar_exit" in stopped_reasons
+
+
+# ============================================================
+# R1-004: 隧道模块日志级别
+# ============================================================
+
+
+class TestLoggingLevel:
+    def test_tunnel_logger_configured_info_at_startup(self) -> None:
+        """R1-004：Sidecar 启动配置后 tunnel 模块固定 INFO，过程日志进 stderr。"""
+        import logging
+
+        from pair_harness.desktop_backend.__main__ import _configure_logging
+
+        logger = logging.getLogger("pair_harness.desktop_backend.tunnel")
+        previous = logger.level
+        try:
+            _configure_logging()
+            assert logger.getEffectiveLevel() == logging.INFO
+        finally:
+            logger.setLevel(previous)

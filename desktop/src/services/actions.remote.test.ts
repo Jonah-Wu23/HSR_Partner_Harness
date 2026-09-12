@@ -198,3 +198,129 @@ describe("远程设备页服务地址（V039-S4-004）", () => {
     expect(desktopStore.getState().remotePairing.tunnel?.publicUrl).toBeNull();
   });
 });
+
+describe("R1-002/R1-001 控制通道事件（V0.4.0 真机缺陷回归）", () => {
+  beforeEach(() => {
+    desktopStore.setState({
+      status: "ready",
+      needsBootstrap: false,
+      lastSequence: -1,
+      streamId: null,
+      eventBuffer: [],
+      remotePairing: {
+        code: null,
+        ttlSeconds: 300,
+        issuedAtEpochMs: null,
+        devices: [],
+        loading: false,
+        error: null,
+        serveAddress: null,
+        servePort: null,
+        serveUnavailableReason: null,
+        serveFailure: null,
+        devicesRevision: 0,
+        tunnel: {
+          state: "off",
+          publicUrl: null,
+          hostname: null,
+          error: null,
+          loading: false,
+        },
+      },
+    });
+  });
+
+  it("R1-002（M10）：序号缺口下 tunnel.failed 即时应用，不进入缓冲丢弃路径", () => {
+    // 真机根因：remote-only 手机语音事件消费全局序号（如 seq 7）但不写桌面
+    // stdout，桌面流出现缺口；旧实现把缺口后的 tunnel.failed 缓冲、随后在
+    // 快照重放时按序号丢弃，面板停留「已连接」。
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "tunnel.started",
+        sequence: 6,
+        payload: {
+          public_url: "https://gap-test.trycloudflare.com",
+          hostname: "gap-test.trycloudflare.com",
+        },
+      },
+    ]);
+    expect(desktopStore.getState().remotePairing.tunnel?.state).toBe("ready");
+
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "tunnel.failed",
+        sequence: 8,
+        payload: { error: "隧道进程已被外部终止 (退出码 1)" },
+      },
+    ]);
+
+    const remote = desktopStore.getState().remotePairing;
+    expect(remote.tunnel?.state).toBe("failed");
+    expect(remote.tunnel?.error).toBe("隧道进程已被外部终止 (退出码 1)");
+    expect(remote.tunnel?.publicUrl).toBeNull();
+    // 缺口事件走控制通道：不置 needsBootstrap、不进缓冲。
+    expect(desktopStore.getState().needsBootstrap).toBe(false);
+    expect(desktopStore.getState().eventBuffer).toHaveLength(0);
+  });
+
+  it("R1-002：tunnel.started 在序号缺口下同样即时应用（同一缺陷类）", () => {
+    desktopStore.setState({ lastSequence: 10 });
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "tunnel.started",
+        sequence: 12,
+        payload: { public_url: "https://late.trycloudflare.com", hostname: "late.trycloudflare.com" },
+      },
+    ]);
+    expect(desktopStore.getState().remotePairing.tunnel?.state).toBe("ready");
+    expect(desktopStore.getState().needsBootstrap).toBe(false);
+  });
+
+  it("R1-002：旧代次（stream_id 不匹配）的 tunnel.failed 仍被拒绝，不覆盖当前代次", () => {
+    desktopStore.setState({ streamId: "2" });
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "tunnel.failed",
+        sequence: 3,
+        stream_id: "1",
+        payload: { error: "旧代次迟到事件" },
+      },
+    ]);
+    expect(desktopStore.getState().remotePairing.tunnel?.state).toBe("off");
+  });
+
+  it("R1-001：remote.paired 事件推进 devicesRevision，供面板重拉设备列表", () => {
+    expect(desktopStore.getState().remotePairing.devicesRevision).toBe(0);
+
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "remote.paired",
+        sequence: 1,
+        payload: { device_name: "我的手机" },
+      },
+    ]);
+    expect(desktopStore.getState().remotePairing.devicesRevision).toBe(1);
+
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "remote.paired",
+        sequence: 2,
+        payload: { device_name: "第二台" },
+      },
+    ]);
+    expect(desktopStore.getState().remotePairing.devicesRevision).toBe(2);
+  });
+
+  it("R1-001：载荷缺失 device_name 的 remote.paired 不推进 revision", () => {
+    desktopStore.getState().applyEvents([
+      { kind: "event", event: "remote.paired", sequence: 1, payload: {} },
+    ]);
+    expect(desktopStore.getState().remotePairing.devicesRevision).toBe(0);
+  });
+});

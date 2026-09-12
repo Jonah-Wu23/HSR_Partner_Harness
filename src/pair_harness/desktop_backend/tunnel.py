@@ -299,6 +299,9 @@ class TunnelManager:
                 stderr=asyncio.subprocess.PIPE,
             )
             self._process = proc
+            logger.info(
+                "cloudflared 子进程已启动 pid=%s local_port=%s", proc.pid, local_port
+            )
         except Exception as exc:
             err_msg = f"启动 cloudflared 进程失败: {exc}"
             logger.error(err_msg, exc_info=True)
@@ -343,6 +346,7 @@ class TunnelManager:
                 self.public_url = f"https://{hostname}"
                 self.state = "ready"
                 self.error = None
+                logger.info("Quick Tunnel 主机名解析就绪 hostname=%s", hostname)
                 self.emitter.emit(
                     "tunnel.started",
                     {"public_url": self.public_url, "hostname": self.hostname},
