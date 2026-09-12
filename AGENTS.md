@@ -183,7 +183,7 @@ npm run build:sidecar
 npm run tauri -- build --bundles nsis
 ```
 
-发布节奏：开发迭代只更新 `desktop/src-tauri/target/release/hsr-partner-harness.exe`，不重新生成或上传安装包。v0.4.0 已重新生成并上传 NSIS 安装包，下一次安装包更新随之后的版本发布安排。
+发布节奏：开发迭代只更新 `desktop/src-tauri/target/release/hsr-partner-harness.exe`，不重新生成或上传安装包。v0.4.0 已重新生成 NSIS 安装包并随该版本发布上传，下一次安装包更新随之后的版本发布安排。
 
 Android arm64 Debug APK：配置 `JAVA_HOME`、`ANDROID_HOME`、`NDK_HOME` 后，在 `desktop/` 运行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-android.ps1`，依赖已缓存时可加 `-Offline`。脚本先构建移动前端及包含前端资源的 Rust 动态库，再打包 APK，不执行安装。调用 gradle 前，脚本读取 `src-tauri/tauri.conf.json` 的 `version`，按 tauri CLI 同一派生式 `major*1000000+minor*1000+patch` 算出 versionCode（0.3.9 → 3009），并写出 `gen/android/app/tauri.properties`（`tauri.android.versionName` / `tauri.android.versionCode`）；该文件只在 `tauri android build` 路径生成，脚本直连 gradle 必须自行补写，否则包内版本恒为 1 / 1.0，`adb install -r` 会因降级被拒。版本缺失、非 semver 或派生值超出 1..2100000000 时脚本报错并非零退出，不进打包。不得仅复制 `assets/` 或因旧 `.so` 存在就宣称新代码已打入 APK。
 

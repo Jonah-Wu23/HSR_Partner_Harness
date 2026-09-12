@@ -34,6 +34,6 @@ SOFTWARE.
 
 Source: https://github.com/cloudflare/cloudflared
 
-cloudflared is the official tunnel client of Cloudflare, licensed under the Apache License, Version 2.0 (with a NOTICE file preserved in the upstream repository). The full license text is available at https://github.com/cloudflare/cloudflared/blob/master/LICENSE.
+cloudflared is the official tunnel client of Cloudflare, licensed under the Apache License, Version 2.0. The full license text is available at https://github.com/cloudflare/cloudflared/blob/master/LICENSE.
 
 This project does not bundle, redistribute, or modify the cloudflared binary. When the user enables mobile remote access over the public internet (`src/pair_harness/desktop_backend/tunnel.py`), the Sidecar downloads the official cloudflared release binary for the current platform from the pinned Cloudflare GitHub release, verifies it against the official SHA256 checksum published for that release, stores it in the user's local application data directory, and manages it as a child process for Cloudflare Quick Tunnel. Tunnel traffic traverses Cloudflare's edge under Cloudflare's terms of service; this project makes no warranty for the third-party binary.

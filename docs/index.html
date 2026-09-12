@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HSR Partner Harness · 上车聊几句，下车活干完</title>
 <meta name="description" content="HSR Partner Harness，Windows 桌面应用，星穹铁道同人作品。三组搭档同屏协作，实现了角色扮演与本地 AI Agent 的双空间联动：与角色商定策略，由助手落地执行；任务完成后自动回传结果，对话流畅接续，重启不串记忆。">
-<meta property="og:title" content="HSR Partner Harness · V0.3.0">
+<meta property="og:title" content="HSR Partner Harness · V0.4.0">
 <meta property="og:description" content="上车聊几句，下车活干完。三组搭档同屏协作，角色负责对话，助手负责执行。">
 <meta property="og:type" content="website">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 L19 13 L30 16 L19 19 L16 30 L13 19 L2 16 L13 13 Z' fill='%23E8B25C'/%3E%3C/svg%3E">
@@ -345,7 +345,7 @@ h2{
 }
 @media(max-width:820px){.loop-arrow{display:none}}
 
-/* ---------- partners dossier (V0.3.0 三搭档画卷与档案) ---------- */
+/* ---------- partners dossier (V0.4.0 三搭档画卷与档案) ---------- */
 .partner-deck{
   display:flex;flex-direction:column;gap:36px;
 }
@@ -658,7 +658,7 @@ footer{
   <a class="brand" href="#top">
     <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 L19 13 L30 16 L19 19 L16 30 L13 19 L2 16 L13 13 Z" fill="#E8B25C"/></svg>
     <span class="brand-name">HSR Partner Harness</span>
-    <span class="brand-ver">v0.3.0</span>
+    <span class="brand-ver">v0.4.0</span>
   </a>
   <div class="nav-links">
     <a href="#loop">工作方式</a>
@@ -676,20 +676,21 @@ footer{
 <!-- ============ HERO ============ -->
 <header class="hero" id="top">
   <div>
-    <div class="eyebrow">Windows 桌面应用 · 星穹铁道同人作品 · V0.3.0 正式版</div>
-    <h1>上车聊几句，<br><span class="em">下车活干完</span></h1>
+    <div class="eyebrow">Windows 桌面应用 · 星穹铁道同人作品 · V0.4.0 正式版</div>
+    <h1>和喜欢的角色，<br><span class="em">一起把想做的事做出来</span>。</h1>
     <p class="hero-sub">
-      <strong>HSR Partner Harness</strong> 实现了同人角色扮演与本地工程 Agent 的同屏联动：<br>
-      与<strong>角色</strong>商定策略，由<strong>助手</strong>落地执行。支持自由切换三组搭档，会话记忆与主题色组精准恢复。
+      <strong>HSR Partner Harness</strong>，能和你一起做事的 AI 角色搭档：<br>
+      创建或导入你的角色，和 TA 讨论想法，由助手在电脑上执行。<br>
+      离开桌面后，也能用手机继续对话和查看进度。
     </p>
     <div class="cta-row">
       <a class="btn btn-gold" href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases" target="_blank" rel="noopener">
         <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 12l-4-4h2.5V2h3v6H12L8 12zM2 14h12v1.5H2V14z"/></svg>
-        下载 Windows 安装包
+        下载 Windows 版
       </a>
-      <a class="btn btn-ghost" href="https://github.com/Jonah-Wu23/HSR_Partner_Harness" target="_blank" rel="noopener">查看开源代码</a>
+      <a class="btn btn-ghost" href="#sessionBox">看 60 秒实机演示</a>
     </div>
-    <div class="hero-note">内置演示模式无 Key 亦可上车 · 支持 OpenAI OAuth / API 与 DeepSeek 双引擎</div>
+    <div class="hero-note">开源 · 自备模型账号 · 手机连接电脑使用</div>
   </div>
 
   <div class="session" id="sessionBox" aria-label="产品会话演示">
@@ -750,7 +751,7 @@ footer{
     <div class="loop-step">
       <span class="loop-no">STEP 02</span>
       <h3>结构化委派，工具落地</h3>
-      <p>商定结果转为底层任务委派单，助手经由本机 Codex / DeepSeek 引擎自主运行文件与命令，过程以结构化卡片直观呈现。</p>
+      <p>商定结果转为底层任务委派单，助手经由打包的 DeepSeek-Reasonix（ACP）在本地项目目录真实读写文件、执行命令，过程以结构化卡片直观呈现。</p>
       <svg class="loop-arrow" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.5"/></svg>
     </div>
     <div class="loop-step">
@@ -761,12 +762,12 @@ footer{
   </div>
 </section>
 
-<!-- ============ PARTNERS (V0.3.0 三搭档画卷与世界切片) ============ -->
+<!-- ============ PARTNERS (V0.4.0 三搭档画卷与世界切片) ============ -->
 <section id="partners">
   <div class="sec-head reveal">
     <div class="sec-index">02 / 搭档名录与世界切片</div>
     <h2>三组搭档，三种旅途。</h2>
-    <p class="sec-desc">V0.3.0 正式实装三组特色搭档。每对均拥有专属的角色设定、助手分工、动态主题色组与高保真语音朗读。</p>
+    <p class="sec-desc">内置三组特色搭档，每对均拥有专属的角色设定、助手分工、动态主题色组与高保真语音朗读。你也可以导入酒馆 v2/v3 角色卡，或在创作工作室捏一张自己的卡，与同一批助手组成配对。</p>
   </div>
 
   <div class="partner-deck">
@@ -782,7 +783,7 @@ footer{
       </div>
       <div class="partner-info-pane">
         <div class="partner-badge-row">
-          <span class="partner-status-tag">V0.3.0 可用 · 经典搭档</span>
+          <span class="partner-status-tag">V0.4.0 可用 · 经典搭档</span>
         </div>
         <div>
           <h3>白厄 × 神秘的古代机械</h3>
@@ -826,7 +827,7 @@ footer{
       </div>
       <div class="partner-info-pane">
         <div class="partner-badge-row">
-          <span class="partner-status-tag">V0.3.0 新增 · 极光与熔火</span>
+          <span class="partner-status-tag">V0.4.0 可用 · 极光与熔火</span>
         </div>
         <div>
           <h3>流萤 × 萨姆</h3>
@@ -870,7 +871,7 @@ footer{
       </div>
       <div class="partner-info-pane">
         <div class="partner-badge-row">
-          <span class="partner-status-tag">V0.3.0 新增 · 摄影与魔镜</span>
+          <span class="partner-status-tag">V0.4.0 可用 · 摄影与魔镜</span>
         </div>
         <div>
           <h3>三月七 × 第四面镜</h3>
@@ -909,9 +910,24 @@ footer{
   <div class="sec-head reveal">
     <div class="sec-index">03 / 功能特性</div>
     <h2>列车之上，一应俱全。</h2>
-    <p class="sec-desc">V0.3.0 带来完整的搭档目录、多主题动态令牌与端到端双空间消息流转体系。</p>
+    <p class="sec-desc">V0.4.0 带来角色卡创作与酒馆双向兼容、手机远程公网接入，以及完整的搭档目录与端到端双空间消息流转。</p>
   </div>
   <div class="feat-list reveal reveal-d1">
+    <div class="feat-row">
+      <div class="feat-name">角色卡创作与酒馆兼容</div>
+      <div class="feat-key">CHARACTER CARDS</div>
+      <div class="feat-desc">在创作工作室从零捏卡，或导入酒馆 Character Card v2/v3 的 JSON 与 PNG；导出同为酒馆兼容格式，头像内嵌单文件分享，第三方扩展字段往返保留。</div>
+    </div>
+    <div class="feat-row">
+      <div class="feat-name">手机远程接入</div>
+      <div class="feat-key">MOBILE REMOTE</div>
+      <div class="feat-desc">扫码配对后，手机可继续对话、查看任务、处理审批、听角色语音。公网走 Cloudflare Quick Tunnel（应用托管官方 cloudflared 子进程，HTTPS 免配置），业务数据与执行全部留在开机联网的 PC。</div>
+    </div>
+    <div class="feat-row">
+      <div class="feat-name">自定义角色音色</div>
+      <div class="feat-key">CUSTOM VOICE</div>
+      <div class="feat-desc">为自己的角色上传参考音频，用你自己的 DashScope 账号生成专属音色，支持试听、重建与解绑；ASR/TTS 模型固定不可改。</div>
+    </div>
     <div class="feat-row">
       <div class="feat-name">搭档目录与选择</div>
       <div class="feat-key">PAIR CATALOG</div>
@@ -930,7 +946,7 @@ footer{
     <div class="feat-row">
       <div class="feat-name">本地账号与设置中心</div>
       <div class="feat-key">LOCAL ACCOUNTS</div>
-      <div class="feat-desc">多账号数据隔离于本机 SQLite，密钥仅回显掩码。提供对话模型配置、编程助手登录与各搭档专属音色试听。</div>
+      <div class="feat-desc">多账号数据隔离于本机 SQLite，密钥仅回显掩码。提供对话模型配置、DashScope 语音配置与各搭档专属音色试听。</div>
     </div>
     <div class="feat-row">
       <div class="feat-name">项目即文件夹</div>
@@ -965,7 +981,7 @@ footer{
   <div class="sec-head reveal">
     <div class="sec-index">04 / 架构设计</div>
     <h2>车底下，一根管子直通到底。</h2>
-    <p class="sec-desc">Tauri 2 承载桌面，Python Sidecar 维护业务状态，Codex 与 DeepSeek 承担底层执行。</p>
+    <p class="sec-desc">Tauri 2 承载桌面，Python Sidecar 维护业务状态，打包的 DeepSeek-Reasonix（ACP）承担底层执行。</p>
   </div>
   <div class="arch-pipe reveal reveal-d1">
     <div class="arch-node">
@@ -991,7 +1007,7 @@ footer{
     <div class="arch-node">
       <div class="arch-kind">Execution Agent</div>
       <div class="arch-name">编程执行后端</div>
-      <div class="arch-tech">OpenAI Codex / DeepSeek</div>
+      <div class="arch-tech">DeepSeek-Reasonix · ACP</div>
       <p>文件修改、环境探测与终端命令执行均由底层 Agent 处理，严格遵从 Let It Fail 原则，绝不粉饰真实失败。</p>
     </div>
   </div>
@@ -1013,7 +1029,7 @@ footer{
     <div class="code-block reveal reveal-d1">
       <div class="code-head">
         <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
-        <span style="margin-left:8px">PowerShell · 源码运行 V0.3.0</span>
+        <span style="margin-left:8px">PowerShell · 源码运行 V0.4.0</span>
       </div>
       <pre><span class="cm"># 环境要求：Python 3.11+ · Node.js 22+ · Rust stable</span>
 python -m venv .venv
@@ -1053,7 +1069,7 @@ npm run tauri:dev</pre>
 <footer>
   <div class="foot-inner">
     <div>
-      <div class="foot-brand">HSR Partner Harness · V0.3.0</div>
+      <div class="foot-brand">HSR Partner Harness · V0.4.0</div>
       <div class="foot-note">
         代码采用 Apache License 2.0，版权所有 © 2026 Zonghe Wu。<br>
         角色名称、立绘素材和崩铁世界观内容归原权利人米哈游所有，本项目为非营利同人作品。<br>
