@@ -239,8 +239,12 @@ class TestTunnelManager:
         assert len(started_events) == 1
         assert started_events[0]["payload"]["public_url"] == "https://test-random-tunnel.trycloudflare.com"
 
-        # 验证审计日志
-        assert any(r[0] == "tunnel_started" and "test-random-tunnel.trycloudflare.com" in r[1] for r in audit_records)
+        # 验证审计日志（精确相等断言，避免 URL 子串清洗告警）
+        assert any(
+            r[0] == "tunnel_started"
+            and r[1] == "hostname=test-random-tunnel.trycloudflare.com"
+            for r in audit_records
+        )
 
         # 停止隧道
         stop_res = await mgr.stop(reason="user_requested")
