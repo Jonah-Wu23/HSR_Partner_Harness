@@ -1,0 +1,135 @@
+=== CAPTURE START 2026-09-13 02:46:49.534 ===
+[2026-09-13 02:46:49.547] STATE-CHANGE: audit_n=5 active_codes=1 tokens=[('我的手机', True, 'CzpEnE5y')] rate_limits={"7292471599df4d4dbcd93a8d9771a1a3": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}}
+[2026-09-13 02:46:49.547]   AUDIT+ scope_denied | method=remote.issue_code origin=remote | at=2026-09-12T18:22:56.552889+00:00
+[2026-09-13 02:46:49.547]   AUDIT+ pairing_code_issued | ttl_seconds=300 | at=2026-09-12T18:26:23.114374+00:00
+[2026-09-13 02:46:49.547]   AUDIT+ pairing_code_issued | ttl_seconds=300 | at=2026-09-12T18:31:25.851693+00:00
+[2026-09-13 02:46:49.547]   AUDIT+ connect | device=我的手机 | at=2026-09-12T18:35:00.031411+00:00
+[2026-09-13 02:46:49.547]   AUDIT+ command | revoke device=我的手机 | at=2026-09-12T18:40:36.456042+00:00
+[2026-09-13 02:49:13.259] STATE-CHANGE: audit_n=12 active_codes=1 tokens=[('我的手机', True, 'CzpEnE5y')] rate_limits={"7292471599df4d4dbcd93a8d9771a1a3": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "ab0844614ae04b23a82d5c80af73ef26": {"fail_count": 1, "blocked_until": 0.0, "backoff_seconds": 60.0}}
+[2026-09-13 02:49:13.259]   AUDIT+ auth_failed | method=app.bootstrap: revoked_token | at=2026-09-12T18:40:37.571365+00:00
+[2026-09-13 02:49:13.259]   AUDIT+ auth_failed | method=ping: revoked_token | at=2026-09-12T18:40:52.571863+00:00
+[2026-09-13 02:49:13.259]   AUDIT+ auth_failed | method=ping: revoked_token | at=2026-09-12T18:41:01.238278+00:00
+[2026-09-13 02:49:13.259]   AUDIT+ auth_failed | method=ping: revoked_token | at=2026-09-12T18:41:07.572339+00:00
+[2026-09-13 02:49:13.259]   AUDIT+ auth_failed | method=ping: revoked_token | at=2026-09-12T18:41:22.572740+00:00
+[2026-09-13 02:49:13.259]   AUDIT+ auth_failed | method=ping: revoked_token | at=2026-09-12T18:41:37.571841+00:00
+[2026-09-13 02:49:13.259]   AUDIT+ auth_failed | method=remote.release_control: revoked_token | at=2026-09-12T18:41:38.925264+00:00
+[2026-09-13 02:49:26.826] STATE-CHANGE: audit_n=12 active_codes=1 tokens=[('我的手机', True, 'CzpEnE5y')] rate_limits={"7292471599df4d4dbcd93a8d9771a1a3": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "ab0844614ae04b23a82d5c80af73ef26": {"fail_count": 2, "blocked_until": 0.0, "backoff_seconds": 60.0}}
+[2026-09-13 02:49:28.349] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 02:49:30.864] STATE-CHANGE: audit_n=13 active_codes=1 tokens=[('我的手机', True, 'CzpEnE5y')] rate_limits={"7292471599df4d4dbcd93a8d9771a1a3": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "ab0844614ae04b23a82d5c80af73ef26": {"fail_count": 3, "blocked_until": 0.0, "backoff_seconds": 60.0}}
+[2026-09-13 02:49:30.864]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T18:49:28.178658+00:00
+[2026-09-13 02:49:33.374] STATE-CHANGE: audit_n=13 active_codes=1 tokens=[('我的手机', True, 'CzpEnE5y')] rate_limits={"7292471599df4d4dbcd93a8d9771a1a3": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "ab0844614ae04b23a82d5c80af73ef26": {"fail_count": 4, "blocked_until": 0.0, "backoff_seconds": 60.0}}
+[2026-09-13 02:49:36.396] STATE-CHANGE: audit_n=14 active_codes=1 tokens=[('我的手机', True, 'CzpEnE5y')] rate_limits={"7292471599df4d4dbcd93a8d9771a1a3": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "ab0844614ae04b23a82d5c80af73ef26": {"fail_count": 5, "blocked_until": 1789239036.3748434, "backoff_seconds": 60.0}}
+[2026-09-13 02:49:36.396]   AUDIT+ pairing_rate_limited | source=ab0844614ae04b23a82d5c80af73ef26 retry_after_s=60 | at=2026-09-12T18:49:36.374843+00:00
+[2026-09-13 02:49:43.436] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 02:49:47.959] STATE-CHANGE: audit_n=16 active_codes=1 tokens=[('我的手机', True, 'CzpEnE5y')] rate_limits={"7292471599df4d4dbcd93a8d9771a1a3": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "ab0844614ae04b23a82d5c80af73ef26": {"fail_count": 5, "blocked_until": 1789239036.3748434, "backoff_seconds": 60.0}}
+[2026-09-13 02:49:47.959]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T18:49:43.179115+00:00
+[2026-09-13 02:49:47.959]   AUDIT+ pairing_code_issued | ttl_seconds=300 | at=2026-09-12T18:49:47.484405+00:00
+[2026-09-13 02:49:58.514] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 02:50:13.608] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 02:50:28.690] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 02:50:37.233] STATE-CHANGE: audit_n=20 active_codes=1 tokens=[('我的手机', True, 'CzpEnE5y'), ('我的手机', False, 'MLDZmb3g')] rate_limits={"7292471599df4d4dbcd93a8d9771a1a3": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "ab0844614ae04b23a82d5c80af73ef26": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}}
+[2026-09-13 02:50:37.233]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T18:49:58.178169+00:00
+[2026-09-13 02:50:37.233]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T18:50:13.177975+00:00
+[2026-09-13 02:50:37.233]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T18:50:28.250778+00:00
+[2026-09-13 02:50:37.233]   AUDIT+ connect | device=我的手机 | at=2026-09-12T18:50:36.883848+00:00
+[2026-09-13 02:51:05.355] STATE-CHANGE: audit_n=21 active_codes=1 tokens=[('我的手机', True, 'CzpEnE5y'), ('我的手机', True, 'MLDZmb3g')] rate_limits={"7292471599df4d4dbcd93a8d9771a1a3": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "ab0844614ae04b23a82d5c80af73ef26": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}}
+[2026-09-13 02:51:05.356]   AUDIT+ command | revoke device=我的手机 | at=2026-09-12T18:51:04.992446+00:00
+[2026-09-13 02:51:06.378] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='app.bootstrap' reason='revoked_token'
+[2026-09-13 02:51:08.407] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='remote.release_control' reason='revoked_token'
+[2026-09-13 02:51:16.953] STATE-CHANGE: audit_n=24 active_codes=1 tokens=[('我的手机', True, 'CzpEnE5y'), ('我的手机', True, 'MLDZmb3g')] rate_limits={"7292471599df4d4dbcd93a8d9771a1a3": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "ab0844614ae04b23a82d5c80af73ef26": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}}
+[2026-09-13 02:51:16.953]   AUDIT+ auth_failed | method=app.bootstrap: revoked_token | at=2026-09-12T18:51:06.029836+00:00
+[2026-09-13 02:51:16.953]   AUDIT+ auth_failed | method=remote.release_control: revoked_token | at=2026-09-12T18:51:07.937653+00:00
+[2026-09-13 02:51:16.953]   AUDIT+ pairing_code_issued | ttl_seconds=300 | at=2026-09-12T18:51:16.692379+00:00
+[2026-09-13 02:51:36.555] STATE-CHANGE: audit_n=25 active_codes=1 tokens=[('我的手机', True, 'CzpEnE5y'), ('我的手机', True, 'MLDZmb3g')] rate_limits={"7292471599df4d4dbcd93a8d9771a1a3": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "ab0844614ae04b23a82d5c80af73ef26": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}}
+[2026-09-13 02:51:36.555]   AUDIT+ pairing_code_issued | ttl_seconds=300 | at=2026-09-12T18:51:36.125480+00:00
+[2026-09-13 02:51:39.070] STATE-CHANGE: audit_n=25 active_codes=1 tokens=[('我的手机', True, 'CzpEnE5y'), ('我的手机', True, 'MLDZmb3g')] rate_limits={"7292471599df4d4dbcd93a8d9771a1a3": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "ab0844614ae04b23a82d5c80af73ef26": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "ed381e43e5b748b5bd89ece67dfd0942": {"fail_count": 1, "blocked_until": 0.0, "backoff_seconds": 60.0}}
+[2026-09-13 02:51:50.134] STATE-CHANGE: audit_n=26 active_codes=1 tokens=[('我的手机', True, 'CzpEnE5y'), ('我的手机', True, 'MLDZmb3g'), ('我的手机', False, 'q5YfkgSY')] rate_limits={"7292471599df4d4dbcd93a8d9771a1a3": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "ab0844614ae04b23a82d5c80af73ef26": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "ed381e43e5b748b5bd89ece67dfd0942": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}}
+[2026-09-13 02:51:50.134]   AUDIT+ connect | device=我的手机 | at=2026-09-12T18:51:50.037577+00:00
+[2026-09-13 02:54:11.374] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='remote.issue_code' reason='forbidden_scope'
+[2026-09-13 02:54:11.374] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='remote.list_devices' reason='forbidden_scope'
+[2026-09-13 02:54:11.374] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='remote.revoke' reason='forbidden_scope'
+[2026-09-13 02:54:11.374] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='remote.tunnel_start' reason='forbidden_scope'
+[2026-09-13 02:54:11.374] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='remote.tunnel_stop' reason='forbidden_scope'
+[2026-09-13 02:54:11.374] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='remote.tunnel_status' reason='forbidden_scope'
+[2026-09-13 02:55:32.724] STATE-CHANGE: audit_n=33 active_codes=1 tokens=[('我的手机', True, 'CzpEnE5y'), ('我的手机', True, 'MLDZmb3g'), ('我的手机', False, 'q5YfkgSY')] rate_limits={"7292471599df4d4dbcd93a8d9771a1a3": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "ab0844614ae04b23a82d5c80af73ef26": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "ed381e43e5b748b5bd89ece67dfd0942": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}}
+[2026-09-13 02:55:32.724]   AUDIT+ scope_denied | method=remote.issue_code origin=remote | at=2026-09-12T18:54:11.247001+00:00
+[2026-09-13 02:55:32.724]   AUDIT+ scope_denied | method=remote.list_devices origin=remote | at=2026-09-12T18:54:11.247001+00:00
+[2026-09-13 02:55:32.724]   AUDIT+ scope_denied | method=remote.revoke origin=remote | at=2026-09-12T18:54:11.247001+00:00
+[2026-09-13 02:55:32.724]   AUDIT+ scope_denied | method=remote.tunnel_start origin=remote | at=2026-09-12T18:54:11.247001+00:00
+[2026-09-13 02:55:32.724]   AUDIT+ scope_denied | method=remote.tunnel_stop origin=remote | at=2026-09-12T18:54:11.247001+00:00
+[2026-09-13 02:55:32.724]   AUDIT+ scope_denied | method=remote.tunnel_status origin=remote | at=2026-09-12T18:54:11.247001+00:00
+[2026-09-13 02:55:32.724]   AUDIT+ pairing_code_issued | ttl_seconds=300 | at=2026-09-12T18:55:32.547233+00:00
+[2026-09-13 02:56:41.046] SIDECAR ===== sidecar stderr session 2026-09-12T18:56:40.611Z stream_id=1 pid=12332 mode=real =====
+[2026-09-13 02:56:46.585] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='app.bootstrap' reason='expired_token'
+[2026-09-13 02:57:01.673] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 02:57:16.241] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 02:57:31.317] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 02:57:46.389] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 02:58:01.466] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 02:58:16.557] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 02:58:31.634] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 02:58:46.711] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 02:59:01.326] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 02:59:16.432] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 02:59:31.511] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 02:59:46.594] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 03:00:01.675] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 03:00:16.280] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 03:00:31.375] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 03:00:46.475] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 03:01:01.565] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 03:01:16.668] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 03:01:31.239] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 03:01:46.318] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 03:02:01.411] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 03:02:16.491] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 03:02:31.570] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 03:02:46.647] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 03:03:01.250] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 03:03:16.347] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 03:03:31.929] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 03:03:47.027] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 03:04:02.110] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 03:04:16.690] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 03:06:53.514] STATE-CHANGE: audit_n=66 active_codes=1 tokens=[('我的手机', True, 'CzpEnE5y'), ('我的手机', True, 'MLDZmb3g'), ('我的手机', False, 'q5YfkgSY')] rate_limits={"7292471599df4d4dbcd93a8d9771a1a3": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "ab0844614ae04b23a82d5c80af73ef26": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "ed381e43e5b748b5bd89ece67dfd0942": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}}
+[2026-09-13 03:06:53.514]   AUDIT+ auth_failed | method=app.bootstrap: expired_token | at=2026-09-12T18:56:46.213787+00:00
+[2026-09-13 03:06:53.514]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T18:57:01.214725+00:00
+[2026-09-13 03:06:53.514]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T18:57:16.212570+00:00
+[2026-09-13 03:06:53.514]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T18:57:31.214138+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T18:57:46.214683+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T18:58:01.214502+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T18:58:16.211390+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T18:58:31.210352+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T18:58:46.210225+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T18:59:01.210204+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T18:59:16.209712+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T18:59:31.213335+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T18:59:46.210137+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T19:00:01.211675+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T19:00:16.212318+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T19:00:31.212829+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T19:00:46.212071+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T19:01:01.208402+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T19:01:16.211305+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T19:01:31.208739+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T19:01:46.211568+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T19:02:01.212670+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T19:02:16.209325+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T19:02:31.210653+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T19:02:46.247065+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T19:03:01.206903+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T19:03:16.212543+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T19:03:31.676355+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ tunnel_started | hostname=controlling-statute-origin-containing.trycloudflare.com | at=2026-09-12T19:03:39.459395+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T19:03:46.675220+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T19:04:01.676643+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T19:04:16.674331+00:00
+[2026-09-13 03:06:53.515]   AUDIT+ pairing_code_issued | ttl_seconds=300 | at=2026-09-12T19:06:53.138347+00:00
+[2026-09-13 03:06:58.050] SIDECAR WARNING:pair_harness.desktop_backend.ws_server:远程鉴权拒绝 method='ping' reason='missing_token'
+[2026-09-13 03:07:01.075] STATE-CHANGE: audit_n=68 active_codes=1 tokens=[('我的手机', True, 'CzpEnE5y'), ('我的手机', True, 'MLDZmb3g'), ('我的手机', False, 'q5YfkgSY'), ('我的手机', False, 'TNLfrCFy')] rate_limits={"7292471599df4d4dbcd93a8d9771a1a3": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "ab0844614ae04b23a82d5c80af73ef26": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "ed381e43e5b748b5bd89ece67dfd0942": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}, "0744aaeffaf34032ac6e8496df4b5b9e": {"fail_count": 0, "blocked_until": 0.0, "backoff_seconds": 60.0}}
+[2026-09-13 03:07:01.075]   AUDIT+ auth_failed | method=ping: missing_token | at=2026-09-12T19:06:57.892250+00:00
+[2026-09-13 03:07:01.075]   AUDIT+ connect | device=我的手机 | at=2026-09-12T19:07:00.671457+00:00
+[2026-09-13 03:08:20.027] SIDECAR WARNING:pair_harness.adapters.codex.transport:session notification without active subscriber dropped to diagnostics: method=session/update sessionId=aef29d3c-67b9-47f8-a6fb-287f1c4eae7a
+[2026-09-13 03:08:20.027] SIDECAR WARNING:pair_harness.adapters.codex.transport:session notification without active subscriber dropped to diagnostics: method=session/update sessionId=aef29d3c-67b9-47f8-a6fb-287f1c4eae7a
+[2026-09-13 03:08:31.623] SIDECAR WARNING:pair_harness.adapters.dialogue.openai_compatible:角色对话模型输出不可用（empty），原始片段: '                                                                                                               '
+=== BATCH END 2026-09-13 03:12:45 ===

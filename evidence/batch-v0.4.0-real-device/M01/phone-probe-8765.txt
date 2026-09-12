@@ -1,0 +1,4 @@
+nc: Timeout
+nc_exit=1
+PC side: sidecar listening sockets:
+  TCP    127.0.0.1:8765         0.0.0.0:0              LISTENING       2584
