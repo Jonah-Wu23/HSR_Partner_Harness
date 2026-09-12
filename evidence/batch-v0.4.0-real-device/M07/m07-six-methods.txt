@@ -1,0 +1,9 @@
+valid token: q5YfkgSY... (device=我的手机)
+remote.issue_code        -> error.code=forbidden_scope  (REJECTED)
+remote.list_devices      -> error.code=forbidden_scope  (REJECTED)
+remote.revoke            -> error.code=forbidden_scope  (REJECTED)
+remote.tunnel_start      -> error.code=forbidden_scope  (REJECTED)
+remote.tunnel_stop       -> error.code=forbidden_scope  (REJECTED)
+remote.tunnel_status     -> error.code=forbidden_scope  (REJECTED)
+
+M07 RESULT: PASS - all 6 control-plane methods forbidden_scope from remote-origin WS

@@ -100,6 +100,9 @@ function createMockActions(overrides: Partial<HarnessActions> = {}): HarnessActi
     issuePairingCode: vi.fn().mockResolvedValue(undefined),
     listRemoteDevices: vi.fn().mockResolvedValue(undefined),
     revokeRemoteDevice: vi.fn().mockResolvedValue(undefined),
+    tunnelStart: vi.fn().mockResolvedValue(undefined),
+    tunnelStop: vi.fn().mockResolvedValue(undefined),
+    queryTunnelStatus: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -847,9 +850,10 @@ describe("CharacterCreatePage", () => {
 
       render(<CharacterCreatePage vm={readOnlyVm} actions={actions} />);
 
-      // 等待 cardGet 副作用完成
+      // 等待 cardGet 副作用完成并更新状态
       await waitFor(() => {
         expect(actions.cardGet).toHaveBeenCalledWith("builtin:phainon");
+        expect(screen.getByTestId("btn-submit")).toBeInTheDocument();
       });
 
       expect(screen.getByText("内置角色卡为只读模式，不可修改或保存。")).toBeInTheDocument();

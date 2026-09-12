@@ -26,10 +26,14 @@ class StubAuthenticator:
         self.valid_tokens = (
             {valid_tokens} if isinstance(valid_tokens, str) else set(valid_tokens)
         )
-        self.calls: list[tuple[str | None, Any]] = []
+        self.calls: list[tuple[str | None, Any, str]] = []
 
-    def authorize(self, token: str | None, method: str) -> AuthDecision:
-        self.calls.append((token, method))
+    def authorize(
+        self, token: str | None, method: str, origin: str = "remote"
+    ) -> AuthDecision:
+        self.calls.append((token, method, origin))
+        if method == "forbidden.method":
+            return AuthDecision(allowed=False, reason="forbidden_scope")
         if method in UNAUTHENTICATED_METHODS:
             return AuthDecision(allowed=True, reason="", device_name="pairing")
         if token in self.valid_tokens:
@@ -424,3 +428,60 @@ def test_ws_response_configures_heartbeat() -> None:
 
     source = inspect.getsource(WSServerMode._handle_ws)
     assert "heartbeat=30.0" in source
+
+
+# ------------------------------------------------------------ V0.4.0 T1 & T4
+
+
+def test_ws_server_default_host_is_loopback() -> None:
+    """T1 / D2: WSServerMode 默认绑定 127.0.0.1，允许指定 host。"""
+    server_default = WSServerMode(
+        dispatch=lambda *a, **k: None,
+        authenticator=StubAuthenticator(),
+        fanout=EventFanout(JsonlWriter(io.StringIO())),
+        static_root=None,
+        port=8765,
+    )
+    assert server_default._host == "127.0.0.1"
+
+    server_lan = WSServerMode(
+        dispatch=lambda *a, **k: None,
+        authenticator=StubAuthenticator(),
+        fanout=EventFanout(JsonlWriter(io.StringIO())),
+        static_root=None,
+        port=8765,
+        host="0.0.0.0",
+    )
+    assert server_lan._host == "0.0.0.0"
+
+
+@pytest.mark.asyncio
+async def test_ws_server_forwards_remote_origin_and_handles_forbidden_scope() -> None:
+    """T4: WebSocket 帧鉴权转发 origin='remote'；forbidden_scope 返回对应错误码。"""
+    import tempfile
+    from pathlib import Path
+
+    auth = StubAuthenticator()
+    with tempfile.TemporaryDirectory() as tmp:
+        harness = await _start(Path(tmp), authenticator=auth)
+        try:
+            session = aiohttp.ClientSession()
+            ws = await session.ws_connect(harness.base + "/ws")
+
+            # 1. 正常业务方法鉴权 -> 转发 origin="remote"
+            await ws.send_str(json.dumps(_req("chat.submit", "m-1", token="phone-token")))
+            reply1 = await _recv_text(ws, "m-1")
+            assert reply1["ok"] is True
+            assert ("phone-token", "chat.submit", "remote") in auth.calls
+
+            # 2. 控制面受限方法 -> 返回 forbidden_scope
+            await ws.send_str(json.dumps(_req("forbidden.method", "m-2", token="phone-token")))
+            reply2 = await _recv_text(ws, "m-2")
+            assert reply2["ok"] is False
+            assert reply2["error"]["code"] == "forbidden_scope"
+            assert "forbidden_scope" in reply2["error"]["message"]
+
+            await ws.close()
+            await session.close()
+        finally:
+            await harness.server.stop()

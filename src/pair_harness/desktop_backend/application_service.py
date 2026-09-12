@@ -117,6 +117,7 @@ from pair_harness.settings import Settings
 from pair_harness.storage.sqlite_store import SQLiteStore
 from .pairing import PairingError, PairingService
 from .power import PowerStatus, PowerStatusError, read_power_status
+from .tunnel import TunnelManager
 from pair_harness.voice_models import VOICE_ASR_MODEL, VOICE_TTS_MODEL
 
 from .commands import DesktopCommand
@@ -833,7 +834,16 @@ class DesktopApplicationService:
             store, store.database.parent / "character_assets"
         )
         self.pairing_service = PairingService()
+        # R1-003：审计随写随持久化——scope_denied、expired_token、
+        # tunnel_started 等条目在写入当刻落库，不随下一次配对状态变更才落库。
+        self.pairing_service.audit_persist_hook = self._persist_pairing_state
         self._restore_pairing_state()
+        self.tunnel_manager = TunnelManager(
+            data_dir=store.database.parent,
+            emitter=emitter,
+            audit_logger=self.pairing_service.record_audit,
+        )
+        self.remote_serve_port: int | None = None
         self.orchestrator = orchestrator
         self.pair_config = pair_config
         self.pair_catalog = tuple(pair_catalog)
@@ -1008,6 +1018,9 @@ class DesktopApplicationService:
         close_transport = getattr(transport, "close", None)
         if close_transport is not None:
             await close_transport()
+        # V0.4.0（D1/T5）：Sidecar 退出时关闭隧道子进程，不留孤儿。
+        if self.tunnel_manager is not None:
+            await self.tunnel_manager.stop(reason="sidecar_exit")
         # V0.3.3：退出前持久化远程配对状态（token/撤销集合/审计）。
         self._persist_pairing_state()
         self.store.close()
@@ -1781,6 +1794,9 @@ class DesktopApplicationService:
             "remote.claim_control": self._remote_claim_control,
             "remote.release_control": self._remote_release_control,
             "remote.control_status": self._remote_control_status,
+            "remote.tunnel_start": self._remote_tunnel_start,
+            "remote.tunnel_stop": self._remote_tunnel_stop,
+            "remote.tunnel_status": self._remote_tunnel_status,
             # V0.3.9 §5：显式只读查询（存储层过滤，不改写状态）。
             "metrics.query": self._metrics_query,
             "diagnostics.prompt_assembly": self._diagnostics_prompt_assembly,
@@ -1791,6 +1807,20 @@ class DesktopApplicationService:
             "memory.update": self._memory_update,
             "memory.delete": self._memory_delete,
         }
+        if command.method == "remote.issue_code":
+            return await self._remote_issue_code(command.params, origin=command.origin)
+        if command.method == "remote.list_devices":
+            return await self._remote_list_devices(command.params, origin=command.origin)
+        if command.method == "remote.revoke":
+            return await self._remote_revoke(command.params, origin=command.origin)
+        if command.method == "remote.tunnel_start":
+            return await self._remote_tunnel_start(command.params, origin=command.origin)
+        if command.method == "remote.tunnel_stop":
+            return await self._remote_tunnel_stop(command.params, origin=command.origin)
+        if command.method == "remote.tunnel_status":
+            return await self._remote_tunnel_status(command.params, origin=command.origin)
+        if command.method == "remote.pair":
+            return await self._remote_pair(command.params, connection_key=command.connection_key)
         if command.method == "approval.resolve":
             # V0.3.5：审批应答需要命令来源做双端仲裁，其余 handler 只收 params。
             return await self._approval_resolve(
@@ -4696,6 +4726,8 @@ class DesktopApplicationService:
             return
         if isinstance(state, dict):
             self.pairing_service.load_state(state)
+            if state.get("version", 1) < 2:
+                self._persist_pairing_state()
 
     def _persist_pairing_state(self) -> None:
         self.store.set_app_state(
@@ -4703,12 +4735,19 @@ class DesktopApplicationService:
             json.dumps(self.pairing_service.export_state(), ensure_ascii=False),
         )
 
-    async def _remote_issue_code(self, params: Mapping[str, Any]) -> dict[str, Any]:
+    async def _remote_issue_code(
+        self, params: Mapping[str, Any], *, origin: str = "desktop"
+    ) -> dict[str, Any]:
         """桌面端生成短期配对码（5 分钟有效、一次性）。
 
-        仅桌面 stdin 路径与已鉴权远程连接可调用；未鉴权连接无权生成。
+        仅桌面回环/stdin 路径可调用；远程连接无权生成。
         """
         del params
+        if origin != "desktop":
+            self.pairing_service.record_audit(
+                "scope_denied", f"method=remote.issue_code origin={origin}"
+            )
+            raise ServiceError("远程连接无权调用控制面方法", code="forbidden_scope")
         code = self.pairing_service.issue_code()
         self._persist_pairing_state()
         # V039-S4-004：配对码与真实接入地址一起返回；未监听时为 None，
@@ -4719,25 +4758,54 @@ class DesktopApplicationService:
             "serve_address": self.remote_serve_address,
         }
 
-    async def _remote_pair(self, params: Mapping[str, Any]) -> dict[str, Any]:
+    async def _remote_pair(
+        self, params: Mapping[str, Any], *, connection_key: str | None = None
+    ) -> dict[str, Any]:
         code = str(params.get("code") or "")
         device_name = str(params.get("device_name") or "").strip()
         if not code or not device_name:
             raise ServiceError(
                 "remote.pair 需要 code 与 device_name", code="invalid_params"
             )
+        source = connection_key or "default"
         try:
-            token = self.pairing_service.claim(code, device_name=device_name)
+            token = self.pairing_service.claim(code, device_name=device_name, source=source)
         except PairingError as exc:
-            raise ServiceError(str(exc), code=f"pairing_{exc.code}") from exc
+            # 失败同样推进失败计数、封锁退避与审计（§4.4：封锁状态随配对状态
+            # 持久化，重启不重置），必须在拒绝请求的当刻落盘，否则 Sidecar
+            # 崩溃重启会重置攻击者的尝试预算。
+            self._persist_pairing_state()
+            details = (
+                {"retry_after_s": int(round(exc.retry_after_s))}
+                if exc.retry_after_s is not None
+                else None
+            )
+            raise ServiceError(str(exc), code=f"pairing_{exc.code}", details=details) from exc
         self._persist_pairing_state()
+        # R1-001：配对成功即时广播，桌面端订阅该事件重拉设备列表，
+        # 不再依赖面板打开时的一次性 remote.list_devices 拉取。
+        self.emitter.emit("remote.paired", {"device_name": device_name})
         return {"token": token}
 
-    async def _remote_list_devices(self, params: Mapping[str, Any]) -> dict[str, Any]:
+    async def _remote_list_devices(
+        self, params: Mapping[str, Any], *, origin: str = "desktop"
+    ) -> dict[str, Any]:
         del params
+        if origin != "desktop":
+            self.pairing_service.record_audit(
+                "scope_denied", f"method=remote.list_devices origin={origin}"
+            )
+            raise ServiceError("远程连接无权调用控制面方法", code="forbidden_scope")
         return {"devices": self.pairing_service.list_devices()}
 
-    async def _remote_revoke(self, params: Mapping[str, Any]) -> dict[str, Any]:
+    async def _remote_revoke(
+        self, params: Mapping[str, Any], *, origin: str = "desktop"
+    ) -> dict[str, Any]:
+        if origin != "desktop":
+            self.pairing_service.record_audit(
+                "scope_denied", f"method=remote.revoke origin={origin}"
+            )
+            raise ServiceError("远程连接无权调用控制面方法", code="forbidden_scope")
         device_name = str(params.get("device_name") or "").strip()
         if not device_name:
             raise ServiceError(
@@ -4767,6 +4835,45 @@ class DesktopApplicationService:
             )
         self._persist_pairing_state()
         return {"device_name": device_name, "revoked_tokens": revoked}
+
+    async def _remote_tunnel_start(
+        self, params: Mapping[str, Any], *, origin: str = "desktop"
+    ) -> dict[str, Any]:
+        if origin != "desktop":
+            self.pairing_service.record_audit(
+                "scope_denied", f"method=remote.tunnel_start origin={origin}"
+            )
+            raise ServiceError("远程连接无权调用控制面方法", code="forbidden_scope")
+        port = params.get("port")
+        if port is None and self.remote_serve_address:
+            port = self.remote_serve_address.get("port")
+        if port is None and self.remote_serve_port is not None:
+            port = self.remote_serve_port
+        if port is None:
+            port = 8765
+        return await self.tunnel_manager.start(int(port))
+
+    async def _remote_tunnel_stop(
+        self, params: Mapping[str, Any], *, origin: str = "desktop"
+    ) -> dict[str, Any]:
+        del params
+        if origin != "desktop":
+            self.pairing_service.record_audit(
+                "scope_denied", f"method=remote.tunnel_stop origin={origin}"
+            )
+            raise ServiceError("远程连接无权调用控制面方法", code="forbidden_scope")
+        return await self.tunnel_manager.stop()
+
+    async def _remote_tunnel_status(
+        self, params: Mapping[str, Any], *, origin: str = "desktop"
+    ) -> dict[str, Any]:
+        del params
+        if origin != "desktop":
+            self.pairing_service.record_audit(
+                "scope_denied", f"method=remote.tunnel_status origin={origin}"
+            )
+            raise ServiceError("远程连接无权调用控制面方法", code="forbidden_scope")
+        return self.tunnel_manager.status()
 
     @staticmethod
     def _remote_control_device_key(command: DesktopCommand) -> str:

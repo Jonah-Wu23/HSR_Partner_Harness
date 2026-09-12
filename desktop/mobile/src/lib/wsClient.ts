@@ -132,6 +132,41 @@ export function syncNativeKeepaliveConfig(): void {
 }
 
 /**
+ * 规范化 WebSocket 服务地址：
+ * 支持解析 https:// 与 wss:// 协议（公网隧道场景如 https://xxx.trycloudflare.com），
+ * 自动将 https:// 映射为 wss://、http:// 映射为 ws://，并确保路径以 /ws 结尾。
+ */
+export function normalizeWsUrl(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  try {
+    const url = new URL(trimmed);
+    let protocol = url.protocol;
+    if (protocol === "https:") {
+      protocol = "wss:";
+    } else if (protocol === "http:") {
+      protocol = "ws:";
+    }
+    if (protocol !== "ws:" && protocol !== "wss:") {
+      return trimmed;
+    }
+    let pathname = url.pathname;
+    if (!pathname || pathname === "/") {
+      pathname = "/ws";
+    } else if (!pathname.endsWith("/ws")) {
+      pathname = `${pathname.replace(/\/+$/, "")}/ws`;
+    }
+    const searchParams = new URLSearchParams(url.search);
+    searchParams.delete("code");
+    searchParams.delete("ws");
+    const search = searchParams.toString();
+    return `${protocol}//${url.host}${pathname}${search ? `?${search}` : ""}`;
+  } catch {
+    return trimmed;
+  }
+}
+
+/**
  * WS 地址解析优先级：?ws= 查询参数（二维码带入）> localStorage 缓存 >
  * 当前站点 /ws（经 vite proxy 或反向代理到 Sidecar）。
  */
@@ -139,11 +174,12 @@ export function resolveWsUrl(): string {
   if (typeof window === "undefined") return "ws://127.0.0.1:8765/ws";
   const query = new URLSearchParams(window.location.search).get("ws");
   if (query && query.length > 0) {
-    storage()?.setItem(WS_URL_KEY, query);
-    return query;
+    const normalized = normalizeWsUrl(query);
+    storage()?.setItem(WS_URL_KEY, normalized);
+    return normalized;
   }
   const stored = storage()?.getItem(WS_URL_KEY);
-  if (stored && stored.length > 0) return stored;
+  if (stored && stored.length > 0) return normalizeWsUrl(stored);
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}/ws`;
 }
@@ -156,6 +192,7 @@ interface PendingEntry {
 export class MobileWsClient {
   private ws: WebSocket | null = null;
   private state: MobileConnectionState = "disconnected";
+  private authFailureCode: string | null = null;
   private nextId = 1;
   private readonly pending = new Map<string, PendingEntry>();
   private readonly eventListeners = new Set<(event: WireEvent) => void>();
@@ -168,6 +205,10 @@ export class MobileWsClient {
 
   getState(): MobileConnectionState {
     return this.state;
+  }
+
+  getAuthFailureCode(): string | null {
+    return this.authFailureCode;
   }
 
   onEvent(listener: (event: WireEvent) => void): () => void {
@@ -243,6 +284,7 @@ export class MobileWsClient {
 
   /** 调用方已收到携带新凭证的业务成功响应后，恢复鉴权连接状态。 */
   confirmAuthenticated(): void {
+    this.authFailureCode = null;
     if (this.state === "auth_failed" && this.isSocketConnected()) {
       this.setState("connected");
     }
@@ -329,7 +371,37 @@ export class MobileWsClient {
     }
     const code = frame.error?.code ?? "unknown";
     const message = frame.error?.message ?? "远程命令失败";
-    if (code === "unauthorized") {
+    const isAuthFailure =
+      code === "unauthorized" ||
+      code === "expired_token" ||
+      code === "token_expired" ||
+      code === "token_revoked" ||
+      code === "revoked_token" ||
+      code === "auth_failed" ||
+      message === "expired_token" ||
+      message === "auth_failed: expired_token" ||
+      message.includes("expired_token");
+
+    if (isAuthFailure) {
+      if (
+        code === "expired_token" ||
+        code === "token_expired" ||
+        message === "expired_token" ||
+        message === "auth_failed: expired_token" ||
+        message.includes("expired_token")
+      ) {
+        this.authFailureCode = "expired_token";
+        clearCredentials();
+      } else if (
+        code === "token_revoked" ||
+        code === "revoked_token" ||
+        message === "revoked_token" ||
+        message === "token_revoked"
+      ) {
+        this.authFailureCode = "token_revoked";
+      } else {
+        this.authFailureCode = code !== "unknown" ? code : message;
+      }
       // 如实暴露鉴权失败：UI 引导重新配对，不在网络层静默换状态。
       this.setState("auth_failed");
     }

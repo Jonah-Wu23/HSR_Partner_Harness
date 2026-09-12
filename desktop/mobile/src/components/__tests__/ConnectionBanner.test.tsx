@@ -85,12 +85,26 @@ describe("ConnectionBanner 组件", () => {
     expect(reconnectSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("auth_failed 时若带细分错误码展示具体原因（token_expired 与 token_revoked）", () => {
+  it("auth_failed 时若带细分错误码展示具体原因（expired_token 与 token_revoked）", () => {
     const { rerender } = render(
       <ConnectionBanner connection="auth_failed" authFailureCode="token_expired" />,
     );
     expect(screen.getByTestId("connection-banner")).toHaveTextContent(
-      "配对凭据已过期，请重新配对。",
+      "登录令牌已过期（最长30天或7天未使用），请重新配对。",
+    );
+
+    rerender(
+      <ConnectionBanner connection="auth_failed" authFailureCode="expired_token" />,
+    );
+    expect(screen.getByTestId("connection-banner")).toHaveTextContent(
+      "登录令牌已过期（最长30天或7天未使用），请重新配对。",
+    );
+
+    rerender(
+      <ConnectionBanner connection="auth_failed" authFailureCode="auth_failed: expired_token" />,
+    );
+    expect(screen.getByTestId("connection-banner")).toHaveTextContent(
+      "登录令牌已过期（最长30天或7天未使用），请重新配对。",
     );
 
     rerender(

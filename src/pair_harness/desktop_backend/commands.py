@@ -88,6 +88,10 @@ DESKTOP_COMMANDS = frozenset(
         "remote.release_control",
         # V0.3.9 契约 §6/§7：只读控制租约状态（TTL/宽限/持有设备）。
         "remote.control_status",
+        # V0.4.0（D1/D6）：Cloudflare Quick Tunnel 控制面命令
+        "remote.tunnel_start",
+        "remote.tunnel_stop",
+        "remote.tunnel_status",
         # V0.3.9 契约 §5/§7：摘要、记忆、指标与装配诊断的显式命令。
         "summary.regenerate",
         "summary.get",

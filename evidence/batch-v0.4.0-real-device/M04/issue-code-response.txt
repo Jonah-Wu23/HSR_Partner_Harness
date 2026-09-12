@@ -1,0 +1,1 @@
+RESPONSE: {"kind": "response", "id": "issue-1", "ok": false, "error": {"code": "forbidden_scope", "message": "forbidden_scope"}}

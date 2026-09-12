@@ -46,6 +46,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PORT",
         help="同端口开启 WS 服务器模式（手机远程 P0），与 stdin 循环并行",
     )
+    parser.add_argument(
+        "--lan",
+        action="store_true",
+        help="允许局域网设备直连（绑定 0.0.0.0），默认仅绑定 127.0.0.1",
+    )
     return parser
 
 
@@ -211,12 +216,17 @@ async def _run(args: argparse.Namespace) -> int:
                 static_root = None
             # V0.3.5：手机语音事件经 fanout 的 remote-only 通道下发。
             service.attach_event_fanout(fanout)
+            is_lan = bool(getattr(args, "lan", False))
+            bind_host = "0.0.0.0" if is_lan else "127.0.0.1"
+            mode = "lan" if is_lan else "loopback"
+            service.remote_serve_port = args.serve
             ws_server = WSServerMode(
                 dispatch=router.dispatch,
                 authenticator=service.pairing_service,
                 fanout=fanout,
                 static_root=static_root,
                 port=args.serve,
+                host=bind_host,
                 # V0.3.5 契约 §5.3：连接断开自动取消其未完成语音会话。
                 on_disconnect=service.handle_remote_disconnect,
             )
@@ -240,19 +250,30 @@ async def _run(args: argparse.Namespace) -> int:
                     },
                 )
             else:
-                lan_host = _detect_lan_ip()
+                if is_lan:
+                    lan_host = _detect_lan_ip()
+                    address: dict[str, Any] = {
+                        "host": lan_host,
+                        "port": args.serve,
+                        "mode": "lan",
+                        "tls": False,
+                    }
+                    if lan_host is None:
+                        address["reason"] = "no_lan_address"
+                else:
+                    lan_host = "127.0.0.1"
+                    address = {
+                        "host": "127.0.0.1",
+                        "port": args.serve,
+                        "mode": "loopback",
+                        "tls": False,
+                    }
                 logging.getLogger(__name__).info(
-                    "WS 服务器模式已启动 port=%s lan_host=%s", args.serve, lan_host
+                    "WS 服务器模式已启动 port=%s host=%s mode=%s",
+                    args.serve,
+                    lan_host,
+                    mode,
                 )
-                # V0.3.4 缺陷 6 / V039-S4-004：远程服务已监听成功就如实上报。
-                # host 是真实局域网地址时桌面端按它生成二维码；探测不到局域网
-                # 地址时 host 为 null 且 reason="no_lan_address"——服务确已
-                # 监听，只是没有可用的接入地址。不伪造 127.0.0.1/0.0.0.0 之类
-                # 不可达地址，也不让桌面端把这种情况误判成「--serve 未启动或
-                # 启动失败」。
-                address: dict[str, Any] = {"host": lan_host, "port": args.serve}
-                if lan_host is None:
-                    address["reason"] = "no_lan_address"
                 service.remote_serve_address = address
                 service.emitter.emit("serve.started", dict(address))
                 # 撤销 token 时立即断开仍持有该 token 的已建立连接（V0.3.4 缺陷 7）。
@@ -280,15 +301,22 @@ async def _run(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    faulthandler.enable(file=sys.stderr, all_threads=True)
+def _configure_logging() -> None:
     # 日志级别可经 PAIR_HARNESS_LOG_LEVEL 调高（INFO/DEBUG）：serve 验收
     # 需要观察 mobile-tts 等下发链路时不必改代码。默认 WARNING 保持安静。
     logging.basicConfig(
         stream=sys.stderr,
         level=getattr(logging, os.getenv("PAIR_HARNESS_LOG_LEVEL", "WARNING").upper(), logging.WARNING),
     )
+    # R1-004：隧道管理过程日志（下载、哈希校验、子进程启动、主机名解析）
+    # 固定 INFO 级别进 sidecar.stderr.log，故障排查有过程线索。
+    logging.getLogger("pair_harness.desktop_backend.tunnel").setLevel(logging.INFO)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    faulthandler.enable(file=sys.stderr, all_threads=True)
+    _configure_logging()
     return asyncio.run(_run(args))
 
 

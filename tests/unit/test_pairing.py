@@ -69,7 +69,7 @@ class TestClaim:
         svc.claim(code, device_name="phone-a")
         with pytest.raises(PairingError) as exc:
             svc.claim(code, device_name="phone-b")
-        assert exc.value.code == "used"
+        assert exc.value.code == "invalid_code"
 
     def test_expired_code_raises_expired(self) -> None:
         clock = _FakeClock(start=1000.0)
@@ -79,10 +79,10 @@ class TestClaim:
         clock.advance(301.0)
         with pytest.raises(PairingError) as exc:
             svc.claim(code, device_name="phone")
-        assert exc.value.code == "expired"
+        assert exc.value.code == "expired_code"
 
     def test_expired_code_evicted_on_issue(self) -> None:
-        """过期码在 issue_code 时被清理，claim 应报 invalid。"""
+        """过期码在 issue_code 时被清理，claim 应报 invalid_code。"""
         clock = _FakeClock(start=1000.0)
         svc = PairingService(ttl_seconds=300, clock=clock)
         code = svc.issue_code()
@@ -91,13 +91,13 @@ class TestClaim:
         svc.issue_code()
         with pytest.raises(PairingError) as exc:
             svc.claim(code, device_name="phone")
-        assert exc.value.code == "invalid"
+        assert exc.value.code == "invalid_code"
 
     def test_nonexistent_code_raises_invalid(self) -> None:
         svc = PairingService()
         with pytest.raises(PairingError) as exc:
             svc.claim("000000", device_name="phone")
-        assert exc.value.code == "invalid"
+        assert exc.value.code == "invalid_code"
 
     def test_claim_records_connect_audit(self) -> None:
         svc = PairingService()
@@ -192,7 +192,7 @@ class TestAuthorize:
     def test_other_method_without_token_rejected(self) -> None:
         """非白名单方法无 token 被拒绝。"""
         svc = PairingService()
-        methods = ["conversation.message", "remote.list_devices", "remote.revoke"]
+        methods = ["conversation.message", "conversation.history"]
         for method in methods:
             decision = svc.authorize(None, method)
             assert decision.allowed is False, f"{method} should be rejected"
@@ -507,7 +507,7 @@ class TestIntegration:
         # 4. 同码再次 claim 失败
         with pytest.raises(PairingError) as exc:
             svc.claim(code, device_name="another-phone")
-        assert exc.value.code == "used"
+        assert exc.value.code == "invalid_code"
 
         # 5. 撤销 token
         assert svc.revoke(token) is True
@@ -544,3 +544,350 @@ class TestIntegration:
         svc.revoke(token_a)
         assert svc.authorize(token_a, "x").allowed is False
         assert svc.authorize(token_b, "x").allowed is True
+
+
+# ============================================================
+# T2: 单码有效与配对频控
+# ============================================================
+
+
+class TestRateLimitingAndSingleCode:
+    def test_single_code_validity_revokes_previous(self) -> None:
+        """签发新码时，未过期的旧码自动作废。"""
+        svc = PairingService()
+        code1 = svc.issue_code()
+        code2 = svc.issue_code()
+        assert code1 != code2
+
+        with pytest.raises(PairingError) as exc:
+            svc.claim(code1, device_name="phone-1")
+        assert exc.value.code == "invalid_code"
+
+        token = svc.claim(code2, device_name="phone-2")
+        assert isinstance(token, str)
+
+    def test_issue_code_records_audit(self) -> None:
+        """签发配对码记录 pairing_code_issued 审计日志（不含配对码明文）。"""
+        svc = PairingService()
+        code = svc.issue_code()
+        entries = svc.audit_entries()
+        issued_events = [e for e in entries if e["event"] == "pairing_code_issued"]
+        assert len(issued_events) == 1
+        assert code not in issued_events[0]["detail"]
+
+    def test_rate_limit_triggered_after_5_failures(self) -> None:
+        """连续 5 次配对失败后进入封锁，封锁时间 60s。"""
+        clock = _FakeClock(start=1000.0)
+        svc = PairingService(clock=clock)
+        svc.issue_code()
+
+        for _ in range(4):
+            with pytest.raises(PairingError) as exc:
+                svc.claim("999999", device_name="bad-actor", connection_key="ip-1.2.3.4")
+            assert exc.value.code == "invalid_code"
+
+        # 第 5 次失败触发封锁
+        with pytest.raises(PairingError) as exc:
+            svc.claim("999999", device_name="bad-actor", connection_key="ip-1.2.3.4")
+        assert exc.value.code == "rate_limited"
+        assert exc.value.retry_after_s == 60
+
+        entries = svc.audit_entries()
+        rate_events = [e for e in entries if e["event"] == "pairing_rate_limited"]
+        assert len(rate_events) == 1
+        assert "ip-1.2.3.4" in rate_events[0]["detail"]
+
+    def test_rate_limit_blocks_valid_code_during_window(self) -> None:
+        """在封锁窗口内，即使使用正确配对码也报错 rate_limited。"""
+        clock = _FakeClock(start=1000.0)
+        svc = PairingService(clock=clock)
+        valid_code = svc.issue_code()
+
+        # 触发 5 次失败
+        for _ in range(5):
+            with pytest.raises(PairingError):
+                svc.claim("wrong", device_name="phone", connection_key="client-1")
+
+        # 尝试使用正确配对码
+        clock.advance(10.0)
+        with pytest.raises(PairingError) as exc:
+            svc.claim(valid_code, device_name="phone", connection_key="client-1")
+        assert exc.value.code == "rate_limited"
+        assert exc.value.retry_after_s == 50  # 60 - 10
+
+    def test_rate_limit_isolated_by_connection_key(self) -> None:
+        """不同 connection_key 的限流互相隔离。"""
+        svc = PairingService()
+        valid_code = svc.issue_code()
+
+        for _ in range(5):
+            with pytest.raises(PairingError):
+                svc.claim("wrong", device_name="bad", connection_key="attacker")
+
+        # 另一个客户端使用同一个码可以成功配对
+        token = svc.claim(valid_code, device_name="good", connection_key="innocent")
+        assert isinstance(token, str)
+
+    def test_exponential_backoff_up_to_30_minutes(self) -> None:
+        """封锁期满后再失败，封锁时间指数退避翻倍，上限 1800s。"""
+        clock = _FakeClock(start=1000.0)
+        svc = PairingService(clock=clock)
+        svc.issue_code()
+
+        for _ in range(5):
+            with pytest.raises(PairingError):
+                svc.claim("wrong", connection_key="actor")
+
+        # 当前封锁 60s，等待 61s
+        clock.advance(61.0)
+        # 再次尝试失败 -> 封锁 120s
+        with pytest.raises(PairingError) as exc:
+            svc.claim("wrong", connection_key="actor")
+        assert exc.value.code == "rate_limited"
+        assert exc.value.retry_after_s == 120
+
+        # 等待 121s -> 封锁 240s
+        clock.advance(121.0)
+        with pytest.raises(PairingError) as exc:
+            svc.claim("wrong", connection_key="actor")
+        assert exc.value.code == "rate_limited"
+        assert exc.value.retry_after_s == 240
+
+        # 模拟多次失败直到达到 1800s 上限
+        last_exc: PairingError | None = None
+        for _ in range(10):
+            clock.advance(2000.0)
+            try:
+                svc.claim("wrong", connection_key="actor")
+            except PairingError as exc:
+                last_exc = exc
+        assert last_exc is not None
+        assert last_exc.code == "rate_limited"
+        assert last_exc.retry_after_s == 1800
+
+    def test_successful_claim_resets_rate_limit(self) -> None:
+        """封锁期满后成功配对，失败计数与退避重置。"""
+        clock = _FakeClock(start=1000.0)
+        svc = PairingService(clock=clock)
+        valid_code = svc.issue_code()
+
+        for _ in range(5):
+            with pytest.raises(PairingError):
+                svc.claim("wrong", connection_key="actor")
+
+        # 封锁期满后
+        clock.advance(61.0)
+        token = svc.claim(valid_code, connection_key="actor")
+        assert isinstance(token, str)
+
+        # 再次失败，应从第 1 次重新计数（不会立即 rate_limited）
+        svc.issue_code()
+        with pytest.raises(PairingError) as exc:
+            svc.claim("wrong", connection_key="actor")
+        assert exc.value.code == "invalid_code"
+
+
+# ============================================================
+# T3: 令牌生命周期与版本 2 快照
+# ============================================================
+
+
+class TestTokenLifecycle:
+    def test_token_has_expires_at_30_days(self) -> None:
+        """令牌初始 expires_at 默认为 7 天（闲置超时），上限不超过 30 天。"""
+        clock = _FakeClock(start=1000.0)
+        svc = PairingService(clock=clock)
+        code = svc.issue_code()
+        token = svc.claim(code, device_name="phone")
+        devices = svc.list_devices()
+        assert len(devices) == 1
+        assert "expires_at" in devices[0]
+
+        # 闲置超过 7 天鉴权失败 (expired_token)
+        clock.advance(7 * 86400 + 1)
+        decision = svc.authorize(token, "conversation.message")
+        assert decision.allowed is False
+        assert decision.reason == "expired_token"
+
+    def test_authorize_refreshes_idle_timeout_up_to_30_days(self) -> None:
+        """每次成功鉴权延长 7 天闲置超时，但不超过 30 天绝对生命周期。"""
+        clock = _FakeClock(start=1000.0)
+        svc = PairingService(clock=clock)
+        code = svc.issue_code()
+        token = svc.claim(code, device_name="phone")
+
+        # 在第 6 天（未过 7 天）访问，延长 7 天
+        clock.advance(6 * 86400)
+        decision = svc.authorize(token, "conversation.message")
+        assert decision.allowed is True
+
+        # 再过 6 天（总共 12 天），如果未刷新原本会过期，但已刷新所以仍然有效
+        clock.advance(6 * 86400)
+        decision = svc.authorize(token, "conversation.message")
+        assert decision.allowed is True
+
+        # 持续刷新直到第 31 天（超过 30 天绝对生命周期），必须过期
+        clock.advance(20 * 86400)
+        decision = svc.authorize(token, "conversation.message")
+        assert decision.allowed is False
+        assert decision.reason == "expired_token"
+
+    def test_export_state_v2_includes_expires_at_and_rate_limits(self) -> None:
+        """快照为版本 2，包含 expires_at 和 rate_limits。"""
+        clock = _FakeClock(start=1000.0)
+        svc = PairingService(clock=clock)
+        code = svc.issue_code()
+        token = svc.claim(code, device_name="phone")
+
+        # 触发一次封锁
+        svc.issue_code()
+        for _ in range(5):
+            with pytest.raises(PairingError):
+                svc.claim("bad", connection_key="attacker")
+
+        state = svc.export_state()
+        assert state["version"] == 2
+        assert len(state["tokens"]) == 1
+        assert "expires_at" in state["tokens"][0]
+        assert "rate_limits" in state
+        assert "attacker" in state["rate_limits"]
+
+        # load_state 恢复
+        svc2 = PairingService(clock=clock)
+        svc2.load_state(state)
+        # 验证封锁恢复
+        with pytest.raises(PairingError) as exc:
+            svc2.claim("wrong", connection_key="attacker")
+        assert exc.value.code == "rate_limited"
+
+        # 验证 token 有效
+        assert svc2.authorize(token, "conversation.message").allowed is True
+
+    def test_load_state_v1_compatibility(self) -> None:
+        """向前兼容版本 1 快照：自动推导 expires_at。"""
+        v1_state = {
+            "version": 1,
+            "tokens": [
+                {
+                    "token_hash": "dummyhash",
+                    "device_name": "old-phone",
+                    "issued_at": 1000.0,
+                    "last_used_at": 1000.0,
+                    "revoked": False,
+                }
+            ],
+            "audit": [],
+        }
+        svc = PairingService()
+        svc.load_state(v1_state)
+        devices = svc.list_devices()
+        assert len(devices) == 1
+        assert "expires_at" in devices[0]
+        # 导出后自动升级为 version 2
+        assert svc.export_state()["version"] == 2
+
+
+# ============================================================
+# T4: 控制面鉴权与审计
+# ============================================================
+
+
+class TestControlPlaneScope:
+    def test_remote_origin_rejects_control_plane_methods(self) -> None:
+        """来自 remote origin 的控制面方法被拒绝，返回 forbidden_scope。"""
+        svc = PairingService()
+        code = svc.issue_code()
+        token = svc.claim(code, device_name="phone")
+
+        control_methods = [
+            "remote.issue_code",
+            "remote.list_devices",
+            "remote.revoke",
+            "remote.tunnel_start",
+            "remote.tunnel_stop",
+            "remote.tunnel_status",
+        ]
+        for method in control_methods:
+            decision = svc.authorize(token, method, origin="remote")
+            assert decision.allowed is False
+            assert decision.reason == "forbidden_scope"
+
+        entries = svc.audit_entries()
+        for method in control_methods:
+            matching = [
+                e
+                for e in entries
+                if e["event"] == "scope_denied" and f"method={method}" in e["detail"]
+            ]
+            assert len(matching) == 1, f"{method} 的 scope_denied 审计缺失或重复"
+            assert "origin=remote" in matching[0]["detail"]
+
+    def test_desktop_origin_allows_control_plane_methods(self) -> None:
+        """来自 desktop origin 的控制面方法鉴权通过。"""
+        svc = PairingService()
+        code = svc.issue_code()
+        token = svc.claim(code, device_name="desktop-ui")
+
+        control_methods = [
+            "remote.issue_code",
+            "remote.list_devices",
+            "remote.revoke",
+            "remote.tunnel_start",
+            "remote.tunnel_stop",
+            "remote.tunnel_status",
+        ]
+        for method in control_methods:
+            decision = svc.authorize(token, method, origin="desktop")
+            assert decision.allowed is True
+            assert decision.device_name == "desktop"
+
+# ============================================================
+# R1-003: 审计随写随持久化钩子
+# ============================================================
+
+
+class TestAuditPersistHook:
+    def test_default_no_hook_and_pure_logic(self) -> None:
+        """未注入钩子（独立构造/测试）时审计只留内存，行为不变。"""
+        svc = PairingService()
+        assert svc.audit_persist_hook is None
+        svc.issue_code()
+        assert svc.audit_entries()[-1]["event"] == "pairing_code_issued"
+
+    def test_record_audit_triggers_persist_hook_per_write(self) -> None:
+        """R1-003：每条审计写入当刻触发持久化钩子。"""
+        svc = PairingService()
+        writes: list[str] = []
+        svc.audit_persist_hook = lambda: writes.append(svc.audit_entries()[-1]["event"])
+        svc.issue_code()
+        svc.record_audit("tunnel_started", "hostname=example.trycloudflare.com")
+        assert writes == ["pairing_code_issued", "tunnel_started"]
+
+    def test_authorize_denial_persists_scope_denied_immediately(self) -> None:
+        """R1-003：scope_denied 拒绝审计在写入当刻触发持久化，不等下一次状态变更。"""
+        svc = PairingService()
+        code = svc.issue_code()
+        token = svc.claim(code, device_name="phone")
+        persisted: list[str] = []
+        svc.audit_persist_hook = lambda: persisted.append(svc.audit_entries()[-1]["event"])
+        decision = svc.authorize(token, "remote.issue_code", origin="remote")
+        assert decision.allowed is False
+        assert decision.reason == "forbidden_scope"
+        assert persisted == ["scope_denied"]
+
+    def test_expired_token_denial_persists_immediately(self) -> None:
+        """R1-003：expired_token 拒绝审计同样当刻触发持久化（M08 同项）。"""
+        clock = {"now": 1000.0}
+        svc = PairingService(clock=lambda: clock["now"])
+        code = svc.issue_code()
+        token = svc.claim(code, device_name="phone")
+        persisted: list[str] = []
+        svc.audit_persist_hook = lambda: persisted.append(svc.audit_entries()[-1]["event"])
+        # 越过 30 天绝对有效期：expired_token
+        clock["now"] = 1000.0 + 31 * 24 * 3600
+        decision = svc.authorize(token, "app.bootstrap", origin="remote")
+        assert decision.allowed is False
+        assert decision.reason == "expired_token"
+        # 审计事件名统一为 auth_failed，拒绝原因在 detail
+        assert persisted == ["auth_failed"]
+        assert "expired_token" in svc.audit_entries()[-1]["detail"]

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { RemoteCommandError, getStoredDeviceName } from "../../lib/wsClient";
+import { RemoteCommandError, getStoredDeviceName, normalizeWsUrl } from "../../lib/wsClient";
 import { useMobileStore } from "../../lib/mobileStore";
 import { useShellEnvironment } from "../../lib/shellCapabilities";
 import { WsAddressInput, validateWsAddress } from "../../components/WsAddressInput";
@@ -24,14 +24,29 @@ function extractPairCode(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return "";
 
-  // 尝试解析为 URL（桌面端二维码常见格式：http://ip:port/?ws=...&code=123456）
-  if (trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.includes("?")) {
+  // 尝试解析为 URL（桌面端二维码常见格式：https://.../?ws=...&code=123456 或 https://xxx.trycloudflare.com/?code=123456）
+  if (
+    trimmed.startsWith("http://") ||
+    trimmed.startsWith("https://") ||
+    trimmed.startsWith("ws://") ||
+    trimmed.startsWith("wss://") ||
+    trimmed.includes("?")
+  ) {
     try {
       const url = new URL(trimmed, typeof window !== "undefined" ? window.location.href : "http://localhost");
       const wsParam = url.searchParams.get("ws");
       const codeParam = url.searchParams.get("code");
       if (wsParam && typeof window !== "undefined") {
-        window.localStorage.setItem("phm.wsUrl", wsParam);
+        window.localStorage.setItem("phm.wsUrl", normalizeWsUrl(wsParam));
+      } else if (
+        trimmed.startsWith("http://") ||
+        trimmed.startsWith("https://") ||
+        trimmed.startsWith("ws://") ||
+        trimmed.startsWith("wss://")
+      ) {
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem("phm.wsUrl", normalizeWsUrl(trimmed));
+        }
       }
       if (codeParam) return codeParam.trim();
     } catch {
@@ -44,7 +59,7 @@ function extractPairCode(raw: string): string {
     try {
       const obj = JSON.parse(trimmed) as Record<string, unknown>;
       if (typeof obj.ws === "string" && typeof window !== "undefined") {
-        window.localStorage.setItem("phm.wsUrl", obj.ws);
+        window.localStorage.setItem("phm.wsUrl", normalizeWsUrl(obj.ws));
       }
       if (typeof obj.code === "string") return obj.code.trim();
     } catch {
@@ -72,6 +87,42 @@ export function PairPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorInfo, setErrorInfo] = useState<{ code?: string; message: string } | null>(null);
 
+  const authFailureCode = useMobileStore((state) => state.authFailureCode);
+  const isTokenExpired = authFailureCode === "expired_token" || authFailureCode === "token_expired";
+
+  const [lockoutCountdown, setLockoutCountdown] = useState<number>(0);
+  const countdownTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (lockoutCountdown <= 0) {
+      if (countdownTimerRef.current !== null && typeof window !== "undefined") {
+        window.clearInterval(countdownTimerRef.current);
+        countdownTimerRef.current = null;
+      }
+      return;
+    }
+
+    countdownTimerRef.current = window.setInterval(() => {
+      setLockoutCountdown((prev) => {
+        if (prev <= 1) {
+          if (countdownTimerRef.current !== null && typeof window !== "undefined") {
+            window.clearInterval(countdownTimerRef.current);
+            countdownTimerRef.current = null;
+          }
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      if (countdownTimerRef.current !== null && typeof window !== "undefined") {
+        window.clearInterval(countdownTimerRef.current);
+        countdownTimerRef.current = null;
+      }
+    };
+  }, [lockoutCountdown > 0]);
+
   // V0.3.7 Android 壳内的桌面端服务地址输入（冻结 §9.1）：壳没有浏览器地址栏，
   // 二维码 ?ws= 无法随链接带入。输入建立在既有 phm.wsUrl localStorage 机制之上
   // （resolveWsUrl 与扫码 extractPairCode 写入同一键），PWA 下不渲染本区、体验不变。
@@ -88,7 +139,8 @@ export function PairPage() {
   const handleSaveAddress = () => {
     const trimmed = wsAddress.trim();
     if (!validateWsAddress(trimmed).valid) return;
-    window.localStorage.setItem("phm.wsUrl", trimmed);
+    const normalized = normalizeWsUrl(trimmed);
+    window.localStorage.setItem("phm.wsUrl", normalized);
     setWsAddressSaved(true);
     // 立即用新地址重连：连不上会由顶部 ConnectionBanner 如实显示，不伪造成功。
     useMobileStore.getState().reconnect();
@@ -176,7 +228,7 @@ export function PairPage() {
     e.preventDefault();
     const trimmedCode = code.trim();
     const trimmedDevice = deviceName.trim();
-    if (!trimmedCode || !trimmedDevice || isSubmitting) return;
+    if (!trimmedCode || !trimmedDevice || isSubmitting || lockoutCountdown > 0) return;
 
     setIsSubmitting(true);
     setErrorInfo(null);
@@ -186,6 +238,13 @@ export function PairPage() {
     } catch (err: unknown) {
       if (err instanceof RemoteCommandError) {
         setErrorInfo({ code: err.code, message: err.message });
+        if (err.code === "pairing_rate_limited" || err.code === "rate_limited") {
+          const retryAfter =
+            typeof err.details?.retry_after_s === "number" && err.details.retry_after_s > 0
+              ? Math.round(err.details.retry_after_s)
+              : 60;
+          setLockoutCountdown(retryAfter);
+        }
       } else if (err instanceof Error) {
         setErrorInfo({ message: err.message });
       } else {
@@ -196,6 +255,32 @@ export function PairPage() {
     }
   };
 
+  let errorMessage = errorInfo?.message ?? "";
+  let errorHint = "请核对配对码或检查桌面端是否在线，并重新尝试。";
+
+  if (errorInfo?.code === "pairing_invalid_code" || errorInfo?.code === "invalid_code") {
+    errorMessage = "配对码无效或已被新码作废";
+    errorHint = "请在电脑桌面端查看当前有效的 6 位配对码或重新生成。";
+  } else if (errorInfo?.code === "pairing_expired_code" || errorInfo?.code === "expired_code") {
+    errorMessage = "配对码已过期，请在电脑端重新生成";
+    errorHint = "配对码有效时长有限，请在电脑端重新生成新配对码后再试。";
+  } else if (
+    errorInfo?.code === "pairing_rate_limited" ||
+    errorInfo?.code === "rate_limited" ||
+    lockoutCountdown > 0
+  ) {
+    errorMessage =
+      lockoutCountdown > 0
+        ? `请求过于频繁已被限流封锁，请在 ${lockoutCountdown} 秒后重试`
+        : "限流封锁已解除，可重新尝试配对";
+    errorHint =
+      lockoutCountdown > 0
+        ? `连续尝试失败次数过多，来源已被封锁，倒计时剩余 ${lockoutCountdown} 秒。`
+        : "封锁期已结束，请确认配对码无误后重新提交。";
+  } else if (errorInfo?.code) {
+    errorMessage = `[${errorInfo.code}] ${errorInfo.message}`;
+  }
+
   return (
     <main className="page" data-testid="pair-page">
       <div className="pair-container">
@@ -205,6 +290,17 @@ export function PairPage() {
             在电脑桌面端「设置 → 远程设备」查看配对码或二维码，输入后即可连接。
           </p>
         </header>
+
+        {/* D5: 令牌过期引导重新扫码配对 */}
+        {isTokenExpired && (
+          <section className="card field-error-card" role="alert" data-testid="expired-token-alert">
+            <div className="error-title">登录令牌已过期</div>
+            <div className="error-message">
+              登录令牌已过期（最长30天或7天未使用），请重新配对。
+            </div>
+            <div className="error-hint">请在电脑桌面端「设置 → 远程设备」重新扫码或输入新配对码。</div>
+          </section>
+        )}
 
         {/* 扫码区域：支持 BarcodeDetector 才提供扫码入口，不支持则如实说明 */}
         <section className="scan-card" data-testid="scan-section">
@@ -322,20 +418,24 @@ export function PairPage() {
           {errorInfo && (
             <div className="card field-error-card" role="alert" data-testid="pair-error">
               <div className="error-title">配对失败</div>
-              <div className="error-message">
-                {errorInfo.code ? `[${errorInfo.code}] ${errorInfo.message}` : errorInfo.message}
+              <div className="error-message" data-testid="pair-error-message">
+                {errorMessage}
               </div>
-              <div className="error-hint">请核对配对码或检查桌面端是否在线，并重新尝试。</div>
+              <div className="error-hint">{errorHint}</div>
             </div>
           )}
 
           <button
             type="submit"
             className="primary pair-submit-btn"
-            disabled={isSubmitting || !code.trim() || !deviceName.trim()}
+            disabled={isSubmitting || !code.trim() || !deviceName.trim() || lockoutCountdown > 0}
             data-testid="btn-submit-pair"
           >
-            {isSubmitting ? "正在配对…" : "开始配对"}
+            {lockoutCountdown > 0
+              ? `限流等待中 (${lockoutCountdown}s)`
+              : isSubmitting
+              ? "正在配对…"
+              : "开始配对"}
           </button>
         </form>
       </div>

@@ -33,25 +33,36 @@ export function validateWsAddress(raw: string): WsAddressValidation {
   } catch {
     return {
       valid: false,
-      error: "地址不完整，请输入形如 ws://192.168.1.50:8765/ws 的完整地址",
+      error: "地址不完整，请输入形如 ws://192.168.1.50:8765/ws 或 https://xxx.trycloudflare.com 的完整地址",
     };
   }
-  if (url.protocol !== "ws:" && url.protocol !== "wss:") {
+  if (url.protocol !== "ws:" && url.protocol !== "wss:" && url.protocol !== "https:") {
     return {
       valid: false,
-      error: "地址需以 ws:// 或 wss:// 开头（与桌面端二维码中的 ?ws= 地址一致）",
+      error: "地址需以 ws://、wss:// 或 https:// 开头（与桌面端二维码中的 ?ws= 地址一致）",
     };
   }
   if (!url.hostname) {
     return {
       valid: false,
-      error: "地址缺少主机名，请填入电脑的局域网 IP 或主机名",
+      error: "地址缺少主机名，请填入公网隧道地址或电脑的局域网 IP",
     };
   }
-  if (!url.pathname.endsWith("/ws")) {
+  if (url.protocol === "ws:" && !url.pathname.endsWith("/ws")) {
     return {
       valid: false,
       error: "地址路径需以 /ws 结尾（桌面端远程服务的入口），例如 ws://192.168.1.50:8765/ws",
+    };
+  }
+  if (
+    url.protocol === "wss:" &&
+    url.pathname !== "/" &&
+    url.pathname !== "" &&
+    !url.pathname.endsWith("/ws")
+  ) {
+    return {
+      valid: false,
+      error: "地址路径需以 /ws 结尾（桌面端远程服务的入口），例如 wss://pc.example.com/ws",
     };
   }
   return { valid: true, error: null };

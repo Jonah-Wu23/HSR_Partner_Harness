@@ -6,7 +6,7 @@ Source: https://github.com/esengine/DeepSeek-Reasonix
 
 `src/pair_harness/config/providers.py` contains a Python adaptation of provider host detection and reasoning-effort behavior from DeepSeek-Reasonix.
 
-`src/pair_harness/adapters/acp/engine.py` implements an Agent Client Protocol (ACP) v1 client that launches the bundled DeepSeek-Reasonix `reasonix acp` binary as the DeepSeek coding engine boundary (V0.2 M3).
+`src/pair_harness/adapters/acp/engine.py` implements an Agent Client Protocol (ACP) v1 client that launches the bundled DeepSeek-Reasonix `reasonix acp` binary as the DeepSeek coding engine boundary.
 
 MIT License
 
@@ -30,15 +30,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-## OpenAI Codex
+## cloudflared
 
-Source: https://github.com/openai/codex
+Source: https://github.com/cloudflare/cloudflared
 
-Previous release builds could include the Windows-native Codex app-server distributed
-through the `@openai/codex` package. Its package metadata identifies it as Apache-2.0;
-the bundled native directory retained the upstream `codex-package.json` metadata.
+cloudflared is the official tunnel client of Cloudflare, licensed under the Apache License, Version 2.0. The full license text is available at https://github.com/cloudflare/cloudflared/blob/master/LICENSE.
 
-The Codex runtime has since been removed under product decision B-03: current builds no
-longer bundle the app-server, and the coding assistant reuses the OpenAI-compatible Chat
-Completions endpoint configured for the dialogue model through the bundled DeepSeek-Reasonix
-ACP. This attribution is retained for the releases that shipped the component.
+This project does not bundle, redistribute, or modify the cloudflared binary. When the user enables mobile remote access over the public internet (`src/pair_harness/desktop_backend/tunnel.py`), the Sidecar downloads the official cloudflared release binary for the current platform from the pinned Cloudflare GitHub release, verifies it against the official SHA256 checksum published for that release, stores it in the user's local application data directory, and manages it as a child process for Cloudflare Quick Tunnel. Tunnel traffic traverses Cloudflare's edge under Cloudflare's terms of service; this project makes no warranty for the third-party binary.

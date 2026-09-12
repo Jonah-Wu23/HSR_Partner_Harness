@@ -2485,3 +2485,53 @@ async def test_app_reconnect_command_reports_clear_error_not_silent(tmp_path: Pa
         assert "桌面进程" in str(exc_info.value)
     finally:
         await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_pairing_failure_persists_rate_limit_state_immediately(tmp_path: Path) -> None:
+    """§4.4：claim 失败当刻落盘失败计数与封锁状态，重启不重置。
+
+    Sidecar 在拒绝请求与落盘之间崩溃时，攻击者的尝试预算不得被清零，
+    因此失败路径必须与成功路径一样调用 _persist_pairing_state。
+    """
+    database = tmp_path / "data" / "pair_harness.db"
+    service = build_demo_service(database=database, project_root=tmp_path)
+    try:
+        resp = await service.handle_command(
+            DesktopCommand("c1", "remote.issue_code", {}, origin="desktop")
+        )
+        valid_code = resp["code"]
+
+        # 连续 5 次错误码（同一连接来源）：前 4 次 invalid_code，第 5 次触发封锁
+        for attempt in range(1, 6):
+            with pytest.raises(ServiceError) as exc_info:
+                await service._remote_pair(
+                    {"code": "000000", "device_name": "phone"},
+                    connection_key="attacker-conn",
+                )
+            expected = "pairing_rate_limited" if attempt == 5 else "pairing_invalid_code"
+            assert exc_info.value.code == expected
+
+            # 失败当刻核对 SQLite 中已落盘的失败计数，不允许只存在于内存
+            persisted = json.loads(service.store.get_app_state("remote.pairing_state"))
+            rate = persisted["rate_limits"]["attacker-conn"]
+            assert rate["fail_count"] == attempt
+
+        assert rate["blocked_until"] > 0
+        assert rate["backoff_seconds"] >= 60
+    finally:
+        await service.shutdown()
+
+    # 模拟 Sidecar 重启：新实例从同一数据库恢复后封锁必须仍然生效
+    service2 = build_demo_service(database=database, project_root=tmp_path)
+    try:
+        with pytest.raises(ServiceError) as exc_info:
+            await service2._remote_pair(
+                {"code": valid_code, "device_name": "phone"},
+                connection_key="attacker-conn",
+            )
+        # 封锁期内即便出示正确配对码也被拒，错误语义是 rate_limited 而非 invalid_code
+        assert exc_info.value.code == "pairing_rate_limited"
+        assert exc_info.value.details["retry_after_s"] > 0
+    finally:
+        await service2.shutdown()

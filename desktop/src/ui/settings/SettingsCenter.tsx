@@ -45,6 +45,9 @@ interface SettingsCenterProps {
   onIssuePairingCode: () => void;
   onListRemoteDevices: () => void;
   onRevokeRemoteDevice: (deviceName: string) => void;
+  onTunnelStart?: () => void | Promise<void>;
+  onTunnelStop?: () => void | Promise<void>;
+  onQueryTunnelStatus?: () => void | Promise<void>;
   modelTest: TestResult;
   voicePreview: TestResult;
   onSaveProfile: (displayName: string) => void;
@@ -820,6 +823,9 @@ function RemotePage(props: SettingsCenterProps) {
         onIssuePairingCode={props.onIssuePairingCode}
         onListRemoteDevices={props.onListRemoteDevices}
         onRevokeRemoteDevice={props.onRevokeRemoteDevice}
+        onTunnelStart={props.onTunnelStart ?? (props.actions ? () => props.actions!.tunnelStart() : undefined)}
+        onTunnelStop={props.onTunnelStop ?? (props.actions ? () => props.actions!.tunnelStop() : undefined)}
+        onQueryTunnelStatus={props.onQueryTunnelStatus ?? (props.actions ? () => props.actions!.queryTunnelStatus() : undefined)}
       />
       {/* V0.3.7 V10：远程管理区常驻电源状态小节（只读；失败如实显示错误）。 */}
       <PowerStatusSection actions={props.actions} />

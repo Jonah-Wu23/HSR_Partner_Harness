@@ -394,6 +394,9 @@ export type DesktopCommandMethod =
   | "remote.revoke"
   | "remote.claim_control"
   | "remote.release_control"
+  | "remote.tunnel_start"
+  | "remote.tunnel_stop"
+  | "remote.tunnel_status"
   | "power.get_status";
 
 export interface DesktopCommand {
@@ -448,12 +451,16 @@ export type DesktopEventName =
   | "voice.mobile_tts_failed"
   | "voice.playback_interrupted"
   | "remote.control_changed"
+  | "remote.paired"
   | "conversation.card_missing"
   | "connection.status"
   | "error.reported"
   | "diagnostic.warning"
   | "serve.started"
-  | "power.status_changed";
+  | "power.status_changed"
+  | "tunnel.started"
+  | "tunnel.stopped"
+  | "tunnel.failed";
 
 export interface DesktopEvent<T = Record<string, unknown>> {
   kind: "event";
@@ -867,6 +874,8 @@ export interface CardDeleteResult {
 export interface ServeAddressPayload {
   host: string | null;
   port: number;
+  mode?: "loopback" | "lan" | null;
+  tls?: boolean | null;
   reason?: string | null;
 }
 
@@ -886,6 +895,7 @@ export interface RemoteDevice {
   device_name: string;
   issued_at: string;
   last_used_at: string;
+  expires_at?: string;
   revoked: boolean;
 }
 
@@ -897,4 +907,36 @@ export interface RemoteListDevicesResult {
 export interface RemoteRevokeResult {
   device_name: string;
   revoked_tokens: number;
+}
+
+/* —— V0.4.0 公网隧道（Cloudflare Quick Tunnel）契约 —— */
+
+export type TunnelState = "off" | "downloading" | "starting" | "ready" | "failed";
+
+export interface RemoteTunnelStatusResult {
+  state: TunnelState;
+  public_url: string | null;
+  hostname: string | null;
+  error: string | null;
+}
+
+export interface RemoteTunnelStartResult {
+  status: "starting";
+}
+
+export interface RemoteTunnelStopResult {
+  status: "stopping";
+}
+
+export interface TunnelStartedPayload {
+  public_url: string;
+  hostname: string;
+}
+
+export interface TunnelStoppedPayload {
+  reason: string;
+}
+
+export interface TunnelFailedPayload {
+  error: string;
 }

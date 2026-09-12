@@ -186,7 +186,7 @@ async def test_remote_pair_full_flow(service) -> None:
         await service.handle_command(
             command("2", "remote.pair", code=code, device_name="第二台")
         )
-    assert excinfo.value.code == "pairing_used"
+    assert excinfo.value.code == "pairing_invalid_code"
 
     devices = await service.handle_command(command("3", "remote.list_devices"))
     assert [d["device_name"] for d in devices["devices"]] == ["我的手机"]
@@ -248,3 +248,58 @@ def test_provision_default_excludes_assistant_speakers() -> None:
     # 角色侧三说话方仍在，助手侧被排除
     assert default_set == {"phainon", "firefly", "march7"}
     assert default_set & assistant_speaker_ids() == set()
+
+
+# ---------------------------------------------------------------- R1-001 / R1-003 回归
+
+
+async def test_remote_paired_event_emitted_on_pairing_success(tmp_path: Path) -> None:
+    """R1-001：配对成功即时广播 remote.paired，桌面端据此重拉设备列表。"""
+    import json
+
+    events: list[dict] = []
+    svc = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+        event_sink=events.append,
+    )
+    try:
+        issued = await svc.handle_command(command("0", "remote.issue_code"))
+        paired = await svc.handle_command(
+            command("1", "remote.pair", code=issued["code"], device_name="我的手机")
+        )
+        assert paired["token"]
+        paired_events = [e for e in events if e.get("event") == "remote.paired"]
+        assert len(paired_events) == 1
+        assert paired_events[0]["payload"] == {"device_name": "我的手机"}
+    finally:
+        svc.store.close()
+
+
+async def test_scope_denied_audit_persisted_immediately(tmp_path: Path) -> None:
+    """R1-003：scope_denied 审计写入当刻落库，不依赖下一次配对状态变更。"""
+    import json
+
+    svc = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+        event_sink=lambda message: None,
+    )
+    try:
+        issued = await svc.handle_command(command("0", "remote.issue_code"))
+        paired = await svc.handle_command(
+            command("1", "remote.pair", code=issued["code"], device_name="我的手机")
+        )
+        before = json.loads(svc.store.get_app_state("remote.pairing_state") or "{}")
+        baseline = len([e for e in before.get("audit", []) if e["event"] == "scope_denied"])
+        decision = svc.pairing_service.authorize(
+            paired["token"], "remote.revoke", origin="remote"
+        )
+        assert decision.allowed is False
+        # 不经任何手动持久化，直接读库验证
+        state = json.loads(svc.store.get_app_state("remote.pairing_state"))
+        persisted = [e for e in state["audit"] if e["event"] == "scope_denied"]
+        assert len(persisted) == baseline + 1
+        assert "method=remote.revoke" in persisted[-1]["detail"]
+    finally:
+        svc.store.close()

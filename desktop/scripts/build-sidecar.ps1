@@ -139,9 +139,27 @@ $mobileDist = Join-Path $mobileRoot "dist"
 if (-not (Test-Path -LiteralPath (Join-Path $mobileDist "index.html") -PathType Leaf)) {
     throw "mobile build output missing index.html: $mobileDist"
 }
+
+# Validate mobile PWA dist directory before packaging (D7)
+$validator = Join-Path $PSScriptRoot "validate-pwa-dist.ps1"
+if (-not (Test-Path -LiteralPath $validator -PathType Leaf)) {
+    throw "PWA dist validator script not found: $validator"
+}
+& $validator -DistPath $mobileDist
+if ($LASTEXITCODE -ne 0) {
+    throw "PWA dist validation failed before bundling (exit code $LASTEXITCODE)."
+}
+
 $mobileResourceRoot = Join-Path $resourceRoot "mobile-dist"
 if (Test-Path -LiteralPath $mobileResourceRoot) {
     Remove-Item -LiteralPath $mobileResourceRoot -Recurse -Force
 }
 Copy-Item -LiteralPath $mobileDist -Destination $mobileResourceRoot -Recurse -Force
-Write-Host "Bundled mobile PWA prepared: $mobileResourceRoot"
+
+# Validate copied mobile-dist resources (D7)
+& $validator -DistPath $mobileResourceRoot
+if ($LASTEXITCODE -ne 0) {
+    throw "PWA resource validation failed after bundling (exit code $LASTEXITCODE)."
+}
+
+Write-Host "Bundled mobile PWA prepared and validated (D7): $mobileResourceRoot"

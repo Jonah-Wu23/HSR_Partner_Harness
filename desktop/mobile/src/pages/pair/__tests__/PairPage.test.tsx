@@ -137,7 +137,7 @@ describe("PairPage 组件", () => {
     expect(screen.queryByTestId("pair-error")).toBeNull();
   });
 
-  it("配对失败（RemoteCommandError）如实展示错误码与信息且可重试", async () => {
+  it("配对失败三态：invalid_code 提示「配对码无效或已被新码作废」且可重新提交", async () => {
     const pairSpy = vi
       .fn()
       .mockRejectedValue(new RemoteCommandError("pairing_invalid_code", "配对码错误或已失效"));
@@ -153,7 +153,7 @@ describe("PairPage 组件", () => {
     await waitFor(() => {
       const errorBox = screen.getByTestId("pair-error");
       expect(errorBox).toBeInTheDocument();
-      expect(errorBox).toHaveTextContent("[pairing_invalid_code] 配对码错误或已失效");
+      expect(errorBox).toHaveTextContent("配对码无效或已被新码作废");
     });
 
     // 重新提交
@@ -164,6 +164,102 @@ describe("PairPage 组件", () => {
     await waitFor(() => {
       expect(pairSpy).toHaveBeenCalledWith("111222", "我的手机");
     });
+  });
+
+  it("配对失败三态：expired_code 提示「配对码已过期，请在电脑端重新生成」", async () => {
+    const pairSpy = vi
+      .fn()
+      .mockRejectedValue(new RemoteCommandError("pairing_expired_code", "配对码已过期"));
+    useMobileStore.setState({ pairDevice: pairSpy });
+
+    render(<PairPage />);
+    fireEvent.change(screen.getByTestId("input-pair-code"), { target: { value: "123456" } });
+    fireEvent.click(screen.getByTestId("btn-submit-pair"));
+
+    await waitFor(() => {
+      const errorBox = screen.getByTestId("pair-error");
+      expect(errorBox).toBeInTheDocument();
+      expect(errorBox).toHaveTextContent("配对码已过期，请在电脑端重新生成");
+    });
+  });
+
+  it("配对失败三态：rate_limited 展示限流封锁倒计时且倒计时结束前禁用提交按钮", async () => {
+    vi.useFakeTimers();
+    const pairSpy = vi
+      .fn()
+      .mockRejectedValue(
+        new RemoteCommandError("pairing_rate_limited", "来源已封锁", { retry_after_s: 30 }),
+      );
+    useMobileStore.setState({ pairDevice: pairSpy });
+
+    render(<PairPage />);
+    fireEvent.change(screen.getByTestId("input-pair-code"), { target: { value: "123456" } });
+    const submitBtn = screen.getByTestId("btn-submit-pair");
+    fireEvent.click(submitBtn);
+
+    await vi.waitFor(() => {
+      const errorBox = screen.getByTestId("pair-error");
+      expect(errorBox).toBeInTheDocument();
+      expect(errorBox).toHaveTextContent("限流封锁");
+      expect(errorBox).toHaveTextContent("30 秒");
+    });
+
+    // 倒计时期间提交按钮禁用
+    expect(submitBtn).toBeDisabled();
+    expect(submitBtn).toHaveTextContent("30s");
+
+    // 时间流逝 15 秒，倒计时更新
+    vi.advanceTimersByTime(15_000);
+    await vi.waitFor(() => {
+      expect(screen.getByTestId("pair-error")).toHaveTextContent("15 秒");
+      expect(submitBtn).toHaveTextContent("15s");
+      expect(submitBtn).toBeDisabled();
+    });
+
+    // 倒计时结束，按钮重新恢复可用
+    vi.advanceTimersByTime(16_000);
+    await vi.waitFor(() => {
+      expect(submitBtn).not.toBeDisabled();
+      expect(submitBtn).toHaveTextContent("开始配对");
+    });
+
+    vi.useRealTimers();
+  });
+
+  it("D5：登录令牌过期时进入重新配对引导，如实提示最长30天或7天未使用", () => {
+    useMobileStore.setState({ authFailureCode: "expired_token" });
+    render(<PairPage />);
+    const alert = screen.getByTestId("expired-token-alert");
+    expect(alert).toBeInTheDocument();
+    expect(alert).toHaveTextContent("登录令牌已过期（最长30天或7天未使用），请重新配对。");
+  });
+
+  it("扫码公网隧道 URL（https://xxx.trycloudflare.com/?code=...）正确规范化为 wss:// 入口", async () => {
+    const mockStop = vi.fn();
+    const mockMediaStream = { getTracks: () => [{ stop: mockStop }] };
+    HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "mediaDevices", {
+      value: { getUserMedia: vi.fn().mockResolvedValue(mockMediaStream) },
+      writable: true,
+      configurable: true,
+    });
+
+    class MockBarcodeDetector {
+      detect = vi.fn().mockResolvedValue([
+        { rawValue: "https://my-tunnel.trycloudflare.com/?code=889900" },
+      ]);
+    }
+    window.BarcodeDetector = MockBarcodeDetector as unknown as typeof window.BarcodeDetector;
+
+    render(<PairPage />);
+    fireEvent.click(screen.getByTestId("btn-start-scan"));
+
+    await waitFor(() => {
+      const codeInput = screen.getByTestId("input-pair-code") as HTMLInputElement;
+      expect(codeInput.value).toBe("889900");
+    });
+
+    expect(window.localStorage.getItem("phm.wsUrl")).toBe("wss://my-tunnel.trycloudflare.com/ws");
   });
 
   it("连接问题（普通 Error）如实展示网络错误", async () => {

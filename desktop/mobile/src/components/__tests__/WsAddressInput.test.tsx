@@ -25,6 +25,21 @@ describe("validateWsAddress 格式校验", () => {
     });
   });
 
+  it("接受公网隧道 https:// 与 wss:// 地址（如 trycloudflare.com）", () => {
+    expect(validateWsAddress("https://abc-123.trycloudflare.com")).toEqual({
+      valid: true,
+      error: null,
+    });
+    expect(validateWsAddress("https://abc-123.trycloudflare.com/ws")).toEqual({
+      valid: true,
+      error: null,
+    });
+    expect(validateWsAddress("wss://abc-123.trycloudflare.com")).toEqual({
+      valid: true,
+      error: null,
+    });
+  });
+
   it("空输入 valid=false 且不算错误文案", () => {
     expect(validateWsAddress("")).toEqual({ valid: false, error: null });
     expect(validateWsAddress("   ")).toEqual({ valid: false, error: null });
