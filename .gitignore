@@ -42,6 +42,7 @@ docs/promo/
 # 保留在本地 evidence/ 目录供复现与抽查；结构化交付物（result.json、
 # notes.md、commands.ps1、manifest、日报与 blockers）随仓库提交。
 evidence/**/*.log
+evidence/**/sidecar-data/
 evidence/**/*.wav
 # graphify 知识图谱。wiki 与审计报告入库：任何客户端克隆后即可按 AGENTS.md
 # 「知识图谱」一节的零依赖路径使用，无需安装 graphify。其余是本机工具数据，

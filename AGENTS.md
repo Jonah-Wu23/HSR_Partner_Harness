@@ -100,7 +100,7 @@ Python 包位于 `src/pair_harness/`。Sidecar 入口是 `pair_harness.desktop_b
 - `docs/README.md` — docs 总索引（完整入口）。
 - `docs/index.html` 与 `docs/assets/website/` — 项目官网，GitHub Pages 从 `docs/` 根目录发布，两者位置不可移动。
 - `docs/plans/` — 开发计划，现行路线图 `V0.3.3-V0.4.0-Plan.md`。
-- `docs/release-notes/` — 版本发布说明（v0.2.0 / v0.3.2 / v0.3.2-patch1）。
+- `docs/release-notes/` — 版本发布说明（v0.4.0 / v0.3.2 / v0.3.2-patch1 / v0.2.0），另有 v0.3.x 阶段验收文档。
 - `docs/character-card/` — 角色卡数据契约、字段映射、状态枚举与接入清单。
 - `docs/design/` — `research/` 外部调研（mufy、SillyTavern、DeepSeek-Reasonix）、`dashscope/` 千问语音 API 参考、`web-prototype/` V0.4.0 视觉原型、`旧版/` v0.2.0 时代文档。
 - `docs/website/` — 官网文案规则。
@@ -183,7 +183,7 @@ npm run build:sidecar
 npm run tauri -- build --bundles nsis
 ```
 
-发布节奏：开发迭代只更新 `desktop/src-tauri/target/release/hsr-partner-harness.exe`，不重新生成或上传安装包。v0.3.2 已重新生成并上传 NSIS 安装包；下一次安装包更新安排在 v0.4.0。
+发布节奏：开发迭代只更新 `desktop/src-tauri/target/release/hsr-partner-harness.exe`，不重新生成或上传安装包。v0.4.0 已重新生成并上传 NSIS 安装包，下一次安装包更新随之后的版本发布安排。
 
 Android arm64 Debug APK：配置 `JAVA_HOME`、`ANDROID_HOME`、`NDK_HOME` 后，在 `desktop/` 运行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-android.ps1`，依赖已缓存时可加 `-Offline`。脚本先构建移动前端及包含前端资源的 Rust 动态库，再打包 APK，不执行安装。调用 gradle 前，脚本读取 `src-tauri/tauri.conf.json` 的 `version`，按 tauri CLI 同一派生式 `major*1000000+minor*1000+patch` 算出 versionCode（0.3.9 → 3009），并写出 `gen/android/app/tauri.properties`（`tauri.android.versionName` / `tauri.android.versionCode`）；该文件只在 `tauri android build` 路径生成，脚本直连 gradle 必须自行补写，否则包内版本恒为 1 / 1.0，`adb install -r` 会因降级被拒。版本缺失、非 semver 或派生值超出 1..2100000000 时脚本报错并非零退出，不进打包。不得仅复制 `assets/` 或因旧 `.so` 存在就宣称新代码已打入 APK。
 

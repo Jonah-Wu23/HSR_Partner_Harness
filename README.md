@@ -4,10 +4,10 @@
 
 <h1 align="center">HSR Partner Harness</h1>
 
-<p align="center">一条会话，两条工作轨。</p>
+<p align="center">能和你一起做事的 AI 角色搭档</p>
 
 <p align="center">
-  <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases"><img src="https://img.shields.io/badge/version-v0.3.2-E8B25C" alt="Version 0.3.2" /></a>
+  <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases"><img src="https://img.shields.io/badge/version-v0.4.0-E8B25C" alt="Version 0.4.0" /></a>
   <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/actions/workflows/ci.yml"><img src="https://github.com/Jonah-Wu23/HSR_Partner_Harness/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" /></a>
   <img src="https://img.shields.io/badge/platform-Windows%20x64-2F5D50" alt="Windows x64" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-5B6C8F" alt="Apache License 2.0" /></a>
@@ -21,29 +21,31 @@
   <a href="AGENTS.md">架构说明</a>
 </p>
 
+## 和喜欢的角色，一起把想做的事做出来。
+
+HSR Partner Harness 是一款 Windows 桌面工作台：你喜欢的角色和你讨论想法，把要做的事交给编程助手，在你的电脑上真实执行，成果直接落在本地的项目文件夹里。角色有自己的设定、世界书、记忆和声音；助手负责把事情做完，把过程与结果端到你面前。
+
 ## 30 秒了解
 
-**和角色讨论需求，把任务委派给真正的编程 Agent，角色再结合结果继续对话——可以用她自己的声音读给你听。**
+**和角色讨论需求，把任务交给真正的编程助手执行，角色再结合结果继续和你聊。**
 
-HSR Partner Harness 把角色扮演对话与本地 AI 编程整合进同一个 Windows 工作台。它不是纯聊天应用，也不是纯编程工具，而是同一条会话里的两条工作轨：
+- **角色参与讨论，助手负责执行**：白厄、流萤、三月七等搭档各有界面主题与专属音色。聊天中勾选“交给助手”，或让角色直接发起委派，助手经打包的 DeepSeek-Reasonix 在绑定的本地项目目录里真实读写文件、执行命令，工具调用与结果以结构化卡片回到同一条时间线。
+- **带上你自己的角色**：用创作工作室从零捏一张角色卡，或直接导入酒馆（SillyTavern）v2/v3 的 JSON 与 PNG 卡；导出同样双向兼容。头像、世界书、关系阶段、事件池都跟着角色走。
+- **让角色开口说话**：为角色上传参考音频，用你自己的 DashScope 账号生成专属音色。角色的自然语言回复可以自动朗读；开启按键说话或 VAD 后，直接开口交代任务。
+- **离开电脑，事情还在推进**：手机扫码配对后继续对话、查看任务进度、处理审批、听角色语音。执行与数据全部留在开机联网的 PC 上。
 
-- **角色负责对话**：白厄、流萤、三月七等搭档各有界面主题与专属复刻音色；自然语言回复可自动朗读，工具记录保持静音。
-- **助手负责执行**：勾选“交给助手”，或让角色直接发起委派；助手复用角色对话的 OpenAI 兼容端点配置（Chat Completions），经打包的 DeepSeek-Reasonix 在绑定的本地项目目录中真实读写文件、执行命令，过程与结果以结构化卡片回传到同一条时间线。
-- **本地优先，自带 Key**：模型与语音（DashScope）均使用你自己的账号配置；本项目不代存密钥，不提供付费中转。
-- **零门槛试用**：安装后无需任何 Key，预览模式即可体验完整界面交互。
-
-Windows x64 · 开源 Apache-2.0 · 非官方同人创作，角色名称与世界观相关内容归原权利人所有。
+Windows x64 · 开源 Apache-2.0 · 模型与语音使用你自己的账号 · 非官方同人创作，角色名称与世界观相关内容归原权利人所有。
 
 ## 一条会话，两条工作轨
 
-聊天模式专注角色交流，协作模式展开助手工作台。模式切换时上下文保持连贯，角色能够结合执行结果继续对话。
+这句标语描述的是产品结构：聊天模式专注角色交流，协作模式展开助手工作台。模式切换时上下文保持连贯，角色能够结合执行结果继续对话。
 
 | 产品特点 | 具体表现 |
 | --- | --- |
 | 任务过程可见 | 工具调用与执行状态显示在助手工作台。 |
 | 搭档随会话切换 | 头像与界面主题跟随当前会话的搭档配置。 |
 | 项目文件夹绑定 | 助手在绑定的本地项目目录中读写文件并执行命令。 |
-| 角色专属语音 | DashScope 语音音色按照当前搭档配置加载。 |
+| 角色专属语音 | 角色音色按当前会话的卡绑定加载，助手保持静音。 |
 
 ## 使用说明
 
@@ -61,7 +63,7 @@ Windows x64 · 开源 Apache-2.0 · 非官方同人创作，角色名称与世�
 
 ### 选择搭档
 
-新建聊天时可从搭档目录选择角色组合。v0.3.0 提供以下搭档：
+新建聊天时可从搭档目录选择角色组合。内置三组搭档：
 
 | 角色 | 助手 |
 | --- | --- |
@@ -74,6 +76,12 @@ Windows x64 · 开源 Apache-2.0 · 非官方同人创作，角色名称与世�
 浅色主题根据当前搭档使用对应的界面配色。
 
 ![切换搭档后的浅色主题](output/real/readme-04-switch-pair-light-theme.png)
+
+### 带上你自己的角色
+
+角色库支持三种来源：内置搭档、自己创建的卡、导入的卡。角色创作工作室按基础信息、头像、世界书、关系阶段逐步引导；熟悉酒馆卡的用户可以直接编辑高级字段。
+
+导入支持酒馆 Character Card v2/v3 的 JSON 与 PNG，PNG 卡把头像和元数据放在同一个文件里。导出生成酒馆兼容的 v3 JSON 与 PNG，导入后重新导出会保留未被应用识别的第三方扩展字段。创建或导入的角色可以与现有助手组成配对，进入对话、发起委派、绑定声音。
 
 ### 执行任务
 
@@ -89,13 +97,26 @@ Windows x64 · 开源 Apache-2.0 · 非官方同人创作，角色名称与世�
 
 ### 设置语音
 
-语音设置页使用你自己的 DashScope 账号，可保存服务地址和 API Key，并生成当前账号专属的五个复刻音色与一个声音设计音色。ASR/TTS 模型固定显示，音色生成失败时可以只重试失败项。自然语言回复接入自动朗读通道。
+语音设置页使用你自己的 DashScope 账号，可保存服务地址和 API Key。内置搭档提供五个复刻音色与一个声音设计音色；自定义角色可在角色语音页上传参考音频，用同一账号生成并保存该角色的音色，支持试听、重建与解绑。ASR/TTS 模型固定显示，不可更改；音色生成失败时可以只重试失败项。
 
-开启按键说话后，输入区下方显示聆听状态；开启 VAD 后无需按键即可直接说话。
+开启按键说话后，输入区下方显示聆听状态；开启 VAD 后无需按键即可直接说话。只有角色的自然语言回复会进入朗读，工具记录、命令输出和系统事件保持静音。
 
 ![聆听状态提示](output/real/readme-09-voice-listening.png)
 
 ![开启 VAD 提示](output/real/readme-10-voice-vad.png)
+
+### 手机远程
+
+在设置页生成配对码或二维码，手机浏览器扫码即可接入。远程模式下手机可以继续对话、查看任务进度、处理审批、听角色语音；任务完成、委派结果与审批请求的本地通知在 Android 壳内送达。
+
+连接方式二选一：
+
+- **Cloudflare Quick Tunnel（推荐）**：一键开启，应用下载官方 `cloudflared` 并校验哈希后托管为子进程，自动生成 `https://*.trycloudflare.com` 公网 HTTPS 地址，手机在蜂窝网络下也能直连，麦克风安全上下文成立。主机名每次启动都会变化，二维码需重新生成；隧道流量经由 Cloudflare 边缘。
+- **局域网直连**：显式开启后桌面常驻“局域网已暴露”提示，适合可信网络。
+
+安全边界：配对码一次性且短期有效，任意时刻仅一枚有效；连续输错触发来源封锁；设备令牌最长 30 天、7 天不用即失效，可在桌面端随时撤销。隧道地址会进入公开的证书透明度日志，地址被看到不等于被接入，真正的防线是配对码与设备令牌。
+
+前提：手机是 PC 的远程终端，电脑需开机联网并保持应用运行；所有模型调用、任务执行与业务数据都留在 PC 本地。
 
 ## 工作模式
 
@@ -120,11 +141,9 @@ Windows x64 · 开源 Apache-2.0 · 非官方同人创作，角色名称与世�
 | 极高 | `xhigh` |
 | 最高 | `max` |
 
-语音功能采用 DashScope 服务，自然语言回复接入自动朗读通道。
-
 ## 安装
 
-Windows x64 安装包发布于 [GitHub Releases](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases)。安装后可使用内置预览模式查看界面交互，配置模型后即可运行真实任务。
+Windows x64 安装包发布于 [GitHub Releases](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases)，当前版本为 [v0.4.0](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases/tag/v0.4.0)，下载 `HSR Partner Harness_0.4.0_x64-setup.exe` 安装。安装后可使用内置预览模式查看界面交互，配置模型后即可运行真实任务。
 
 安装版默认读取 `%LOCALAPPDATA%\PairHarness\.env`。源码运行默认读取仓库根目录的 `.env`，可通过 `PAIR_HARNESS_ENV_FILE` 自定义配置文件路径。
 
@@ -142,7 +161,7 @@ Windows x64 安装包发布于 [GitHub Releases](https://github.com/Jonah-Wu23/H
 
 参考音频和声音设计提示词随项目资源分发，音色生成结果按本地账号保存。用户只需在语音设置页填写自己的 DashScope API Key 与服务地址；API Key 只显示掩码，不写入 README 或事件日志。
 
-启动模式：**默认即真实模式**，不需要任何环境变量或 `.env`。演示模式只在显式请求时启用（`PAIR_HARNESS_DEMO=1`，或桌面端以 `--demo` 启动）；`PAIR_HARNESS_REAL=1` 用于显式声明真实模式。两个变量指向不同模式时按配置冲突直接报错，不做二选一的猜测。未配置 Key 也能完成首次引导——在引导内填写并测试账号级密钥即可，真实模式不要求仓库内存在 `.env`。
+启动模式：**默认即真实模式**，不需要任何环境变量或 `.env`。演示模式只在显式请求时启用（`PAIR_HARNESS_DEMO=1`，或桌面端以 `--demo` 启动）；`PAIR_HARNESS_REAL=1` 用于显式声明真实模式。两个变量指向不同模式时按配置冲突直接报错，不做二选一的猜测。未配置 Key 也能完成首次引导，在引导内填写并测试账号级密钥即可；真实模式不要求仓库内存在 `.env`。
 
 ## 从源码运行
 
@@ -170,17 +189,19 @@ NSIS 安装包生成于 `desktop/src-tauri/target/release/bundle/nsis/`。编译
 
 ## 验证记录
 
-以下是 v0.3.1 基线记录；V0.3.2 的前端、语音和真实提供商联调由当前使用者在本地完成，未把尚未运行的结果写成通过：
+v0.4.0 发布基线（2026-09-13 实测）：
 
 | 检查项 | 结果 |
 | --- | --- |
-| Python | `420 passed, 5 skipped` |
-| 前端 Vitest | `107 passed` |
+| Python | `1202 passed, 4 skipped` |
+| 桌面前端 Vitest | 47 套件 `503 passed` |
+| 移动端 Vitest | 30 套件 `361 passed` |
 | TypeScript | `tsc --noEmit` 通过 |
-| Rust | `cargo test`，`7 passed` |
-| 前端生产构建 | Vite build 通过 |
-| DeepSeek 真实链路 | 2 项测试通过 |
-| Codex app-server | 文件检查任务完成，收到 `turn.completed` 事件（v0.3.1 基线记录；Codex 运行时已按 B-03 剥离，当前版本不再包含） |
+| Rust | `cargo fmt --check` 0 差异，`cargo test` `28 passed` |
+| 真机验收 | 12 项矩阵 11 项通过；唯一失败项 M10 修复后模拟复测通过（见 [真机验收记录](docs/plans/V0.4.0-真机验收记录.md)） |
+| 发布门槛 | 14 项逐项核对全部满足（同上 §7） |
+
+已知边界如实记录在 [v0.4.0 发布说明](docs/release-notes/v0.4.0-release-notes.md)：iOS Safari/PWA 未覆盖（无设备受阻）、移动端弱网与四聊天交互负载未执行、手机浏览器无系统通知（本地通知仅在 Android 壳内）。
 
 常用验证命令：
 
@@ -203,14 +224,14 @@ cargo test
 
 | 路径 | 内容 |
 | --- | --- |
-| `desktop/` | Tauri 2 桌面端与 React 界面。 |
+| `desktop/` | Tauri 2 桌面端与 React 界面，含移动端 PWA 与 Android 壳。 |
 | `src/pair_harness/` | Python Sidecar 与业务代码。 |
 | `config/` | 搭档配置与提示词。 |
 | `assets/` | 桌面应用运行时资源。 |
 | `tests/` | Python 测试。 |
 | `docs/` | 架构资料与项目介绍网站。 |
 
-Python Sidecar 管理业务状态，桌面端通过 JSONL 协议与其通信。本地持久化数据存储于 SQLite。
+Python Sidecar 管理业务状态，桌面端与手机端通过 JSONL/WebSocket 协议与其通信。本地持久化数据存储于 SQLite。
 
 ## 语音费用与账号
 
