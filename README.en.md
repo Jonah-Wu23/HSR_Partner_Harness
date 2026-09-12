@@ -4,7 +4,7 @@
 
 **Build something real with the characters you love.**
 
-HSR Partner Harness is a Windows desktop workspace where the character you love talks through the idea with you, hands the work to a coding assistant, and watches it run on your own machine. The character has a persona, a world book, memories, and a voice of her own. The assistant does the work and brings the process and results back to you.
+HSR Partner Harness is a Windows desktop workspace where the character you love talks through the idea with you, hands the work to a coding assistant, and watches it run on your own machine. The character has a persona, a world book, memories, and a voice of their own. The assistant does the work and brings the process and results back to you.
 
 Project website: <https://jonah-wu23.github.io/HSR_Partner_Harness/>
 
@@ -17,9 +17,9 @@ Project website: <https://jonah-wu23.github.io/HSR_Partner_Harness/>
 
 **Talk the plan through with a character, delegate the task to a real coding assistant, and keep the conversation going around the results.**
 
-- **The character discusses, the assistant executes.** Built-in pairs such as Phainon and the Mysterious Ancient Machine each come with their own theme and voice. Check "hand it to the assistant" in the composer, or let the character delegate on her own; the assistant runs through the bundled DeepSeek-Reasonix ACP against your local project folder, really writing files and running commands, and tool activity returns as structured cards in the same timeline.
+- **The character discusses, the assistant executes.** Built-in pairs such as Phainon and the Mysterious Ancient Machine each come with their own theme and voice. Check "hand it to the assistant" in the composer, or let the character delegate on their own; the assistant runs through the bundled DeepSeek-Reasonix ACP against your local project folder, really writing files and running commands, and tool activity returns as structured cards in the same timeline.
 - **Bring your own characters.** Create a card from scratch in the character studio, or import SillyTavern Character Card v2/v3 files as JSON or PNG. Export works both ways, so you can share your characters too. Avatars, world books, relationship stages, and event pools travel with the card.
-- **Let the character speak.** Upload reference audio for a character and generate her voice with your own DashScope account. Character replies can be read aloud; push-to-talk or VAD lets you brief her by voice.
+- **Let the character speak.** Upload reference audio for a character and generate that character's voice with your own DashScope account. Character replies can be read aloud; push-to-talk or VAD lets you brief the character by voice.
 - **Leave the desk, keep the work moving.** After pairing by QR code, your phone can keep chatting, watch task progress, handle approvals, and play character voices. Execution and data stay on the PC, which needs to be on and online.
 
 Windows x64 · Open source under Apache-2.0 · Bring your own model and voice accounts · Unofficial fan work; character names and lore belong to their rights holders.

@@ -688,7 +688,7 @@ footer{
         <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 12l-4-4h2.5V2h3v6H12L8 12zM2 14h12v1.5H2V14z"/></svg>
         下载 Windows 版
       </a>
-      <a class="btn btn-ghost" href="#sessionBox">看 60 秒实机演示</a>
+      <a class="btn btn-ghost" href="#sessionBox">看协作会话怎么跑</a>
     </div>
     <div class="hero-note">开源 · 自备模型账号 · 手机连接电脑使用</div>
   </div>
@@ -697,7 +697,7 @@ footer{
     <div class="session-bar">
       <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
       <span class="session-title" id="sessionTitle">pair-harness · 白厄 × 神秘的古代机械</span>
-      <span class="session-live">LIVE</span>
+      <span class="session-live">DEMO</span>
     </div>
     <div class="session-tabs" role="tablist" aria-label="选择搭档体验会话">
       <button type="button" class="session-tab active" data-pair="phainon">
@@ -1164,7 +1164,7 @@ npm run tauri:dev</pre>
         { kind:"msg", cls:"msg-machine", name:"神秘的古代机械", mark:"#C5A059",
           text:"收到委派。正在建立搜索索引，覆盖代码与界面。完成后汇报结果。" },
         { kind:"tool",
-          tag:"DELEGATION", title:"codex · 建立搜索索引",
+          tag:"DELEGATION", title:"ancient_machine · 建立搜索索引",
           lines:[
             { cls:"path", text:"$ 检索 src/ 与 desktop/src，建立索引树" },
             { cls:"path", text:"$ 修改 search_index.py · SearchPanel.tsx" },
@@ -1190,8 +1190,8 @@ npm run tauri:dev</pre>
           tag:"DELEGATION", title:"sam · 执行工程自检",
           lines:[
             { cls:"path", text:"$ pytest -q tests/unit/ · npm run typecheck" },
-            { cls:"path", text:"$ 校验 416 项用例，对齐协议契约" },
-            { cls:"ok",   text:"✓ 完成 · 416 passed, typecheck 0 errors" }
+            { cls:"path", text:"$ 单元测试与类型检查全部通过，对齐协议契约" },
+            { cls:"ok",   text:"✓ 完成 · 测试全绿，类型检查无错误" }
           ] },
         { kind:"msg", cls:"msg-character", name:"流萤", mark:"#52D1A3",
           text:"萨姆那边已经全部搞定啦！测试全绿通过，可以放心推进下一步了。" }
