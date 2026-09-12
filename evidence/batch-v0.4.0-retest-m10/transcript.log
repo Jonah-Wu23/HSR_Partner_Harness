@@ -1,0 +1,17 @@
+[05:22:18] 启动 Sidecar：E:\AI\HSR Partner Harness\.venv\Scripts\python.exe -m pair_harness.desktop_backend --serve 18799 --data-dir E:\AI\HSR Partner Harness\evidence\batch-v0.4.0-retest-m10\sidecar-data --project E:\AI\HSR Partner Harness\evidence\batch-v0.4.0-retest-m10\sidecar-data --demo
+[05:22:19] EVENT seq=0 backend.ready payload={"pid": 24508, "demo": true, "mode_source": "explicit_demo"}
+[05:22:19] EVENT seq=1 serve.started payload={"host": "127.0.0.1", "port": 18799, "mode": "loopback", "tls": false}
+[05:22:19] 已发送 remote.tunnel_start（port=18799，desktop 来源）
+[05:22:19] MSG kind=response id=t1 ok=True
+[05:22:19] tunnel_start 响应：{"status": "starting"}
+[05:22:19] EVENT seq=2 power.status_changed payload={"supported": true, "platform": "win32", "plan_name": "平衡", "ac_sleep_timeout_seconds": 1800, "dc_sleep_timeout_seconds": 180, "remote_serve_enabled": true, "th
+[05:23:12] EVENT seq=3 tunnel.started payload={"public_url": "https://favorite-container-gospel-city.trycloudflare.com", "hostname": "favorite-container-gospel-city.trycloudflare.com"}
+[05:23:12] 隧道就绪：https://favorite-container-gospel-city.trycloudflare.com（seq=3）
+[05:23:12] 强杀 cloudflared.exe pid=32596
+[05:23:12] EVENT seq=4 tunnel.failed payload={"error": "隧道进程已被外部终止 (退出码 1)"}
+[05:23:12] tunnel.failed seq=4 error=隧道进程已被外部终止 (退出码 1)
+[05:23:12] PASS：Sidecar 真实发出 tunnel.failed（真实退出码），序号连续；桌面 store/面板消费已由 vitest 回归覆盖
+[05:23:12] SIDECAR STDERR 末尾：
+INFO:pair_harness.desktop_backend.tunnel:开始下载 cloudflared: https://github.com/cloudflare/cloudflared/releases/download/2026.9.0/cloudflared-windows-amd64.exe -> E:\AI\HSR Partner Harness\evidence\batch-v0.4.0-retest-m10\sidecar-data\bin\cloudflared.exe
+INFO:pair_harness.desktop_backend.tunnel:cloudflared 子进程已启动 pid=32596 local_port=18799
+INFO:pair_harness.desktop_backend.tunnel:Quick Tunnel 主机名解析就绪 hostname=favorite-container-gospel-city.trycloudflare.com
