@@ -20,9 +20,15 @@ declare global {
   }
 }
 
-function extractPairCode(raw: string): string {
+interface PairingPayload {
+  code: string;
+  /** 扫码载荷中携带的桌面端服务地址（已规范化）；载荷不含地址时为 null。 */
+  wsUrl: string | null;
+}
+
+function extractPairingPayload(raw: string): PairingPayload {
   const trimmed = raw.trim();
-  if (!trimmed) return "";
+  if (!trimmed) return { code: "", wsUrl: null };
 
   // 尝试解析为 URL（桌面端二维码常见格式：https://.../?ws=...&code=123456 或 https://xxx.trycloudflare.com/?code=123456）
   if (
@@ -36,8 +42,10 @@ function extractPairCode(raw: string): string {
       const url = new URL(trimmed, typeof window !== "undefined" ? window.location.href : "http://localhost");
       const wsParam = url.searchParams.get("ws");
       const codeParam = url.searchParams.get("code");
+      let wsUrl: string | null = null;
       if (wsParam && typeof window !== "undefined") {
-        window.localStorage.setItem("phm.wsUrl", normalizeWsUrl(wsParam));
+        wsUrl = normalizeWsUrl(wsParam);
+        window.localStorage.setItem("phm.wsUrl", wsUrl);
       } else if (
         trimmed.startsWith("http://") ||
         trimmed.startsWith("https://") ||
@@ -45,10 +53,11 @@ function extractPairCode(raw: string): string {
         trimmed.startsWith("wss://")
       ) {
         if (typeof window !== "undefined") {
-          window.localStorage.setItem("phm.wsUrl", normalizeWsUrl(trimmed));
+          wsUrl = normalizeWsUrl(trimmed);
+          window.localStorage.setItem("phm.wsUrl", wsUrl);
         }
       }
-      if (codeParam) return codeParam.trim();
+      if (codeParam) return { code: codeParam.trim(), wsUrl };
     } catch {
       // 忽略 URL 解析异常
     }
@@ -58,16 +67,20 @@ function extractPairCode(raw: string): string {
   if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
     try {
       const obj = JSON.parse(trimmed) as Record<string, unknown>;
+      let wsUrl: string | null = null;
       if (typeof obj.ws === "string" && typeof window !== "undefined") {
-        window.localStorage.setItem("phm.wsUrl", normalizeWsUrl(obj.ws));
+        wsUrl = normalizeWsUrl(obj.ws);
+        window.localStorage.setItem("phm.wsUrl", wsUrl);
       }
-      if (typeof obj.code === "string") return obj.code.trim();
+      if (typeof obj.code === "string") {
+        return { code: obj.code.trim(), wsUrl };
+      }
     } catch {
       // 忽略 JSON 解析异常
     }
   }
 
-  return trimmed;
+  return { code: trimmed, wsUrl: null };
 }
 
 export function PairPage() {
@@ -206,9 +219,15 @@ export function PairPage() {
           const barcodes = await detector.detect(videoRef.current);
           if (barcodes && barcodes.length > 0) {
             const detected = barcodes[0].rawValue;
-            const parsedCode = extractPairCode(detected);
-            if (parsedCode) {
-              setCode(parsedCode);
+            const parsed = extractPairingPayload(detected);
+            if (parsed.code) {
+              setCode(parsed.code);
+              // R1-006：载荷携带服务地址时同步带入壳内地址框——此前只写
+              // localStorage，框内 state 仍停留在挂载值，用户看不到已带入。
+              if (parsed.wsUrl) {
+                setWsAddress(parsed.wsUrl);
+                setWsAddressSaved(false);
+              }
               stopScanning();
             }
           }
