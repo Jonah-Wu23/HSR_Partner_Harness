@@ -875,6 +875,24 @@ class TestAuditPersistHook:
         assert decision.reason == "forbidden_scope"
         assert persisted == ["scope_denied"]
 
+    def test_whitelist_refresh_persists_throttled(self) -> None:
+        """白名单路径（remote.pair 携有效 token）的空闲刷新同样节流落盘。"""
+        clock = {"now": 1000.0}
+        svc = PairingService(clock=lambda: clock["now"])
+        code = svc.issue_code()
+        token = svc.claim(code, device_name="phone")
+        calls: list[float] = []
+        svc.state_persist_hook = lambda: calls.append(clock["now"])
+
+        svc.authorize(token, "remote.pair", origin="remote")
+        assert len(calls) == 1
+        clock["now"] = 1000.0 + 60
+        svc.authorize(token, "remote.pair", origin="remote")
+        assert len(calls) == 1
+        clock["now"] = 1000.0 + 301
+        svc.authorize(token, "remote.pair", origin="remote")
+        assert len(calls) == 2
+
     def test_authorize_refresh_persists_throttled(self) -> None:
         """令牌空闲刷新按节流周期写回，不逐帧整表落库。"""
         clock = {"now": 1000.0}
