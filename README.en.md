@@ -82,35 +82,43 @@ Generate a pairing code or QR code in the settings page and open it in the phone
 
 Safety boundaries: a pairing code is one-time and short-lived, only the latest code is valid, repeated failures lock the source out, and device tokens expire after 30 days absolute or 7 days idle. You can revoke any device from the desktop at any time. Tunnel hostnames appear in public certificate-transparency logs; seeing the address is not having access, and the real defenses are the pairing code and device tokens.
 
+Pairing, the Quick Tunnel switch, and the paired-device list all live in Settings → Remote devices.
+
+![Remote device settings with Quick Tunnel](output/real/readme-13-settings-remote.png)
+
 Local notifications for task completion, delegation results, and approval requests are delivered inside the Android shell; mobile browsers have no system notifications. The phone is a remote terminal for the PC: model calls, task execution, and business data all stay on the computer.
 
-## Screenshots
+## A look at the app
 
-Real screenshots from the desktop app:
-
-First launch asks you to pick a local project folder; the project is created from the folder name.
-
-![Pick a project folder on first launch](output/real/readme-01-first-launch.png)
-
-Chat mode keeps the character conversation focused.
+Chat mode keeps the character conversation focused; after the first complete reply the assistant generates the conversation title.
 
 ![Character chat in chat mode](output/real/readme-05-chat-mode.png)
 
-New chats pick a pair from the directory; the theme follows the current pair.
-
-![Pair overview](output/real/readme-02-multi-pair-overview.png)
-
-![Light theme after switching pairs](output/real/readme-04-switch-pair-light-theme.png)
-
-Collaboration mode shows the assistant workspace next to the character chat. Delegations carry a source marker, and results come back as structured cards in the same timeline.
+Collaboration mode opens the assistant workspace beside the chat. Delegations carry a source marker, and results come back as structured cards in the same timeline.
 
 ![Tool calls and results in collaboration mode](output/real/readme-03-collaboration-result.png)
 
-![Delegation card from the character](output/real/readme-08-delegation-card.png)
+Dangerous operations ask first: the approval bar sits above the composer, and you decide between allow, allow-for-this-chat, or deny. The verdict stays in the timeline.
 
-![Delegation execution result](output/real/readme-07-delegation-result.png)
+![Task waiting for approval](output/real/readme-08-approval-pending.png)
+
+## Character cards
+
+The character library lists the built-in pairs and your own cards side by side.
+
+![Character library with built-in and custom cards](output/real/readme-11-character-library.png)
+
+The creation studio guides you through the basics and offers a full advanced editor.
+
+![Character creation studio](output/real/readme-12-character-create.png)
+
+## Voice settings
 
 Voice settings use your own DashScope account. Built-in pairs provide five cloned voices and one sound-design voice; custom characters take reference audio and get their own generated voice on the same account, with preview, regeneration, and unbinding. The ASR/TTS models are shown as fixed values, and failed voice generations can be retried individually. Character replies feed into the auto-read channel, while tool records stay silent. Listening state and VAD prompts appear next to the input area.
+
+![Voice settings: account, voices, and fixed models](output/real/readme-14-settings-voice.png)
+
+![Custom character voice creation](output/real/readme-15-voice-custom.png)
 
 ![Listening state prompt](output/real/readme-09-voice-listening.png)
 
