@@ -126,12 +126,16 @@ nav{
   display:flex;align-items:center;gap:12px;margin-bottom:26px;
 }
 .eyebrow::before{content:"";width:34px;height:1px;background:var(--gold);opacity:.7}
+/* 双栏区间内左栏收窄，收紧字距让这行元信息保持单行，避免折出两个字的孤行 */
+@media(min-width:961px) and (max-width:1140px){.eyebrow{font-size:11px;letter-spacing:.14em}}
 h1{
   font-family:var(--serif);font-weight:900;
   font-size:clamp(34px,4.6vw,62px);
   line-height:1.26;letter-spacing:.01em;
   margin-bottom:24px;
+  white-space:nowrap;
 }
+@media(max-width:400px){h1{font-size:30px}}
 h1 .em{
   color:var(--gold);
   background:linear-gradient(120deg,#F5D06F,#E8B25C 55%,#D18F3E);
@@ -677,7 +681,7 @@ footer{
 <header class="hero" id="top">
   <div>
     <div class="eyebrow">Windows 桌面应用 · 星穹铁道同人作品 · V0.4.0 正式版</div>
-    <h1>和喜欢的角色，<br><span class="em">一起把想做的事做出来</span>。</h1>
+    <h1>和喜欢的角色，<br><span class="em">一起把想做的事<br>做出来</span>。</h1>
     <p class="hero-sub">
       <strong>HSR Partner Harness</strong>，能和你一起做事的 AI 角色搭档：<br>
       创建或导入你的角色，和 TA 讨论想法，由助手在电脑上执行。<br>
