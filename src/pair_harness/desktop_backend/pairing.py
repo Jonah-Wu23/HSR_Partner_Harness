@@ -28,6 +28,10 @@ CONTROL_PLANE_METHODS: frozenset[str] = frozenset(
 
 TOKEN_ABSOLUTE_TTL_SECONDS: float = 30 * 86400.0  # 绝对有效期 30 天
 TOKEN_IDLE_TTL_SECONDS: float = 7 * 86400.0       # 空闲有效期 7 天
+
+# 令牌空闲刷新（authorize 成功路径）的节流落盘周期：崩溃时最多丢失
+# 该窗口内的空闲延期，相对 7 天空闲期可忽略，避免每帧鉴权整表写库。
+TOKEN_REFRESH_PERSIST_INTERVAL = 300.0
 MAX_PAIRING_FAILURES: int = 5                     # 触发封锁的连续失败次数
 INITIAL_BACKOFF_SECONDS: float = 60.0             # 初始封锁 60 秒
 MAX_BACKOFF_SECONDS: float = 1800.0               # 最大退避 30 分钟 (1800 秒)
@@ -156,11 +160,12 @@ class PairingService:
         self._revoked_hashes: set[str] = set()
         # 审计日志
         self._audit: list[dict] = []
-        # R1-003：审计随写随持久化钩子。应用服务注入 _persist_pairing_state，
-        # 每条审计写入当刻落库；纯逻辑场景（独立构造、测试）保持 None，不碰存储。
-        # 没有它，scope_denied / expired_token / tunnel_started 等条目要等下一次
-        # 配对状态变更才落库，Sidecar 在此之前退出即丢失。
-        self.audit_persist_hook: Callable[[], None] | None = None
+        # R1-003：配对状态随写随持久化钩子。应用服务注入 _persist_pairing_state：
+        # 每条审计写入当刻触发；authorize 成功的令牌空闲刷新按
+        # TOKEN_REFRESH_PERSIST_INTERVAL 节流触发（写回 last_used_at/expires_at，
+        # 崩溃不回退空闲期）。纯逻辑场景（独立构造、测试）保持 None，不碰存储。
+        self.state_persist_hook: Callable[[], None] | None = None
+        self._refresh_persisted_at: float = 0.0
         # 撤销监听器：revoke 成功后以 (token, device_name) 回调，
         # 供 WS 服务器立即断开仍持有该 token 的已建立连接（V0.3.4 缺陷 7）。
         self._revoke_listeners: list[Callable[[str, str], None]] = []
@@ -177,8 +182,8 @@ class PairingService:
             "event": event,
             "detail": detail,
         })
-        if self.audit_persist_hook is not None:
-            self.audit_persist_hook()
+        if self.state_persist_hook is not None:
+            self.state_persist_hook()
 
     def record_audit(self, event: str, detail: str) -> None:
         """供应用服务或外部模块写入审计日志。"""
@@ -343,11 +348,7 @@ class PairingService:
             if token is not None and self._lookup_token(token) is not None:
                 entry = self._tokens[token]
                 if not entry.revoked and now <= entry.expires_at:
-                    entry.last_used_at = now
-                    entry.expires_at = min(
-                        entry.issued_at + TOKEN_ABSOLUTE_TTL_SECONDS,
-                        now + TOKEN_IDLE_TTL_SECONDS,
-                    )
+                    self._touch_token_entry(entry, now)
                     return AuthDecision(
                         allowed=True,
                         reason="",
@@ -377,16 +378,31 @@ class PairingService:
             return AuthDecision(allowed=False, reason="expired_token")
 
         # 有效：刷新空闲计时与过期时间
-        entry.last_used_at = now
-        entry.expires_at = min(
-            entry.issued_at + TOKEN_ABSOLUTE_TTL_SECONDS,
-            now + TOKEN_IDLE_TTL_SECONDS,
-        )
+        self._touch_token_entry(entry, now)
         return AuthDecision(
             allowed=True,
             reason="",
             device_name=entry.device_name,
         )
+
+    def _touch_token_entry(self, entry: _TokenEntry, now: float) -> None:
+        """刷新空闲计时与过期时间，并按节流周期写回状态。
+
+        空闲延期不落盘时，Sidecar 崩溃会让设备在内存里已延期、库里仍按
+        旧期限到期，重启即误拒仍活跃的设备；逐帧整表落盘代价又过高，
+        取 TOKEN_REFRESH_PERSIST_INTERVAL 节流，崩溃丢失窗口有限。
+        """
+        entry.last_used_at = now
+        entry.expires_at = min(
+            entry.issued_at + TOKEN_ABSOLUTE_TTL_SECONDS,
+            now + TOKEN_IDLE_TTL_SECONDS,
+        )
+        if (
+            self.state_persist_hook is not None
+            and now - self._refresh_persisted_at >= TOKEN_REFRESH_PERSIST_INTERVAL
+        ):
+            self._refresh_persisted_at = now
+            self.state_persist_hook()
 
     def _lookup_token(self, token: str) -> _TokenEntry | None:
         """恒定时间查找 token（hmac.compare_digest 比较）。"""

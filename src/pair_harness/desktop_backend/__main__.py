@@ -219,7 +219,6 @@ async def _run(args: argparse.Namespace) -> int:
             is_lan = bool(getattr(args, "lan", False))
             bind_host = "0.0.0.0" if is_lan else "127.0.0.1"
             mode = "lan" if is_lan else "loopback"
-            service.remote_serve_port = args.serve
             ws_server = WSServerMode(
                 dispatch=router.dispatch,
                 authenticator=service.pairing_service,
@@ -275,6 +274,10 @@ async def _run(args: argparse.Namespace) -> int:
                     mode,
                 )
                 service.remote_serve_address = address
+                # 隧道端口只在监听成功后登记：若端口被其他本地服务占用，
+                # 启动失败路径不得留下端口，否则 remote.tunnel_start 会把
+                # 占用该端口的无关服务交给 cloudflared 暴露到公网。
+                service.remote_serve_port = args.serve
                 service.emitter.emit("serve.started", dict(address))
                 # 撤销 token 时立即断开仍持有该 token 的已建立连接（V0.3.4 缺陷 7）。
                 service.pairing_service.add_revoke_listener(

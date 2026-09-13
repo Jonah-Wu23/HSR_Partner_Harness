@@ -539,7 +539,7 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
       ) : null}
 
       <p className="settings-hint" style={{ marginTop: "16px", fontSize: "12px" }}>
-        提示：Sidecar 需以 <code>--serve</code> 参数运行以开启局域网 WebSocket 监听服务；未开启时手机端将无法连接。
+        提示：手机接入需要公网隧道（推荐，上方一键开启）或进阶的局域网直连（<code>--lan</code> 参数 / <code>PAIR_HARNESS_LAN=1</code>，见《手机远程语音说明》方式三）；两者都未开启时手机端无法连接。
       </p>
     </section>
   );

@@ -836,7 +836,7 @@ class DesktopApplicationService:
         self.pairing_service = PairingService()
         # R1-003：审计随写随持久化——scope_denied、expired_token、
         # tunnel_started 等条目在写入当刻落库，不随下一次配对状态变更才落库。
-        self.pairing_service.audit_persist_hook = self._persist_pairing_state
+        self.pairing_service.state_persist_hook = self._persist_pairing_state
         self._restore_pairing_state()
         self.tunnel_manager = TunnelManager(
             data_dir=store.database.parent,
@@ -4850,7 +4850,13 @@ class DesktopApplicationService:
         if port is None and self.remote_serve_port is not None:
             port = self.remote_serve_port
         if port is None:
-            port = 8765
+            # --serve 未成功监听（未开启或端口被占）时不得回退默认端口：
+            # 打包应用恒以 --serve 8765 启动，回退会把占用 8765 的无关本地
+            # 服务交给 cloudflared 暴露到公网。如实拒绝并提示。
+            raise ServiceError(
+                "远程服务未启动（--serve 未监听或端口被占用），无法开启公网接入",
+                code="serve_not_started",
+            )
         return await self.tunnel_manager.start(int(port))
 
     async def _remote_tunnel_stop(
