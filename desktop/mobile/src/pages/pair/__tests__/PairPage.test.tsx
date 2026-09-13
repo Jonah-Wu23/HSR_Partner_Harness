@@ -366,4 +366,71 @@ describe("PairPage V0.3.7 壳内桌面端地址输入", () => {
     fireEvent.change(input, { target: { value: "ws://10.0.0.9:8765/ws" } });
     expect(screen.queryByTestId("ws-address-saved")).toBeNull();
   });
+
+  it("R1-006：壳内扫码载荷携带 ?ws= 时，配对码与桌面端连接地址框同时带入", async () => {
+    stubAndroidShell();
+    stubScanner();
+
+    render(<PairPage />);
+    fireEvent.click(screen.getByTestId("btn-start-scan"));
+
+    await waitFor(() => {
+      const codeInput = screen.getByTestId("input-pair-code") as HTMLInputElement;
+      expect(codeInput.value).toBe("998877");
+    });
+    const addressInput = screen.getByTestId("ws-address-input") as HTMLInputElement;
+    expect(addressInput.value).toBe("ws://192.168.1.100:8765/ws");
+    expect(window.localStorage.getItem("phm.wsUrl")).toBe("ws://192.168.1.100:8765/ws");
+    // 地址来自本次扫码，「已保存」提示不得残留上一轮状态
+    expect(screen.queryByTestId("ws-address-saved")).toBeNull();
+  });
+
+  it("R1-006：壳内扫码公网隧道 URL（仅 ?code=，无 ?ws=）时，地址框带入规范化隧道地址", async () => {
+    stubAndroidShell();
+    stubScanner({ rawValue: "https://my-tunnel.trycloudflare.com/?code=889900" });
+
+    render(<PairPage />);
+    fireEvent.click(screen.getByTestId("btn-start-scan"));
+
+    await waitFor(() => {
+      const codeInput = screen.getByTestId("input-pair-code") as HTMLInputElement;
+      expect(codeInput.value).toBe("889900");
+    });
+    const addressInput = screen.getByTestId("ws-address-input") as HTMLInputElement;
+    expect(addressInput.value).toBe("wss://my-tunnel.trycloudflare.com/ws");
+    expect(window.localStorage.getItem("phm.wsUrl")).toBe("wss://my-tunnel.trycloudflare.com/ws");
+  });
+
+  it("R1-006：壳内扫码仅含裸配对码时，配对码带入且地址框保持原值", async () => {
+    stubAndroidShell();
+    stubScanner({ rawValue: "654321" });
+    window.localStorage.setItem("phm.wsUrl", "ws://10.0.0.5:8765/ws");
+
+    render(<PairPage />);
+    fireEvent.click(screen.getByTestId("btn-start-scan"));
+
+    await waitFor(() => {
+      const codeInput = screen.getByTestId("input-pair-code") as HTMLInputElement;
+      expect(codeInput.value).toBe("654321");
+    });
+    const addressInput = screen.getByTestId("ws-address-input") as HTMLInputElement;
+    expect(addressInput.value).toBe("ws://10.0.0.5:8765/ws");
+  });
 });
+
+/** 扫码测试公共桩：摄像头流 + BarcodeDetector（默认返回带 ws 参数的完整 URL）。 */
+function stubScanner(firstResult: { rawValue: string } = {
+  rawValue: "http://192.168.1.100:1421/?ws=ws%3A%2F%2F192.168.1.100%3A8765%2Fws&code=998877",
+}): void {
+  const mockMediaStream = { getTracks: () => [{ stop: vi.fn() }] };
+  HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "mediaDevices", {
+    value: { getUserMedia: vi.fn().mockResolvedValue(mockMediaStream) },
+    writable: true,
+    configurable: true,
+  });
+  class MockBarcodeDetector {
+    detect = vi.fn().mockResolvedValue([firstResult]);
+  }
+  window.BarcodeDetector = MockBarcodeDetector as unknown as typeof window.BarcodeDetector;
+}
