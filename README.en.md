@@ -116,9 +116,7 @@ The creation studio guides you through the basics and offers a full advanced edi
 
 Voice settings use your own DashScope account. Built-in pairs provide five cloned voices and one sound-design voice; custom characters take reference audio and get their own generated voice on the same account, with preview, regeneration, and unbinding. The ASR/TTS models are shown as fixed values, and failed voice generations can be retried individually. Character replies feed into the auto-read channel, while tool records stay silent. Listening state and VAD prompts appear next to the input area.
 
-![Voice settings: account, voices, and fixed models](output/real/readme-14-settings-voice.png)
-
-![Custom character voice creation](output/real/readme-15-voice-custom.png)
+![Voice settings page: DashScope account, voice generation, and fixed ASR/TTS models](output/real/readme-14-settings-voice.png)
 
 ![Listening state prompt](output/real/readme-09-voice-listening.png)
 

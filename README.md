@@ -100,9 +100,7 @@ Windows x64 · 开源 Apache-2.0 · 模型与语音使用你自己的账号 · �
 
 语音设置页集中管理账号、音色与固定模型：上方填写自己的 DashScope 账号，下方为三个内置搭档生成专属音色，也能为任意自定义角色上传参考音频创建音色。
 
-![语音设置：账号、音色与固定模型](output/real/readme-14-settings-voice.png)
-
-![为自定义角色创建音色](output/real/readme-15-voice-custom.png)
+![语音设置页：DashScope 账号、专属音色生成与固定 ASR/TTS 模型](output/real/readme-14-settings-voice.png)
 
 开启按键说话后，输入区下方显示聆听状态；开启 VAD 后无需按键即可直接说话。
 
