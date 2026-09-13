@@ -126,13 +126,20 @@ class TestHashAndRegex:
 class _MockStream:
     def __init__(self, lines: list[bytes]) -> None:
         self._lines = list(lines)
+        self._wakeup = asyncio.Event()
+
+    def append_lines(self, lines: list[bytes]) -> None:
+        """模拟进程在读取过程中继续产出日志（唤醒阻塞中的 readline）。"""
+        self._lines.extend(lines)
+        self._wakeup.set()
 
     async def readline(self) -> bytes:
-        if self._lines:
-            return self._lines.pop(0)
-        # 保持连接阻塞直到被取消
-        await asyncio.sleep(100.0)
-        return b""
+        while True:
+            if self._lines:
+                return self._lines.pop(0)
+            # 保持连接阻塞直到新日志到达或读取任务被取消
+            await self._wakeup.wait()
+            self._wakeup.clear()
 
 
 class _MockProcess:
@@ -329,6 +336,60 @@ class TestTunnelManager:
 
         assert mgr.state == "failed"
         assert "137" in (mgr.error or "")
+        failed_events = [e for e in events if e.get("event") == "tunnel.failed"]
+        assert len(failed_events) == 1
+
+    @pytest.mark.asyncio
+    async def test_readers_drain_logs_after_ready_until_exit(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Codex Review ④ 回归：就绪后消费任务保持排空 PIPE 直至进程退出。
+
+        旧实现在 tunnel.started 后立即取消读取任务，cloudflared 持续写日志
+        会撑满管道缓冲并阻塞在写入上，隧道假死且外部强杀无法及时检出。
+        """
+        events: list[dict[str, Any]] = []
+        emitter = EventEmitter(sink=lambda ev: events.append(ev))
+
+        monkeypatch.setattr("pair_harness.desktop_backend.tunnel.verify_file_hash", lambda p, s: True)
+
+        mock_proc = _MockProcess(
+            stderr_lines=[
+                b"2026-09-11 INF https://drain-test.trycloudflare.com\n",
+            ]
+        )
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=mock_proc))
+
+        mgr = TunnelManager(
+            data_dir=tmp_path,
+            emitter=emitter,
+            audit_logger=lambda ev, d: None,
+            downloader=AsyncMock(),
+        )
+
+        await mgr.start(local_port=8765)
+        for _ in range(50):
+            if mgr.state == "ready":
+                break
+            await asyncio.sleep(0.05)
+        assert mgr.state == "ready"
+
+        # 就绪后 cloudflared 继续写日志（超过管道缓冲的量级）
+        mock_proc.stderr.append_lines(
+            [
+                ("2026-09-11 INF request #%d served" % i).encode() + "\n".encode()
+                for i in range(64)
+            ]
+        )
+
+        # 模拟外部崩溃：进程退出时日志管道必须已被持续排空
+        mock_proc.trigger_crash(code=1)
+        for _ in range(50):
+            if mgr.state == "failed":
+                break
+            await asyncio.sleep(0.05)
+
+        assert mgr.state == "failed"
+        # 就绪后的 64 行日志全部被消费任务读走：读取任务在监视期未被取消
+        assert len(mock_proc.stderr._lines) == 0
         failed_events = [e for e in events if e.get("event") == "tunnel.failed"]
         assert len(failed_events) == 1
 

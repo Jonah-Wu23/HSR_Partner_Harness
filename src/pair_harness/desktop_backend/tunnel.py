@@ -379,6 +379,9 @@ class TunnelManager:
                     stderr_task.cancel()
                 if not stdout_task.done():
                     stdout_task.cancel()
+                await asyncio.gather(
+                    stderr_task, stdout_task, return_exceptions=True
+                )
 
         # 就绪监视阶段：两个消费任务必须持续排空 PIPE——cloudflared 持续
         # 写日志，管道满会令它阻塞在写入上，隧道假死且外部强杀无法及时

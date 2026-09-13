@@ -348,11 +348,7 @@ class PairingService:
             if token is not None and self._lookup_token(token) is not None:
                 entry = self._tokens[token]
                 if not entry.revoked and now <= entry.expires_at:
-                    entry.last_used_at = now
-                    entry.expires_at = min(
-                        entry.issued_at + TOKEN_ABSOLUTE_TTL_SECONDS,
-                        now + TOKEN_IDLE_TTL_SECONDS,
-                    )
+                    self._touch_token_entry(entry, now)
                     return AuthDecision(
                         allowed=True,
                         reason="",
@@ -382,24 +378,31 @@ class PairingService:
             return AuthDecision(allowed=False, reason="expired_token")
 
         # 有效：刷新空闲计时与过期时间
+        self._touch_token_entry(entry, now)
+        return AuthDecision(
+            allowed=True,
+            reason="",
+            device_name=entry.device_name,
+        )
+
+    def _touch_token_entry(self, entry: _TokenEntry, now: float) -> None:
+        """刷新空闲计时与过期时间，并按节流周期写回状态。
+
+        空闲延期不落盘时，Sidecar 崩溃会让设备在内存里已延期、库里仍按
+        旧期限到期，重启即误拒仍活跃的设备；逐帧整表落盘代价又过高，
+        取 TOKEN_REFRESH_PERSIST_INTERVAL 节流，崩溃丢失窗口有限。
+        """
         entry.last_used_at = now
         entry.expires_at = min(
             entry.issued_at + TOKEN_ABSOLUTE_TTL_SECONDS,
             now + TOKEN_IDLE_TTL_SECONDS,
         )
-        # 空闲延期按节流周期写回：不落盘时 Sidecar 崩溃会让设备在内存里
-        # 已延期、库里仍按旧期限到期，重启即误拒仍活跃的设备。
         if (
             self.state_persist_hook is not None
             and now - self._refresh_persisted_at >= TOKEN_REFRESH_PERSIST_INTERVAL
         ):
             self._refresh_persisted_at = now
             self.state_persist_hook()
-        return AuthDecision(
-            allowed=True,
-            reason="",
-            device_name=entry.device_name,
-        )
 
     def _lookup_token(self, token: str) -> _TokenEntry | None:
         """恒定时间查找 token（hmac.compare_digest 比较）。"""

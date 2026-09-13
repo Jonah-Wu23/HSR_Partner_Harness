@@ -250,6 +250,33 @@ def test_provision_default_excludes_assistant_speakers() -> None:
     assert default_set & assistant_speaker_ids() == set()
 
 
+# ---------------------------------------------------------------- Codex Review ① 回归
+
+
+async def test_tunnel_start_refuses_when_serve_not_started(service) -> None:
+    """--serve 未成功监听时 remote.tunnel_start 必须拒绝，不得回退默认端口。"""
+    assert service.remote_serve_port is None
+    with pytest.raises(ServiceError) as excinfo:
+        await service.handle_command(command("1", "remote.tunnel_start"))
+    assert excinfo.value.code == "serve_not_started"
+
+
+async def test_tunnel_start_uses_registered_serve_port(service) -> None:
+    """监听成功登记端口后，tunnel_start 把该端口交给隧道管理器。"""
+    service.remote_serve_port = 18765
+    started: list[int] = []
+
+    class _RecordingTunnel:
+        async def start(self, port: int) -> dict:
+            started.append(port)
+            return {"status": "starting"}
+
+    service.tunnel_manager = _RecordingTunnel()
+    result = await service.handle_command(command("1", "remote.tunnel_start"))
+    assert result == {"status": "starting"}
+    assert started == [18765]
+
+
 # ---------------------------------------------------------------- R1-001 / R1-003 回归
 
 
