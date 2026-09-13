@@ -371,36 +371,37 @@ export class MobileWsClient {
     }
     const code = frame.error?.code ?? "unknown";
     const message = frame.error?.message ?? "远程命令失败";
+    // 只按协议字段与精确原因值判定鉴权失败：错误正文做子串推断会把
+    // internal_error 回显的普通业务异常误判成令牌过期，清除仍有效的凭据。
     const isAuthFailure =
       code === "unauthorized" ||
       code === "expired_token" ||
       code === "token_expired" ||
       code === "token_revoked" ||
       code === "revoked_token" ||
-      code === "auth_failed" ||
-      message === "expired_token" ||
-      message === "auth_failed: expired_token" ||
-      message.includes("expired_token");
+      code === "auth_failed";
+    // 服务端把原因放在 message（ws_server：response_error(id, "unauthorized", reason)），
+    // 因此 message 只做精确相等比较，不做包含匹配。
+    const reason = message.trim();
+    const isExpired =
+      code === "expired_token" ||
+      code === "token_expired" ||
+      (code === "unauthorized" && reason === "expired_token");
+    const isRevoked =
+      code === "token_revoked" ||
+      code === "revoked_token" ||
+      (code === "unauthorized" && reason === "revoked_token");
 
     if (isAuthFailure) {
-      if (
-        code === "expired_token" ||
-        code === "token_expired" ||
-        message === "expired_token" ||
-        message === "auth_failed: expired_token" ||
-        message.includes("expired_token")
-      ) {
+      if (isExpired) {
         this.authFailureCode = "expired_token";
         clearCredentials();
-      } else if (
-        code === "token_revoked" ||
-        code === "revoked_token" ||
-        message === "revoked_token" ||
-        message === "token_revoked"
-      ) {
+      } else if (isRevoked) {
         this.authFailureCode = "token_revoked";
       } else {
-        this.authFailureCode = code !== "unknown" ? code : message;
+        // 走到这里的 code 只剩鉴权失败码（auth_failed / unauthorized），
+        // 原因文本已由 UI 层按需展示。
+        this.authFailureCode = code;
       }
       // 如实暴露鉴权失败：UI 引导重新配对，不在网络层静默换状态。
       this.setState("auth_failed");

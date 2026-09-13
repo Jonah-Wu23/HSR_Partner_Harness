@@ -850,7 +850,7 @@ class TestAuditPersistHook:
     def test_default_no_hook_and_pure_logic(self) -> None:
         """未注入钩子（独立构造/测试）时审计只留内存，行为不变。"""
         svc = PairingService()
-        assert svc.audit_persist_hook is None
+        assert svc.state_persist_hook is None
         svc.issue_code()
         assert svc.audit_entries()[-1]["event"] == "pairing_code_issued"
 
@@ -858,7 +858,7 @@ class TestAuditPersistHook:
         """R1-003：每条审计写入当刻触发持久化钩子。"""
         svc = PairingService()
         writes: list[str] = []
-        svc.audit_persist_hook = lambda: writes.append(svc.audit_entries()[-1]["event"])
+        svc.state_persist_hook = lambda: writes.append(svc.audit_entries()[-1]["event"])
         svc.issue_code()
         svc.record_audit("tunnel_started", "hostname=example.trycloudflare.com")
         assert writes == ["pairing_code_issued", "tunnel_started"]
@@ -869,11 +869,32 @@ class TestAuditPersistHook:
         code = svc.issue_code()
         token = svc.claim(code, device_name="phone")
         persisted: list[str] = []
-        svc.audit_persist_hook = lambda: persisted.append(svc.audit_entries()[-1]["event"])
+        svc.state_persist_hook = lambda: persisted.append(svc.audit_entries()[-1]["event"])
         decision = svc.authorize(token, "remote.issue_code", origin="remote")
         assert decision.allowed is False
         assert decision.reason == "forbidden_scope"
         assert persisted == ["scope_denied"]
+
+    def test_authorize_refresh_persists_throttled(self) -> None:
+        """令牌空闲刷新按节流周期写回，不逐帧整表落库。"""
+        clock = {"now": 1000.0}
+        svc = PairingService(clock=lambda: clock["now"])
+        code = svc.issue_code()
+        token = svc.claim(code, device_name="phone")
+        calls: list[float] = []
+        svc.state_persist_hook = lambda: calls.append(clock["now"])
+
+        # 首次成功鉴权：立即写回空闲延期
+        svc.authorize(token, "app.bootstrap", origin="remote")
+        assert len(calls) == 1
+        # 周期内再次鉴权：内存刷新但不写回
+        clock["now"] = 1000.0 + 60
+        svc.authorize(token, "app.bootstrap", origin="remote")
+        assert len(calls) == 1
+        # 越过节流周期：再次写回
+        clock["now"] = 1000.0 + 301
+        svc.authorize(token, "app.bootstrap", origin="remote")
+        assert len(calls) == 2
 
     def test_expired_token_denial_persists_immediately(self) -> None:
         """R1-003：expired_token 拒绝审计同样当刻触发持久化（M08 同项）。"""
@@ -882,7 +903,7 @@ class TestAuditPersistHook:
         code = svc.issue_code()
         token = svc.claim(code, device_name="phone")
         persisted: list[str] = []
-        svc.audit_persist_hook = lambda: persisted.append(svc.audit_entries()[-1]["event"])
+        svc.state_persist_hook = lambda: persisted.append(svc.audit_entries()[-1]["event"])
         # 越过 30 天绝对有效期：expired_token
         clock["now"] = 1000.0 + 31 * 24 * 3600
         decision = svc.authorize(token, "app.bootstrap", origin="remote")

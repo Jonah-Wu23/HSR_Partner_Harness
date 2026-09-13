@@ -1122,8 +1122,9 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
   // 缺口缓冲。remote-only 手机语音事件消费全局序号但不写桌面 stdout，桌面事件
   // 流因此存在序号缺口；缺口走「缓冲 → 快照 → 按序号丢弃」路径会静默吞掉
   // tunnel.failed，设置面板停留「已连接」。这些事件的状态只存在于 remotePairing
-  // slice（快照不携带），带代次隔离的即时应用不破坏快照一致性，也不推进
-  // lastSequence（与 error.reported 同语义）。
+  // slice（快照不携带），带代次隔离的即时应用不破坏快照一致性。它们仍由同一
+  // EventEmitter 分配全局序号，应用后按已观察序号推进 lastSequence——否则紧随
+  // 其后的普通业务事件会被连续性检查误判成缺口，触发多余的 bootstrap。
   if (
     event.event === "tunnel.started" ||
     event.event === "tunnel.stopped" ||
@@ -1180,6 +1181,10 @@ function eventTargetsConversation(event: DesktopEvent, conversationId: string): 
  */
 function applyTunnelAndPairingNotice(state: DesktopState, event: DesktopEvent): DesktopState {
   const next: DesktopState = { ...state };
+  // 消费已观察通知的序号：防回退（迟到/重复事件不得倒退 lastSequence）。
+  // 缺口场景（中间序号被 remote-only 消费）一并越过——那类序号桌面永远
+  // 观察不到，停留旧值只会把下一条业务事件误判成缺口。
+  next.lastSequence = Math.max(state.lastSequence, event.sequence);
   switch (event.event) {
     case "tunnel.started": {
       const payload = (event.payload && typeof event.payload === "object" ? event.payload : {}) as {

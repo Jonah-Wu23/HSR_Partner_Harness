@@ -252,10 +252,10 @@ class WSServerMode:
         token = auth.get("token") if isinstance(auth, Mapping) else None
 
         try:
-            try:
-                decision = self.authenticator.authorize(token, method, origin="remote")
-            except TypeError:
-                decision = self.authenticator.authorize(token, method)
+            # 鉴权接口按协议固定携带 origin；实现内部异常由下方统一按
+            # 未授权拒绝。不做 TypeError 探测降级——那会把实现内部的
+            # TypeError 误判成旧签名并二次执行鉴权，产生重复审计。
+            decision = self.authenticator.authorize(token, method, origin="remote")
         except Exception:  # noqa: BLE001 - 鉴权实现异常按未授权拒绝，不让服务器崩溃
             logger.exception("远程鉴权接口异常，拒绝该请求")
             conn.send(

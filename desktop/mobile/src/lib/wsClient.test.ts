@@ -221,6 +221,31 @@ describe("MobileWsClient", () => {
     expect(client.getState()).toBe("auth_failed");
   });
 
+  it("internal_error 文本偶然包含 expired_token 时不得误清有效凭据（R1-006 批次回归）", async () => {
+    saveCredentials("tok-valid", "我的手机");
+    const client = new MobileWsClient();
+    client.connect();
+    const ws = lastInstance();
+    ws.open();
+
+    const pending = client.request("chat.submit");
+    const frame = lastSentFrame(ws);
+    ws.emit({
+      kind: "response",
+      id: frame.id,
+      ok: false,
+      error: {
+        code: "internal_error",
+        message: "处理委派失败：子任务状态 expired_token 越界",
+      },
+    });
+    await expect(pending).rejects.toBeInstanceOf(RemoteCommandError);
+    // 普通业务异常按原样呈现：不进入鉴权失败态，不清除仍有效的凭据
+    expect(client.getState()).not.toBe("auth_failed");
+    expect(client.getAuthFailureCode()).toBeNull();
+    expect(getStoredToken()).toBe("tok-valid");
+  });
+
   it("auth_failed: expired_token 响应清理本地失效 token 并记录细分错误码", async () => {
     saveCredentials("tok-expired-30d", "我的手机");
     const client = new MobileWsClient();

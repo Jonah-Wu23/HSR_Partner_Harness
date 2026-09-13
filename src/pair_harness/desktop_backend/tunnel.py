@@ -331,6 +331,7 @@ class TunnelManager:
         stderr_task = asyncio.create_task(_consume_stream(proc.stderr))
         stdout_task = asyncio.create_task(_consume_stream(proc.stdout))
 
+        reached_ready = False
         try:
             # 30 秒内等待主机名解析
             wait_proc = asyncio.create_task(proc.wait())
@@ -347,6 +348,7 @@ class TunnelManager:
                 self.state = "ready"
                 self.error = None
                 logger.info("Quick Tunnel 主机名解析就绪 hostname=%s", hostname)
+                reached_ready = True
                 self.emitter.emit(
                     "tunnel.started",
                     {"public_url": self.public_url, "hostname": self.hostname},
@@ -370,18 +372,27 @@ class TunnelManager:
                 pass
             raise
         finally:
+            # 提前返回（就绪前退出/解析超时）在此收尾读任务；就绪路径的
+            # 管道排空延续到下方监视段。
+            if not reached_ready:
+                if not stderr_task.done():
+                    stderr_task.cancel()
+                if not stdout_task.done():
+                    stdout_task.cancel()
+
+        # 就绪监视阶段：两个消费任务必须持续排空 PIPE——cloudflared 持续
+        # 写日志，管道满会令它阻塞在写入上，隧道假死且外部强杀无法及时
+        # 触发 tunnel.failed。进程退出（含外部强杀）由 proc.wait() 检出。
+        try:
+            return_code = await proc.wait()
+        finally:
             if not stderr_task.done():
                 stderr_task.cancel()
             if not stdout_task.done():
                 stdout_task.cancel()
-
-        # 进入就绪监视阶段：若进程被外部杀死，上报 tunnel.failed
-        try:
-            return_code = await proc.wait()
-            if self.state in ("ready", "starting"):
-                self._fail(f"隧道进程已被外部终止 (退出码 {return_code})")
-        except asyncio.CancelledError:
-            pass
+            await asyncio.gather(stderr_task, stdout_task, return_exceptions=True)
+        if self.state in ("ready", "starting"):
+            self._fail(f"隧道进程已被外部终止 (退出码 {return_code})")
 
     def _fail(self, error: str) -> None:
         """进入 failed 终态并派发 tunnel.failed 事件。"""

@@ -260,9 +260,10 @@ describe("R1-002/R1-001 控制通道事件（V0.4.0 真机缺陷回归）", () =
     expect(remote.tunnel?.state).toBe("failed");
     expect(remote.tunnel?.error).toBe("隧道进程已被外部终止 (退出码 1)");
     expect(remote.tunnel?.publicUrl).toBeNull();
-    // 缺口事件走控制通道：不置 needsBootstrap、不进缓冲。
+    // 缺口事件走控制通道：不置 needsBootstrap、不进缓冲；已观察序号被消费
     expect(desktopStore.getState().needsBootstrap).toBe(false);
     expect(desktopStore.getState().eventBuffer).toHaveLength(0);
+    expect(desktopStore.getState().lastSequence).toBe(8);
   });
 
   it("R1-002：tunnel.started 在序号缺口下同样即时应用（同一缺陷类）", () => {
@@ -291,6 +292,32 @@ describe("R1-002/R1-001 控制通道事件（V0.4.0 真机缺陷回归）", () =
       },
     ]);
     expect(desktopStore.getState().remotePairing.tunnel?.state).toBe("off");
+  });
+
+  it("R1-002 补充：控制通道通知消费序号后，紧随的业务事件不再误判缺口", () => {
+    desktopStore.setState({ lastSequence: 5 });
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "tunnel.started",
+        sequence: 6,
+        payload: { public_url: "https://seq.trycloudflare.com", hostname: "seq.trycloudflare.com" },
+      },
+    ]);
+    // tunnel.started 自身占用全局序号 6；lastSequence 必须跟进，否则
+    // 下一条业务事件 7 会被连续性检查误判成缺口触发多余 bootstrap。
+    expect(desktopStore.getState().lastSequence).toBe(6);
+
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "power.status_changed",
+        sequence: 7,
+        payload: { supported: true },
+      },
+    ]);
+    expect(desktopStore.getState().needsBootstrap).toBe(false);
+    expect(desktopStore.getState().lastSequence).toBe(7);
   });
 
   it("R1-001：remote.paired 事件推进 devicesRevision，供面板重拉设备列表", () => {
