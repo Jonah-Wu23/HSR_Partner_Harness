@@ -919,10 +919,21 @@
 
 /* ---- 消息区 ---- */
 
+.conversation-list-shell {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
 .message-scroll {
   flex: 1;
   overflow-y: auto;
   overscroll-behavior: contain;
+  overflow-anchor: none;
+  position: relative;
   padding: var(--space-4);
   min-height: 0;
 }
@@ -930,27 +941,27 @@
 .message-column {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: 0;
   max-width: 760px;
   margin: 0 auto;
 }
-.message-column-virtual {
-  display: block;
-  position: relative;
-  width: 100%;
-}
 .message-virtual-row {
-  position: absolute;
-  top: 0;
-  left: 0;
+  display: flow-root;
+  flex: none;
   width: 100%;
   padding-bottom: var(--space-3);
 }
+.conversation-list-spacer { flex: none; }
+.conversation-list-jump-overlay {
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  pointer-events: none;
+}
+.conversation-list-jump-overlay > * { pointer-events: auto; }
 
 .msg-row {
   display: flex;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 64px;
 }
 .msg-row-user { justify-content: flex-end; }
 .msg-row-system { justify-content: center; }
@@ -1553,9 +1564,9 @@
 
 /* ========== 消息区补充：回到最新 ========== */
 
-.message-scroll { position: relative; }
 .scroll-latest-btn {
-  position: sticky;
+  position: absolute;
+  z-index: 2;
   bottom: var(--space-3);
   left: 50%;
   transform: translateX(-50%);

@@ -7,14 +7,22 @@ interface ReasoningRibbonProps {
   streaming: boolean;
   /** 思考耗时秒数；结束后用于摘要「思考了 x 秒」。 */
   elapsedSeconds?: number;
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
 }
 
 /**
  * 思考缎带：细高内联块，脉动点 + 打字机增量；高度封顶 120px 内部滚动，
  * 不顶动下方内容。结束自动折叠成一行摘要，点击重新展开。
  */
-export function ReasoningRibbon({ text, streaming, elapsedSeconds }: ReasoningRibbonProps) {
-  const [expanded, setExpanded] = useState(true);
+export function ReasoningRibbon({ text, streaming, elapsedSeconds, expanded: controlledExpanded, onExpandedChange }: ReasoningRibbonProps) {
+  const [localExpanded, setLocalExpanded] = useState(streaming);
+  const expanded = controlledExpanded ?? localExpanded;
+  const previousStreamingRef = useRef(streaming);
+  const setExpanded = (next: boolean) => {
+    setLocalExpanded(next);
+    onExpandedChange?.(next);
+  };
   const bodyRef = useRef<HTMLDivElement>(null);
 
   // 流式期间始终贴底，呈现打字机效果
@@ -25,7 +33,8 @@ export function ReasoningRibbon({ text, streaming, elapsedSeconds }: ReasoningRi
 
   // 思考结束自动收成摘要
   useEffect(() => {
-    if (!streaming) setExpanded(false);
+    if (previousStreamingRef.current && !streaming) setExpanded(false);
+    previousStreamingRef.current = streaming;
   }, [streaming]);
 
   if (!streaming && !text) return null;
@@ -48,7 +57,7 @@ export function ReasoningRibbon({ text, streaming, elapsedSeconds }: ReasoningRi
               </button>
             )}
           </div>
-          <div className="reasoning-ribbon-body" ref={bodyRef}>
+          <div className="reasoning-ribbon-body" ref={bodyRef} data-internal-scroll>
             {text}
             {streaming ? <span className="msg-streaming-caret" aria-hidden /> : null}
           </div>

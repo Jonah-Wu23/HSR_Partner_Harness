@@ -11,6 +11,7 @@ export default defineConfig({
   base: "./",
   plugins: [react()],
   resolve: {
+    dedupe: ["react", "react-dom", "@tanstack/react-virtual"],
     alias: {
       "@shared": fileURLToPath(new URL("../src", import.meta.url)),
       "@": fileURLToPath(new URL("./src", import.meta.url)),

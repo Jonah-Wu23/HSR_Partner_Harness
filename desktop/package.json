@@ -1,13 +1,14 @@
 {
   "name": "hsr-partner-harness-desktop",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.4.1",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
     "build": "tsc -b && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:e2e": "playwright test --config=e2e/playwright.config.ts",
     "test:watch": "vitest",
     "tauri": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/tauri-with-first-run-reset.ps1",
     "tauri:dev": "npm run tauri -- dev",
@@ -25,6 +26,7 @@
     "zustand": "^5.0.8"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tauri-apps/cli": "^2.8.4",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.3.0",

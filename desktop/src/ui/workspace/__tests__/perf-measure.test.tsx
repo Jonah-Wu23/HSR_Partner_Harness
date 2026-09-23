@@ -44,7 +44,7 @@ function timeline(messages: Message[]): ConversationTimelineViewModel {
   };
 }
 
-/** virtualizer.measure() 会 clear() 测量缓存 Map；用它计数全量重测次数。 */
+/** 用测量缓存清理次数验证流式更新和追加不会触发全量重测。 */
 function countCacheClears() {
   const counter = { clears: 0 };
   const original = Map.prototype.clear;
@@ -64,7 +64,7 @@ function countCacheClears() {
 describe("MessageList measure() 调用次数（jsdom 离线计数）", () => {
   afterEach(cleanup);
 
-  it("流式 delta 重渲染不应清空测量缓存", () => {
+  it("流式 delta 与追加条目都不应清空既有测量缓存", () => {
     const messages = Array.from({ length: 500 }, (_, index) =>
       makeMessage(index, `消息 ${index}`),
     );
@@ -96,7 +96,7 @@ describe("MessageList measure() 调用次数（jsdom 离线计数）", () => {
       `[measure] initial=${initial} streamingDeltaClears=${afterStreaming - initial} appendClears=${afterAppend - afterStreaming}`,
     );
     expect(afterStreaming - initial).toBe(0);
-    expect(afterAppend - afterStreaming).toBeGreaterThan(0);
+    expect(afterAppend - afterStreaming).toBe(0);
   });
 
   it("切换会话时应当触发 measure() 重测清空缓存", () => {

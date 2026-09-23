@@ -25,6 +25,8 @@ function StatusIcon({ status }: { status: ToolRunStatus }) {
 export interface ToolCardProps {
   run: ToolRun;
   defaultExpanded?: boolean;
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
 }
 
 /**
@@ -32,8 +34,13 @@ export interface ToolCardProps {
  * 状态色条 + 状态指示 + 可展开折叠的命令与执行结果明细。
  * 手机端保持静音、不提供 TTS 入口。
  */
-export function ToolCard({ run, defaultExpanded = false }: ToolCardProps) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
+export function ToolCard({ run, defaultExpanded = false, expanded: controlledExpanded, onExpandedChange }: ToolCardProps) {
+  const [localExpanded, setLocalExpanded] = useState(defaultExpanded);
+  const expanded = controlledExpanded ?? localExpanded;
+  const setExpanded = (next: boolean) => {
+    setLocalExpanded(next);
+    onExpandedChange?.(next);
+  };
   const hasDetails = Boolean(run.title || run.details || run.summary);
   const displayTitle = "工具调用";
 
@@ -46,7 +53,7 @@ export function ToolCard({ run, defaultExpanded = false }: ToolCardProps) {
       <button
         type="button"
         className="mobile-tool-card-head"
-        onClick={() => setExpanded((prev) => !prev)}
+        onClick={() => setExpanded(!expanded)}
         aria-expanded={expanded}
         aria-label={`${displayTitle}：${STATUS_TEXT[run.status]}`}
       >

@@ -141,10 +141,20 @@
 
 /* ========== 消息滚动区与虚拟化 ========== */
 
+.conversation-list-shell {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
 .mobile-chat-scroll {
   flex: 1;
   overflow-y: auto;
   overscroll-behavior: contain;
+  overflow-anchor: none;
   -webkit-overflow-scrolling: touch;
   padding: 12px;
   min-height: 0;
@@ -163,17 +173,25 @@
 }
 
 .mobile-virtual-container {
-  position: relative;
+  display: flex;
+  flex-direction: column;
   width: 100%;
 }
 
 .mobile-virtual-row {
-  position: absolute;
-  top: 0;
-  left: 0;
+  display: flow-root;
+  flex: none;
   width: 100%;
   padding-bottom: 10px;
 }
+.conversation-list-spacer { flex: none; }
+.conversation-list-jump-overlay {
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  pointer-events: none;
+}
+.conversation-list-jump-overlay > * { pointer-events: auto; }
 
 /* ========== 消息气泡行 ========== */
 
@@ -271,7 +289,7 @@
 
 .mobile-jump-latest {
   position: absolute;
-  bottom: 80px;
+  bottom: 12px;
   left: 50%;
   transform: translateX(-50%);
   display: inline-flex;

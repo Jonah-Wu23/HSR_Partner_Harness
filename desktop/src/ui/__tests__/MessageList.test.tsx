@@ -146,8 +146,9 @@ describe("MessageList 流式与身份展示", () => {
     const { container } = render(
       <MessageList timeline={makeTimeline(messages)} pair={pair} emptyText="空" />,
     );
-    expect(container.querySelector(".message-column-virtual")).not.toBeNull();
+    expect(container.querySelector(".conversation-list-spacer")).not.toBeNull();
     expect(container.querySelectorAll("[data-message-source]").length).toBeLessThan(500);
+    expect(container.querySelector(".message-virtual-row")?.getAttribute("style")).toBeNull();
   });
 
   it("忙时排队项在消息流尾部全文呈现（V0.3.8 T5）", () => {

@@ -18,11 +18,18 @@ function StatusIcon({ status }: { status: ToolRunStatus }) {
 
 interface ToolCardProps {
   run: ToolRun;
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
 }
 
 /** 工具卡片：状态色条 + mono 标题 + 可展开明细，全程静音、不进入 TTS。 */
-export function ToolCard({ run }: ToolCardProps) {
-  const [expanded, setExpanded] = useState(false);
+export function ToolCard({ run, expanded: controlledExpanded, onExpandedChange }: ToolCardProps) {
+  const [localExpanded, setLocalExpanded] = useState(false);
+  const expanded = controlledExpanded ?? localExpanded;
+  const setExpanded = (next: boolean) => {
+    setLocalExpanded(next);
+    onExpandedChange?.(next);
+  };
   const hasCommand = Boolean(run.title || run.details);
   const displayTitle = "工具调用";
 
@@ -31,7 +38,7 @@ export function ToolCard({ run }: ToolCardProps) {
       <button
         type="button"
         className="tool-card-head"
-        onClick={() => setExpanded((value) => !value)}
+        onClick={() => setExpanded(!expanded)}
         aria-expanded={expanded}
       >
         <span className={`tool-status-icon tool-status-${run.status}`}>

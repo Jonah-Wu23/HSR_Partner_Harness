@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HSR Partner Harness · 上车聊几句，下车活干完</title>
 <meta name="description" content="HSR Partner Harness，Windows 桌面应用，星穹铁道同人作品。三组搭档同屏协作，实现了角色扮演与本地 AI Agent 的双空间联动：与角色商定策略，由助手落地执行；任务完成后自动回传结果，对话流畅接续，重启不串记忆。">
-<meta property="og:title" content="HSR Partner Harness · V0.4.0">
+<meta property="og:title" content="HSR Partner Harness · V0.4.1">
 <meta property="og:description" content="上车聊几句，下车活干完。三组搭档同屏协作，角色负责对话，助手负责执行。">
 <meta property="og:type" content="website">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 L19 13 L30 16 L19 19 L16 30 L13 19 L2 16 L13 13 Z' fill='%23E8B25C'/%3E%3C/svg%3E">
@@ -662,7 +662,7 @@ footer{
   <a class="brand" href="#top">
     <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 L19 13 L30 16 L19 19 L16 30 L13 19 L2 16 L13 13 Z" fill="#E8B25C"/></svg>
     <span class="brand-name">HSR Partner Harness</span>
-    <span class="brand-ver">v0.4.0</span>
+    <span class="brand-ver">v0.4.1</span>
   </a>
   <div class="nav-links">
     <a href="#loop">工作方式</a>
@@ -680,7 +680,7 @@ footer{
 <!-- ============ HERO ============ -->
 <header class="hero" id="top">
   <div>
-    <div class="eyebrow">Windows 桌面应用 · 星穹铁道同人作品 · V0.4.0 正式版</div>
+    <div class="eyebrow">Windows 桌面与 Android 应用 · 星穹铁道同人作品 · V0.4.1</div>
     <h1>和喜欢的角色，<br><span class="em">一起把想做的事<br>做出来</span>。</h1>
     <p class="hero-sub">
       <strong>HSR Partner Harness</strong>，能和你一起做事的 AI 角色搭档：<br>
@@ -688,9 +688,12 @@ footer{
       离开桌面后，也能用手机继续对话和查看进度。
     </p>
     <div class="cta-row">
-      <a class="btn btn-gold" href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases" target="_blank" rel="noopener">
+      <a class="btn btn-gold" href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases/download/v0.4.1/HSR%20Partner%20Harness_0.4.1_x64-setup.exe" target="_blank" rel="noopener">
         <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 12l-4-4h2.5V2h3v6H12L8 12zM2 14h12v1.5H2V14z"/></svg>
-        下载 Windows 版
+        下载 Windows 安装包
+      </a>
+      <a class="btn btn-ghost" href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases/download/v0.4.1/app-arm64-debug.apk" target="_blank" rel="noopener">
+        下载 Android arm64 APK
       </a>
       <a class="btn btn-ghost" href="#sessionBox">看协作会话怎么跑</a>
     </div>
@@ -914,7 +917,7 @@ footer{
   <div class="sec-head reveal">
     <div class="sec-index">03 / 功能特性</div>
     <h2>列车之上，一应俱全。</h2>
-    <p class="sec-desc">V0.4.0 带来角色卡创作与酒馆双向兼容、手机远程公网接入，以及完整的搭档目录与端到端双空间消息流转。</p>
+    <p class="sec-desc">V0.4.1 优化实时消息流：更新时自动跟随最新内容，手动翻阅历史时保留阅读位置。角色卡创作、酒馆双向兼容与手机远程接入也已包含在当前版本。</p>
   </div>
   <div class="feat-list reveal reveal-d1">
     <div class="feat-row">
@@ -971,6 +974,11 @@ footer{
       <div class="feat-name">双通道思考流式呈现</div>
       <div class="feat-key">DUAL STREAMING</div>
       <div class="feat-desc">模型思考过程与最终正文双流独立解析，角色回复前先展现思绪缎带，完成后自动折叠，保持阅读清爽。</div>
+    </div>
+    <div class="feat-row">
+      <div class="feat-name">稳定的实时会话消息流</div>
+      <div class="feat-key">LIVE TIMELINE</div>
+      <div class="feat-desc">新消息与工具输出到达时，卡片按实际内容高度排布。阅读历史期间保留当前阅读位置，返回最新内容后恢复自动跟随。</div>
     </div>
     <div class="feat-row">
       <div class="feat-name">专属音色复刻与 VAD</div>
@@ -1033,7 +1041,7 @@ footer{
     <div class="code-block reveal reveal-d1">
       <div class="code-head">
         <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
-        <span style="margin-left:8px">PowerShell · 源码运行 V0.4.0</span>
+        <span style="margin-left:8px">PowerShell · 源码运行 V0.4.1</span>
       </div>
       <pre><span class="cm"># 环境要求：Python 3.11+ · Node.js 22+ · Rust stable</span>
 python -m venv .venv
@@ -1047,7 +1055,7 @@ npm run tauri:dev</pre>
     <div class="start-notes reveal reveal-d2">
       <div class="start-note">
         <h4><span class="n">A</span>直接下载安装包</h4>
-        <p>Windows x64 安装包位于 <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases" target="_blank" rel="noopener">GitHub Releases</a>，已打包包含全部三组搭档立绘、音色配置与 Sidecar 运行时。</p>
+        <p><a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases/download/v0.4.1/HSR%20Partner%20Harness_0.4.1_x64-setup.exe" target="_blank" rel="noopener">Windows x64 NSIS 安装包</a>与 <a href="https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases/download/v0.4.1/app-arm64-debug.apk" target="_blank" rel="noopener">Android arm64 APK</a>可直接下载。Windows 安装包内含搭档资源与 Sidecar 运行时。</p>
       </div>
       <div class="start-note">
         <h4><span class="n">B</span>即刻体验演示模式</h4>
@@ -1073,7 +1081,7 @@ npm run tauri:dev</pre>
 <footer>
   <div class="foot-inner">
     <div>
-      <div class="foot-brand">HSR Partner Harness · V0.4.0</div>
+      <div class="foot-brand">HSR Partner Harness · V0.4.1</div>
       <div class="foot-note">
         代码采用 Apache License 2.0，版权所有 © 2026 Zonghe Wu。<br>
         角色名称、立绘素材和崩铁世界观内容归原权利人米哈游所有，本项目为非营利同人作品。<br>
