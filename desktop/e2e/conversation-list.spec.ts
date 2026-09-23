@@ -43,6 +43,12 @@ async function streamAndSample(page: Page, selector: string, anchorKey: string) 
   return page.evaluate(async ({ scrollSelector, key }) => {
     const scroll = document.querySelector<HTMLElement>(scrollSelector);
     if (!scroll) throw new Error(`Missing scroll container: ${scrollSelector}`);
+    const scrollRect = scroll.getBoundingClientRect();
+    const anchor = Array.from(scroll.querySelectorAll<HTMLElement>("[data-timeline-key]"))
+      .find((row) => row.dataset.timelineKey === key);
+    if (!anchor) throw new Error(`Missing reading anchor before stream: ${key}`);
+    const initialAnchorOffset = anchor.getBoundingClientRect().top - scrollRect.top;
+    const initialScrollTop = scroll.scrollTop;
     const stream = window.conversationHarness.streamLatest(12);
     const frames: Array<{
       scrollTop: number;
@@ -64,7 +70,7 @@ async function streamAndSample(page: Page, selector: string, anchorKey: string) 
       });
     }
     await stream;
-    return frames;
+    return { initialAnchorOffset, initialScrollTop, initialAnchorTop: initialAnchorOffset + scrollRect.top, frames };
   }, { scrollSelector: selector, key: anchorKey });
 }
 
@@ -119,21 +125,18 @@ test("desktop keeps measured rows separate, preserves the reading anchor, and re
   });
   if (!desktopAnchor) throw new Error("Missing desktop reading anchor");
   const anchorKey = desktopAnchor.key;
-  const anchorTop = desktopAnchor.top;
-  const scrollTop = await characterScroll.evaluate((node) => node.getBoundingClientRect().top);
-  const readingScrollTop = await characterScroll.evaluate((node) => node.scrollTop);
   const streamFrames = await streamAndSample(page, ".pane-character .message-scroll", anchorKey);
-  expectNoOverlap(streamFrames);
-  expect(streamFrames).toHaveLength(12);
-  for (const frame of streamFrames) {
+  expectNoOverlap(streamFrames.frames);
+  expect(streamFrames.frames).toHaveLength(12);
+  for (const frame of streamFrames.frames) {
     expect(frame.anchorTop).not.toBeNull();
-    expect(Math.abs((frame.anchorTop ?? Infinity) - (anchorTop - scrollTop))).toBeLessThanOrEqual(2);
-    expect(Math.abs(frame.scrollTop - readingScrollTop)).toBeLessThanOrEqual(1);
+    expect(Math.abs((frame.anchorTop ?? Infinity) - streamFrames.initialAnchorOffset), `desktop anchor drift: ${JSON.stringify(frame)}`).toBeLessThanOrEqual(2);
+    expect(Math.abs(frame.scrollTop - streamFrames.initialScrollTop), `desktop scrollTop changed: ${JSON.stringify(frame)}`).toBeLessThanOrEqual(1);
   }
   const restoredAnchor = characterScroll.locator(`[data-timeline-key="${anchorKey}"]`);
   await expect(restoredAnchor).toBeAttached();
   const restoredTop = await restoredAnchor.evaluate((row) => row.getBoundingClientRect().top);
-  expect(Math.abs(restoredTop - anchorTop)).toBeLessThanOrEqual(2);
+  expect(Math.abs(restoredTop - streamFrames.initialAnchorTop)).toBeLessThanOrEqual(2);
 
   const desktopJump = page.locator(".pane-character .scroll-latest-btn");
   await expect(desktopJump).toBeVisible();
@@ -191,21 +194,18 @@ test("mobile holds the reader position through simulated streaming and scrolls o
   });
   if (!mobileAnchor) throw new Error("Missing mobile reading anchor");
   const anchorKey = mobileAnchor.key;
-  const before = mobileAnchor.top;
-  const scrollTop = await scroll.evaluate((node) => node.getBoundingClientRect().top);
-  const readingScrollTop = await scroll.evaluate((node) => node.scrollTop);
   const streamFrames = await streamAndSample(page, ".mobile-chat-scroll", anchorKey);
-  expectNoOverlap(streamFrames);
-  expect(streamFrames).toHaveLength(12);
-  for (const frame of streamFrames) {
+  expectNoOverlap(streamFrames.frames);
+  expect(streamFrames.frames).toHaveLength(12);
+  for (const frame of streamFrames.frames) {
     expect(frame.anchorTop).not.toBeNull();
-    const anchorDrift = Math.abs((frame.anchorTop ?? Infinity) - (before - scrollTop));
-    expect(anchorDrift, `mobile anchor drift at scrollTop=${frame.scrollTop}: ${JSON.stringify(frame)}`).toBeLessThanOrEqual(2);
-    expect(Math.abs(frame.scrollTop - readingScrollTop), `mobile scrollTop changed: ${JSON.stringify(frame)}`).toBeLessThanOrEqual(1);
+    const anchorDrift = Math.abs((frame.anchorTop ?? Infinity) - streamFrames.initialAnchorOffset);
+    expect(anchorDrift, `mobile anchor drift from offset ${streamFrames.initialAnchorOffset} at scrollTop=${frame.scrollTop}: ${JSON.stringify(frame)}`).toBeLessThanOrEqual(2);
+    expect(Math.abs(frame.scrollTop - streamFrames.initialScrollTop), `mobile scrollTop changed: ${JSON.stringify(frame)}`).toBeLessThanOrEqual(1);
   }
   const sameAnchor = scroll.locator(`[data-timeline-key="${anchorKey}"]`);
   const after = await sameAnchor.evaluate((row) => row.getBoundingClientRect().top);
-  expect(Math.abs(after - before)).toBeLessThanOrEqual(2);
+  expect(Math.abs(after - streamFrames.initialAnchorTop)).toBeLessThanOrEqual(2);
 
   const mobileJump = page.locator(".mobile-chat-container .mobile-jump-latest");
   await expect(mobileJump).toBeVisible();
