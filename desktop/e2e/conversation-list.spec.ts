@@ -109,10 +109,17 @@ test("desktop keeps measured rows separate, preserves the reading anchor, and re
   await characterScroll.hover();
   await page.mouse.wheel(0, -420);
   await expect(characterScroll).toHaveAttribute("data-following-latest", "false");
-  const anchor = characterScroll.locator("[data-timeline-key]").first();
-  const anchorKey = await anchor.getAttribute("data-timeline-key");
-  if (!anchorKey) throw new Error("Missing desktop reading anchor");
-  const anchorTop = await anchor.evaluate((row) => row.getBoundingClientRect().top);
+  const desktopAnchor = await characterScroll.evaluate((scroll) => {
+    const viewportTop = scroll.getBoundingClientRect().top;
+    const row = Array.from(scroll.querySelectorAll<HTMLElement>("[data-timeline-key]")).find(
+      (candidate) => candidate.getBoundingClientRect().bottom > viewportTop,
+    );
+    if (!row?.dataset.timelineKey) return null;
+    return { key: row.dataset.timelineKey, top: row.getBoundingClientRect().top };
+  });
+  if (!desktopAnchor) throw new Error("Missing desktop reading anchor");
+  const anchorKey = desktopAnchor.key;
+  const anchorTop = desktopAnchor.top;
   const scrollTop = await characterScroll.evaluate((node) => node.getBoundingClientRect().top);
   const readingScrollTop = await characterScroll.evaluate((node) => node.scrollTop);
   const streamFrames = await streamAndSample(page, ".pane-character .message-scroll", anchorKey);
@@ -171,10 +178,17 @@ test("mobile holds the reader position through simulated streaming and scrolls o
   await scroll.hover();
   await page.mouse.wheel(0, -390);
   await expect(scroll).toHaveAttribute("data-following-latest", "false");
-  const anchor = scroll.locator("[data-timeline-key]").first();
-  const anchorKey = await anchor.getAttribute("data-timeline-key");
-  if (!anchorKey) throw new Error("Missing mobile reading anchor");
-  const before = await anchor.evaluate((row) => row.getBoundingClientRect().top);
+  const mobileAnchor = await scroll.evaluate((node) => {
+    const viewportTop = node.getBoundingClientRect().top;
+    const row = Array.from(node.querySelectorAll<HTMLElement>("[data-timeline-key]")).find(
+      (candidate) => candidate.getBoundingClientRect().bottom > viewportTop,
+    );
+    if (!row?.dataset.timelineKey) return null;
+    return { key: row.dataset.timelineKey, top: row.getBoundingClientRect().top };
+  });
+  if (!mobileAnchor) throw new Error("Missing mobile reading anchor");
+  const anchorKey = mobileAnchor.key;
+  const before = mobileAnchor.top;
   const scrollTop = await scroll.evaluate((node) => node.getBoundingClientRect().top);
   const readingScrollTop = await scroll.evaluate((node) => node.scrollTop);
   const streamFrames = await streamAndSample(page, ".mobile-chat-scroll", anchorKey);
