@@ -64,6 +64,13 @@ export function ConversationList<T>({
     () => items.map((item) => `${conversationId}:${getItemKey(item)}`),
     [conversationId, getItemKey, items],
   );
+  const itemKeysSignature = JSON.stringify(itemKeys);
+  const itemKeysRef = useRef(itemKeys);
+  itemKeysRef.current = itemKeys;
+  const getVirtualizerItemKey = useCallback(
+    (index: number) => itemKeysRef.current[index] ?? `${conversationId}:${index}`,
+    [conversationId, itemKeysSignature],
+  );
 
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -71,7 +78,7 @@ export function ConversationList<T>({
     estimateSize: () => estimateSize,
     initialRect: { width: 1, height: estimateSize },
     overscan,
-    getItemKey: (index) => itemKeys[index] ?? `${conversationId}:${index}`,
+    getItemKey: getVirtualizerItemKey,
     rangeExtractor: (range) => items.length <= 40
       ? Array.from({ length: items.length }, (_, index) => index)
       : defaultRangeExtractor(range),
