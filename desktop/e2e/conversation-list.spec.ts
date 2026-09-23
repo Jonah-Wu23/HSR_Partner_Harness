@@ -83,11 +83,15 @@ function expectNoOverlap(frames: Awaited<ReturnType<typeof sampleRows>>): void {
 test("desktop keeps measured rows separate, preserves the reading anchor, and restores follow mode", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const pageErrors: string[] = [];
-  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("pageerror", (error) => {
+    pageErrors.push(error.message);
+    console.error(`Desktop browser page error: ${error.stack ?? error.message}`);
+  });
   await page.goto("http://127.0.0.1:1422/e2e/desktop-list.html");
+  await page.waitForFunction(() => window.conversationHarness !== undefined);
 
   const characterScroll = page.locator(".pane-character .message-scroll");
-  await expect(characterScroll.locator("[data-message-source]")).toHaveCount(39);
+  await expect(characterScroll.locator("[data-message-source]")).toHaveCount(39, { timeout: 20_000 });
   await page.evaluate(() => window.conversationHarness.setCharacterCount?.(40));
   await expect(characterScroll.locator("[data-message-source]")).toHaveCount(40);
   const rowAtBoundary = characterScroll.locator('[data-timeline-key$="message:message-39"]');
@@ -151,7 +155,10 @@ test("desktop keeps measured rows separate, preserves the reading anchor, and re
 test("mobile holds the reader position through simulated streaming and scrolls only after user action", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const pageErrors: string[] = [];
-  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("pageerror", (error) => {
+    pageErrors.push(error.message);
+    console.error(`Mobile browser page error: ${error.stack ?? error.message}`);
+  });
   await page.goto("http://127.0.0.1:1423/e2e/mobile-list.html");
 
   const scroll = page.locator(".mobile-chat-scroll");
@@ -175,8 +182,9 @@ test("mobile holds the reader position through simulated streaming and scrolls o
   expect(streamFrames).toHaveLength(12);
   for (const frame of streamFrames) {
     expect(frame.anchorTop).not.toBeNull();
-    expect(Math.abs((frame.anchorTop ?? Infinity) - (before - scrollTop))).toBeLessThanOrEqual(2);
-    expect(Math.abs(frame.scrollTop - readingScrollTop)).toBeLessThanOrEqual(1);
+    const anchorDrift = Math.abs((frame.anchorTop ?? Infinity) - (before - scrollTop));
+    expect(anchorDrift, `mobile anchor drift at scrollTop=${frame.scrollTop}: ${JSON.stringify(frame)}`).toBeLessThanOrEqual(2);
+    expect(Math.abs(frame.scrollTop - readingScrollTop), `mobile scrollTop changed: ${JSON.stringify(frame)}`).toBeLessThanOrEqual(1);
   }
   const sameAnchor = scroll.locator(`[data-timeline-key="${anchorKey}"]`);
   const after = await sameAnchor.evaluate((row) => row.getBoundingClientRect().top);

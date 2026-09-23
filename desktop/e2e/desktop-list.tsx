@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState } from "react";
+import { StrictMode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Message, PairRecord, ToolRun } from "../src/contracts/protocol";
 import type { WorkspaceViewModel } from "../src/contracts/view-models";
@@ -55,11 +55,16 @@ function makeTool(index: number): ToolRun {
 
 function Harness() {
   const [messages, setMessages] = useState(() => Array.from({ length: 39 }, (_, index) => makeMessage(index)));
+  const streamCommitWaiters = useRef<Array<() => void>>([]);
   const [assistantItems, setAssistantItems] = useState<WorkspaceViewModel["assistant"]["items"]>(() =>
     Array.from({ length: 84 }, (_, index) => index % 2 === 0
       ? { kind: "tool" as const, order: index, run: makeTool(index / 2) }
       : { kind: "message" as const, order: index, message: makeMessage(index, `助手模拟记录 ${index}`) }),
   );
+
+  useLayoutEffect(() => {
+    streamCommitWaiters.current.splice(0).forEach((resolve) => resolve());
+  }, [messages]);
 
   useEffect(() => {
     (window as typeof window & { conversationHarness?: object }).conversationHarness = {
@@ -68,8 +73,11 @@ function Harness() {
         index === current.length - 1 ? { ...message, text: message.text + suffix } : message)),
       streamLatest: async (count: number) => {
         for (let index = 0; index < count; index += 1) {
-          setMessages((current) => current.map((message, row) =>
-            row === current.length - 1 ? { ...message, text: `${message.text} token-${index} ` } : message));
+          await new Promise<void>((resolve) => {
+            streamCommitWaiters.current.push(resolve);
+            setMessages((current) => current.map((message, row) =>
+              row === current.length - 1 ? { ...message, text: `${message.text} token-${index} ` } : message));
+          });
           await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
         }
       },

@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState } from "react";
+import { StrictMode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Message, ToolRun } from "../../src/contracts/protocol";
 import type { ConversationItemState } from "../../src/ui/conversation/ConversationList";
@@ -61,6 +61,12 @@ function renderItem(item: TimelineItem, state: ConversationItemState) {
 
 function Harness() {
   const [items, setItems] = useState(() => makeItems(41));
+  const streamCommitWaiters = useRef<Array<() => void>>([]);
+
+  useLayoutEffect(() => {
+    streamCommitWaiters.current.splice(0).forEach((resolve) => resolve());
+  }, [items]);
+
   useEffect(() => {
     (window as typeof window & { conversationHarness?: object }).conversationHarness = {
       setCount: (count: number) => setItems(makeItems(count)),
@@ -70,10 +76,13 @@ function Harness() {
           : item)),
       streamLatest: async (count: number) => {
         for (let index = 0; index < count; index += 1) {
-          setItems((current) => current.map((item, row) =>
-            row === current.length - 1 && item.kind === "message"
-              ? { ...item, message: { ...item.message, text: `${item.message.text} token-${index} ` } }
-              : item));
+          await new Promise<void>((resolve) => {
+            streamCommitWaiters.current.push(resolve);
+            setItems((current) => current.map((item, row) =>
+              row === current.length - 1 && item.kind === "message"
+                ? { ...item, message: { ...item.message, text: `${item.message.text} token-${index} ` } }
+                : item));
+          });
           await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
         }
       },

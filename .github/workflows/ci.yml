@@ -86,6 +86,14 @@ jobs:
       - name: Run browser layout tests
         run: npm run test:e2e
 
+      - name: Upload browser failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-layout-failures
+          path: output/playwright/test-results/
+          if-no-files-found: ignore
+
   rust:
     name: Rust checks
     runs-on: windows-latest
