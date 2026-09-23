@@ -135,7 +135,10 @@ test("desktop keeps measured rows separate, preserves the reading anchor, and re
   const restoredTop = await restoredAnchor.evaluate((row) => row.getBoundingClientRect().top);
   expect(Math.abs(restoredTop - anchorTop)).toBeLessThanOrEqual(2);
 
-  await characterScroll.getByRole("button", { name: "回到最新" }).click();
+  const desktopJump = page.locator(".pane-character .scroll-latest-btn");
+  await expect(desktopJump).toBeVisible();
+  await expect(desktopJump).toBeInViewport();
+  await desktopJump.click();
   await expect(characterScroll).toHaveAttribute("data-following-latest", "true");
   await expect.poll(() => characterScroll.evaluate((element) =>
     element.scrollHeight - element.clientHeight - element.scrollTop,
@@ -204,7 +207,10 @@ test("mobile holds the reader position through simulated streaming and scrolls o
   const after = await sameAnchor.evaluate((row) => row.getBoundingClientRect().top);
   expect(Math.abs(after - before)).toBeLessThanOrEqual(2);
 
-  await scroll.getByRole("button", { name: /回到最新/ }).click();
+  const mobileJump = page.locator(".mobile-chat-container .mobile-jump-latest");
+  await expect(mobileJump).toBeVisible();
+  await expect(mobileJump).toBeInViewport();
+  await mobileJump.click();
   await expect(scroll).toHaveAttribute("data-following-latest", "true");
   expect(pageErrors).toEqual([]);
 });

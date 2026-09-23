@@ -141,6 +141,15 @@
 
 /* ========== 消息滚动区与虚拟化 ========== */
 
+.conversation-list-shell {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
 .mobile-chat-scroll {
   flex: 1;
   overflow-y: auto;
@@ -176,6 +185,13 @@
   padding-bottom: 10px;
 }
 .conversation-list-spacer { flex: none; }
+.conversation-list-jump-overlay {
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  pointer-events: none;
+}
+.conversation-list-jump-overlay > * { pointer-events: auto; }
 
 /* ========== 消息气泡行 ========== */
 

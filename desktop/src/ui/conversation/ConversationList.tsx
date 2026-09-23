@@ -214,58 +214,64 @@ export function ConversationList<T>({
   const lastVirtualItem = virtualItems[virtualItems.length - 1];
 
   return (
-    <div
-      className={scrollClassName}
-      ref={scrollRef}
-      onScroll={onScroll}
-      onWheel={onWheel}
-      onTouchMove={() => markUserScroll(1500)}
-      onPointerDown={(event) => {
-        if (event.target === event.currentTarget) markUserScroll(1000);
-      }}
-      onKeyDown={(event) => {
-        if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) {
-          markUserScroll(500);
-        }
-      }}
-      tabIndex={tabIndex}
-      data-following-latest={pinned}
-      data-testid={scrollTestId}
-    >
-      <div className={contentClassName}>
-        {items.length === 0 ? emptyContent : null}
-        {items.length > 0 && firstVirtualItem ? (
-          <div className="conversation-list-spacer" style={{ height: `${firstVirtualItem.start}px` }} aria-hidden="true" />
-        ) : null}
-        {virtualItems.map((virtualItem) => {
-          const item = items[virtualItem.index];
-          if (!item) return null;
-          return (
+    <div className="conversation-list-shell">
+      <div
+        className={scrollClassName}
+        ref={scrollRef}
+        onScroll={onScroll}
+        onWheel={onWheel}
+        onTouchMove={() => markUserScroll(1500)}
+        onPointerDown={(event) => {
+          if (event.target === event.currentTarget) markUserScroll(1000);
+        }}
+        onKeyDown={(event) => {
+          if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) {
+            markUserScroll(500);
+          }
+        }}
+        tabIndex={tabIndex}
+        data-following-latest={pinned}
+        data-testid={scrollTestId}
+      >
+        <div className={contentClassName}>
+          {items.length === 0 ? emptyContent : null}
+          {items.length > 0 && firstVirtualItem ? (
+            <div className="conversation-list-spacer" style={{ height: `${firstVirtualItem.start}px` }} aria-hidden="true" />
+          ) : null}
+          {virtualItems.map((virtualItem) => {
+            const item = items[virtualItem.index];
+            if (!item) return null;
+            return (
+              <div
+                key={virtualItem.key}
+                ref={virtualizer.measureElement}
+                data-index={virtualItem.index}
+                data-timeline-key={itemKeys[virtualItem.index]}
+                className={rowClassName}
+              >
+                {renderItem(item, itemState)}
+              </div>
+            );
+          })}
+          {items.length > 0 && lastVirtualItem ? (
             <div
-              key={virtualItem.key}
-              ref={virtualizer.measureElement}
-              data-index={virtualItem.index}
-              data-timeline-key={itemKeys[virtualItem.index]}
-              className={rowClassName}
-            >
-              {renderItem(item, itemState)}
-            </div>
-          );
-        })}
-        {items.length > 0 && lastVirtualItem ? (
-          <div
-            className="conversation-list-spacer"
-            style={{ height: `${Math.max(0, totalSize - lastVirtualItem.end)}px` }}
-            aria-hidden="true"
-          />
-        ) : null}
+              className="conversation-list-spacer"
+              style={{ height: `${Math.max(0, totalSize - lastVirtualItem.end)}px` }}
+              aria-hidden="true"
+            />
+          ) : null}
+        </div>
       </div>
       {!pinned && items.length > 0
-        ? renderJumpButton?.(jumpToLatest) ?? (
-            <button type="button" className="conversation-jump-latest" onClick={jumpToLatest}>
-              回到最新
-            </button>
-          )
+        ? (
+          <div className="conversation-list-jump-overlay">
+            {renderJumpButton?.(jumpToLatest) ?? (
+              <button type="button" className="conversation-jump-latest" onClick={jumpToLatest}>
+                回到最新
+              </button>
+            )}
+          </div>
+        )
         : null}
     </div>
   );
