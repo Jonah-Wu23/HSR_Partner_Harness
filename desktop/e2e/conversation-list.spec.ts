@@ -130,8 +130,8 @@ test("desktop keeps measured rows separate, preserves the reading anchor, and re
   expect(streamFrames.frames).toHaveLength(12);
   for (const frame of streamFrames.frames) {
     expect(frame.anchorTop).not.toBeNull();
-    expect(Math.abs((frame.anchorTop ?? Infinity) - streamFrames.initialAnchorOffset), `desktop anchor drift: ${JSON.stringify(frame)}`).toBeLessThanOrEqual(2);
     expect(Math.abs(frame.scrollTop - streamFrames.initialScrollTop), `desktop scrollTop changed: ${JSON.stringify(frame)}`).toBeLessThanOrEqual(1);
+    expect(Math.abs((frame.anchorTop ?? Infinity) - streamFrames.initialAnchorOffset), `desktop anchor drift from offset ${streamFrames.initialAnchorOffset} at scrollTop=${frame.scrollTop}: ${JSON.stringify(frame)}`).toBeLessThanOrEqual(2);
   }
   const restoredAnchor = characterScroll.locator(`[data-timeline-key="${anchorKey}"]`);
   await expect(restoredAnchor).toBeAttached();
@@ -199,9 +199,9 @@ test("mobile holds the reader position through simulated streaming and scrolls o
   expect(streamFrames.frames).toHaveLength(12);
   for (const frame of streamFrames.frames) {
     expect(frame.anchorTop).not.toBeNull();
+    expect(Math.abs(frame.scrollTop - streamFrames.initialScrollTop), `mobile scrollTop changed from ${streamFrames.initialScrollTop}: ${JSON.stringify(frame)}`).toBeLessThanOrEqual(1);
     const anchorDrift = Math.abs((frame.anchorTop ?? Infinity) - streamFrames.initialAnchorOffset);
     expect(anchorDrift, `mobile anchor drift from offset ${streamFrames.initialAnchorOffset} at scrollTop=${frame.scrollTop}: ${JSON.stringify(frame)}`).toBeLessThanOrEqual(2);
-    expect(Math.abs(frame.scrollTop - streamFrames.initialScrollTop), `mobile scrollTop changed: ${JSON.stringify(frame)}`).toBeLessThanOrEqual(1);
   }
   const sameAnchor = scroll.locator(`[data-timeline-key="${anchorKey}"]`);
   const after = await sameAnchor.evaluate((row) => row.getBoundingClientRect().top);

@@ -31,6 +31,7 @@ interface ConversationListProps<T> {
 
 interface Anchor {
   key: string;
+  index: number;
   top: number;
 }
 
@@ -83,7 +84,10 @@ export function ConversationList<T>({
       ? Array.from({ length: items.length }, (_, index) => index)
       : defaultRangeExtractor(range),
   });
-  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => false;
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item) => {
+    const anchorIndex = anchorRef.current?.index;
+    return !pinnedRef.current && anchorIndex !== undefined && item.index < anchorIndex;
+  };
   const totalSize = virtualizer.getTotalSize();
   const virtualItems = virtualizer.getVirtualItems();
 
@@ -100,7 +104,11 @@ export function ConversationList<T>({
     for (const row of rows) {
       const rect = row.getBoundingClientRect();
       if (rect.bottom > viewportTop) {
-        anchorRef.current = { key: row.dataset.timelineKey ?? "", top: rect.top - viewportTop };
+        anchorRef.current = {
+          key: row.dataset.timelineKey ?? "",
+          index: Number(row.dataset.index),
+          top: rect.top - viewportTop,
+        };
         return;
       }
     }
