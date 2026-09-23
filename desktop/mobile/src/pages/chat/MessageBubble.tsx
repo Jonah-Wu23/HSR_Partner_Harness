@@ -1,4 +1,5 @@
 import type { Message, MessageSource, ToolRun } from "@shared/contracts/protocol";
+import type { ConversationItemState } from "@shared/ui/conversation/ConversationList";
 import { ReasoningRibbon } from "../../components/cards/ReasoningRibbon";
 import { ToolCard } from "../../components/cards/ToolCard";
 
@@ -14,6 +15,7 @@ export interface MessageBubbleProps {
   onStopPlayback?: () => void;
   /** V0.3.8：本条消息朗读失败的真实错误（store playback.error 透传）。 */
   playbackError?: string | null;
+  itemState?: ConversationItemState;
 }
 
 function sourceBadge(source: MessageSource, pairNames?: { character?: string; assistant?: string }): string | null {
@@ -37,6 +39,7 @@ export function MessageBubble({
   playingMessageId,
   onStopPlayback,
   playbackError,
+  itemState,
 }: MessageBubbleProps) {
   const badge = sourceBadge(message.source, pairNames);
   const isTtsEligible = message.source === "character" && message.tts_eligible === true;
@@ -78,9 +81,13 @@ export function MessageBubble({
         data-testid="message-bubble"
         data-message-source="tool"
         data-message-id={message.message_id}
-      >
+        >
         <div className="mobile-msg-tool-wrap">
-          <ToolCard run={run} />
+          <ToolCard
+            run={run}
+            expanded={itemState?.isExpanded(`tool:${run.tool_call_id}`)}
+            onExpandedChange={(expanded) => itemState?.setExpanded(`tool:${run.tool_call_id}`, expanded)}
+          />
         </div>
       </div>
     );
@@ -104,6 +111,8 @@ export function MessageBubble({
             text={reasoning ?? ""}
             streaming={reasoningStreaming}
             elapsedSeconds={reasoningSeconds}
+            expanded={itemState?.isExpanded(`reasoning:${message.message_id}`, false)}
+            onExpandedChange={(expanded) => itemState?.setExpanded(`reasoning:${message.message_id}`, expanded)}
           />
         ) : null}
 

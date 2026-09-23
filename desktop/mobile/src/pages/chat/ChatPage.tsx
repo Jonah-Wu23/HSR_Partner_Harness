@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useEffect, useState } from "react";
 import type {
   ActiveTask,
   ApprovalMode,
@@ -10,9 +9,10 @@ import type {
 import { ContextStatusStrip } from "../../components/ContextStatusStrip";
 import { ChatStatusHint } from "../../components/ChatStatusHint";
 import { ApprovalCard } from "../../components/cards/ApprovalCard";
-import { ArrowDownIcon, BackIcon, MicIcon, StopIcon } from "../../components/cards/icons";
+import { BackIcon, MicIcon, StopIcon } from "../../components/cards/icons";
 import { DelegationCard, type DelegationStatus } from "../../components/cards/DelegationCard";
 import { ToolCard } from "../../components/cards/ToolCard";
+import { ConversationList, type ConversationItemState } from "@shared/ui/conversation/ConversationList";
 import { useMobileStore } from "../../lib/mobileStore";
 import { navigateBack } from "../../lib/router";
 import { RemoteCommandError } from "../../lib/wsClient";
@@ -99,7 +99,6 @@ export function ChatPage({ conversationId }: ChatPageProps) {
   );
 
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [pinned, setPinned] = useState(true);
   const [target, setTarget] = useState<ChatComposerTarget>("character");
   const [modeSwitching, setModeSwitching] = useState(false);
   const [modeError, setModeError] = useState<string | null>(null);
@@ -117,7 +116,6 @@ export function ChatPage({ conversationId }: ChatPageProps) {
   // voice.mode !== "off" 推导，导致「打开面板」必然隐式开始 auto 采集，
   // 采集报错（mode 复位 off）又会连带关掉面板、吞掉错误提示。
   const [voicePanelOpen, setVoicePanelOpen] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
 
   const voice = useVoiceCapture(conversationId);
   const { playingMessageId, playbackMessageId, playbackError } = useVoicePlayback(conversationId);
@@ -155,60 +153,7 @@ export function ChatPage({ conversationId }: ChatPageProps) {
     };
   }, []);
 
-  // 键盘弹出/收起后把最新消息重新贴到底部：输入区与最新回复同时可见。
-  useEffect(() => {
-    if (keyboardViewportHeight === null) return;
-    setPinned(true);
-    const node = scrollRef.current;
-    if (node) {
-      node.scrollTop = node.scrollHeight;
-    }
-  }, [keyboardViewportHeight]);
-
-  const { items, isStreaming } = useChatTimeline(conversationId);
-
-  const shouldVirtualize = items.length > 40;
-  const virtualizer = useVirtualizer({
-    count: items.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => 80,
-    overscan: 6,
-    getItemKey: (index) => items[index]?.id ?? index,
-  });
-
-  const checkPinned = () => {
-    const node = scrollRef.current;
-    if (!node) return;
-    const isNearBottom =
-      node.scrollHeight - node.scrollTop - node.clientHeight < 80;
-    setPinned(isNearBottom);
-  };
-
-  // 近底部自动跟随
-  useEffect(() => {
-    const node = scrollRef.current;
-    if (!node || !pinned || items.length === 0) return;
-
-    if (shouldVirtualize) {
-      virtualizer.scrollToIndex(items.length - 1, { align: "end" });
-    } else {
-      node.scrollTop = node.scrollHeight;
-    }
-  }, [items.length, isStreaming, pinned, shouldVirtualize, virtualizer]);
-
-  useEffect(() => {
-    if (shouldVirtualize) {
-      virtualizer.measure();
-    }
-  }, [items, shouldVirtualize, virtualizer]);
-
-  const jumpToLatest = () => {
-    const node = scrollRef.current;
-    if (node) {
-      node.scrollTop = node.scrollHeight;
-    }
-    setPinned(true);
-  };
+  const { items } = useChatTimeline(conversationId);
 
   const mode: ConversationMode = conversation?.last_mode === "collaboration" ? "collaboration" : "chat";
   const modeText = mode === "collaboration" ? "协作模式" : "对话模式";
@@ -290,26 +235,22 @@ export function ChatPage({ conversationId }: ChatPageProps) {
     }
   };
 
-  const handleInputFocus = () => {
-    // 聚焦输入时把最新消息贴到底部，键盘抬起后输入区与最新回复同屏。
-    setPinned(true);
-    const node = scrollRef.current;
-    if (node) {
-      node.scrollTop = node.scrollHeight;
-    }
-  };
-
   const characterName = pair?.character?.name || "角色";
 
-  const renderTimelineItem = (item: TimelineItem, key?: string) => {
+  const renderTimelineItem = (item: TimelineItem, itemState: ConversationItemState) => {
     if (item.kind === "tool_run") {
-      return <ToolCard key={key ?? item.id} run={item.toolRun} />;
+      return (
+        <ToolCard
+          run={item.toolRun}
+          expanded={itemState.isExpanded(`tool:${item.toolRun.tool_call_id}`)}
+          onExpandedChange={(expanded) => itemState.setExpanded(`tool:${item.toolRun.tool_call_id}`, expanded)}
+        />
+      );
     }
     if (item.kind === "queue_item") {
       // V0.3.8 T5（契约 §14.1）：忙时排队中的用户消息可见、可置顶/编辑/撤回。
       return (
         <QueueItemRow
-          key={key ?? item.id}
           queueItem={item.queueItem}
           onWithdraw={() => void withdrawQueueItem(item.queueItem.queue_item_id)}
           onPrioritize={() => void prioritizeQueueItem(item.queueItem.queue_item_id)}
@@ -321,7 +262,6 @@ export function ChatPage({ conversationId }: ChatPageProps) {
     if (isDelegationMessage(message)) {
       return (
         <DelegationCard
-          key={key ?? item.id}
           delegationId={message.delegation_id ?? ""}
           fromName={characterName}
           summary={message.text}
@@ -330,9 +270,9 @@ export function ChatPage({ conversationId }: ChatPageProps) {
       );
     }
     return (
-      <MessageBubble
-        key={key ?? item.id}
-        message={message}
+        <MessageBubble
+          message={message}
+        itemState={itemState}
         playingMessageId={playingMessageId}
         playbackError={
           message.message_id === playbackMessageId ? playbackError : null
@@ -558,58 +498,35 @@ export function ChatPage({ conversationId }: ChatPageProps) {
       ) : null}
 
       {/* 消息滚动流 */}
-      <div
-        className="mobile-chat-scroll"
-        ref={scrollRef}
-        onScroll={checkPinned}
-        data-testid="chat-scroll"
-      >
-        {items.length === 0 ? (
+      <ConversationList
+        conversationId={conversationId}
+        items={items}
+        getItemKey={(item) => item.id}
+        estimateSize={80}
+        overscan={6}
+        scrollClassName="mobile-chat-scroll"
+        contentClassName="mobile-virtual-container"
+        rowClassName="mobile-virtual-row"
+        scrollTestId="chat-scroll"
+        tabIndex={-1}
+        emptyContent={(
           <div className="mobile-chat-empty">
             <p>暂无消息</p>
             <p className="hint">给角色发消息，或切换到协作模式后把任务交给助手。</p>
           </div>
-        ) : shouldVirtualize ? (
-          <div
-            className="mobile-virtual-container"
-            style={{ height: `${virtualizer.getTotalSize()}px` }}
-          >
-            {virtualizer.getVirtualItems().map((virtualRow) => {
-              const item = items[virtualRow.index];
-              if (!item) return null;
-
-              return (
-                <div
-                  key={virtualRow.key}
-                  ref={virtualizer.measureElement}
-                  data-index={virtualRow.index}
-                  className="mobile-virtual-row"
-                  style={{
-                    transform: `translateY(${virtualRow.start}px)`,
-                  }}
-                >
-                  {renderTimelineItem(item)}
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          items.map((item) => renderTimelineItem(item, item.id))
         )}
-      </div>
-
-      {/* 回到最新悬浮按钮 */}
-      {!pinned && items.length > 0 ? (
-        <button
-          type="button"
-          className="mobile-jump-latest"
-          onClick={jumpToLatest}
-          aria-label="滚动回到最新消息"
-        >
-          <ArrowDownIcon />
-          <span>回到最新</span>
-        </button>
-      ) : null}
+        renderItem={renderTimelineItem}
+        renderJumpButton={(jump) => (
+          <button
+            type="button"
+            className="mobile-jump-latest"
+            onClick={jump}
+            aria-label="滚动回到最新消息"
+          >
+            <span>回到最新</span>
+          </button>
+        )}
+      />
 
       {/* 输入区：会话模式切换 + 发送目标切换 + 语音入口 + 输入框 */}
       <footer className="mobile-composer" data-testid="chat-composer-area">
@@ -816,7 +733,6 @@ export function ChatPage({ conversationId }: ChatPageProps) {
 
         <ChatComposer
           target={target}
-          onInputFocus={handleInputFocus}
           disabled={assistantBlocked}
           disabledHint={assistantBlocked
             ? "对话模式下助手不接收委派，请先切换到协作模式。"

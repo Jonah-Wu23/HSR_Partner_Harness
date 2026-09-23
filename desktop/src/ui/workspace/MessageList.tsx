@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useMemo } from "react";
 import type { Message, MessageSource, PairRecord } from "../../contracts/protocol";
 import type { ConversationTimelineViewModel } from "../../contracts/view-models";
+import { ConversationList, type ConversationItemState } from "../conversation/ConversationList";
 import { ReasoningRibbon } from "./ReasoningRibbon";
 
 interface MessageListProps {
@@ -33,7 +33,15 @@ function sourceLabel(message: Message, pair: PairRecord): string | null {
   return null;
 }
 
-export function MessageBubble({ message, pair }: { message: Message; pair: PairRecord }) {
+export function MessageBubble({
+  message,
+  pair,
+  itemState,
+}: {
+  message: Message;
+  pair: PairRecord;
+  itemState?: ConversationItemState;
+}) {
   const label = sourceLabel(message, pair);
   const reasoning =
     typeof message.payload?.reasoning === "string" ? message.payload.reasoning : null;
@@ -82,7 +90,13 @@ export function MessageBubble({ message, pair }: { message: Message; pair: PairR
     >
       <div className={`${baseBubbleClass}${statusModifier}`}>
         {reasoning !== null || reasoningStreaming ? (
-          <ReasoningRibbon text={reasoning ?? ""} streaming={reasoningStreaming} elapsedSeconds={reasoningSeconds} />
+          <ReasoningRibbon
+            text={reasoning ?? ""}
+            streaming={reasoningStreaming}
+            elapsedSeconds={reasoningSeconds}
+            expanded={itemState?.isExpanded(`reasoning:${message.message_id}`, reasoningStreaming)}
+            onExpandedChange={(expanded) => itemState?.setExpanded(`reasoning:${message.message_id}`, expanded)}
+          />
         ) : null}
         {label ? (
           <span className="msg-source">
@@ -111,107 +125,58 @@ export function MessageBubble({ message, pair }: { message: Message; pair: PairR
   );
 }
 
-/** 消息流：气泡分色、思考折叠、流式光标、近底部自动跟随。 */
+type MessageListItem =
+  | { kind: "message"; id: string; message: Message }
+  | { kind: "queue"; id: string; text: string; status: string };
+
+const messageItemKey = (item: MessageListItem) => item.id;
+
+/** 消息流：气泡分色、思考折叠、流式光标与动态高度虚拟窗口。 */
 export function MessageList({ timeline, pair, emptyText }: MessageListProps) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [pinned, setPinned] = useState(true);
-  const shouldVirtualize = timeline.messages.length > 40;
-  const virtualizer = useVirtualizer({
-    count: timeline.messages.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => 76,
-    overscan: 8,
-    getItemKey: (index) => timeline.messages[index]?.message_id ?? index,
-  });
-
-  const checkPinned = () => {
-    const node = scrollRef.current;
-    if (!node) return;
-    setPinned(node.scrollHeight - node.scrollTop - node.clientHeight < 80);
-  };
-
-  useEffect(() => {
-    const node = scrollRef.current;
-    if (!node || !pinned || timeline.messages.length === 0) return;
-    if (shouldVirtualize) {
-      virtualizer.scrollToIndex(timeline.messages.length - 1, { align: "end" });
-    } else {
-      node.scrollTop = node.scrollHeight;
-    }
-  }, [timeline.messages, timeline.isStreaming, pinned, shouldVirtualize, virtualizer]);
-
-  const prevLengthRef = useRef(timeline.messages.length);
-  const prevConvIdRef = useRef(timeline.conversationId);
-  useEffect(() => {
-    if (!shouldVirtualize) return;
-    if (
-      timeline.conversationId !== prevConvIdRef.current ||
-      timeline.messages.length !== prevLengthRef.current
-    ) {
-      prevConvIdRef.current = timeline.conversationId;
-      prevLengthRef.current = timeline.messages.length;
-      virtualizer.measure();
-    }
-  }, [timeline.conversationId, timeline.messages.length, shouldVirtualize, virtualizer]);
-
-  const jumpToLatest = () => {
-    const node = scrollRef.current;
-    if (node) node.scrollTop = node.scrollHeight;
-    setPinned(true);
-  };
+  const items = useMemo<MessageListItem[]>(() => [
+    ...timeline.messages.map((message) => ({
+      kind: "message" as const,
+      id: `message:${message.message_id}`,
+      message,
+    })),
+    ...timeline.queueItems.map((item) => ({
+      kind: "queue" as const,
+      id: `queue:${item.queue_item_id}`,
+      text: item.text,
+      status: item.status,
+    })),
+  ], [timeline.messages, timeline.queueItems]);
 
   return (
-    <div className="message-scroll" ref={scrollRef} onScroll={checkPinned}>
-      <div className="message-column">
-        {timeline.messages.length === 0 ? (
-          <div className="msg-row msg-row-system">
-            <div className="msg-bubble msg-system">{emptyText}</div>
+    <ConversationList
+      conversationId={timeline.conversationId}
+      items={items}
+      getItemKey={messageItemKey}
+      estimateSize={76}
+      overscan={8}
+      scrollClassName="message-scroll"
+      contentClassName="message-column"
+      rowClassName="message-virtual-row"
+      emptyContent={(
+        <div className="msg-row msg-row-system">
+          <div className="msg-bubble msg-system">{emptyText}</div>
+        </div>
+      )}
+      renderItem={(item, itemState) => item.kind === "message" ? (
+        <MessageBubble message={item.message} pair={pair} itemState={itemState} />
+      ) : (
+        <div className="msg-row msg-row-user" data-queued="true">
+          <div className="msg-bubble msg-user queue-in-stream-bubble">
+            <span className="queue-in-stream-badge">{item.status === "processing" ? "执行中" : "排队中"}</span>
+            {item.text}
           </div>
-        ) : shouldVirtualize ? (
-          <div
-            className="message-column message-column-virtual"
-            style={{ height: `${virtualizer.getTotalSize()}px` }}
-          >
-            {virtualizer.getVirtualItems().map((item) => {
-              const message = timeline.messages[item.index];
-              return message ? (
-                <div
-                  key={item.key}
-                  ref={virtualizer.measureElement}
-                  data-index={item.index}
-                  className="message-virtual-row"
-                  style={{ transform: `translateY(${item.start}px)` }}
-                >
-                  <MessageBubble message={message} pair={pair} />
-                </div>
-              ) : null;
-            })}
-          </div>
-        ) : (
-          timeline.messages.map((message) => (
-            <MessageBubble key={message.message_id} message={message} pair={pair} />
-          ))
-        )}
-        {timeline.queueItems.length > 0 ? (
-          <div className="queue-in-stream">
-            {timeline.queueItems.map((item) => (
-              <div key={item.queue_item_id} className="msg-row msg-row-user" data-queued="true">
-                <div className="msg-bubble msg-user queue-in-stream-bubble">
-                  <span className="queue-in-stream-badge">
-                    {item.status === "processing" ? "执行中" : "排队中"}
-                  </span>
-                  {item.text}
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </div>
-      {!pinned ? (
-        <button type="button" className="scroll-latest-btn" onClick={jumpToLatest}>
+        </div>
+      )}
+      renderJumpButton={(jump) => (
+        <button type="button" className="scroll-latest-btn" onClick={jump}>
           回到最新
         </button>
-      ) : null}
-    </div>
+      )}
+    />
   );
 }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDownIcon, SpinnerIcon } from "./icons";
 
 export interface ReasoningRibbonProps {
@@ -6,6 +6,8 @@ export interface ReasoningRibbonProps {
   streaming?: boolean;
   elapsedSeconds?: number;
   defaultExpanded?: boolean;
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
 }
 
 /**
@@ -18,8 +20,21 @@ export function ReasoningRibbon({
   streaming = false,
   elapsedSeconds,
   defaultExpanded = false,
+  expanded: controlledExpanded,
+  onExpandedChange,
 }: ReasoningRibbonProps) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
+  const [localExpanded, setLocalExpanded] = useState(defaultExpanded);
+  const expanded = controlledExpanded ?? localExpanded;
+  const previousStreamingRef = useRef(streaming);
+  const setExpanded = (next: boolean) => {
+    setLocalExpanded(next);
+    onExpandedChange?.(next);
+  };
+
+  useEffect(() => {
+    if (previousStreamingRef.current && !streaming) setExpanded(false);
+    previousStreamingRef.current = streaming;
+  }, [streaming]);
 
   if (!streaming && !text) return null;
 
@@ -38,7 +53,7 @@ export function ReasoningRibbon({
         className="mobile-reasoning-toggle"
         onClick={() => {
           if (!streaming) {
-            setExpanded((prev) => !prev);
+          setExpanded(!expanded);
           }
         }}
         aria-expanded={isExpanded}
@@ -74,7 +89,7 @@ export function ReasoningRibbon({
       </button>
 
       {isExpanded && text ? (
-        <div className="mobile-reasoning-body" data-testid="reasoning-body">
+        <div className="mobile-reasoning-body" data-testid="reasoning-body" data-internal-scroll>
           <pre className="mobile-reasoning-text">{text}</pre>
           {streaming ? <span className="mobile-streaming-caret" aria-hidden="true" /> : null}
         </div>
