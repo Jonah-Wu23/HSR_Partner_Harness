@@ -146,7 +146,7 @@ Windows x64 · 开源 Apache-2.0 · 模型与语音使用你自己的账号 · �
 
 ## 安装
 
-Windows x64 安装包和 Android arm64 安装包发布于 [GitHub Releases](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases)，当前版本为 [v0.4.1](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases/tag/v0.4.1)。Windows 下载 `HSR Partner Harness_0.4.1_x64-setup.exe`，Android 下载 `app-arm64-debug.apk`。安装后可使用内置预览模式查看界面交互，配置模型后即可运行真实任务。
+Windows x64 安装包和 Android arm64 安装包发布于 [GitHub Releases](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases)，当前版本为 [v0.4.1](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases/tag/v0.4.1)。Windows 下载 `HSR.Partner.Harness_0.4.1_x64-setup.exe`，Android 下载 `app-arm64-debug.apk`。安装后可使用内置预览模式查看界面交互，配置模型后即可运行真实任务。
 
 安装版默认读取 `%LOCALAPPDATA%\PairHarness\.env`。源码运行默认读取仓库根目录的 `.env`，可通过 `PAIR_HARNESS_ENV_FILE` 自定义配置文件路径。
 
