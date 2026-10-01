@@ -28,11 +28,12 @@ function formatDateTime(isoString?: string | null): string {
 }
 
 /**
- * V0.3.3 手机端会话列表页。
+ * 手机端会话列表页。
  *
  * 状态处理：
  * 1. 未水合 (!bootstrapped)：
  *    - 若连接处于异常态 (unreachable / auth_failed / disconnected)，展示真实错误与重试/重新配对入口；
+ *    - 连接正常但同步失败时展示原始错误与重新同步入口；
  *    - 否则展示骨架屏 (Skeleton)。
  * 2. 零项目空态 (bootstrapped && projects.length === 0)：引导回桌面端创建项目。
  * 3. 项目分组渲染：按项目展示会话（过滤 archived），点击进入对应聊天。
@@ -42,6 +43,8 @@ export function ChatListPage() {
   const bootstrapped = useMobileStore((state) => state.bootstrapped);
   const connection = useMobileStore((state) => state.connection);
   const reconnect = useMobileStore((state) => state.reconnect);
+  const syncError = useMobileStore((state) => state.syncError);
+  const retrySync = useMobileStore((state) => state.retrySync);
   const powerStatus = useMobileStore((state) => state.powerStatus);
   // V0.3.9 V01：会话行徽章数据源（缺数据源时字段为 null，不渲染伪造零值）。
   const badgeSource = useConversationBadgeSource();
@@ -126,6 +129,25 @@ export function ChatListPage() {
                     重试连接
                   </button>
                 )}
+              </section>
+            ) : syncError ? (
+              <section className="card error-state-card" data-testid="chat-list-sync-error">
+                <h2 className="error-state-title">数据同步失败</h2>
+                <p className="error-state-desc" data-testid="chat-list-sync-error-text">
+                  {syncError}
+                </p>
+                <button
+                  type="button"
+                  className="primary chat-list-retry-btn"
+                  onClick={() => {
+                    retrySync().catch((error: unknown) => {
+                      console.error("重新同步失败", error);
+                    });
+                  }}
+                  data-testid="chat-list-btn-resync"
+                >
+                  重新同步
+                </button>
               </section>
             ) : (
               <div

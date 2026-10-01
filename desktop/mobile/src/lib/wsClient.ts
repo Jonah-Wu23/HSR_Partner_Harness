@@ -1,5 +1,5 @@
 /**
- * V0.3.3 手机端 WebSocket 客户端：Sidecar --serve 远程模式的最小协议封装。
+ * 手机端 WebSocket 客户端：Sidecar --serve 远程模式的最小协议封装。
  *
  * 帧格式与桌面 stdio 一致（kind: request/response/event），差别仅两点：
  * - 请求帧顶层可带 auth: { token }；配对之后所有业务请求必须携带；
@@ -33,7 +33,7 @@ export interface WireResponse<T = unknown> {
   error?: {
     code: string;
     message: string;
-    /** V0.3.5 契约 §6：结构化附加字段（如 approval_already_resolved 的真实结果）。 */
+    /** 结构化附加字段（如 approval_already_resolved 的真实结果）。 */
     details?: Record<string, unknown>;
   };
 }
@@ -41,7 +41,8 @@ export interface WireResponse<T = unknown> {
 export interface WireEvent<T = Record<string, unknown>> {
   kind: "event";
   event: string;
-  sequence: number;
+  /** remote-only 事件（手机 TTS 分片、转写）不带序号，不参与序号校验。 */
+  sequence?: number;
   stream_id?: string | number;
   payload: T;
 }
@@ -49,7 +50,7 @@ export interface WireEvent<T = Record<string, unknown>> {
 /** Sidecar 远程命令失败：保留 code，调用方可据 code 分支（如 unauthorized）。 */
 export class RemoteCommandError extends Error {
   readonly code: string;
-  /** V0.3.5 契约 §6：服务端结构化附加字段（原样透传，无则为空对象）。 */
+  /** 服务端结构化附加字段（原样透传，无则为空对象）。 */
   readonly details: Record<string, unknown>;
 
   constructor(
@@ -72,8 +73,8 @@ const NOTIFICATION_PREFERENCES_KEY = "phm.notificationPreferences.v1";
 /** 重连退避序列（毫秒）；用尽后进入 unreachable，等用户手动重试。 */
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000];
 
-/** V0.3.8 T1（契约 §14.3）：心跳口径——每 15s 发一次 ping；30s（2×周期）
-    内未收到任何入站消息即判定半开连接，主动断开走既有重连。服务端
+/** 心跳口径：鉴权 bootstrap 成功后每 15s 发一次 ping；30s（2×周期）内未收到
+    任何入站消息即判定半开连接，立即摘除 socket 并重连。服务端
     WebSocketResponse 另开 heartbeat=30s，双侧都能在超时内暴露死链。 */
 export const PING_INTERVAL_MS = 15_000;
 export const INBOUND_STALE_MS = 30_000;
@@ -169,13 +170,22 @@ export function normalizeWsUrl(raw: string): string {
 /**
  * WS 地址解析优先级：?ws= 查询参数（二维码带入）> localStorage 缓存 >
  * 当前站点 /ws（经 vite proxy 或反向代理到 Sidecar）。
+ * ?ws= 读入缓存后从地址栏移除，之后扫码或手动保存的新地址才能生效。
  */
 export function resolveWsUrl(): string {
   if (typeof window === "undefined") return "ws://127.0.0.1:8765/ws";
-  const query = new URLSearchParams(window.location.search).get("ws");
+  const params = new URLSearchParams(window.location.search);
+  const query = params.get("ws");
   if (query && query.length > 0) {
     const normalized = normalizeWsUrl(query);
     storage()?.setItem(WS_URL_KEY, normalized);
+    params.delete("ws");
+    const search = params.toString();
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`,
+    );
     return normalized;
   }
   const stored = storage()?.getItem(WS_URL_KEY);
@@ -235,6 +245,7 @@ export class MobileWsClient {
       this.reconnectTimer = null;
     }
     this.manualClose = false;
+    this.authFailureCode = null;
     this.setState(this.reconnectAttempt > 0 ? "reconnecting" : "connecting");
     const ws = new WebSocket(resolveWsUrl());
     this.ws = ws;
@@ -242,7 +253,6 @@ export class MobileWsClient {
       if (this.ws !== ws) return;
       this.reconnectAttempt = 0;
       this.lastInboundAt = Date.now();
-      this.startHeartbeat();
       this.setState("connected");
     };
     ws.onmessage = (message: MessageEvent<string>) => {
@@ -264,6 +274,7 @@ export class MobileWsClient {
     // onerror 不单独置状态：失败随后必有 onclose，由 onclose 统一处理。
   }
 
+  /** 主动断开并复位退避计数，之后的 connect() 从第一档退避重新开始。 */
   disconnect(): void {
     this.manualClose = true;
     this.stopHeartbeat();
@@ -271,6 +282,7 @@ export class MobileWsClient {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.reconnectAttempt = 0;
     this.ws?.close();
     this.ws = null;
     this.failAllPending(new Error("客户端主动断开"));
@@ -280,14 +292,6 @@ export class MobileWsClient {
   /** 底层 WebSocket 是否物理处于 OPEN 状态。 */
   isSocketConnected(): boolean {
     return Boolean(this.ws && this.ws.readyState === WebSocket.OPEN);
-  }
-
-  /** 调用方已收到携带新凭证的业务成功响应后，恢复鉴权连接状态。 */
-  confirmAuthenticated(): void {
-    this.authFailureCode = null;
-    if (this.state === "auth_failed" && this.isSocketConnected()) {
-      this.setState("connected");
-    }
   }
 
   /**
@@ -404,6 +408,8 @@ export class MobileWsClient {
         this.authFailureCode = code;
       }
       // 如实暴露鉴权失败：UI 引导重新配对，不在网络层静默换状态。
+      // 凭据失效后心跳只会反复被拒，随之停止。
+      this.stopHeartbeat();
       this.setState("auth_failed");
     }
     entry.reject(
@@ -411,15 +417,16 @@ export class MobileWsClient {
     );
   }
 
-  private startHeartbeat(): void {
-    if (typeof window === "undefined") return;
-    this.stopHeartbeat();
+  /**
+   * 鉴权 bootstrap 成功后由调用方启动心跳；未鉴权的连接不发 ping。
+   * 已在运行时保持不变，连接关闭或鉴权失败时停止。
+   */
+  startHeartbeat(): void {
+    if (typeof window === "undefined" || this.heartbeatTimer !== null) return;
     this.heartbeatTimer = window.setInterval(() => {
       if (Date.now() - this.lastInboundAt >= INBOUND_STALE_MS) {
-        // 半开连接：TCP 未断但服务端/网络已死——主动断开，onclose 统一走重连。
         console.warn("WS 心跳超时（30s 无入站消息），判定半开连接并重连");
-        this.stopHeartbeat();
-        this.ws?.close();
+        this.abandonSocket();
         return;
       }
       this.request("ping", {}).catch((error) => {
@@ -429,6 +436,19 @@ export class MobileWsClient {
     }, PING_INTERVAL_MS);
   }
 
+  /**
+   * 半开连接：浏览器关闭握手可能等待约 60s，这里立即摘除 socket、
+   * 拒绝在途请求并进入重连，旧 socket 的迟到回调按 this.ws 比对忽略。
+   */
+  private abandonSocket(): void {
+    const ws = this.ws;
+    this.stopHeartbeat();
+    this.ws = null;
+    ws?.close();
+    this.failAllPending(new Error("WebSocket 心跳超时，连接已摘除"));
+    this.scheduleReconnect();
+  }
+
   private stopHeartbeat(): void {
     if (this.heartbeatTimer !== null && typeof window !== "undefined") {
       window.clearInterval(this.heartbeatTimer);
@@ -436,9 +456,8 @@ export class MobileWsClient {
     }
   }
 
-  /** V0.3.8 T1（契约 §14.4）：回前台重同步分派——unreachable 终态复位重连
-      （不得永久停摆）；connected 返回 resync 由调用方重新 bootstrap 补拉；
-      connecting/reconnecting 维持既有流程。 */
+  /** 回前台重同步分派：unreachable 复位退避后重连；connected 返回 resync，
+      由调用方重新 bootstrap 补拉；connecting/reconnecting 维持现有流程。 */
   notifyAppForeground(): "resync" | "reconnecting" | "none" {
     if (this.state === "unreachable") {
       this.reconnectAttempt = 0;

@@ -1,20 +1,15 @@
 /**
- * V0.3.5 手机端语音输入 Hook。
+ * 手机端语音输入 Hook。
  *
  * 封装两种交互模式：
  * - 按住说话：pointer down 开始，pointer up 结束。
  * - 自动检测：开始后由本地静音检测自动结束。
  *
- * 状态全部来自 mobileStore；本 Hook 只负责把 Web Audio 采集引擎与 store 动作串起来。
- *
- * V0.3.9 P1 修复（按住说话整条交互不可用）：
- * - 启动前置判断改为读取 store 实时状态，不再用渲染闭包里的旧 capture.state
- *   （面板只能经「语音」触发器打开，用户必然先处于 auto 录制态，旧值判断会让
- *   「按住说话」的启动静默 return）；
- * - 启动在途可取消：generationRef 让 pointerup / 卸载 / 新一次按压能作废在途启动，
- *   并在服务端会话建立后补发停止，不泄漏会话；
- * - mode 只表示采集模式，复位交给「capture 回到 idle」的 effect，stopSession 不再
- *   顺带把 mode 置 off（否则音频错误会连带关掉面板）。
+ * 状态来自 mobileStore；本 Hook 把 Web Audio 采集引擎与 store 动作串起来。
+ * 启动顺序：先拿到麦克风，再建服务端会话（voice.mobile_ptt_start），最后启动引擎；
+ * 麦克风失败不会留下空会话。启动在途可被 pointerup / 卸载 / 新一次按压作废，
+ * 作废时停掉麦克风轨道，服务端会话已建立则补发停止。
+ * mode 只表示采集模式，复位交给「capture 回到 idle」的 effect。
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -80,9 +75,16 @@ export function useVoiceCapture(conversationId: string): VoiceCaptureStatus {
   const startVoiceCapture = useMobileStore((state) => state.startVoiceCapture);
   const sendAudioChunk = useMobileStore((state) => state.sendAudioChunk);
   const stopVoiceCapture = useMobileStore((state) => state.stopVoiceCapture);
+  const reportVoiceCaptureError = useMobileStore((state) => state.reportVoiceCaptureError);
   const refreshVoiceAvailability = useMobileStore((state) => state.refreshVoiceAvailability);
 
   const [mode, setMode] = useState<VoiceInputMode>("off");
+  /**
+   * 正在申请麦克风的启动代次（getUserMedia 未返回时 store 仍是 idle）。
+   * 期间界面按「准备中」展示，复位 effect 不收回 mode。
+   */
+  const acquiringRef = useRef<number | null>(null);
+  const [acquiring, setAcquiring] = useState(false);
   const engineRef = useRef<ReturnType<typeof createVoiceCaptureEngine> | null>(null);
   /**
    * 在途停止：Promise 连同它停的是哪个会话一起缓存。停止请求最坏要等服务端尾超时
@@ -116,9 +118,9 @@ export function useVoiceCapture(conversationId: string): VoiceCaptureStatus {
     void refreshVoiceAvailability();
   }, [refreshVoiceAvailability]);
 
-  const stopEngine = useCallback(() => {
-    engineRef.current?.stop();
-    engineRef.current = null;
+  const markAcquiring = useCallback((owner: number | null) => {
+    acquiringRef.current = owner;
+    setAcquiring(owner !== null);
   }, []);
 
   const stopSession = useCallback((explicitSessionId?: string): Promise<void> => {
@@ -131,23 +133,28 @@ export function useVoiceCapture(conversationId: string): VoiceCaptureStatus {
     // 新会话已经建立）必须各自发一次停止，否则新会话会被旧 Promise 吞掉、
     // 泄漏到 watchdog。目标相同时，调用方 await 到的是它真正停稳。
     if (inFlight && inFlight.sessionId === targetId) return inFlight.promise;
-    // 本地采集立即停：别人的在途停止不能当作「本地也已经停了」。
-    stopEngine();
+    // 本地采集立即开始收尾：引擎交出尾部样本并等全部分片上行完成。
+    const engine = engineRef.current;
+    engineRef.current = null;
+    const engineStopped = engine ? engine.stop() : Promise.resolve();
     const previous = inFlight?.promise ?? Promise.resolve();
     const doStop = async () => {
+      try {
+        await engineStopped;
+      } catch (error) {
+        console.error("语音采集引擎停止失败", error);
+        reportVoiceCaptureError(error instanceof Error ? error.message : String(error));
+      }
       if (!targetId) return;
       try {
-        // 目标会话一路透传到 store：补发停止要打向本次启动那一个。
+        // 分片全部发完才发停止；目标会话一路透传到 store，补发停止要打向本次启动那一个。
         await stopVoiceCapture(targetId);
       } catch {
-        // 错误已写入 store，这里不吞异常但不需要额外处理
+        // store 已把错误写入 capture.error 并记录日志
       }
-      // 这里不 setMode("off")：mode 只表示采集模式，复位统一交给下面
-      // 「capture 回到 idle」的 effect，否则停止采集会连带关掉整个语音面板。
     };
     // 串在在途停止之后：旧会话先关、本次停止再发，服务端按序处理。
-    // doStop 体内不 reject 是不变量（异常已在其中吞掉并写入 store），
-    // 拒绝分支只作防御，免得链上出现未处理的拒绝。
+    // doStop 体内不 reject（错误已写入 store），拒绝分支保证链上没有未处理的拒绝。
     const stopPromise = previous.then(
       () => doStop(),
       () => doStop(),
@@ -160,7 +167,7 @@ export function useVoiceCapture(conversationId: string): VoiceCaptureStatus {
     // 注册在调用方 await 之前，结算时先清缓存再恢复调用方。
     void stopPromise.then(clearStopPromise, clearStopPromise);
     return stopPromise;
-  }, [stopEngine, stopVoiceCapture]);
+  }, [reportVoiceCaptureError, stopVoiceCapture]);
 
   const startSession = useCallback(
     async (targetMode: ActiveVoiceInputMode) => {
@@ -169,76 +176,80 @@ export function useVoiceCapture(conversationId: string): VoiceCaptureStatus {
       /** 本次启动是否已被取消（更晚的按压 / 停止 / 卸载）。 */
       const cancelled = () =>
         generation !== generationRef.current || disposedRef.current;
+      // 读 store 实时状态：渲染闭包里的 capture.state 可能已经过期。
+      if (useMobileStore.getState().voice.capture.state !== "idle") {
+        // 接替上一段采集：先停旧会话，再启动新会话。
+        await stopSession();
+        if (cancelled()) return;
+      }
+      // 交接期间 store 会短暂回到 idle，复位 effect 可能把刚按下的模式收回 off；
+      // 这里重新声明，并在同一时刻标记「申请麦克风中」挡住复位。
+      setMode(targetMode);
+      markAcquiring(generation);
+      /** 尚未移交引擎的麦克风流；移交前的任何退出都由 finally 停掉轨道。 */
+      let stream: MediaStream | null = null;
       let sessionId: string | null = null;
+      let stage: "microphone" | "session" | "engine" = "microphone";
       try {
-        // 读 store 实时状态：渲染闭包里的 capture.state 可能已经过期，
-        // 用它做前置判断会让「自动检测录制中点按住说话」的启动被静默吞掉。
-        if (useMobileStore.getState().voice.capture.state !== "idle") {
-          // 接替上一段采集：先停旧会话，再启动新会话。
-          await stopSession();
-          if (cancelled()) return;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } finally {
+          if (acquiringRef.current === generation) markAcquiring(null);
         }
-        // 交接期间 store 会短暂回到 idle，「capture 回到 idle 就把 mode 置 off」的
-        // effect 可能正好在那一刻把刚按下的 hold / 刚点的 auto 冲掉；这里按本次
-        // 启动的目标模式重新声明一次，之后 state 进入 starting 就不会再被复位。
-        setMode(targetMode);
+        if (cancelled()) return;
+
+        stage = "session";
         const result = await startVoiceCapture(conversationId);
-        sessionId = result?.session_id ?? null;
-        if (!sessionId) {
-          throw new Error("服务端未返回语音会话 ID");
-        }
+        sessionId = result.session_id;
         if (cancelled()) {
-          // 启动在途被取消（pointerup 早于会话建立、或卸载）：服务端会话刚建立
-          // 就没人接管了，显式携带 sessionId 补发停止，避免泄漏到 watchdog 超时。
-          await stopSession(sessionId);
-          return;
-        }
-        // 服务端会话建立后再取麦克风，避免无意义采集
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        await refreshVoiceAvailability();
-        if (cancelled()) {
-          // 麦克风到手但已被取消：不建引擎，直接关闭服务端会话。
+          // 启动在途被取消（pointerup 早于会话建立、或卸载）：显式携带 sessionId
+          // 补发停止，避免服务端会话泄漏到 watchdog 超时。
           await stopSession(sessionId);
           return;
         }
 
+        stage = "engine";
         const engine = createVoiceCaptureEngine({
           onChunk: async (seq, base64) => {
             await sendAudioChunk(seq, base64);
           },
           onSilence: () => {
-            // 自动检测模式下静音触发停止
             void stopSession();
           },
           onError: (err) => {
-            // eslint-disable-next-line no-console
             console.error("语音采集引擎错误", err);
             void stopSession();
           },
-          // 用本次调用显式传入的目标模式，而不是可能尚未更新的 React state
-          // （Codex P1：setMode 之后紧接 startSession 仍闭包捕获旧 mode）。
           enableSilenceDetection: targetMode === "auto",
         });
         engineRef.current = engine;
-        await engine.start(stream);
+        const owned = stream;
+        stream = null;
+        await engine.start(owned);
         if (cancelled()) {
-          // 采集已经跑起来但已被取消：立即停引擎与服务端会话。
-          await stopSession();
-          return;
+          await stopSession(sessionId);
         }
       } catch (err) {
+        console.error(`语音采集启动失败（${stage}）`, err);
+        // 会话阶段的失败已由 store 写入 capture.error；麦克风与引擎阶段在这里写入，
+        // 权限被拒、没有麦克风等原因原样展示。
+        if (stage !== "session") {
+          reportVoiceCaptureError(err instanceof Error ? err.message : String(err));
+        }
+        if (sessionId) await stopSession(sessionId);
+      } finally {
+        stream?.getTracks().forEach((track) => track.stop());
         await refreshVoiceAvailability();
-        // 服务端会话可能已建立（getUserMedia/引擎失败）：显式携带刚返回的
-        // sessionId 通知服务端关闭，不复位会泄漏直到 watchdog 超时。
-        await stopSession(sessionId ?? undefined);
       }
     },
     [
       usable,
       conversationId,
+      markAcquiring,
       startVoiceCapture,
       sendAudioChunk,
       stopSession,
+      reportVoiceCaptureError,
       refreshVoiceAvailability,
     ],
   );
@@ -252,21 +263,26 @@ export function useVoiceCapture(conversationId: string): VoiceCaptureStatus {
     void startSession("hold");
   }, [usable, startSession]);
 
-  const endHoldCapture = useCallback(() => {
-    // 无论服务端会话是否已建立，都要让在途启动失效：startSession 会在下一个
-    // await 之后发现代次不一致并补发停止（会话未建立时 store 仍可能是 idle，
-    // 光看状态会漏掉这半边）。
+  /** 作废在途启动：startSession 在下一个 await 之后发现代次变化，自行释放麦克风与会话。 */
+  const cancelPendingStart = useCallback(() => {
     generationRef.current += 1;
+    if (acquiringRef.current !== null) markAcquiring(null);
+  }, [markAcquiring]);
+
+  const endHoldCapture = useCallback(() => {
+    // 无论服务端会话是否已建立，都要让在途启动失效（会话未建立时 store 仍是 idle，
+    // 光看状态会漏掉这半边）。
+    cancelPendingStart();
     if (useMobileStore.getState().voice.capture.state === "idle") return;
     void stopSession();
-  }, [stopSession]);
+  }, [cancelPendingStart, stopSession]);
 
   const toggleAuto = useCallback(() => {
     if (!usable) return;
     const state = useMobileStore.getState().voice.capture.state;
-    if (mode === "auto" && state !== "idle") {
+    if (mode === "auto" && (state !== "idle" || acquiringRef.current !== null)) {
       // 已在自动检测采集中：本次点击是停止
-      generationRef.current += 1;
+      cancelPendingStart();
       void stopSession();
       return;
     }
@@ -274,12 +290,12 @@ export function useVoiceCapture(conversationId: string): VoiceCaptureStatus {
     lastAttemptModeRef.current = "auto";
     setMode("auto");
     void startSession("auto");
-  }, [usable, mode, startSession, stopSession]);
+  }, [usable, mode, cancelPendingStart, startSession, stopSession]);
 
   const stopListening = useCallback(async () => {
-    generationRef.current += 1;
+    cancelPendingStart();
     await stopSession();
-  }, [stopSession]);
+  }, [cancelPendingStart, stopSession]);
 
   // 自动模式下收到最终转写后复位
   useEffect(() => {
@@ -288,31 +304,31 @@ export function useVoiceCapture(conversationId: string): VoiceCaptureStatus {
     }
   }, [mode, transcript?.isFinal, stopSession]);
 
-  // 当 capture 回到 idle 时确保模式也回到 off（错误/成功都会回到 idle）
+  // 当 capture 回到 idle 时确保模式也回到 off（错误/成功都会回到 idle）；
+  // 申请麦克风期间 store 本来就是 idle，不算回到 idle。
   useEffect(() => {
-    if (capture.state === "idle" && mode !== "off") {
+    if (capture.state === "idle" && !acquiring && mode !== "off") {
       setMode("off");
     }
-  }, [capture.state, mode]);
+  }, [capture.state, acquiring, mode]);
 
   // 组件卸载时清理：停本地采集之外，还必须向服务端补发 voice.mobile_ptt_stop，
   // 否则录制中离开页面（返回键/切页）会让服务端会话泄漏到 watchdog 超时。
-  // 停止失败（如已断连）照常写入 store 的 capture.error，不伪造成功。
+  // 停止失败（如已断连）照常写入 store 的 capture.error。
   useEffect(() => {
     disposedRef.current = false;
     return () => {
       disposedRef.current = true;
       generationRef.current += 1;
-      stopEngine();
       void stopSession();
     };
-  }, [stopEngine, stopSession]);
+  }, [stopSession]);
 
   return {
     mode,
     usable,
     disabledReason,
-    captureState: capture.state,
+    captureState: acquiring ? "starting" : capture.state,
     transcriptText: transcript?.text ?? null,
     transcriptFinal: transcript?.isFinal ?? false,
     captureError: capture.error,

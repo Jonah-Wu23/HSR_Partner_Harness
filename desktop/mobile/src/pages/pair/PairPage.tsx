@@ -103,39 +103,6 @@ export function PairPage() {
   const authFailureCode = useMobileStore((state) => state.authFailureCode);
   const isTokenExpired = authFailureCode === "expired_token" || authFailureCode === "token_expired";
 
-  const [lockoutCountdown, setLockoutCountdown] = useState<number>(0);
-  const countdownTimerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    if (lockoutCountdown <= 0) {
-      if (countdownTimerRef.current !== null && typeof window !== "undefined") {
-        window.clearInterval(countdownTimerRef.current);
-        countdownTimerRef.current = null;
-      }
-      return;
-    }
-
-    countdownTimerRef.current = window.setInterval(() => {
-      setLockoutCountdown((prev) => {
-        if (prev <= 1) {
-          if (countdownTimerRef.current !== null && typeof window !== "undefined") {
-            window.clearInterval(countdownTimerRef.current);
-            countdownTimerRef.current = null;
-          }
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => {
-      if (countdownTimerRef.current !== null && typeof window !== "undefined") {
-        window.clearInterval(countdownTimerRef.current);
-        countdownTimerRef.current = null;
-      }
-    };
-  }, [lockoutCountdown > 0]);
-
   // V0.3.7 Android 壳内的桌面端服务地址输入（冻结 §9.1）：壳没有浏览器地址栏，
   // 二维码 ?ws= 无法随链接带入。输入建立在既有 phm.wsUrl localStorage 机制之上
   // （resolveWsUrl 与扫码 extractPairCode 写入同一键），PWA 下不渲染本区、体验不变。
@@ -222,11 +189,12 @@ export function PairPage() {
             const parsed = extractPairingPayload(detected);
             if (parsed.code) {
               setCode(parsed.code);
-              // R1-006：载荷携带服务地址时同步带入壳内地址框——此前只写
-              // localStorage，框内 state 仍停留在挂载值，用户看不到已带入。
+              // 载荷携带服务地址时（已写入 phm.wsUrl）同步带入壳内地址框，
+              // 并立即用新地址重连；连不上由顶部 ConnectionBanner 如实显示。
               if (parsed.wsUrl) {
                 setWsAddress(parsed.wsUrl);
                 setWsAddressSaved(false);
+                useMobileStore.getState().reconnect();
               }
               stopScanning();
             }
@@ -247,7 +215,7 @@ export function PairPage() {
     e.preventDefault();
     const trimmedCode = code.trim();
     const trimmedDevice = deviceName.trim();
-    if (!trimmedCode || !trimmedDevice || isSubmitting || lockoutCountdown > 0) return;
+    if (!trimmedCode || !trimmedDevice || isSubmitting) return;
 
     setIsSubmitting(true);
     setErrorInfo(null);
@@ -257,13 +225,6 @@ export function PairPage() {
     } catch (err: unknown) {
       if (err instanceof RemoteCommandError) {
         setErrorInfo({ code: err.code, message: err.message });
-        if (err.code === "pairing_rate_limited" || err.code === "rate_limited") {
-          const retryAfter =
-            typeof err.details?.retry_after_s === "number" && err.details.retry_after_s > 0
-              ? Math.round(err.details.retry_after_s)
-              : 60;
-          setLockoutCountdown(retryAfter);
-        }
       } else if (err instanceof Error) {
         setErrorInfo({ message: err.message });
       } else {
@@ -283,19 +244,9 @@ export function PairPage() {
   } else if (errorInfo?.code === "pairing_expired_code" || errorInfo?.code === "expired_code") {
     errorMessage = "配对码已过期，请在电脑端重新生成";
     errorHint = "配对码有效时长有限，请在电脑端重新生成新配对码后再试。";
-  } else if (
-    errorInfo?.code === "pairing_rate_limited" ||
-    errorInfo?.code === "rate_limited" ||
-    lockoutCountdown > 0
-  ) {
-    errorMessage =
-      lockoutCountdown > 0
-        ? `请求过于频繁已被限流封锁，请在 ${lockoutCountdown} 秒后重试`
-        : "限流封锁已解除，可重新尝试配对";
-    errorHint =
-      lockoutCountdown > 0
-        ? `连续尝试失败次数过多，来源已被封锁，倒计时剩余 ${lockoutCountdown} 秒。`
-        : "封锁期已结束，请确认配对码无误后重新提交。";
+  } else if (errorInfo?.code === "pairing_code_exhausted") {
+    errorMessage = "配对码输错次数过多，已作废";
+    errorHint = "请在电脑桌面端「设置 → 远程设备」重新生成配对码后再试。";
   } else if (errorInfo?.code) {
     errorMessage = `[${errorInfo.code}] ${errorInfo.message}`;
   }
@@ -447,14 +398,10 @@ export function PairPage() {
           <button
             type="submit"
             className="primary pair-submit-btn"
-            disabled={isSubmitting || !code.trim() || !deviceName.trim() || lockoutCountdown > 0}
+            disabled={isSubmitting || !code.trim() || !deviceName.trim()}
             data-testid="btn-submit-pair"
           >
-            {lockoutCountdown > 0
-              ? `限流等待中 (${lockoutCountdown}s)`
-              : isSubmitting
-              ? "正在配对…"
-              : "开始配对"}
+            {isSubmitting ? "正在配对…" : "开始配对"}
           </button>
         </form>
       </div>

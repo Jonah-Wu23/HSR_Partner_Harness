@@ -7,25 +7,31 @@ export type TimelineItem =
       kind: "message";
       id: string;
       message: Message;
-      order: number;
     }
   | {
       kind: "tool_run";
       id: string;
       toolRun: ToolRun;
-      order: number;
     }
   | {
-      /** V0.3.8 T5（契约 §14.1）：忙时排队中的用户消息（可撤回/编辑/置顶）。 */
+      /** 忙时排队或派发失败的用户消息。 */
       kind: "queue_item";
       id: string;
       queueItem: QueueItem;
-      order: number;
     };
+
+function compareToolRuns(left: ToolRun, right: ToolRun): number {
+  return (left.timeline_order ?? 0) - (right.timeline_order ?? 0) || left.sequence - right.sequence;
+}
 
 /**
  * 手机聊天时间线只消费 mobileStore 已按 stream_id、sequence 和会话归并的状态。
  * WebSocket 事件不得在 Hook 内二次订阅，否则重复事件与旧连接事件会再次拼接。
+ *
+ * 排序：消息保持服务端顺序（created_at 严格递增，新消息按到达追加，状态变化原位替换）。
+ * 工具卡与助手 segment 共用 timeline_order，工具卡插到第一条 timeline_order 更大的
+ * 消息之前；用户和角色消息没有 timeline_order，不参与比较。无序号的旧工具记录排在最后，
+ * 排队项始终在末尾。
  */
 export function useChatTimeline(conversationId: string) {
   const storeMessages = useMobileStore((state) => state.messages);
@@ -43,46 +49,48 @@ export function useChatTimeline(conversationId: string) {
 
   const items = useMemo<TimelineItem[]>(() => {
     const list: TimelineItem[] = [];
-
-    messages.forEach((message, index) => {
-      list.push({
-        kind: "message",
-        id: `msg-${message.message_id}`,
-        message,
-        order:
-          typeof message.timeline_order === "number"
-            ? message.timeline_order
-            : index * 10,
-      });
+    const toolItem = (toolRun: ToolRun): TimelineItem => ({
+      kind: "tool_run",
+      id: `tool-${toolRun.tool_call_id}`,
+      toolRun,
     });
+    const orderedTools = toolRuns
+      .filter((toolRun) => typeof toolRun.timeline_order === "number")
+      .sort(compareToolRuns);
+    const legacyTools = toolRuns
+      .filter((toolRun) => typeof toolRun.timeline_order !== "number")
+      .sort((left, right) => left.sequence - right.sequence);
 
-    toolRuns.forEach((toolRun, index) => {
-      list.push({
-        kind: "tool_run",
-        id: `tool-${toolRun.tool_call_id}`,
-        toolRun,
-        order:
-          typeof toolRun.timeline_order === "number"
-            ? toolRun.timeline_order
-            : (toolRun.sequence ?? index) * 10 + 5,
-      });
-    });
+    let nextTool = 0;
+    for (const message of messages) {
+      const order = message.timeline_order;
+      if (typeof order === "number") {
+        while (
+          nextTool < orderedTools.length &&
+          (orderedTools[nextTool].timeline_order as number) < order
+        ) {
+          list.push(toolItem(orderedTools[nextTool]));
+          nextTool += 1;
+        }
+      }
+      list.push({ kind: "message", id: `msg-${message.message_id}`, message });
+    }
+    orderedTools.slice(nextTool).forEach((toolRun) => list.push(toolItem(toolRun)));
+    legacyTools.forEach((toolRun) => list.push(toolItem(toolRun)));
 
-    // 排队项天然在当前回合之后：order 取消息最大 order 之后的偏移段。
-    const lastOrder = list.reduce((max, item) => Math.max(max, item.order), 0);
     queueItems
       .filter((queueItem) => queueItem.conversation_id === conversationId)
+      .sort((left, right) => left.position - right.position)
       .forEach((queueItem) => {
         list.push({
           kind: "queue_item",
           id: `queue-${queueItem.queue_item_id}`,
           queueItem,
-          order: lastOrder + 1000 + queueItem.position,
         });
       });
 
-    return list.sort((a, b) => a.order - b.order);
-  }, [messages, toolRuns, queueItems]);
+    return list;
+  }, [conversationId, messages, toolRuns, queueItems]);
 
   const isStreaming = useMemo(
     () =>

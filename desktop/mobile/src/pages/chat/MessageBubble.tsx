@@ -28,8 +28,8 @@ function sourceBadge(source: MessageSource, pairNames?: { character?: string; as
 }
 
 /**
- * V0.3.5 手机端单条消息气泡：
- * 消息来源标记（角色/助手/用户/工具/思考/系统事件）清晰可区分；
+ * 手机端单条消息气泡：
+ * 来源标记用角色与助手各自的名字；失败与取消状态连同服务端原因一起展示；
  * 思考段默认折叠，点击展开；流式更新展示光标；
  * 角色自然语言回复支持朗读，其余来源保持静音。
  */
@@ -96,6 +96,14 @@ export function MessageBubble({
   const displayText =
     message.text ||
     (message.streaming && !reasoning ? "..." : "");
+  // 失败与取消的原因由服务端写在 payload.error / payload.cancelled_reason。
+  const isFailed = message.status === "failed";
+  const isCancelled = message.status === "cancelled";
+  const statusDetail = isFailed
+    ? message.payload?.error
+    : isCancelled
+      ? message.payload?.cancelled_reason
+      : null;
 
   return (
     <div
@@ -103,6 +111,7 @@ export function MessageBubble({
       data-testid="message-bubble"
       data-message-source={message.source}
       data-message-id={message.message_id}
+      data-message-status={message.status}
     >
       <div className={`mobile-msg-bubble mobile-msg-bubble-${message.source}`}>
         {/* 思考段折叠组件 */}
@@ -131,6 +140,17 @@ export function MessageBubble({
               <span className="mobile-streaming-caret" aria-hidden="true" />
             ) : null}
           </div>
+        ) : null}
+
+        {isFailed || isCancelled ? (
+          <p
+            className={`mobile-msg-status mobile-msg-status-${message.status}`}
+            role={isFailed ? "alert" : undefined}
+            data-testid="msg-status"
+          >
+            {isFailed ? "失败" : "已取消"}
+            {typeof statusDetail === "string" && statusDetail ? `：${statusDetail}` : null}
+          </p>
         ) : null}
 
         {/* V0.3.5：角色自然语言回复的朗读入口 / 朗读中标记。

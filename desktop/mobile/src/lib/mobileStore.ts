@@ -66,6 +66,37 @@ export interface MobileVoiceAvailability {
   supported: boolean;
 }
 
+/** 最近一次朗读被服务端打断（voice.playback_interrupted 载荷原值）。 */
+export interface MobilePlaybackInterruption {
+  conversationId: string | null;
+  messageId: string | null;
+  reason: string | null;
+}
+
+/** 已决审批：终态字段取自 approval.resolved 或 approval_already_resolved 的 details。 */
+export interface MobileResolvedApproval {
+  approval_id: string;
+  conversation_id?: string;
+  task_id?: string;
+  /** allow / allow_for_conversation / deny / timeout；服务端未给出时为空串。 */
+  decision: string;
+  resolved_by: string | null;
+  actor: string | null;
+  /** 终态原因（如「等待审批超时」），与申请理由分开存放。 */
+  resolved_reason: string | null;
+  error_code: string | null;
+  resolved_at: string | null;
+  /** 申请时的操作与理由；本端未收到 approval.requested 时缺省。 */
+  operation?: PendingApproval["operation"];
+  reason?: string;
+}
+
+/** 聊天页装载失败：保留目标会话，页面据此提供重试。 */
+export interface MobileOpenError {
+  conversationId: string;
+  message: string;
+}
+
 /** 下行 TTS 分片（``voice.mobile_tts_chunk`` payload 的缓冲形态）。 */
 export interface MobileTtsChunk {
   seq: number;
@@ -127,20 +158,8 @@ export interface MobileState {
       忙时消息可见、可撤回/编辑/置顶。 */
   queueItems: QueueItem[];
   approvals: PendingApproval[];
-  /** V0.3.5：已决审批记录（含 resolved_by/decision），供 UI 表达双端仲裁结果。 */
-  resolvedApprovals: Array<{
-    approval_id: string;
-    conversation_id?: string;
-    decision: string;
-    resolved_by: string;
-    task_id?: string;
-    /** 保留原始 operation/reason 以便已决卡仍展示详情。 */
-    operation?: PendingApproval["operation"];
-    reason?: string;
-    /** V0.3.9 §6：真实失败码（timeout 等）；无则为 null。 */
-    error_code?: string | null;
-    resolved_at?: string | null;
-  }>;
+  /** 已决审批记录，供 UI 表达双端仲裁结果。 */
+  resolvedApprovals: MobileResolvedApproval[];
   /** V0.3.4：当前配对（委派卡「来自 <角色名> 的委派」数据源）。 */
   pair: PairRecord | null;
   /** V0.3.4：当前活动任务（委派卡运行状态与 delegation_id 对齐）。 */
@@ -158,8 +177,13 @@ export interface MobileState {
   /** V0.3.9 §6：远程控制租约；无数据保持 null，不本地推导。 */
   remoteControl: RemoteControlState | null;
   streamId: string | null;
+  /** 最近处理的带序号事件；-1 表示本代次尚未收到事件。 */
   lastSequence: number;
   bootstrapped: boolean;
+  /** 最近一次状态同步（app.bootstrap）的原始错误；同步成功或重新开始时清空。 */
+  syncError: string | null;
+  /** 当前聊天页装载（conversation.open）失败的原始错误。 */
+  openError: MobileOpenError | null;
   /** V0.3.7：桌面端电源状态（power.status_changed 事件驱动；无数据时为 null，不本地推导）。 */
   powerStatus: PowerStatusPayload | null;
     /** V0.3.5：手机语音状态。 */
@@ -175,16 +199,21 @@ export interface MobileState {
        * 字段保留为可选仅为兼容既有 UI 测试的字面量，后续版本可随 UI 一并删除。
        */
       ttsDroppedChunks?: Record<string, number>;
+      /** 最近一次朗读被打断；下一条朗读开始时清空。 */
+      lastInterruption: MobilePlaybackInterruption | null;
     };
 
   start: () => void;
   /** 手动重连入口（unreachable/auth_failed 后由 UI 重试按钮调用）。 */
   reconnect: () => void;
+  /** 状态同步失败后的重试入口。 */
+  retrySync: () => Promise<void>;
   pairDevice: (code: string, deviceName: string) => Promise<void>;
   openConversation: (conversationId: string) => Promise<void>;
-  submitDelegation: (text: string) => Promise<void>;
-  /** V0.3.4 缺陷 3：手机端普通角色消息输入（target=character，任何模式可用）。 */
-  submitMessage: (text: string) => Promise<void>;
+  /** 委派给助手；不带 mode，模式以服务端会话记录为准。 */
+  submitDelegation: (conversationId: string, text: string) => Promise<void>;
+  /** 普通角色消息（target=character，任何模式可用）。 */
+  submitMessage: (conversationId: string, text: string) => Promise<void>;
   /** V0.3.8 T5：队列三命令——撤回 / 编辑文本 / 置顶（仅 queued 项）。 */
   withdrawQueueItem: (queueItemId: string) => Promise<void>;
   editQueueItem: (queueItemId: string, text: string) => Promise<void>;
@@ -199,6 +228,8 @@ export interface MobileState {
   sendAudioChunk: (seq: number, base64: string) => Promise<void>;
   /** 停止语音采集；传入 sessionId 时以它覆盖 store 里的会话（用于补发停止）。 */
   stopVoiceCapture: (sessionId?: string) => Promise<void>;
+  /** 采集端（麦克风、音频引擎）失败写入 capture.error。 */
+  reportVoiceCaptureError: (message: string) => void;
   stopVoicePlayback: (messageId: string) => Promise<void>;
   /** V0.3.5：本地 TTS 队列自然播放到末尾后复位 playback 状态。 */
   finishVoicePlayback: (messageId: string) => void;
@@ -231,6 +262,116 @@ function indexConversations(projects: ProjectRecord[]): Record<string, Conversat
     }
   }
   return map;
+}
+
+/** 按 key 原位替换；不存在时追加到末尾（新条目按到达顺序排在最后）。 */
+function upsertBy<T>(list: T[], item: T, isSame: (existing: T) => boolean): T[] {
+  const index = list.findIndex(isSame);
+  if (index === -1) return [...list, item];
+  const next = list.slice();
+  next[index] = item;
+  return next;
+}
+
+/** 时间线展示的排队项：待派发与派发失败（失败项带 error）。 */
+function visibleQueueItems(items: QueueItem[]): QueueItem[] {
+  return items.filter((item) => item.status === "queued" || item.status === "failed");
+}
+
+function detectVoiceAvailability(): MobileVoiceAvailability {
+  return {
+    secureContext: typeof window !== "undefined" ? window.isSecureContext : false,
+    micPermission: "unknown",
+    supported: typeof navigator !== "undefined" && Boolean(navigator.mediaDevices?.getUserMedia),
+  };
+}
+
+type MobileSessionState = Pick<
+  MobileState,
+  | "projects"
+  | "conversationsById"
+  | "messages"
+  | "toolRuns"
+  | "queueItems"
+  | "approvals"
+  | "resolvedApprovals"
+  | "pair"
+  | "activeTask"
+  | "activeTasks"
+  | "turnsByConversation"
+  | "summaries"
+  | "summariesByConversation"
+  | "memories"
+  | "remoteControl"
+  | "streamId"
+  | "lastSequence"
+  | "bootstrapped"
+  | "syncError"
+  | "openError"
+  | "powerStatus"
+  | "voice"
+>;
+
+/**
+ * 会话级状态初值：首次装载、桌面端新代次（stream_id 变化）与解绑共用。
+ * 连接状态、设备名与当前打开的聊天不属于会话级状态；麦克风可用性是本机环境，沿用传入值。
+ */
+function initialSessionState(availability: MobileVoiceAvailability): MobileSessionState {
+  return {
+    projects: [],
+    conversationsById: {},
+    messages: [],
+    toolRuns: [],
+    queueItems: [],
+    approvals: [],
+    resolvedApprovals: [],
+    pair: null,
+    activeTask: null,
+    activeTasks: [],
+    turnsByConversation: {},
+    summaries: [],
+    summariesByConversation: {},
+    memories: [],
+    remoteControl: null,
+    streamId: null,
+    lastSequence: -1,
+    bootstrapped: false,
+    syncError: null,
+    openError: null,
+    powerStatus: null,
+    voice: {
+      capture: { state: "idle", sessionId: null, error: null },
+      transcript: null,
+      playback: { messageId: null, state: "idle", error: null, errorCode: null },
+      availability,
+      ttsChunks: {},
+      lastInterruption: null,
+    },
+  };
+}
+
+/**
+ * 已决审批记录：终态字段来自 approval.resolved 载荷或 approval_already_resolved 的
+ * details（两者字段相同）；申请时的 operation 与理由来自本端见过的待审批记录。
+ */
+function toResolvedApproval(
+  approvalId: string,
+  fields: Partial<ApprovalResolvedPayload>,
+  pending: PendingApproval | undefined,
+): MobileResolvedApproval {
+  return {
+    approval_id: approvalId,
+    conversation_id: fields.conversation_id ?? pending?.conversation_id,
+    task_id: fields.task_id ?? pending?.task_id,
+    decision: fields.decision ?? "",
+    resolved_by: fields.resolved_by ?? null,
+    actor: fields.actor ?? null,
+    resolved_reason: fields.reason ?? null,
+    error_code: fields.error_code ?? null,
+    resolved_at: fields.resolved_at ?? null,
+    operation: pending?.operation,
+    reason: pending?.reason,
+  };
 }
 
 /** V0.3.8 T5：chat.submit 的排队回执（忙时 accepted=false→queued=true）。 */
@@ -367,9 +508,9 @@ function applySnapshot(
   const snapshotMatchesActive = !activeConvId || snapshotConversationId === activeConvId;
   const messages = snapshotMatchesActive ? snapshot.messages : get().messages;
   const toolRuns = snapshotMatchesActive ? snapshot.tool_runs : get().toolRuns;
-  // V0.3.8 T5：快照 queue_items 属于快照当前会话；不匹配本会话时不覆盖。
+  // 快照 queue_items 属于快照当前会话；不匹配本会话时不覆盖。
   const queueItems = snapshotMatchesActive
-    ? snapshot.queue_items.filter((item) => item.status === "queued")
+    ? visibleQueueItems(snapshot.queue_items)
     : get().queueItems;
 
   // V0.3.9 §3：全账号活动任务集合与回合按会话存放，activeTask 只是当前会话视图。
@@ -432,11 +573,15 @@ export const useMobileStore = create<MobileState>((set, get) => {
   let bootstrapGeneration = 0;
   let releasingControl = false;
   let openConversationGeneration = 0;
-  let stableConversationView: Pick<
-    MobileState,
-    "activeConversationId" | "messages" | "toolRuns" | "pair" | "activeTask"
-  > | null = null;
   const eventCollectors = new Set<WireEvent[]>();
+
+  /** 桌面端新代次：会话级状态整体回到初值并采用新 stream_id，保留当前打开的聊天。 */
+  const resetSession = (streamId: string | null): void => {
+    openConversationGeneration += 1;
+    stoppedOrTerminalMessages.clear();
+    endedTtsMessages.clear();
+    set({ ...initialSessionState(get().voice.availability), streamId });
+  };
   const nextQueuedPlayback = (
     chunks: Record<string, MobileTtsChunk[]>,
     fallback: MobileVoicePlayback = { messageId: null, state: "idle", error: null, errorCode: null },
@@ -482,13 +627,14 @@ export const useMobileStore = create<MobileState>((set, get) => {
     });
   };
 
-  /** connect() 只发起握手；pair 等调用必须等 connected 后才能发请求。 */
+  /**
+   * connect() 只发起握手；业务请求必须等 connected 后才能发。
+   * auth_failed 是该连接的终态（凭据失效），直接拒绝，由界面引导重新配对。
+   */
   const waitForConnected = (timeoutMs = 10_000): Promise<void> => {
     if (client.getState() === "connected") return Promise.resolve();
-    // V0.3.8 D4：若处于 auth_failed，但底层 socket 物理连接仍为 OPEN，
-    // 对于 remote.pair 等免鉴权请求物理链路可用，立即放行，杜绝配对按钮永久挂起。
-    if (client.getState() === "auth_failed" && client.isSocketConnected()) {
-      return Promise.resolve();
+    if (client.getState() === "auth_failed") {
+      return Promise.reject(new Error("配对凭据已失效，请重新配对"));
     }
     if (client.getState() === "disconnected" && !client.isSocketConnected()) {
       return Promise.reject(new Error("连接已断开"));
@@ -516,11 +662,11 @@ export const useMobileStore = create<MobileState>((set, get) => {
           cleanup();
           resolve();
         }
-        if (connection === "auth_failed" && client.isSocketConnected()) {
-          cleanup();
-          resolve();
-        }
-        if (connection === "unreachable" || connection === "disconnected") {
+        if (
+          connection === "unreachable" ||
+          connection === "disconnected" ||
+          connection === "auth_failed"
+        ) {
           cleanup();
           reject(new Error(`连接失败：${connection}`));
         }
@@ -539,20 +685,26 @@ export const useMobileStore = create<MobileState>((set, get) => {
     };
   };
 
+  /** 重放收集期间的带序号事件；remote-only 事件不带序号，收到时已即时处理。 */
   const replayEventsAfter = (
     events: WireEvent[],
     sequence: number,
     streamId: string | null,
   ): void => {
     events
-      .filter((event) => {
+      .filter((event): event is WireEvent & { sequence: number } => {
         const eventStream = event.stream_id == null ? null : String(event.stream_id);
-        return event.sequence > sequence && (!streamId || !eventStream || eventStream === streamId);
+        return (
+          typeof event.sequence === "number" &&
+          event.sequence > sequence &&
+          (!streamId || !eventStream || eventStream === streamId)
+        );
       })
       .sort((left, right) => left.sequence - right.sequence)
       .forEach((event) => handleEvent(event, true));
   };
 
+  /** 后台触发的同步失败：错误已写入 syncError，这里保留日志。 */
   const reportBootstrapFailure = (error: unknown): void => {
     console.error("手机端状态同步失败", error);
   };
@@ -561,7 +713,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
     if (releasingControl) return;
     if (bootstrapping) return bootstrapping;
     const generation = ++bootstrapGeneration;
-    set({ bootstrapped: false });
+    set({ bootstrapped: false, syncError: null });
     const activeConversationId = get().activeConversationId;
     const collector = collectEvents();
     let tracked: Promise<void>;
@@ -571,32 +723,17 @@ export const useMobileStore = create<MobileState>((set, get) => {
       // 控制声明必须成功后才公布同步完成；活跃聊天重连也走同一条路径。
       await client.request("remote.claim_control");
       if (generation !== bootstrapGeneration) return;
-      client.confirmAuthenticated();
+      // 鉴权请求已成功，连接确认可用后才开始心跳。
+      client.startHeartbeat();
       const snapshotStream =
         snapshot.stream_id == null ? null : String(snapshot.stream_id);
       // app.bootstrap 是新连接的权威基线；重连后即使旧 streamId 仍在本地，也采纳响应代次。
       if (snapshotStream && snapshotStream !== get().streamId) {
-        openConversationGeneration += 1;
-        stableConversationView = null;
-        set({
-          streamId: snapshotStream,
-          lastSequence: -1,
-          bootstrapped: false,
-          messages: [],
-          toolRuns: [],
-          approvals: [],
-          pair: null,
-          activeTask: null,
-          // 新 stream 属于桌面端新一轮会话：旧电源状态随之作废，
-          // serve 启动时按冻结 §2.1 会重新 emit，之前不展示旧值。
-          powerStatus: null,
-        });
+        resetSession(snapshotStream);
       }
       applySnapshot(set, snapshot, get);
-      // V0.3.7 电源（Codex Review P2）：serve 启动时的 status_changed 只在
-      // 已鉴权订阅之前 emit 一次，晚连手机收不到（无回放缓冲）——bootstrap
-      // 完成后主动拉一次当前快照（power.get_status 幂等无副作用），晚连
-      // 手机即可获得休眠风险提示；失败如实保留日志不阻塞 bootstrap。
+      // serve 启动时的 power.status_changed 只在手机订阅之前发一次且没有回放，
+      // bootstrap 完成后主动拉一次当前状态（幂等无副作用）；失败保留日志，不阻塞同步。
       void client
         .request<PowerStatusPayload>("power.get_status")
         .then((status) => {
@@ -620,7 +757,13 @@ export const useMobileStore = create<MobileState>((set, get) => {
           });
         } catch (error) {
           if (generation === bootstrapGeneration) {
-            set({ bootstrapped: false });
+            set({
+              bootstrapped: false,
+              openError: {
+                conversationId: activeConversationId,
+                message: error instanceof Error ? error.message : String(error),
+              },
+            });
             replayEventsAfter(collector.events, get().lastSequence, get().streamId);
           }
           throw error;
@@ -638,10 +781,11 @@ export const useMobileStore = create<MobileState>((set, get) => {
         set({
           messages: conversation.messages,
           toolRuns: conversation.tool_runs,
-          queueItems: conversation.queue_items.filter((item) => item.status === "queued"),
+          queueItems: visibleQueueItems(conversation.queue_items),
           pair: conversation.pair,
           activeTask: conversation.active_task,
-          // V0.3.9 §3：conversation.open 只带当前聊天的 active_task；全账号权威集合
+          openError: null,
+          // conversation.open 只带当前聊天的 active_task；全账号权威集合
           // 由 app.bootstrap / task.busy_changed 维护，这里只替换本会话条目。
           activeTasks: conversation.active_task
             ? [
@@ -653,8 +797,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
             ...get().turnsByConversation,
             [activeConversationId]: conversation.turns ?? [],
           },
-          // V0.3.9 §2/§6：只读装载显式下发时才覆盖摘要/记忆/租约。
-          // 记忆：conversation.open 返回体同样不带 memories，缺字段保留现状。
+          // 只读装载显式下发时才覆盖摘要/记忆/租约；conversation.open 不带 memories，保留现状。
           summaries: conversation.summaries ?? (get().summariesByConversation[activeConversationId] ?? []),
           summariesByConversation: conversation.summaries
             ? { ...get().summariesByConversation, [activeConversationId]: conversation.summaries }
@@ -674,7 +817,12 @@ export const useMobileStore = create<MobileState>((set, get) => {
       replayEventsAfter(collector.events, snapshot.sequence, snapshotStream ?? get().streamId);
     })();
     tracked = request.catch((error: unknown) => {
-      if (generation === bootstrapGeneration) set({ bootstrapped: false });
+      if (generation === bootstrapGeneration) {
+        set({
+          bootstrapped: false,
+          syncError: error instanceof Error ? error.message : String(error),
+        });
+      }
       throw error;
     }).finally(() => {
       collector.stop();
@@ -691,25 +839,14 @@ export const useMobileStore = create<MobileState>((set, get) => {
       bootstrapGeneration += 1;
       bootstrapping = null;
       eventCollectors.clear();
-      openConversationGeneration += 1;
-      stableConversationView = null;
-      set({
-        streamId: eventStream,
-        lastSequence: -1,
-        bootstrapped: false,
-        messages: [],
-        toolRuns: [],
-        approvals: [],
-        pair: null,
-        activeTask: null,
-        powerStatus: null,
-      });
+      resetSession(eventStream);
       void bootstrap().catch(reportBootstrapFailure);
     } else if (eventStream && !state.streamId) {
       set({ streamId: eventStream });
     }
 
-    if (!replaying) {
+    // remote-only 事件（TTS 分片、转写）不带序号：不收集重放、不做序号校验、不推进 lastSequence。
+    if (!replaying && typeof event.sequence === "number") {
       eventCollectors.forEach((events) => events.push(event));
     }
 
@@ -734,14 +871,28 @@ export const useMobileStore = create<MobileState>((set, get) => {
         break;
       }
       case "conversation.changed": {
-        // 真实协议存在两种载荷：完整 {"conversation": record} 与仅
-        // {"conversation_id": ...}（如归档其他会话的分支）。骨架只合并
-        // 带完整 record 的分支；仅 id 形态不做本地猜测，等下次水合对齐。
+        // 两种载荷：完整 {"conversation": record}，以及归档非当前会话时只带
+        // {"conversation_id"}。完整记录同时写回所属项目（列表页按项目渲染）；
+        // 只有 id 时本地不知道变了什么，重新同步取权威列表。
         const conversation = (event.payload as { conversation?: ConversationRecord }).conversation;
         if (conversation) {
           set({
             conversationsById: { ...get().conversationsById, [conversation.conversation_id]: conversation },
+            projects: get().projects.map((project) =>
+              project.project_id === conversation.project_id
+                ? {
+                    ...project,
+                    conversations: upsertBy(
+                      project.conversations ?? [],
+                      conversation,
+                      (item) => item.conversation_id === conversation.conversation_id,
+                    ),
+                  }
+                : project,
+            ),
           });
+        } else {
+          void bootstrap().catch(reportBootstrapFailure);
         }
         break;
       }
@@ -757,28 +908,19 @@ export const useMobileStore = create<MobileState>((set, get) => {
         break;
       }
       case "approval.resolved": {
-        // V0.3.9 §6：终态统一为 allow|allow_for_conversation|deny|timeout，
-        // resolved_by/actor/reason/error_code 缺失保持 null——绝不伪造成 remote。
+        // 终态为 allow|allow_for_conversation|deny|timeout；resolved_by/actor/reason/
+        // error_code 原样记录，缺失保持 null。载荷里的 reason 是终态原因，申请理由取自待审批记录。
         const payload = event.payload as Partial<ApprovalResolvedPayload>;
-        if (payload.approval_id) {
-          const existing = get().approvals.find((item) => item.approval_id === payload.approval_id);
+        const approvalId = payload.approval_id;
+        if (approvalId) {
+          const pending = get().approvals.find((item) => item.approval_id === approvalId);
           set({
-            approvals: get().approvals.filter((item) => item.approval_id !== payload.approval_id),
-            resolvedApprovals: [
-              ...get().resolvedApprovals.filter((item) => item.approval_id !== payload.approval_id),
-              {
-                approval_id: payload.approval_id,
-                conversation_id: payload.conversation_id ?? get().activeConversationId ?? undefined,
-                // 缺失时不伪造方向，置空串由展示层给中性文案。
-                decision: payload.decision ?? "",
-                resolved_by: payload.resolved_by ?? "",
-                task_id: payload.task_id ?? undefined,
-                operation: existing?.operation,
-                reason: payload.reason ?? existing?.reason,
-                error_code: payload.error_code ?? null,
-                resolved_at: payload.resolved_at ?? null,
-              },
-            ],
+            approvals: get().approvals.filter((item) => item.approval_id !== approvalId),
+            resolvedApprovals: upsertBy(
+              get().resolvedApprovals,
+              toResolvedApproval(approvalId, payload, pending),
+              (item) => item.approval_id === approvalId,
+            ),
           });
         }
         break;
@@ -903,13 +1045,18 @@ export const useMobileStore = create<MobileState>((set, get) => {
         break;
       }
       case "voice.playback_interrupted": {
-        // V0.3.9 §6：抢占反馈——本地播放必须已停止，迟到分片由终态集合挡住。
+        // 抢占反馈：本地播放随之停止，迟到分片由终态集合挡住；打断原因写入 lastInterruption 供页面展示。
         const payload = event.payload as {
           conversation_id?: string;
           message_id?: string | null;
           reason?: string | null;
         };
         const interruptedId = payload.message_id ?? null;
+        const lastInterruption: MobilePlaybackInterruption = {
+          conversationId: payload.conversation_id ?? null,
+          messageId: interruptedId,
+          reason: payload.reason ?? null,
+        };
         if (interruptedId) {
           stoppedOrTerminalMessages.add(interruptedId);
           endedTtsMessages.delete(interruptedId);
@@ -920,21 +1067,23 @@ export const useMobileStore = create<MobileState>((set, get) => {
             voice: {
               ...voice,
               ttsChunks: nextChunks,
-              // 被抢占的消息不再是播放目标；迟到分片由终态集合挡住。
               playback:
                 voice.playback.messageId === interruptedId
                   ? { messageId: null, state: "idle", error: null, errorCode: null }
                   : voice.playback,
+              lastInterruption,
             },
           });
+        } else {
+          set({ voice: { ...get().voice, lastInterruption } });
         }
         console.warn("[voice.playback_interrupted]", event.payload);
         break;
       }
       case "message.created":
       case "message.status_changed": {
-        // V0.3.4 Codex 建议 A：委派执行的完成/失败/取消由 message.status_changed
-        // 推进消息状态；按 message_id upsert，委派卡据此退出「运行中」。
+        // 委派执行的完成/失败/取消由 message.status_changed 推进消息状态；
+        // 按 message_id 原位替换，时间线位置不随状态变化移动。
         const createdPayload = event.payload as {
           message?: Message;
           /** V0.3.7：服务端预判的移动端朗读可用性随 created 下发。 */
@@ -965,8 +1114,10 @@ export const useMobileStore = create<MobileState>((set, get) => {
           ) {
             preemptOldPlayback(message.message_id);
           }
-          const rest = get().messages.filter((m) => m.message_id !== message.message_id);
-          set({ messages: [...rest, message] });
+          const messageId = message.message_id;
+          set({
+            messages: upsertBy(get().messages, message, (item) => item.message_id === messageId),
+          });
         }
         break;
       }
@@ -1027,10 +1178,13 @@ export const useMobileStore = create<MobileState>((set, get) => {
               streaming: true,
               timeline_order: payload.timeline_order ?? null,
             };
-        const rest = get().messages.filter(
-          (item) => item.message_id !== message.message_id,
-        );
-        set({ messages: [...rest, message] });
+        set({
+          messages: upsertBy(
+            get().messages,
+            message,
+            (item) => item.message_id === message.message_id,
+          ),
+        });
         break;
       }
       case "message.finalized": {
@@ -1064,10 +1218,13 @@ export const useMobileStore = create<MobileState>((set, get) => {
         ) {
           break;
         }
-        const rest = get().toolRuns.filter(
-          (item) => item.tool_call_id !== toolRun.tool_call_id,
-        );
-        set({ toolRuns: [...rest, toolRun] });
+        set({
+          toolRuns: upsertBy(
+            get().toolRuns,
+            toolRun,
+            (item) => item.tool_call_id === toolRun.tool_call_id,
+          ),
+        });
         break;
       }
       case "voice.mobile_transcript": {
@@ -1093,6 +1250,28 @@ export const useMobileStore = create<MobileState>((set, get) => {
                 // 错误清掉，让 F4 的保留只在「事件丢失」兜底路径生效。
                 // 错误由下一次成功启动的 starting 态清空（见 startVoiceCapture）。
                 error: get().voice.capture.error,
+              },
+            },
+          });
+        }
+        break;
+      }
+      case "voice.mobile_asr_failed": {
+        // 服务端放弃本次转写（如录音超时）：会话已关闭，录音状态退出并展示错误原文。
+        const payload = event.payload as {
+          session_id?: string;
+          code?: string;
+          error?: string;
+        };
+        console.error("手机语音转写失败", payload);
+        if (payload.session_id && payload.session_id === get().voice.capture.sessionId) {
+          set({
+            voice: {
+              ...get().voice,
+              capture: {
+                state: "idle",
+                sessionId: null,
+                error: payload.error ?? null,
               },
             },
           });
@@ -1125,7 +1304,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
           bytes: base64PcmByteLength(data),
         };
 
-        // V0.3.8 修复：新语音分片到达时，若正在播放前序旧消息，立即抢占打断旧消息
+        // 新消息的分片到达时，正在播放的旧消息立即被抢占
         const nextChunks = { ...voice.ttsChunks };
         const currentMsgId = voice.playback.messageId;
         if (
@@ -1145,9 +1324,8 @@ export const useMobileStore = create<MobileState>((set, get) => {
           TTS_MAX_BUFFERED_PCM_BYTES,
         );
         if (appended.overflow) {
-          // V0.3.9 契约 §6：超过上限时整条播放进入 failed（error_code=pcm_overflow），
-          // 清空缓冲、记录终态并请求服务端停止合成；不丢旧片段后继续播放。
-          // 迟到 chunk/end 由 stoppedOrTerminalMessages + failed 终态挡住，不得复活。
+          // 超过上限时整条播放进入 failed（error_code=pcm_overflow），清空缓冲、
+          // 记录终态并请求服务端停止合成；迟到 chunk/end 由终态集合与 failed 挡住。
           stoppedOrTerminalMessages.add(msgId);
           endedTtsMessages.delete(msgId);
           delete nextChunks[msgId];
@@ -1172,6 +1350,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
         nextChunks[msgId] = appended.chunks;
 
         let nextPlayback = voice.playback;
+        let lastInterruption = voice.lastInterruption;
         if (
           !voice.playback.messageId ||
           voice.playback.state === "idle" ||
@@ -1184,6 +1363,8 @@ export const useMobileStore = create<MobileState>((set, get) => {
             error: null,
             errorCode: null,
           };
+          // 新一条朗读开始，上一次的打断提示随之失效。
+          lastInterruption = null;
         } else if (voice.playback.messageId === msgId) {
           nextPlayback = {
             messageId: msgId,
@@ -1198,6 +1379,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
             ...voice,
             playback: nextPlayback,
             ttsChunks: nextChunks,
+            lastInterruption,
           },
         });
         break;
@@ -1318,8 +1500,8 @@ export const useMobileStore = create<MobileState>((set, get) => {
         break;
       }
       case "queue.changed": {
-        // V0.3.8 T5（契约 §14.1）：全量快照按会话对齐——只更新当前活跃
-        // 会话的排队项；其他会话的队列由其打开时的 conversation.open 带回。
+        // 全量快照按会话对齐：只更新当前活跃会话的排队项；
+        // 其他会话的队列由其打开时的 conversation.open 带回。
         const queuePayload = event.payload as {
           conversation_id?: unknown;
           items?: unknown;
@@ -1329,11 +1511,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
           queuePayload.conversation_id === get().activeConversationId &&
           Array.isArray(queuePayload.items)
         ) {
-          set({
-            queueItems: (queuePayload.items as QueueItem[]).filter(
-              (item) => item.status === "queued",
-            ),
-          });
+          set({ queueItems: visibleQueueItems(queuePayload.items as QueueItem[]) });
         }
         break;
       }
@@ -1347,41 +1525,24 @@ export const useMobileStore = create<MobileState>((set, get) => {
     }
   };
 
+  /** 发消息或开始按住说话前停止本机全部朗读；停止失败如实抛出。 */
+  const stopLocalPlayback = async (): Promise<void> => {
+    const voice = get().voice;
+    const playing =
+      voice.playback.messageId &&
+      (voice.playback.state === "buffering" || voice.playback.state === "playing")
+        ? [voice.playback.messageId]
+        : [];
+    const messageIds = [...new Set([...playing, ...Object.keys(voice.ttsChunks)])];
+    await Promise.all(messageIds.map((messageId) => get().stopVoicePlayback(messageId)));
+  };
+
   return {
     connection: "disconnected",
     authFailureCode: null,
     deviceName: getStoredDeviceName(),
-    projects: [],
-    conversationsById: {},
     activeConversationId: null,
-    messages: [],
-    toolRuns: [],
-    queueItems: [],
-    approvals: [],
-    resolvedApprovals: [],
-    pair: null,
-    activeTask: null,
-    activeTasks: [],
-    turnsByConversation: {},
-    summaries: [],
-    summariesByConversation: {},
-    memories: [],
-    remoteControl: null,
-    streamId: null,
-    lastSequence: 0,
-    bootstrapped: false,
-    powerStatus: null,
-    voice: {
-      capture: { state: "idle", sessionId: null, error: null },
-      transcript: null,
-      playback: { messageId: null, state: "idle", error: null, errorCode: null },
-      availability: {
-        secureContext: typeof window !== "undefined" ? window.isSecureContext : false,
-        micPermission: "unknown",
-        supported: typeof navigator !== "undefined" && Boolean(navigator.mediaDevices?.getUserMedia),
-      },
-      ttsChunks: {},
-    },
+    ...initialSessionState(detectVoiceAvailability()),
 
     start() {
       if (wired) return;
@@ -1409,13 +1570,12 @@ export const useMobileStore = create<MobileState>((set, get) => {
           (failureCode === "expired_token" || failureCode === "token_expired")
         ) {
           clearCredentials();
-          navigate({ name: "pair" });
+          navigate({ name: "pair" }, { replace: true });
         }
       });
       client.onEvent(handleEvent);
-      // V0.3.8 T1（契约 §14.4）：回前台重同步——connected 时重新 bootstrap
-      // 全量覆盖本地快照（幂等补拉）；unreachable 终态由客户端复位重连，
-      // 连接成功后自会 bootstrap，不再永久停摆。
+      // 回前台重同步：connected 时重新 bootstrap 全量覆盖本地快照；
+      // unreachable 由客户端复位重连，连接成功后自会 bootstrap。
       if (typeof document !== "undefined") {
         document.addEventListener("visibilitychange", () => {
           if (document.visibilityState !== "visible") return;
@@ -1429,13 +1589,21 @@ export const useMobileStore = create<MobileState>((set, get) => {
     },
 
     reconnect() {
-      // reconnect 前复位退避计数：unreachable 是终态，需显式重开。
+      // client.disconnect() 复位退避计数，随后从第一档重新连接。
       client.disconnect();
       client.connect();
     },
 
+    async retrySync() {
+      await bootstrap();
+    },
+
     async pairDevice(code, deviceName) {
+      // 配对总在新连接上进行：旧连接可能已绑定失效 token（服务端不允许同一连接切换身份）。
+      // 先清旧凭据，新连接建立时不会拿它自动 bootstrap。
+      clearCredentials();
       set({ authFailureCode: null });
+      client.disconnect();
       client.connect();
       await waitForConnected();
       const result = await client.request<{ token: string }>(
@@ -1450,26 +1618,17 @@ export const useMobileStore = create<MobileState>((set, get) => {
 
     async openConversation(conversationId) {
       const generation = ++openConversationGeneration;
-      const currentView = {
-        activeConversationId: get().activeConversationId,
-        messages: get().messages,
-        toolRuns: get().toolRuns,
-        pair: get().pair,
-        activeTask: get().activeTask,
-      };
-      if (currentView.activeConversationId !== conversationId && currentView.messages.length > 0) {
-        stableConversationView = currentView;
-      }
-      const previous = stableConversationView ?? currentView;
+      // 页面已切到目标聊天：装载失败也保持在这里，由 openError 提供重试。
       set({
         activeConversationId: conversationId,
+        openError: null,
         messages: [],
         toolRuns: [],
+        queueItems: [],
         pair: null,
         activeTask: null,
       });
-      // 页面刷新直接落在聊天页时，装载可能先于 WS 握手完成；
-      // 连接等待和请求都必须处于同一回滚范围。
+      // 页面刷新直接落在聊天页时，装载可能先于 WS 握手完成。
       client.connect();
       let collector: ReturnType<typeof collectEvents> | null = null;
       let result: ConversationOpenResult;
@@ -1482,20 +1641,21 @@ export const useMobileStore = create<MobileState>((set, get) => {
         });
       } catch (error) {
         if (generation === openConversationGeneration) {
-          set({ ...previous, bootstrapped: false });
-          if (collector) {
-            replayEventsAfter(collector.events, get().lastSequence, get().streamId);
-          }
+          set({
+            openError: {
+              conversationId,
+              message: error instanceof Error ? error.message : String(error),
+            },
+          });
         }
         throw error;
       } finally {
         collector?.stop();
       }
-      if (generation !== openConversationGeneration || !collector) return;
+      if (generation !== openConversationGeneration) return;
       const resultStream = result.stream_id == null ? get().streamId : String(result.stream_id);
       if (resultStream && get().streamId && resultStream !== get().streamId) {
-        replayEventsAfter(collector.events, get().lastSequence, get().streamId);
-        set(previous);
+        // 装载结果来自另一代次：整体重新同步，bootstrap 会重新装载当前聊天。
         void bootstrap().catch(reportBootstrapFailure);
         return;
       }
@@ -1503,7 +1663,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
         activeConversationId: conversationId,
         messages: result.messages,
         toolRuns: result.tool_runs,
-        queueItems: result.queue_items.filter((item) => item.status === "queued"),
+        queueItems: visibleQueueItems(result.queue_items),
         pair: result.pair,
         activeTask: result.active_task,
         activeTasks: result.active_task
@@ -1531,34 +1691,22 @@ export const useMobileStore = create<MobileState>((set, get) => {
         bootstrapped: true,
       });
       replayEventsAfter(collector.events, result.sequence, resultStream);
-      stableConversationView = {
-        activeConversationId: get().activeConversationId,
-        messages: get().messages,
-        toolRuns: get().toolRuns,
-        pair: get().pair,
-        activeTask: get().activeTask,
-      };
     },
 
-    async submitDelegation(text) {
-      const conversationId = get().activeConversationId;
-      if (!conversationId) throw new Error("尚未打开会话");
-      const mode = get().conversationsById[conversationId]?.last_mode ?? "chat";
-      // V0.3.8 T5：忙时回执 queued+queue_item——排队消息立即本地可见，
-      // 随后的 queue.changed 全量快照会对齐（事件为权威）。
+    async submitDelegation(conversationId, text) {
+      await stopLocalPlayback();
+      // 不带 mode：服务端按会话持久化的模式校验，手机上可能过时的模式不覆盖桌面切换。
+      // 忙时回执 queued+queue_item，排队消息立即本地可见，随后的 queue.changed 全量快照对齐。
       const receipt = await client.request<SubmitReceipt>("chat.submit", {
         conversation_id: conversationId,
         target: "assistant",
-        mode,
         text,
       });
       applySubmitReceipt(set, get, conversationId, receipt);
     },
 
-    async submitMessage(text) {
-      const conversationId = get().activeConversationId;
-      if (!conversationId) throw new Error("尚未打开会话");
-      // 角色消息任何模式都可发送；不带 mode 参数，避免顺带切换会话模式。
+    async submitMessage(conversationId, text) {
+      await stopLocalPlayback();
       const receipt = await client.request<SubmitReceipt>("chat.submit", {
         conversation_id: conversationId,
         target: "character",
@@ -1610,45 +1758,23 @@ export const useMobileStore = create<MobileState>((set, get) => {
       try {
         await client.request("approval.resolve", { approval_id: approvalId, decision });
       } catch (error) {
-        const code = error instanceof Error && "code" in error ? String((error as Error & { code?: string }).code) : "";
-        if (code === "approval_already_resolved") {
-          // V0.3.5 双端并发仲裁：本端失败必须按先到者的真实结果收敛，严禁用本端入参顶替
-          // （此前直接写入本端 attempted decision，会把对端的真实拒绝伪造成批准，违反 Let It Fail）。
-          // 真实结果首选 approval.resolved 事件已写入的记录（同一 WS 上有序，通常已先处理）；
-          // 事件未到时优先取服务端结构化 details（契约 §6：error.details={decision,resolved_by}，
-          // 见 application_service.py ApprovalBroker.resolve），仅在 details 缺失时从错误文案提取。
-          const message = error instanceof Error ? error.message : String(error);
-          const structured =
-            error instanceof RemoteCommandError ? error.details : undefined;
-          const recorded = get().resolvedApprovals.find((item) => item.approval_id === approvalId);
-          const parsedDecision =
-            typeof structured?.decision === "string" && structured.decision
-              ? structured.decision
-              : (/应答（([^）]+)）/.exec(message)?.[1] ?? "");
-          const parsedBy =
-            typeof structured?.resolved_by === "string" && structured.resolved_by
-              ? structured.resolved_by
-              : (/已由\s*(\S+)\s*应答/.exec(message)?.[1] ?? "remote");
+        if (error instanceof RemoteCommandError && error.code === "approval_already_resolved") {
+          // 双端并发仲裁：按先到者的真实终态收敛。服务端在 details 里给出与
+          // approval.resolved 相同的终态字段；事件已先到时以事件记录为准。
+          const recorded = get().resolvedApprovals.some((item) => item.approval_id === approvalId);
           const pending = get().approvals.find((item) => item.approval_id === approvalId);
           set({
             approvals: get().approvals.filter((item) => item.approval_id !== approvalId),
             resolvedApprovals: recorded
               ? get().resolvedApprovals
-              : parsedDecision
-                ? [
-                    ...get().resolvedApprovals.filter((item) => item.approval_id !== approvalId),
-                    {
-                      approval_id: approvalId,
-                      conversation_id: get().activeConversationId ?? undefined,
-                      decision: parsedDecision,
-                      resolved_by: parsedBy,
-                      task_id: pending?.task_id,
-                      operation: pending?.operation,
-                      reason: pending?.reason,
-                    },
-                  ]
-                : // 解析不到真实决策时如实不补已决卡片；错误照常抛出由界面呈现。
-                  get().resolvedApprovals,
+              : [
+                  ...get().resolvedApprovals,
+                  toResolvedApproval(
+                    approvalId,
+                    error.details as Partial<ApprovalResolvedPayload>,
+                    pending,
+                  ),
+                ],
           });
         }
         throw error;
@@ -1661,7 +1787,8 @@ export const useMobileStore = create<MobileState>((set, get) => {
       bootstrapping = null;
       releasingControl = true;
       try {
-        if (getStoredToken()) {
+        // auth_failed 时凭据已失效，服务端不会接受释放请求；撤销流程已同步清除控制资格。
+        if (getStoredToken() && client.getState() !== "auth_failed") {
           client.connect();
           await waitForConnected();
           try {
@@ -1675,53 +1802,23 @@ export const useMobileStore = create<MobileState>((set, get) => {
         releasingControl = false;
       }
       eventCollectors.clear();
-      stableConversationView = null;
       client.disconnect();
       clearCredentials();
+      stoppedOrTerminalMessages.clear();
+      endedTtsMessages.clear();
       set({
         connection: "disconnected",
         authFailureCode: null,
         deviceName: null,
-        projects: [],
-        conversationsById: {},
         activeConversationId: null,
-        messages: [],
-        toolRuns: [],
-        approvals: [],
-        resolvedApprovals: [],
-        pair: null,
-        activeTask: null,
-        activeTasks: [],
-        turnsByConversation: {},
-        summaries: [],
-        summariesByConversation: {},
-        memories: [],
-        remoteControl: null,
-        streamId: null,
-        lastSequence: 0,
-        bootstrapped: false,
-        powerStatus: null,
-        voice: {
-          capture: { state: "idle", sessionId: null, error: null },
-          transcript: null,
-          playback: { messageId: null, state: "idle", error: null, errorCode: null },
-          availability: {
-            secureContext: typeof window !== "undefined" ? window.isSecureContext : false,
-            micPermission: "unknown",
-            supported: typeof navigator !== "undefined" && Boolean(navigator.mediaDevices?.getUserMedia),
-          },
-          ttsChunks: {},
-        },
+        ...initialSessionState(get().voice.availability),
       });
     },
 
     async startVoiceCapture(conversationId) {
       const voice = get().voice;
       if (voice.capture.state !== "idle") {
-        // 前置条件违反如实抛错：此前静默 return undefined，叠加接口的 `| void`，
-        // 导致 useVoiceCapture 每次启动都必抛「服务端未返回语音会话 ID」。
-        // V0.3.9 P1 加固：抛错前把原因写进 capture.error。调用方（useVoiceCapture）
-        // 会吞掉这次异常，只靠 throw 的话界面既无错误也无反馈，等于静默丢弃按压。
+        // 前置条件违反：原因写进 capture.error 再抛出，界面能看到这次按压为什么没有开始。
         const message = "语音采集正在进行中";
         set({
           voice: {
@@ -1739,6 +1836,8 @@ export const useMobileStore = create<MobileState>((set, get) => {
         },
       });
       try {
+        // 开始说话前先停本机朗读，避免麦克风录进角色语音。
+        await stopLocalPlayback();
         const result = await client.request<{ session_id: string }>("voice.mobile_ptt_start", {
           conversation_id: conversationId,
         });
@@ -1789,12 +1888,10 @@ export const useMobileStore = create<MobileState>((set, get) => {
       // 也可能已被别的启动改写，补发停止必须打向本次启动拿到的那一个。
       const sessionId = explicitSessionId ?? get().voice.capture.sessionId;
       if (!sessionId) return;
-      // V0.3.9 G1：服务端 end_session 先回调 is_final 事件、后返回 stop 响应
-      // （mobile_audio.py:221），这个窗口里 store 已被事件置 idle/sessionId=null，
-      // 用户可能已经建起新会话。旧会话的迟到响应若无条件写 capture，就会把新会话的
-      // 前端状态抹成 idle/null：新会话的服务端会话还开着，上行分片却因 sessionId=null
-      // 抛错，没人再持有它的 session_id，泄漏到 watchdog（120s）。
-      // 因此每次写 capture 前都确认目标会话仍是当前会话；不一致只发请求、不写状态。
+      // 服务端 end_session 先发 is_final 事件、后返回 stop 响应，这个窗口里 store 可能
+      // 已被事件置 idle，用户也可能已经建起新会话。旧会话的迟到响应若无条件写 capture，
+      // 会把新会话抹成 idle/null，新会话的服务端会话因此泄漏到 watchdog。
+      // 所以每次写 capture 前都确认目标会话仍是当前会话；不一致只发请求、不写状态。
       const stillCurrent = () => get().voice.capture.sessionId === sessionId;
       if (stillCurrent()) {
         set({
@@ -1812,10 +1909,8 @@ export const useMobileStore = create<MobileState>((set, get) => {
           transcript: string;
           conversation_id: string;
         }>("voice.mobile_ptt_stop", { session_id: sessionId });
-        // V0.3.9 P1：停止成功即复位，不再只依赖服务端 voice.mobile_transcript
-        // (is_final) 事件复位。事件丢失或 session_id 不匹配会让 capture 永久停在
-        // "stopping"，之后所有启动都被拦截。服务端停响应本身携带最终转写全文，
-        // 直接落库即与事件路径等价（事件路径保留，幂等冗余）。
+        // 停止成功即复位：停响应本身携带最终转写全文，与 is_final 事件路径等价，
+        // 事件丢失时 capture 也不会停在 stopping。
         if (stillCurrent()) {
           set({
             voice: {
@@ -1835,11 +1930,18 @@ export const useMobileStore = create<MobileState>((set, get) => {
         // 不复位、也不把旧会话的转写盖到新会话的界面上。
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        console.error("语音会话停止失败", sessionId, error);
         if (stillCurrent()) {
           set({
             voice: {
               ...get().voice,
-              capture: { state: "idle", sessionId: null, error: message },
+              // 本次采集已记录的错误（麦克风、引擎、分片上行）是根因，停止失败
+              // （如空会话的 voice_transcript_empty）只是后果，不覆盖根因。
+              capture: {
+                state: "idle",
+                sessionId: null,
+                error: get().voice.capture.error ?? message,
+              },
             },
           });
         } else {
@@ -1854,6 +1956,15 @@ export const useMobileStore = create<MobileState>((set, get) => {
         }
         throw error;
       }
+    },
+
+    reportVoiceCaptureError(message) {
+      set({
+        voice: {
+          ...get().voice,
+          capture: { ...get().voice.capture, error: message },
+        },
+      });
     },
 
     async stopVoicePlayback(messageId) {

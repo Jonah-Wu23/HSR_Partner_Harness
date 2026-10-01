@@ -403,6 +403,18 @@
   word-break: break-word;
 }
 
+/* 装载 / 同步失败条上的重试按钮 */
+.mobile-open-retry-btn {
+  flex: none;
+  min-height: 36px;
+  padding: 0 12px;
+  background: transparent;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  color: var(--fg);
+  font-size: 13px;
+}
+
 .mobile-composer-error-close {
   display: inline-flex;
   align-items: center;
@@ -803,6 +815,20 @@
   color: var(--danger);
 }
 
+/* 消息失败 / 取消状态及服务端原因 */
+.mobile-msg-status {
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+
+.mobile-msg-status-failed {
+  color: var(--danger);
+}
+
+.mobile-msg-status-cancelled {
+  color: var(--muted);
+}
+
 /* 窄屏 (≤ 360px) 优化：核对项——审批三按钮同行不溢出、语音面板与状态条不撑破
    视口、输入区左右留白与消息区一致（安全区仍由 .app-shell 承担）。 */
 @media (max-width: 360px) {
@@ -853,6 +879,10 @@
   border-radius: 10px;
   padding: 10px 12px;
   margin: 6px 0;
+}
+
+.queue-item-failed {
+  border-color: var(--danger, #ff6b6b);
 }
 
 .queue-item-head {

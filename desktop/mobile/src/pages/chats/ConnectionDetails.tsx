@@ -3,22 +3,14 @@ import type { RemoteControlState } from "@shared/contracts/protocol";
 import type { MobileConnectionState } from "../../lib/wsClient";
 import { useMobileStore } from "../../lib/mobileStore";
 import { LeaseStatusPanel } from "../../components/LeaseStatusPanel";
-import { DeviceListPanel } from "../../components/DeviceListPanel";
-import { useRemoteDevices } from "./useRemoteDevices";
 import "./ConnectionDetails.css";
 
 /**
- * V0.3.9 V06：会话列表页的「连接详情」抽屉（显式按钮打开，可关闭）。
+ * 会话列表页的「连接详情」抽屉（显式按钮打开，可关闭）。
  *
- * 内容：连接状态、远程控制租约（LeaseStatusPanel）、远程设备列表（DeviceListPanel）。
- * 移动端没有独立设置页，会话列表是常驻首页，因此把连接详情放在这里，默认收起，
- * 用户显式点开才发 remote.list_devices 只读请求。
- *
- * 呈现纪律：每个字段无数据时如实显示「尚未取得 / 未知」，不用 0 或默认值顶替；
- * 失败保留原始错误文本。
- *
- * 待真实接线：store 尚未提供 remote_control 快照、本机 device_key 与失去控制权时点，
- * 三个字段接入前保持 null（面板如实显示「尚未取得控制权状态」）。
+ * 内容：连接状态与远程控制租约（LeaseStatusPanel）。设备列表与撤销属于桌面端
+ * 控制面方法，手机连接无权调用，只在桌面端「设置 → 远程设备」管理。
+ * 每个字段无数据时如实显示「尚未取得 / 未知」，不用 0 或默认值顶替。
  */
 
 const CONNECTION_LABELS: Record<MobileConnectionState, string> = {
@@ -39,11 +31,9 @@ interface ConnectionStoreExtensions {
 export function ConnectionDetails() {
   const [open, setOpen] = useState(false);
   const connection = useMobileStore((state) => state.connection);
-  const currentDeviceName = useMobileStore((state) => state.deviceName);
   const extensions = useMobileStore(
     (state) => state as unknown as ConnectionStoreExtensions,
   );
-  const devices = useRemoteDevices(open);
 
   return (
     <section className="card connection-details" data-testid="connection-details">
@@ -67,16 +57,6 @@ export function ConnectionDetails() {
             lease={extensions.remoteControl ?? null}
             selfDeviceKey={extensions.selfDeviceKey ?? null}
             controlLostAt={extensions.controlLostAt ?? null}
-          />
-          <DeviceListPanel
-            devices={devices.devices}
-            currentDeviceName={currentDeviceName}
-            loading={devices.loading}
-            error={devices.error}
-            revokingDeviceName={devices.revokingDeviceName}
-            revokeError={devices.revokeError}
-            onRefresh={devices.refresh}
-            onRevoke={devices.revoke}
           />
         </div>
       ) : null}

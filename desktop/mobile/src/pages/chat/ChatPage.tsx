@@ -1,10 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type {
   ActiveTask,
   ApprovalMode,
   ConversationMode,
   Message,
-  PendingApproval,
 } from "@shared/contracts/protocol";
 import { ContextStatusStrip } from "../../components/ContextStatusStrip";
 import { ChatStatusHint } from "../../components/ChatStatusHint";
@@ -87,6 +86,11 @@ export function ChatPage({ conversationId }: ChatPageProps) {
   const setApprovalMode = useMobileStore((state) => state.setApprovalMode);
   const connection = useMobileStore((state) => state.connection);
   const bootstrapped = useMobileStore((state) => state.bootstrapped);
+  const openError = useMobileStore((state) =>
+    state.openError?.conversationId === conversationId ? state.openError.message : null,
+  );
+  const syncError = useMobileStore((state) => state.syncError);
+  const retrySync = useMobileStore((state) => state.retrySync);
   const controlLostAt = useMobileStore(
     (state) => (state as unknown as { controlLostAt?: string | null }).controlLostAt ?? null,
   );
@@ -98,10 +102,11 @@ export function ChatPage({ conversationId }: ChatPageProps) {
     (a) => a.conversation_id === conversationId,
   );
 
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [target, setTarget] = useState<ChatComposerTarget>("character");
   const [modeSwitching, setModeSwitching] = useState(false);
   const [modeError, setModeError] = useState<string | null>(null);
+  const [approvalModeSwitching, setApprovalModeSwitching] = useState(false);
+  const [approvalModeError, setApprovalModeError] = useState<string | null>(null);
   const [resolvingApprovalIds, setResolvingApprovalIds] = useState<Set<string>>(new Set());
   // V0.3.9 V07：审批 resolve 的真实错误与幂等终态必须在页内可见（此前 177-191 行
   // 静默吞掉非 approval_already_resolved 的错误，违反 Let It Fail）。
@@ -121,16 +126,18 @@ export function ChatPage({ conversationId }: ChatPageProps) {
   const { playingMessageId, playbackMessageId, playbackError } = useVoicePlayback(conversationId);
   const contextStatus = useContextStatus(conversationId);
   const playbackErrorCode = usePlaybackErrorCode();
-  const playbackInterruption = usePlaybackInterruption();
+  const playbackInterruption = usePlaybackInterruption(conversationId);
 
-  // 装载会话
-  useEffect(() => {
-    setLoadError(null);
-    void openConversation(conversationId).catch((err) => {
-      const message = err instanceof Error ? err.message : "装载会话失败";
-      setLoadError(message);
+  // 装载会话：失败写入 store.openError，页面展示原始错误与重试入口。
+  const loadConversation = useCallback(() => {
+    openConversation(conversationId).catch((err: unknown) => {
+      console.error("会话装载失败", conversationId, err);
     });
   }, [conversationId, openConversation]);
+
+  useEffect(() => {
+    loadConversation();
+  }, [loadConversation]);
 
   // V0.3.9 V08：软键盘处理。visualViewport 是软键盘唯一可靠信号（dvh 只跟随
   // 浏览器工具栏收起/展开，不跟随键盘）；不支持 visualViewport 的引擎回退到
@@ -173,8 +180,23 @@ export function ChatPage({ conversationId }: ChatPageProps) {
     }
   };
 
+  // 显式带上本页的 conversationId：装载失败或切换途中也不会发到别的聊天。
   const handleSubmit = (text: string) =>
-    target === "assistant" ? submitDelegation(text) : submitMessage(text);
+    target === "assistant"
+      ? submitDelegation(conversationId, text)
+      : submitMessage(conversationId, text);
+
+  const handleApprovalModeChange = async (projectId: string, next: ApprovalMode) => {
+    setApprovalModeSwitching(true);
+    setApprovalModeError(null);
+    try {
+      await setApprovalMode(projectId, next);
+    } catch (err) {
+      setApprovalModeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setApprovalModeSwitching(false);
+    }
+  };
 
   const clearApprovalFeedback = (approvalId: string) => {
     setApprovalErrors((prev) => {
@@ -236,6 +258,7 @@ export function ChatPage({ conversationId }: ChatPageProps) {
   };
 
   const characterName = pair?.character?.name || "角色";
+  const pairNames = { character: pair?.character?.name, assistant: pair?.assistant?.name };
 
   const renderTimelineItem = (item: TimelineItem, itemState: ConversationItemState) => {
     if (item.kind === "tool_run") {
@@ -248,13 +271,13 @@ export function ChatPage({ conversationId }: ChatPageProps) {
       );
     }
     if (item.kind === "queue_item") {
-      // V0.3.8 T5（契约 §14.1）：忙时排队中的用户消息可见、可置顶/编辑/撤回。
+      // 命令返回 promise，失败由行内如实展示。
       return (
         <QueueItemRow
           queueItem={item.queueItem}
-          onWithdraw={() => void withdrawQueueItem(item.queueItem.queue_item_id)}
-          onPrioritize={() => void prioritizeQueueItem(item.queueItem.queue_item_id)}
-          onEdit={(text) => void editQueueItem(item.queueItem.queue_item_id, text)}
+          onWithdraw={() => withdrawQueueItem(item.queueItem.queue_item_id)}
+          onPrioritize={() => prioritizeQueueItem(item.queueItem.queue_item_id)}
+          onEdit={(text) => editQueueItem(item.queueItem.queue_item_id, text)}
         />
       );
     }
@@ -270,8 +293,9 @@ export function ChatPage({ conversationId }: ChatPageProps) {
       );
     }
     return (
-        <MessageBubble
-          message={message}
+      <MessageBubble
+        message={message}
+        pairNames={pairNames}
         itemState={itemState}
         playingMessageId={playingMessageId}
         playbackError={
@@ -314,10 +338,42 @@ export function ChatPage({ conversationId }: ChatPageProps) {
         </div>
       </header>
 
-      {/* 装载失败提示 */}
-      {loadError ? (
-        <div className="mobile-composer-error" style={{ margin: "8px 12px 0" }} role="alert">
-          <span className="mobile-composer-error-text">会话装载失败：{loadError}</span>
+      {/* 装载失败：停在本聊天，展示原始错误并提供重试 */}
+      {openError ? (
+        <div
+          className="mobile-composer-error"
+          style={{ margin: "8px 12px 0" }}
+          role="alert"
+          data-testid="chat-open-error"
+        >
+          <span className="mobile-composer-error-text">会话装载失败：{openError}</span>
+          <button
+            type="button"
+            className="mobile-open-retry-btn"
+            onClick={loadConversation}
+            data-testid="chat-open-retry"
+          >
+            重试
+          </button>
+        </div>
+      ) : syncError ? (
+        <div
+          className="mobile-composer-error"
+          style={{ margin: "8px 12px 0" }}
+          role="alert"
+          data-testid="chat-sync-error"
+        >
+          <span className="mobile-composer-error-text">同步失败：{syncError}</span>
+          <button
+            type="button"
+            className="mobile-open-retry-btn"
+            onClick={() => {
+              retrySync().catch((err: unknown) => console.error("重新同步失败", err));
+            }}
+            data-testid="chat-sync-retry"
+          >
+            重新同步
+          </button>
         </div>
       ) : null}
 
@@ -326,7 +382,7 @@ export function ChatPage({ conversationId }: ChatPageProps) {
           重点提供重同步与失去控制权事实提示；无事实时返回 null。 */}
       <ChatStatusHint
         connection={connection}
-        resyncing={!bootstrapped && connection === "connected"}
+        resyncing={!bootstrapped && connection === "connected" && !syncError && !openError}
         leaseLostAt={controlLostAt}
         showConnection={false}
       />
@@ -358,8 +414,7 @@ export function ChatPage({ conversationId }: ChatPageProps) {
         </div>
       ) : null}
 
-      {/* V0.3.9 V07：抢占反馈。voice.playback_interrupted 落地前按冻结事件类型
-          先出提示；reason 有值才展示原因，不合成结论。 */}
+      {/* 朗读被打断（voice.playback_interrupted）；reason 有值才展示原因。 */}
       {playbackInterruption ? (
         <div
           className="mobile-playback-interrupted"
@@ -378,8 +433,9 @@ export function ChatPage({ conversationId }: ChatPageProps) {
         </div>
       ) : null}
 
-      {/* V0.3.5：项目审批模式切换——真实调用 project.update_settings。
-          三档与桌面一致：请求批准（request_approval）/帮我审核（review）/完全允许运行（full_auto）。 */}
+      {/* 项目审批模式切换（project.update_settings），三档与桌面一致：
+          请求批准（request_approval）/帮我审核（review）/完全允许运行（full_auto）。
+          切换失败在本区如实展示。 */}
       {(() => {
         const project = projects.find(
           (item) => item.project_id === conversation?.project_id,
@@ -402,15 +458,22 @@ export function ChatPage({ conversationId }: ChatPageProps) {
                     project.approval_mode === item.value ? " is-active" : ""
                   }`}
                   data-testid={`approval-mode-${item.value}`}
-                  disabled={project.approval_mode === item.value}
-                  onClick={() =>
-                    void setApprovalMode(project.project_id, item.value)
-                  }
+                  disabled={approvalModeSwitching || project.approval_mode === item.value}
+                  onClick={() => void handleApprovalModeChange(project.project_id, item.value)}
                 >
                   {item.label}
                 </button>
               ))}
             </div>
+            {approvalModeError ? (
+              <p
+                className="mobile-composer-hint mobile-composer-hint-error"
+                role="alert"
+                data-testid="approval-mode-error"
+              >
+                审批模式切换失败：{approvalModeError}
+              </p>
+            ) : null}
           </section>
         );
       })()}
@@ -456,44 +519,24 @@ export function ChatPage({ conversationId }: ChatPageProps) {
               onReject={() => void handleResolve(approval.approval_id, "deny")}
             />
           ))}
-          {resolvedApprovals.map((resolved) => {
-            // V0.3.9 待真实接线：ApprovalResolvedPayload 的 actor / reason /
-            // error_code / resolved_at 目前没有进入 store 的 resolvedApprovals
-            // 记录（store 只保留 decision / resolved_by / 申请理由）。此处按
-            // 可选字段读取，逻辑轨补上后无需改本页即可展示；缺失保持 null。
-            const resolvedExtras = resolved as typeof resolved & {
-              actor?: string | null;
-              resolved_reason?: string | null;
-              error_code?: string | null;
-              resolved_at?: string | null;
-            };
-            return (
+          {resolvedApprovals.map((resolved) => (
             <ApprovalCard
               key={resolved.approval_id}
               approval={{
                 approval_id: resolved.approval_id,
-                conversation_id: resolved.conversation_id ?? conversationId,
-                operation: resolved.operation ?? {
-                  tool_kind: "shell",
-                  command: null,
-                  paths: [],
-                  patch_file_count: null,
-                  summary: "",
-                },
+                operation: resolved.operation ?? null,
                 reason: resolved.reason ?? "",
-                task_id: resolved.task_id,
-              } as PendingApproval}
+              }}
               conversationTitle={conversation?.title}
               status="resolved"
               decision={resolved.decision}
               resolvedBy={resolved.resolved_by}
-              actor={resolvedExtras.actor ?? null}
-              resolvedReason={resolvedExtras.resolved_reason ?? null}
-              errorCode={resolvedExtras.error_code ?? null}
-              resolvedAt={resolvedExtras.resolved_at ?? null}
+              actor={resolved.actor}
+              resolvedReason={resolved.resolved_reason}
+              errorCode={resolved.error_code}
+              resolvedAt={resolved.resolved_at}
             />
-            );
-          })}
+          ))}
         </section>
       ) : null}
 

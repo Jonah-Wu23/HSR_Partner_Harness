@@ -27,9 +27,10 @@ export function App() {
   useEffect(() => startNotificationEngine(), []);
 
   // 路由守卫：未配对一律落到配对页；已配对访问配对页则回列表。
+  // 用 replace 替换当前条目，返回键不会退回被纠正的页面再被弹回。
   useEffect(() => {
-    if (!hasToken && route.name !== "pair") navigate({ name: "pair" });
-    if (hasToken && route.name === "pair") navigate({ name: "list" });
+    if (!hasToken && route.name !== "pair") navigate({ name: "pair" }, { replace: true });
+    if (hasToken && route.name === "pair") navigate({ name: "list" }, { replace: true });
   }, [hasToken, route.name]);
 
   return (

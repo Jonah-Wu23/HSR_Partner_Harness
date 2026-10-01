@@ -1,28 +1,33 @@
 import type { PendingApproval } from "@shared/contracts/protocol";
 import { ShieldIcon } from "./icons";
 
+/** 卡片展示所需的审批字段；已决审批在本端没见过申请时 operation 为 null。 */
+export type ApprovalCardApproval = Omit<PendingApproval, "conversation_id" | "operation"> & {
+  conversation_id?: string;
+  operation: PendingApproval["operation"] | null;
+};
+
 export interface ApprovalCardProps {
-  approval: PendingApproval;
+  approval: ApprovalCardApproval;
   conversationTitle?: string;
-  /** V0.3.5：提交中状态（点击后等待服务器/事件收敛）。 */
+  /** 提交中状态（点击后等待服务器/事件收敛）。 */
   resolving?: boolean;
   onApprove?: () => void;
-  /** V0.3.5：仅本会话内生效的批准（ApprovalDecision.allow_for_conversation）。 */
+  /** 仅本会话内生效的批准（allow_for_conversation）。 */
   onAllowForConversation?: () => void;
   onReject?: () => void;
-  /** V0.3.5：已决状态展示。 */
   status?: "pending" | "resolved";
+  /** 终态决策：allow / allow_for_conversation / deny / timeout。 */
   decision?: string;
-  /** V0.3.9：审批终态来源（ApprovalResolvedPayload.resolved_by）。缺失传 null，
-      不伪造 desktop/remote/system。 */
+  /** 终态来源（resolved_by：desktop / remote / system）；缺失为 null。 */
   resolvedBy?: string | null;
-  /** V0.3.9：处理者（ApprovalResolvedPayload.actor：user|reviewer|system）。缺失 null。 */
+  /** 处理者（actor：user / reviewer / system）；缺失为 null。 */
   actor?: string | null;
-  /** V0.3.9：终态原因原文（如 timeout 的「等待审批超时」）。缺失 null。 */
+  /** 终态原因原文（如 timeout 的「等待审批超时」）；缺失为 null。 */
   resolvedReason?: string | null;
-  /** V0.3.9：终态错误码（如 approval_timeout）。缺失 null。 */
+  /** 终态错误码（如 approval_timeout）；缺失为 null。 */
   errorCode?: string | null;
-  /** V0.3.9：终态时间（ApprovalResolvedPayload.resolved_at）。缺失 null。 */
+  /** 终态时间（resolved_at）；缺失为 null。 */
   resolvedAt?: string | null;
 }
 
@@ -34,7 +39,7 @@ const TOOL_KIND_LABELS: Record<string, string> = {
 };
 
 const DECISION_LABELS: Record<string, string> = {
-  // 后端真实决策值（contract-v1 §6）：allow / allow_for_conversation / deny / timeout。
+  // 后端终态决策取值：allow / allow_for_conversation / deny / timeout。
   allow: "已批准",
   allow_for_conversation: "已批准（本会话）",
   deny: "已拒绝",
@@ -79,8 +84,9 @@ function actorLabel(actor: string | null | undefined): string | null {
 }
 
 /**
- * V0.3.5 手机端审批操作卡片：
- * 展示命令、路径、摘要、理由，并提供批准/拒绝按钮。
+ * 手机端审批操作卡片：
+ * 展示命令、路径、摘要、申请理由，并提供批准/拒绝按钮。
+ * 已决卡另行展示终态来源、处理者、终态原因、错误码与时间；
  * 审批被另一端处理后由 store 收敛，本组件只负责渲染与回调。
  */
 export function ApprovalCard({
@@ -99,7 +105,9 @@ export function ApprovalCard({
   resolvedAt = null,
 }: ApprovalCardProps) {
   const { operation, reason } = approval;
-  const kindLabel = TOOL_KIND_LABELS[operation.tool_kind] || operation.tool_kind;
+  const kindLabel = operation
+    ? TOOL_KIND_LABELS[operation.tool_kind] || operation.tool_kind
+    : null;
   const isResolved = status === "resolved";
   const actorText = actorLabel(actor);
 
@@ -115,7 +123,8 @@ export function ApprovalCard({
             <ShieldIcon />
           </span>
           <span className="mobile-approval-title">
-            {isResolved ? "已决操作" : "待审批操作"} · {kindLabel}
+            {isResolved ? "已决操作" : "待审批操作"}
+            {kindLabel ? ` · ${kindLabel}` : null}
           </span>
         </div>
         {isResolved ? (
@@ -132,18 +141,18 @@ export function ApprovalCard({
       </header>
 
       <div className="mobile-approval-body">
-        {operation.summary ? (
+        {operation?.summary ? (
           <p className="mobile-approval-summary">{operation.summary}</p>
         ) : null}
 
-        {operation.command ? (
+        {operation?.command ? (
           <div className="mobile-approval-row">
             <span className="mobile-approval-label">执行命令</span>
             <code className="mobile-approval-code">{operation.command}</code>
           </div>
         ) : null}
 
-        {operation.paths && operation.paths.length > 0 ? (
+        {operation?.paths && operation.paths.length > 0 ? (
           <div className="mobile-approval-row">
             <span className="mobile-approval-label">涉及路径</span>
             <code className="mobile-approval-code">
@@ -152,7 +161,7 @@ export function ApprovalCard({
           </div>
         ) : null}
 
-        {operation.patch_file_count !== null && operation.patch_file_count !== undefined ? (
+        {operation && operation.patch_file_count !== null && operation.patch_file_count !== undefined ? (
           <div className="mobile-approval-row">
             <span className="mobile-approval-label">变更文件</span>
             <code className="mobile-approval-code">
