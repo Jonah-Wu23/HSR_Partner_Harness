@@ -1,25 +1,7 @@
-"""Qwen-Audio-TTS 音色 customization 客户端（V0.3.2 M6）。
-
-供 CLI（``scripts/create_qwen_voice.py``）与桌面命令（``voice.provision``）
-共用同一份请求构建、响应解析和错误映射，避免两套实现漂移。
-
-契约依据 ``docs/design/dashscope/千问声音复刻文档.md`` 与
-``docs/design/dashscope/千问声音设计文档.md``：
-
-- 复刻：``POST {http_base_url}/services/audio/tts/customization``，
-  ``model="voice-enrollment"``，``input.action="create_voice"``，
-  ``input.target_model`` 固定 ``VOICE_TTS_MODEL``，``input.prefix``
-  （≤10 位小写字母数字），``input.url`` 为 DashScope 可访问的版本化
-  HTTPS 参考音频地址；成功读取 ``output.voice_id``。
-- 声音设计：同 endpoint，``input.voice_prompt`` + ``input.preview_text``，
-  ``target_model`` 同上；成功同样读取 ``output.voice_id``。
-- Qwen3-TTS 的 ``qwen-voice-enrollment`` / ``action="create"`` /
-  ``input.audio.data``（Base64）属于另一模型系列，本客户端不提供。
-
-错误处理（Let It Fail）：HTTP 状态、DashScope ``code``/``message`` 原样
-保留在 :class:`VoiceCustomizationError` 中，绝不合成 voice_id，也绝不把
-失败改写成成功。
-"""
+# Qwen-Audio-TTS 音色创建客户端，CLI（scripts/create_qwen_voice.py）与桌面命令共用。复刻与声音设计都走
+# POST {http_base_url}/services/audio/tts/customization，成功读取 output.voice_id；请求格式见
+# docs/design/dashscope/千问声音复刻文档.md 与 千问声音设计文档.md。HTTP 状态与 DashScope code/message
+# 原样保留在 VoiceCustomizationError 中。
 
 from __future__ import annotations
 
@@ -190,10 +172,7 @@ class QwenVoiceCustomizationClient:
         self._transport = transport
 
     def _redact(self, value: object) -> str:
-        text = str(value)
-        if self._api_key:
-            text = text.replace(self._api_key, "<REDACTED_API_KEY>")
-        return text
+        return str(value).replace(self._api_key, "<REDACTED_API_KEY>")
 
     def _redacted_error(self, exc: VoiceCustomizationError) -> VoiceCustomizationError:
         return VoiceCustomizationError(

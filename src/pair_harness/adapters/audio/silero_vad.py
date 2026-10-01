@@ -1,26 +1,13 @@
-"""Silero VAD v5 本地语音活动检测（B2）。
-
-把 16 kHz 单声道 int16 PCM 块流切成语音事件。内部：
-
-- 任意大小的 PCM 块按 512 样本（32 ms @ 16 kHz）重分帧，不足一帧的
-  尾部留存与下一块拼接；
-- 每帧送入 onnxruntime 推理（毫秒级，直接在异步迭代器内同步调用，
-  不进线程池——避免过度设计）；
-- 状态机产出 ``VadEvent``：``listening`` / ``speech_started`` /
-  ``speech_ended`` / ``false_trigger``，参数语义沿用旧项目
-  ``vad-config.ts``（阈值 0.45、结束等待约 1 秒、最短语音 4 帧）。
-  开口前的 pre-roll 补发由 VoiceRuntime 自己维护，Silero 适配器不保存
-  未消费的 pre-roll 状态。
-
-模型文件缺失或 onnxruntime 不可用时，构造阶段抛
-:class:`VadUnavailableError`；VoiceRuntime 捕获后退回按键说话。
-"""
+# Silero VAD v5 本地语音活动检测：16 kHz 单声道 int16 PCM 按 512 样本重分帧，逐帧用 onnxruntime 推理。
+# 阈值 0.45、结束等待约 1 秒、最短语音 4 帧；开口前的 pre-roll 由 VoiceRuntime 维护。
 
 from __future__ import annotations
 
-import shutil
 from collections.abc import AsyncIterable, AsyncIterator
 from pathlib import Path
+
+import numpy as np
+import onnxruntime as ort
 
 from pair_harness.core.contracts import VadEvent
 from pair_harness.core.ports import VoiceActivityDetector
@@ -30,15 +17,12 @@ FRAME_BYTES = FRAME_SAMPLES * 2  # int16 单声道
 DEFAULT_REDEMPTION_FRAMES = 30  # 约 960 ms 连续静音后结束语音段
 
 
-class VadUnavailableError(RuntimeError):
-    """VAD 模型文件缺失或 onnxruntime 不可导入。"""
-
-
 class SileroVoiceActivityDetector(VoiceActivityDetector):
     """本地 Silero VAD v5 状态机。
 
     ``detect`` 每次调用维护独立的模型循环状态；进入即产出
     ``listening``，之后按语音概率产出事件，直到输入流结束。
+    模型文件缺失或损坏时构造即抛出 onnxruntime 的原始错误。
     """
 
     def __init__(
@@ -56,29 +40,10 @@ class SileroVoiceActivityDetector(VoiceActivityDetector):
         self._session = self._load_session(self.model_path)
 
     @staticmethod
-    def _load_session(model_path: Path):
-        # 先检查文件，缺模型时不必加载 onnxruntime 原生库；这也避免无语音
-        # 环境的降级路径在进程退出时承受无意义的原生运行时收尾。
-        if not model_path.is_file():
-            raise VadUnavailableError(
-                f"VAD 模型文件缺失: {model_path}（应放置 silero_vad_v5.onnx）"
-            )
-        try:
-            import onnxruntime as ort  # type: ignore
-        except ImportError as exc:  # pragma: no cover - 由环境决定
-            raise VadUnavailableError(
-                "未安装 onnxruntime，无法启用本地 VAD"
-            ) from exc
-        try:
-            return ort.InferenceSession(
-                str(model_path), providers=["CPUExecutionProvider"]
-            )
-        except Exception as exc:  # pragma: no cover - 模型损坏等
-            raise VadUnavailableError(f"VAD 模型加载失败: {exc}") from exc
+    def _load_session(model_path: Path) -> ort.InferenceSession:
+        return ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
 
     def _frame_probability(self, frame: bytes, state) -> tuple[float, object]:
-        import numpy as np  # 延迟导入：仅真实 VAD 路径需要
-
         samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
         samples = samples.reshape(1, -1)
         outputs = self._session.run(
@@ -88,8 +53,6 @@ class SileroVoiceActivityDetector(VoiceActivityDetector):
         return float(outputs[0][0][0]), outputs[1]
 
     async def detect(self, pcm_stream: AsyncIterable[bytes]) -> AsyncIterator[VadEvent]:
-        import numpy as np  # 延迟导入：仅真实 VAD 路径需要
-
         yield VadEvent(type="listening")
 
         state = np.zeros((2, 1, 128), dtype=np.float32)
@@ -138,10 +101,3 @@ class SileroVoiceActivityDetector(VoiceActivityDetector):
                 yield VadEvent(type="speech_ended")
             else:
                 yield VadEvent(type="false_trigger")
-
-def copy_reference_model(source: Path, dest: Path) -> None:
-    """把旧项目的 silero_vad_v5.onnx 复制到项目 assets/models/。"""
-    if not source.is_file():
-        raise FileNotFoundError(f"源模型不存在: {source}")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, dest)

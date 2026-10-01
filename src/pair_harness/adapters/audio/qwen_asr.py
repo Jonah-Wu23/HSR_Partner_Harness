@@ -1,17 +1,6 @@
-"""Qwen 流式语音识别适配器。
-
-用 ``dashscope.audio.asr.Recognition`` 的 duplex WebSocket 把 16 kHz
-int16 PCM 流实时转写。SDK 回调运行在 SDK 自有线程，回调内只做一件事——
-``loop.call_soon_threadsafe(queue.put_nowait, ...)`` 把原始事件塞进
-asyncio 队列；适配器的异步迭代器从队列取出并映射为 :class:`AsrEvent`。
-
-句子合并：每个结果事件携带一个 sentence，按 ``begin_time`` 归并，见
-:func:`merge_asr_sentences`。
-
-生命周期：一次 ``stream_transcribe`` 对应一次 ``Recognition.start()`` /
-``stop()``。送音频与读识别结果并发进行，partial 随识别实时产出；音频流
-结束后 ``stop()`` 在线程池中等待 SDK 收尾，随后产出 final 或 error。
-"""
+# Qwen 流式语音识别：dashscope Recognition 的双工 WebSocket 实时转写 16 kHz int16 PCM。SDK 回调线程只把
+# 原始事件经 call_soon_threadsafe 放进 asyncio 队列，异步迭代器取出后映射为 AsrEvent。一次
+# stream_transcribe 对应一次 start()/stop()；送帧与读结果并发，音频流结束后 stop() 在线程池等待 SDK 收尾。
 
 from __future__ import annotations
 
@@ -20,17 +9,17 @@ from collections.abc import AsyncIterable, AsyncIterator, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+import dashscope
+from dashscope.audio.asr import Recognition, RecognitionCallback, RecognitionResult
+
 from pair_harness.core.audio import DASHSCOPE_CONFIG_LOCK
 from pair_harness.core.contracts import AsrEvent
 from pair_harness.core.ports import SpeechRecognizer
 from pair_harness.voice_models import VOICE_ASR_MODEL
 
+ASR_SAMPLE_RATE = 16_000
 # 送帧结束后等待 SDK 收尾事件的超时（秒）
 _TAIL_TIMEOUT_S = 5.0
-
-
-class QwenAsrError(RuntimeError):
-    """Qwen 流式 ASR 服务错误。"""
 
 
 @dataclass
@@ -53,7 +42,7 @@ def merge_asr_sentences(sentences: Iterable[Mapping[str, Any]]) -> str:
     return "".join(latest[begin] for begin in sorted(latest)).strip()
 
 
-async def _send_audio(recognition: Any, audio_stream: AsyncIterable[bytes]) -> None:
+async def _send_audio(recognition: Recognition, audio_stream: AsyncIterable[bytes]) -> None:
     """逐帧送入 SDK；音频流结束或送帧中断后调用 ``stop()`` 等 SDK 收尾。"""
     try:
         async for chunk in audio_stream:
@@ -64,43 +53,19 @@ async def _send_audio(recognition: Any, audio_stream: AsyncIterable[bytes]) -> N
         await asyncio.to_thread(recognition.stop)
 
 
-# ---------------------------------------------------------------------------
-# 适配器
-# ---------------------------------------------------------------------------
-
-
 class QwenStreamingRecognizer(SpeechRecognizer):
     """qwen-audio-3.0-asr-flash-streaming 流式识别。
 
-    ``api_key`` / ``ws_url`` 可在构造时显式传入；缺省时按
-    ``DASHSCOPE_API_KEY`` 环境变量与官方北京端点推导。SDK 的回调
-    事件经 ``call_soon_threadsafe`` 入 asyncio 队列。
+    ``api_key`` / ``ws_url`` 缺省时沿用 dashscope SDK 的环境变量与官方端点。
     """
 
-    def __init__(
-        self,
-        *,
-        api_key: str | None = None,
-        ws_url: str | None = None,
-        model: str | None = None,
-        sample_rate: int = 16_000,
-    ) -> None:
-        # ``model`` remains accepted for source compatibility with the old
-        # live-test helper, but it is intentionally ignored.  M6 has one ASR
-        # model and no caller may redirect this adapter to another model.
-        del model
+    def __init__(self, *, api_key: str | None = None, ws_url: str | None = None) -> None:
         self.api_key = api_key
         self.ws_url = ws_url
-        self.model = VOICE_ASR_MODEL
-        self.sample_rate = sample_rate
 
-    def _make_sdk(self, bridge_queue: asyncio.Queue[_BridgeEvent], loop: asyncio.AbstractEventLoop):
-        try:
-            import dashscope  # type: ignore
-            from dashscope.audio.asr import Recognition, RecognitionCallback  # type: ignore
-        except ImportError as exc:
-            raise QwenAsrError("未安装 dashscope SDK（pip install -e \".[voice]\"）") from exc
-
+    def _make_sdk(
+        self, bridge_queue: asyncio.Queue[_BridgeEvent], loop: asyncio.AbstractEventLoop
+    ) -> Recognition:
         with DASHSCOPE_CONFIG_LOCK:
             if self.ws_url:
                 dashscope.base_websocket_api_url = self.ws_url
@@ -108,7 +73,7 @@ class QwenStreamingRecognizer(SpeechRecognizer):
                 dashscope.api_key = self.api_key
 
         class _Callback(RecognitionCallback):
-            def on_event(self, result) -> None:
+            def on_event(self, result: RecognitionResult) -> None:
                 # 不含 sentence 的事件没有转写内容。字段在事件循环一侧解析，
                 # 结构不符时异常沿 stream_transcribe 上抛
                 sentence = result.get_sentence()
@@ -124,22 +89,18 @@ class QwenStreamingRecognizer(SpeechRecognizer):
                     bridge_queue.put_nowait, _BridgeEvent(kind="complete")
                 )
 
-            def on_error(self, result) -> None:
-                message = getattr(result, "message", None)
-                if message is None:
-                    message = str(result)
+            def on_error(self, result: RecognitionResult) -> None:
                 loop.call_soon_threadsafe(
                     bridge_queue.put_nowait,
-                    _BridgeEvent(kind="error", message=str(message)),
+                    _BridgeEvent(kind="error", message=str(result.message)),
                 )
 
-        recognition = Recognition(
-            model=self.model,
+        return Recognition(
+            model=VOICE_ASR_MODEL,
             format="pcm",
-            sample_rate=self.sample_rate,
+            sample_rate=ASR_SAMPLE_RATE,
             callback=_Callback(),
         )
-        return recognition
 
     async def stream_transcribe(self, audio_stream: AsyncIterable[bytes]) -> AsyncIterator[AsrEvent]:
         bridge: asyncio.Queue[_BridgeEvent] = asyncio.Queue()

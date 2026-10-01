@@ -18,13 +18,6 @@ logger = logging.getLogger(__name__)
 _PORTAUDIO_LOCK = threading.RLock()
 
 
-def list_devices() -> tuple[str, ...]:
-    """列出可用音频设备，供界面选择。"""
-    with _PORTAUDIO_LOCK:
-        devices = sd.query_devices()
-    return tuple(f"{index}: {device['name']}" for index, device in enumerate(devices))
-
-
 class MicrophoneCapture:
     """采集 16 kHz 单声道 int16 PCM 的麦克风流。
 
@@ -145,12 +138,9 @@ class MicrophoneCapture:
 
 def _input_device_candidates() -> tuple[int | None, ...]:
     """返回默认输入及可尝试的真实麦克风设备，优先 Windows WDM-KS。"""
-    try:
-        default_input = sd.default.device[0]
-        default_value = int(default_input) if default_input is not None else -1
-        default = default_value if default_value >= 0 else None
-    except (AttributeError, TypeError, ValueError):
-        default = None
+    # 没有默认输入设备时 PortAudio 返回 -1。
+    default_input = sd.default.device[0]
+    default = default_input if default_input is not None and default_input >= 0 else None
 
     preferred: list[int] = []
     remaining: list[int] = []
@@ -400,12 +390,10 @@ class AudioPlayer:
         if stream is None:
             return
         with _PORTAUDIO_LOCK:
-            abort = getattr(stream, "abort", None)
-            if abort is not None:
-                try:
-                    abort()
-                except Exception:  # noqa: BLE001 - 关闭阶段保留真实错误到日志
-                    logger.debug("failed to abort output stream", exc_info=True)
+            try:
+                stream.abort()
+            except Exception:  # noqa: BLE001 - 关闭阶段保留真实错误到日志
+                logger.debug("failed to abort output stream", exc_info=True)
             try:
                 stream.close()
             except Exception:  # noqa: BLE001 - 关闭阶段保留真实错误到日志

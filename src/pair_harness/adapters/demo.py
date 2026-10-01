@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from typing import Any
 from uuid import uuid4
 
 from pair_harness.core.contracts import (
@@ -23,33 +24,41 @@ from pair_harness.core.ports import CodingEngine, DialogueModel
 
 
 class ScriptedDialogueModel(DialogueModel):
-    """Predictable roleplay adapter used by Plan A demos and tests."""
+    """可预测的演示角色模型，供演示模式与离线测试使用。"""
 
     def __init__(self) -> None:
         self.title_requests: list[tuple[str, tuple[Message, ...]]] = []
 
     async def generate_title(
         self, *, pair_id: str, context: tuple[Message, ...]
-    ) -> str | None:
+    ) -> str:
         self.title_requests.append((pair_id, context))
         user_message = next((item for item in context if item.source == "user"), None)
         if user_message is None:
-            return None
+            raise ValueError("演示标题需要至少一条用户消息")
         text = " ".join(user_message.text.split())[:14]
-        return f"关于{text}" if text else None
+        if not text:
+            raise ValueError("演示标题需要非空的用户消息")
+        return f"关于{text}"
 
     async def generate_summary(
         self, *, pair_id: str, assistant_prompt: str, context_text: str
-    ) -> dict | None:
-        """确定性摘要：demo/测试用，不做语义判断、不改写消息原文。"""
-        if not context_text.strip():
-            return None
+    ) -> dict[str, Any]:
+        """确定性摘要：只取上下文前几行组成结构化对象，不改写消息原文。"""
         lines = [line for line in context_text.splitlines() if line.strip()]
+        if not lines:
+            raise ValueError("演示摘要需要非空的聊天上下文")
         return {
-            "title": f"关于{lines[0][:20] if lines else '对话'}",
+            "title": f"关于{lines[0][:20]}",
             "key_points": [line[:50] for line in lines[:3]],
-            "summary": "demo 摘要——结构化对象形状校验用。",
+            "summary": "演示摘要，用于结构化对象形状校验。",
         }
+
+    async def complete_json(
+        self, *, system: str, user: str, max_tokens: int
+    ) -> dict[str, Any]:
+        del system, user, max_tokens
+        raise NotImplementedError("演示角色模型没有真实模型，不支持单 JSON 请求")
 
     async def stream_reply(self, request: DialogueRequest) -> AsyncIterator[DialogueEvent]:
         if request.result_summary is not None:
@@ -81,7 +90,12 @@ class ScriptedDialogueModel(DialogueModel):
 
 
 class ScriptedCodingEngine(CodingEngine):
-    """Emits tool-shaped events without touching the filesystem."""
+    """不接触文件系统的演示引擎，按脚本发出工具形状的事件。
+
+    与真实 ACP 引擎一样，工具执行前先发 approval.requested，等编排器经
+    ``resolve_approval`` 回复裁决：允许时继续演示工具，否决时跳过工具并
+    正常结束本轮。
+    """
 
     engine_type = "scripted"
 
@@ -95,7 +109,7 @@ class ScriptedCodingEngine(CodingEngine):
     ) -> None:
         self.fail_tool = fail_tool
         self.tool_payload = tool_payload or {}
-        # 计划 A2：演示脚本包含 file.patch 事件，回执的变更文件列表据此形成
+        # 演示脚本发出 file.patch 事件，回执的变更文件列表据此形成。
         self.patch_path = patch_path
         self.reasoning = reasoning
         self.opened_sessions: list[tuple[ProjectRef, EngineSessionRef | None]] = []
@@ -104,7 +118,7 @@ class ScriptedCodingEngine(CodingEngine):
         self.requests: list[TaskRequest] = []
         self.cancelled: list[tuple[EngineSessionRef, str]] = []
         self.amendments: list[tuple[EngineSessionRef, str, TaskAmendment]] = []
-        self.approvals: list[tuple[EngineSessionRef, str, ApprovalDecision]] = []
+        self.decisions: dict[str, ApprovalDecision] = {}
 
     async def open_session(
         self,
@@ -157,6 +171,32 @@ class ScriptedCodingEngine(CodingEngine):
             payload=started_payload,
             **common,
         )
+        approval_id = f"demo-approval-{uuid4()}"
+        yield EngineEvent(
+            sequence=3,
+            type=EngineEventType.APPROVAL_REQUESTED,
+            tool_call_id=tool_call_id,
+            payload={
+                **started_payload,
+                "approval_id": approval_id,
+                "summary": started_payload["title"],
+            },
+            **common,
+        )
+        if self.decisions.pop(approval_id) == ApprovalDecision.DENY:
+            yield EngineEvent(
+                sequence=4,
+                type=EngineEventType.ASSISTANT_FINAL,
+                payload={"text": "演示文件操作被否决，没有执行。"},
+                **common,
+            )
+            yield EngineEvent(
+                sequence=5,
+                type=EngineEventType.TURN_COMPLETED,
+                payload={"summary": "本地演示结束"},
+                **common,
+            )
+            return
         yield EngineEvent(
             sequence=3,
             type=EngineEventType.TOOL_PROGRESS,
@@ -217,4 +257,5 @@ class ScriptedCodingEngine(CodingEngine):
         approval_id: str,
         decision: ApprovalDecision,
     ) -> None:
-        self.approvals.append((session_ref, approval_id, decision))
+        del session_ref
+        self.decisions[approval_id] = decision

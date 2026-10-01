@@ -1,2 +1,1 @@
-"""Dialogue model adapters."""
 
