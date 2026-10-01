@@ -13,6 +13,8 @@ dependencies = [
     "httpx>=0.27",
     "httpx-sse>=0.4",
     "aiohttp>=3.9",
+    "tomli-w>=1.0",
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]

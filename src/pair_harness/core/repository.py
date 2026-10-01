@@ -4,15 +4,18 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from .contracts import EngineSessionRef, Message, ToolRun
+from .summary import ConversationSummary
+
 
 @dataclass(frozen=True)
 class Project:
     project_id: str
     name: str
     root_path: str
-    # V0.2 M3：项目归属账号（默认账号为 "default-local"）
+    # 项目归属账号（默认账号为 "default-local"）
     account_id: str = ""
-    # 计划 A6：审批模式按项目保存，默认“请求批准”
+    # 审批模式按项目保存，默认“请求批准”
     approval_mode: str = "request_approval"
     reasoning_effort: str = "low"
     archived: bool = False
@@ -34,9 +37,9 @@ class Conversation:
     archived: bool
     created_at: datetime
     updated_at: datetime
-    # V0.2 M3：会话归属账号；旧库迁移按项目归属回填。
+    # 会话归属账号；旧库迁移按项目归属回填。
     account_id: str = ""
-    # V0.3.5：对话绑定的角色卡快照（card_id；内置角色为 None，迁移 v10）。
+    # 对话绑定的角色卡快照（card_id；内置角色为 None）。
     character_card_id: str | None = None
     # 标题来源：default 初始名、auto 助手生成、user 用户命名。
     title_source: str = "default"
@@ -44,7 +47,13 @@ class Conversation:
 
 @dataclass(frozen=True)
 class ConversationSnapshot:
+    """打开旧聊天时从存储读出的完整快照。
+
+    ``summary`` 是该聊天最近一条摘要记录，没有摘要时为 None。
+    """
+
     conversation: Conversation
-    messages: tuple
-    tool_runs: tuple
-    engine_session: object | None
+    messages: tuple[Message, ...]
+    tool_runs: tuple[ToolRun, ...]
+    engine_session: EngineSessionRef | None
+    summary: ConversationSummary | None

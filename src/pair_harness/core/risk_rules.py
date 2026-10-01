@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path, PurePath
 
+import yaml
+
 from .contracts import PendingOperation
 
 
@@ -27,8 +29,6 @@ class RiskRules:
 
 def load_risk_rules(path: Path) -> RiskRules:
     """从 YAML 加载高风险规则表。"""
-    import yaml
-
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     return RiskRules(
         version=int(data.get("version", 1)),
@@ -74,8 +74,8 @@ def match_high_risk(op: PendingOperation, rules: RiskRules) -> str | None:
             return f"批量 patch: {op.patch_file_count} 个文件"
 
     for path in op.paths:
-        # O1.6：Windows 反斜杠路径统一规范为 POSIX 风格后再匹配，
-        # 规则表保持正斜杠写法不变；展示仍用原始路径。
+        # Windows 反斜杠路径统一规范为 POSIX 风格后再匹配，规则表保持
+        # 正斜杠写法；展示仍用原始路径。
         normalized = PurePath(path).as_posix()
         for pattern in rules.sensitive_paths:
             if fnmatch(normalized, pattern):

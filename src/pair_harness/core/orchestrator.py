@@ -3,14 +3,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import time as time_module
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import partial
 from pathlib import Path, PurePath
 from typing import Literal, cast
 
-from .approval import ApprovalManager, ApprovalRequired, GateOutcome
+from .approval import ApprovalManager, GateOutcome
 from .context import ExecutionContext
 from .projection import role_context_window
 from .contracts import (
@@ -18,7 +19,6 @@ from .contracts import (
     ApprovalMode,
     CharacterProgressSummary,
     CharacterResultSummary,
-    CharacterTurn,
     DialogueEvent,
     DialogueRequest,
     EngineEvent,
@@ -33,7 +33,6 @@ from .contracts import (
     MessageStatus,
     MessageTarget,
     PendingOperation,
-    ProjectRef,
     ProjectRuntimeContext,
     TaskAmendment,
     TaskAmendmentDraft,
@@ -45,19 +44,28 @@ from .contracts import (
 )
 from .engine_state import ActiveTurn, BusyTurnError, GlobalEngineState, TaskLifecycle
 from .ports import CodingEngine, DialogueModel, Reviewer, StateStore
+from .repository import ConversationSnapshot
 from .risk_rules import RiskRules, default_risk_rules
 from .sandbox import ProjectSandbox, SandboxViolation
-from .summary import ConversationSummary
 from .voice_policy import is_tts_eligible
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class Runtime:
+    """一套整体替换的模型运行时：角色对话模型、编程助手引擎与审查智能体。"""
+
+    dialogue_model: DialogueModel
+    coding_engine: CodingEngine
+    reviewer: Reviewer | None
+
+
+@dataclass(frozen=True)
 class ConversationOutcome:
     messages: tuple[Message, ...] = ()
-    # V039-S4-003：本轮角色要求写入的长期记忆条目。持久化与作用域解析由
-    # 调用方（application_service）负责，编排器不接触存储。
+    # 本轮角色要求写入的长期记忆条目。持久化与作用域解析由调用方
+    # （application_service）负责，编排器不接触存储。
     memory_drafts: tuple[MemoryDraft, ...] = ()
     engine_events: tuple[EngineEvent, ...] = ()
     tool_runs: tuple[ToolRun, ...] = ()
@@ -70,21 +78,20 @@ class ConversationOutcome:
 
 @dataclass
 class _TaskProgress:
-    """O3.3：执行期间的活动任务进度（事件驱动更新、按需生成摘要）。
+    """执行期间的活动任务进度。
 
     只保存中性描述（当前步骤标签、已完成步骤数），不保存命令、路径与
-    输出原文；节流策略：进度状态只在工具事件到达时更新，摘要文本只在
-    角色请求（执行期间的聊天轮）到达时生成——不逐事件注入。
+    输出原文。进度状态只在工具事件到达时更新，摘要只在执行期间的聊天轮
+    到达时生成，不逐事件注入。
     """
 
     current_step: str = "任务准备中"
     completed_steps: int = 0
-    total_steps: int | None = None
 
 
 @dataclass
 class _SegmentState:
-    """V0.3.2 M1：单次任务内的助手分段累加器。
+    """单次任务内的助手分段累加器。
 
     思考与正文 delta 持续进入当前段；第一个工具事件到达时定稿当前段，
     工具后再次出现的 delta 开新段。消息 id 为
@@ -112,18 +119,17 @@ ApprovalCallback = Callable[
 裁决按 approval_id 对应到 UI 审批队列中的条目。
 """
 
-# O4.3：状态字面量类型别名——ToolRun.status 与 ExecutionReceipt.status
-# 的枚举值在事件循环里以 str 流动，出口处 cast 收敛，消除 type: ignore
+# ToolRun.status 与 ExecutionReceipt.status 的枚举值在事件循环里以 str
+# 流动，出口处用 cast 收敛到字面量类型。
 ToolRunStatus = Literal["running", "succeeded", "failed", "denied"]
 ReceiptStatus = Literal["completed", "failed", "cancelled"]
 
 
 def _conversation_turn_index(history: list[Message]) -> int:
-    """V0.3.7：计算本轮序号（用户发起消息累计数，1 起算）。
+    """计算本轮序号（用户发起消息累计数，1 起算）。
 
-    入参为不含当前消息的历史（当前条已在提交时落库，不在 history 内）。
-    仅统计 source==USER 且 origin==USER 的用户真实发言；角色/助手/工具/
-    系统消息不计入，开场白（CHARACTER/SYSTEM 来源）也不计入。
+    入参为当前用户消息之前的历史。只统计 source==USER 且 origin==USER
+    的用户真实发言；角色、助手、工具、系统消息与开场白都不计入。
     返回值 = 1 + 上述用户消息条数（当前回合占 +1）。
     """
     user_messages = sum(
@@ -138,90 +144,89 @@ class ConversationOrchestrator:
     def __init__(
         self,
         *,
-        pair_id: str,
-        project: ProjectRef,
         dialogue_model: DialogueModel,
         coding_engine: CodingEngine,
         approval_callback: ApprovalCallback,
         state: GlobalEngineState | None = None,
         store: StateStore | None = None,
-        approval_mode: ApprovalMode = ApprovalMode.REQUEST_APPROVAL,
         risk_rules: RiskRules | None = None,
         reviewer: Reviewer | None = None,
-        assistant_instructions: str = "",
     ) -> None:
-        self.pair_id = pair_id
-        self.project = project
         self.dialogue_model = dialogue_model
         self.coding_engine = coding_engine
         self.state = state or GlobalEngineState()
         self.store = store
-        self.approval_mode = approval_mode
         self.risk_rules = risk_rules or default_risk_rules()
         self.reviewer = reviewer
         self.approval_callback = approval_callback
-        self.assistant_instructions = assistant_instructions
         self._history: dict[str, list[Message]] = {}
         self._sessions: dict[str, EngineSessionRef] = {}
         self._approval_managers: dict[str, ApprovalManager] = {}
-        # O3.3：活动任务的执行进度（_execute 期间填充，结束时清理）
+        # 活动任务的执行进度（_execute 期间填充，结束时清理）
         self._progress: dict[str, _TaskProgress] = {}
-        # V0.3.2 M4：活动任务生命周期按 task_id 索引；不同聊天并发时
-        # 各自独立推进，一个任务结束只清理自己的生命周期。
+        # 活动任务生命周期按 task_id 索引；不同聊天并发时各自独立推进，
+        # 一个任务结束只清理自己的生命周期。
         self._active_lifecycles: dict[str, TaskLifecycle] = {}
-        # V0.3.2：每个聊天单调递增的工作台序号；助手 segment 与工具卡
-        # 共用同一时间线。restore_conversation 从历史最大值恢复。
+        # 每个聊天单调递增的时间线序号，全部消息与工具记录共用同一计数器。
+        # restore_conversation 从历史最大值恢复。
         self._timeline_counters: dict[str, int] = {}
-        # V0.2：按会话持久化的对话模式（chat/collaboration）。模式由
-        # 后端权威保存；设置类命令不得回推覆盖（与推理档位/审批方式/
-        # 发送对象互不覆盖的独立字段）。聊天模式是角色能力边界：不能委派。
-        self._conversation_modes: dict[str, Literal["chat", "collaboration"]] = {}
-        # O2.5：每会话入口锁——聊天轮（用户消息+角色台词）在锁内整体落库，
-        # 轮内顺序固定为用户→角色且不与其他轮交错；任务执行（_execute）
-        # 刻意不在锁内，执行期间到达的聊天轮与执行产生的系统/助手消息按
-        # 落库先后交错，运行中直接输入/修改仍可并发 steer 活动 turn。
+        # 角色流式回复开始时为 speech:{conversation_id}:{user_message_id}
+        # 预留的序号；同 id 的最终角色消息落库时取回。
+        self._speech_orders: dict[str, int] = {}
+        # 每会话入口锁：聊天轮（用户消息+角色台词）在锁内整体落库，轮内
+        # 顺序固定为用户→角色且不与其他轮交错。任务执行刻意不在锁内，
+        # 执行期间到达的聊天轮与执行产生的系统、助手消息按落库先后交错，
+        # 运行中的直接输入与修改仍可并发 steer 活动 turn。
         self._conversation_locks: dict[str, asyncio.Lock] = {}
-        # V0.3.9 契约 §1：会话级搭档登记表——消息与系统提示必须使用该聊天
-        # 自己的搭档 id，不能回退到可变全局 self.pair_id（迁移 v8 修过同类
-        # 历史错写）。由 select_context / restore_conversation / 执行上下文登记。
+        # 会话级搭档登记表：消息与系统提示必须使用该聊天自己的搭档 id。
+        # 由 restore_conversation 与执行上下文登记。
         self._conversation_pairs: dict[str, str] = {}
-        # V0.3.9 契约 §2：会话最近一次成功摘要的覆盖终点。触发摘要后角色
-        # 上下文只保留最近 12 条原文；未登记时沿用触发前上限。
+        # 会话最近一次成功摘要的覆盖终点。触发摘要后角色上下文只保留最近
+        # 12 条原文；未登记时沿用触发前上限。
         self._summary_coverage: dict[str, str] = {}
-        # 未登记搭档的会话已告警一次（避免逐条消息刷屏）。
-        self._pair_fallback_warned: set[str] = set()
-        # 执行生命周期回调（O1.4）：busy 状态由任务开始/结束驱动，UI 不做
-        # 文本猜测。V0.3.2 M4：回调携带完整 ActiveTurn，不能再从可变全局
-        # 状态反查。
+        # 执行生命周期回调：busy 状态由任务开始与结束驱动，回调携带完整
+        # ActiveTurn。
         self.on_execution_started: Callable[[ActiveTurn], None] | None = None
         self.on_execution_finished: Callable[[ActiveTurn], None] | None = None
-        # O2.1：流式事件通道——消息与引擎事件产生时即推送，UI 增量渲染；
-        # ConversationOutcome 保留为最终汇总（事后回放）。
-        # 推送顺序约定（设计 §3.2）：角色接受委派的台词先于执行事件到达界面。
+        # 流式事件通道：消息与引擎事件产生时即推送，UI 增量渲染；
+        # ConversationOutcome 是最终汇总。角色接受委派的台词先于执行事件
+        # 到达界面。
         self.on_message: Callable[[Message], None] | None = None
         self.on_engine_event: Callable[[EngineEvent], None] | None = None
-        # V0.2：消息生命周期状态变更回调（message.status_changed）。
-        # 与 on_message 并存：on_message 管创建，本回调管状态推进。
+        # 消息生命周期状态变更回调（message.status_changed）。on_message
+        # 管创建，本回调管状态推进。
         self.on_message_status_changed: Callable[[Message], None] | None = None
-        # V0.2：对话增量事件通道（角色思考/正文 delta），由桌面桥转发为
-        # message.delta 的 reasoning/speech 通道。
-        self.on_dialogue_event: Callable[[str, Message, DialogueEvent], None] | None = None
-        # V0.2：审查智能体生命周期事件（review.started/completed/failed）。
-        # 只有真正调用审查智能体时才触发，UI 据此显示审查状态（问题 14）。
+        # 对话增量事件通道（角色思考与正文 delta），由桌面桥转发为
+        # message.delta 的 reasoning 与 speech 通道；末参是该角色回复的
+        # 时间线序号。
+        self.on_dialogue_event: (
+            Callable[[str, Message, DialogueEvent, int], None] | None
+        ) = None
+        # 审查智能体生命周期事件（review.started/completed/failed），只有
+        # 真正调用审查智能体时才触发。
         self.on_review_event: Callable[[str, dict], None] | None = None
-        # B2.6：消息监听器列表（VoiceRuntime 挂 TTS 用），在消息持久化后逐个调用
+        # 消息监听器列表（VoiceRuntime 挂 TTS 用），在消息持久化后逐个调用
         self._message_listeners: list[Callable[[Message], None]] = []
 
-    def set_approval_mode(
-        self, mode: ApprovalMode, *, conversation_id: str | None = None
-    ) -> None:
-        """切换项目级审批模式（计划 A5：输入区下拉框切换）。"""
-        self.approval_mode = mode
-        if conversation_id is None:
-            for manager in self._approval_managers.values():
-                manager.mode = mode
-        elif conversation_id in self._approval_managers:
-            self._approval_managers[conversation_id].mode = mode
+    def install_runtime(self, runtime: Runtime) -> Runtime:
+        """整体替换对话模型、编程助手引擎与审查智能体，返回被替换的旧运行时。"""
+        previous = Runtime(
+            dialogue_model=self.dialogue_model,
+            coding_engine=self.coding_engine,
+            reviewer=self.reviewer,
+        )
+        self.dialogue_model = runtime.dialogue_model
+        self.coding_engine = runtime.coding_engine
+        self.reviewer = runtime.reviewer
+        return previous
+
+    def forget_sessions(self, conversation_ids: Iterable[str] | None = None) -> None:
+        """丢弃内存中的引擎会话引用（None 表示全部），下一次任务新开 session。"""
+        if conversation_ids is None:
+            self._sessions.clear()
+            return
+        for conversation_id in conversation_ids:
+            self._sessions.pop(conversation_id, None)
 
     def set_project_approval_mode(self, project_id: str, mode: ApprovalMode) -> None:
         """把项目审批模式应用到该项目正在运行的任务。
@@ -233,75 +238,19 @@ class ConversationOrchestrator:
             if active.project_id == project_id:
                 self._approval_managers[active.conversation_id].mode = mode
 
-    def select_context(
-        self,
-        *,
-        project: ProjectRef,
-        pair_id: str,
-        conversation_id: str,
-        approval_mode: ApprovalMode,
-        assistant_instructions: str,
-        conversation_mode: Literal["chat", "collaboration"] = "chat",
-    ) -> None:
-        """切换当前项目与聊天，保留其他聊天已恢复的历史和会话引用。"""
-        self.project = project
-        self.pair_id = pair_id
-        self.assistant_instructions = assistant_instructions
-        self._remember_conversation_pair(conversation_id, pair_id)
-        self.set_approval_mode(approval_mode, conversation_id=conversation_id)
-        self.set_conversation_mode(conversation_id, conversation_mode)
-
-    def set_conversation_mode(
-        self, conversation_id: str, mode: Literal["chat", "collaboration"]
-    ) -> None:
-        """V0.2：保存当前会话的对话模式（后端权威）。
-
-        模式是与推理档位/审批方式/发送对象互不覆盖的独立字段；
-        设置类命令不得回推覆盖它。聊天模式下角色不能形成委派。
-        """
-        self._conversation_modes[conversation_id] = mode
-
-    def conversation_mode(self, conversation_id: str) -> Literal["chat", "collaboration"]:
-        """当前会话的持久化模式。
-
-        桌面应用总是经 ``select_context`` 从 ``conversations.last_mode``
-        显式设置；未显式设置的独立使用（CLI/语音/单测）默认协作，
-        保持委派行为与历史一致。聊天模式的边界只在应用明确持久化时生效。
-        """
-        return self._conversation_modes.get(conversation_id, "collaboration")
-
-    # ---------------------------------------------------------------- V0.3.9 身份与上下文
-
-    def _remember_conversation_pair(self, conversation_id: str, pair_id: str) -> None:
-        """登记会话的权威搭档 id（V0.3.9 契约 §1）。"""
-        if conversation_id and pair_id:
-            self._conversation_pairs[conversation_id] = pair_id
-
     def _pair_id_for(self, conversation_id: str, explicit: str | None) -> str:
-        """解析消息归属的搭档 id。
-
-        显式传入优先，其次使用该聊天登记过的权威搭档。两者都没有时只可能
-        是单会话直连用法（CLI/单测：从未 select_context 也未恢复快照），
-        此时退回启动搭档并记录一次告警——后台聊天不得静默写到别的搭档名下。
-        """
+        """解析消息归属的搭档 id：显式传入优先，其次是该聊天登记的搭档。"""
         if explicit:
             return explicit
         registered = self._conversation_pairs.get(conversation_id)
-        if registered:
-            return registered
-        if conversation_id not in self._pair_fallback_warned:
-            self._pair_fallback_warned.add(conversation_id)
-            logger.warning(
-                "会话 %s 未登记搭档，消息归属退回启动搭档 %s",
-                conversation_id,
-                self.pair_id,
-            )
-        return self.pair_id
+        if registered is None:
+            raise RuntimeError(f"会话 {conversation_id} 没有登记搭档，无法确定消息归属")
+        return registered
 
     def set_summary_coverage(
         self, conversation_id: str, covers_to_message_id: str | None
     ) -> None:
-        """登记该聊天最近一次成功摘要的覆盖终点（V0.3.9 契约 §2）。
+        """登记该聊天最近一次成功摘要的覆盖终点。
 
         接线方在 ``summary.completed`` 与 ``restore_conversation`` 时调用；
         传 None 表示该聊天没有成功摘要（退回触发前窗口）。
@@ -318,10 +267,10 @@ class ConversationOrchestrator:
     def _roleplay_context(
         self, conversation_id: str, *, exclude_message_id: str | None = None
     ) -> tuple[Message, ...]:
-        """进入角色上下文的原文窗口（三处装配点共用）。
+        """进入角色上下文的原文窗口（主角色轮与任务结果轮共用）。
 
-        过滤与窗口规则来自契约 §2（``projection.role_context_window``）：
-        触发摘要后保留最近 12 条角色消息原文，未触发时沿用触发前上限。
+        过滤与窗口规则见 ``projection.role_context_window``：触发摘要后
+        保留最近 12 条角色消息原文，未触发时沿用触发前上限。
         """
         history = self._history.get(conversation_id, ())
         if exclude_message_id is not None:
@@ -340,8 +289,8 @@ class ConversationOrchestrator:
     ) -> int:
         """当前用户回合的序号（世界书 atDepth 与确定性触发用）。
 
-        以该用户消息之前的用户真实发言数为基准 +1，三处装配点对同一回合
-        得到同一个值。消息不在历史里时退回整段历史的统计口径（不猜测）。
+        以该用户消息之前的用户真实发言数为基准 +1，主角色轮与任务结果轮
+        对同一回合得到同一个值。消息不在历史里时按整段历史统计。
         """
         history = self._history.get(conversation_id, [])
         if source_message_id:
@@ -362,10 +311,10 @@ class ConversationOrchestrator:
         progress_summary: CharacterProgressSummary | None = None,
         result_summary: CharacterResultSummary | None = None,
     ) -> DialogueRequest:
-        """三处角色装配点共用的 DialogueRequest 构造（V0.3.9 契约 §2）。
+        """角色装配点共用的 DialogueRequest 构造。
 
-        主角色轮、委派纠偏重试轮与任务结果轮必须使用同一份上下文窗口、
-        同一回合序号与同一项目运行上下文，避免窗口/序号漂移。
+        主角色轮与任务结果轮使用同一份上下文窗口、同一回合序号与同一
+        项目运行上下文。
         """
         return DialogueRequest(
             pair_id=pair_id,
@@ -380,23 +329,10 @@ class ConversationOrchestrator:
             turn_index=turn_index,
         )
 
-    def _build_runtime_context(
-        self,
-        conversation_id: str,
-        context: ExecutionContext | None = None,
-    ) -> ProjectRuntimeContext:
-        """V0.2：构造项目运行上下文（名称/目录/时间/时区/模式）。
-
-        V0.3.2 M4：Turn 显式携带 ExecutionContext 时从上下文读取项目与
-        模式，不再依赖可变全局 ``self.project``；省略上下文的独立使用
-        （CLI/单测）沿用当前全局状态。
-        """
-        project = context.project if context is not None else self.project
-        mode = (
-            context.conversation_mode
-            if context is not None
-            else self.conversation_mode(conversation_id)
-        )
+    @staticmethod
+    def _build_runtime_context(context: ExecutionContext) -> ProjectRuntimeContext:
+        """构造项目运行上下文（名称、目录、时间、时区、对话模式）。"""
+        project = context.project
         now = datetime.now().astimezone()
         tz_abbr = time_module.tzname[0] if time_module.tzname else now.tzname() or ""
         return ProjectRuntimeContext(
@@ -404,39 +340,17 @@ class ConversationOrchestrator:
             project_abs_dir=project.root_path,
             local_time=now.strftime("%Y-%m-%d %H:%M:%S"),
             timezone=tz_abbr or str(now.utcoffset() or ""),
-            conversation_mode=mode,
+            conversation_mode=context.conversation_mode,
             memory_enabled=bool((project.root_path or "").strip()),
-        )
-
-    def _context_or_current(
-        self, conversation_id: str, context: ExecutionContext | None
-    ) -> ExecutionContext:
-        """V0.3.2 M4：执行路径的上下文来源统一出口。
-
-        显式上下文优先；未提供时（CLI/单测的直连用法）按当前全局选择
-        状态合成，保持旧行为。
-        """
-        if context is not None:
-            # V0.3.9 契约 §1：执行上下文是该聊天身份的权威来源，就地登记。
-            self._remember_conversation_pair(conversation_id, context.pair_id)
-            return context
-        return ExecutionContext(
-            account_id="",
-            project=self.project,
-            conversation_id=conversation_id,
-            pair_id=self.pair_id,
-            conversation_mode=self.conversation_mode(conversation_id),
-            approval_mode=self.approval_mode,
-            assistant_instructions=self.assistant_instructions,
         )
 
     def mark_message_failed(
         self, conversation_id: str, message_id: str, reason: str
     ) -> Message | None:
-        """V0.2：把一条已落库消息标记为失败（保留文字，可重试）。
+        """把一条已落库消息标记为失败（保留文字，可重试）。
 
-        即时回显原则：处理失败后文字仍在，前端可按真实 id 对账并重试。
-        同时更新内存历史与 SQLite，并推送 ``message.status_changed``。
+        处理失败后文字仍在，前端可按真实 id 对账并重试。同时更新内存历史
+        与 SQLite，并推送 ``message.status_changed``。
         """
         return self._set_message_status(
             conversation_id,
@@ -521,8 +435,7 @@ class ConversationOrchestrator:
     ) -> Message:
         """把运行时错误作为可见且可恢复的系统消息写入目标聊天。
 
-        ``pair_id`` 缺省时按该聊天登记过的权威搭档解析（V0.3.9 契约 §1），
-        不再直接使用可变全局搭档。
+        ``pair_id`` 缺省时使用该聊天登记的搭档。
         """
         return self._message(
             conversation_id=conversation_id,
@@ -542,35 +455,31 @@ class ConversationOrchestrator:
             self._message_listeners.append(callback)
 
     def remove_message_listener(self, callback: Callable[[Message], None]) -> None:
-        """移除消息监听器（V0.3.2 M6：替换 VoiceRuntime 时清理旧回调）。"""
+        """移除消息监听器（替换 VoiceRuntime 时清理旧回调）。"""
         while callback in self._message_listeners:
             self._message_listeners.remove(callback)
 
-    def restore_conversation(self, snapshot: dict) -> None:
-        """O2.2：打开旧聊天时回填消息历史与会话引用。
+    def restore_conversation(self, snapshot: ConversationSnapshot) -> None:
+        """打开旧聊天时回填消息历史、搭档、摘要覆盖与引擎会话引用。
 
-        接受 :meth:`StateStore.load_conversation` 的返回值：
-        - ``messages`` 回填 ``_history``，恢复后 ``recent_messages`` 不再为空
-          （角色不失忆）；
-        - ``engine_session`` 回填 ``_sessions``，后续 ``open_session`` 收到
-          已保存的 ``stored_ref``，可走 thread/resume 而非 thread/start。
+        - ``messages`` 回填 ``_history``，恢复后角色上下文不再为空；
+        - 快照里的会话搭档是该聊天的权威身份；
+        - 只有 completed 摘要才收窄角色上下文窗口；
+        - 引擎类型一致的 ``engine_session`` 回填 ``_sessions``，后续
+          ``open_session`` 收到已保存的 ``stored_ref`` 并恢复引擎会话。
         """
-        conversation_id = snapshot["conversation"].conversation_id
-        self._history[conversation_id] = list(snapshot.get("messages", ()))
-        # V0.3.9 契约 §1：快照里的会话搭档是该聊天的权威身份。
-        self._remember_conversation_pair(
-            conversation_id, snapshot["conversation"].pair_id
+        conversation = snapshot.conversation
+        conversation_id = conversation.conversation_id
+        self._history[conversation_id] = list(snapshot.messages)
+        self._conversation_pairs[conversation_id] = conversation.pair_id
+        summary = snapshot.summary
+        self.set_summary_coverage(
+            conversation_id,
+            summary.covers_to_message_id
+            if summary is not None and summary.status == "completed"
+            else None,
         )
-        # V0.3.9 契约 §2：快照可选携带该聊天最近的摘要记录；只有 completed
-        # 摘要才收窄角色上下文窗口，failed/running 保持原窗口。
-        summary = snapshot.get("summary")
-        if isinstance(summary, dict):
-            summary = ConversationSummary.model_validate(summary)
-        if isinstance(summary, ConversationSummary) and summary.status == "completed":
-            self.set_summary_coverage(conversation_id, summary.covers_to_message_id)
-        else:
-            self.set_summary_coverage(conversation_id, None)
-        session_ref = snapshot.get("engine_session")
+        session_ref = snapshot.engine_session
         if (
             session_ref is not None
             and session_ref.engine_type == self.coding_engine.engine_type
@@ -578,28 +487,26 @@ class ConversationOrchestrator:
             self._sessions[conversation_id] = session_ref
         else:
             self._sessions.pop(conversation_id, None)
-        # V0.3.2：恢复工作台序号——历史消息与工具记录的最大值。旧记录
-        # 缺少 timeline_order 时不推进计数器（legacy 数据按旧版展示）。
+        # 恢复时间线计数器：取历史消息与工具记录的最大序号，且不低于内存里
+        # 已分配的值（运行中的任务可能已分配尚未落库的序号）。
         restored_orders = [
             value
             for value in (
-                *(m.timeline_order for m in snapshot.get("messages", ())),
-                *(r.timeline_order for r in snapshot.get("tool_runs", ())),
+                *(m.timeline_order for m in snapshot.messages),
+                *(r.timeline_order for r in snapshot.tool_runs),
             )
             if value is not None
         ]
-        if restored_orders:
-            self._timeline_counters[conversation_id] = max(restored_orders)
+        self._timeline_counters[conversation_id] = max(
+            [self._timeline_counters.get(conversation_id, 0), *restored_orders]
+        )
 
     def close_conversation(self, conversation_id: str) -> None:
-        """O4.2：聊天结束/切换钩子——清理该会话的审批缓存。
+        """聊天结束或切换时清理该会话的“本对话内允许”缓存。
 
-        “本对话内允许”缓存的生命周期是单次聊天：聊天关闭或切换后
-        必须失效。这里清空会话 :class:`ApprovalManager` 的
-        ``_session_allow`` 缓存；会话没有运行中任务时再移除常驻引用（下次
-        使用该会话时新建管理器，缓存与挂起请求均为空）。运行中任务的
-        管理器保留登记，项目审批模式切换仍能作用到它。
-        未打开过的会话调用是无害空操作。
+        会话没有运行中任务时同时移除审批管理器，下次使用该会话时新建；
+        运行中任务的管理器保留登记，项目审批模式切换仍能作用到它。
+        未打开过的会话调用是空操作。
         """
         manager = self._approval_managers.get(conversation_id)
         if manager is None:
@@ -609,7 +516,7 @@ class ConversationOrchestrator:
             del self._approval_managers[conversation_id]
 
     def _conversation_lock(self, conversation_id: str) -> asyncio.Lock:
-        """O2.5：获取会话级入口锁（首次访问时惰性创建）。
+        """获取会话级入口锁（首次访问时惰性创建）。
 
         不同会话的入口互不阻塞；同一会话的聊天轮按到达顺序串行。
         """
@@ -620,7 +527,7 @@ class ConversationOrchestrator:
         return lock
 
     def _next_timeline_order(self, conversation_id: str) -> int:
-        """V0.3.2 M1：分配该聊天单调递增的工作台序号。"""
+        """分配该聊天单调递增的工作台序号。"""
         value = self._timeline_counters.get(conversation_id, 0) + 1
         self._timeline_counters[conversation_id] = value
         return value
@@ -636,12 +543,11 @@ class ConversationOrchestrator:
         delegation_id: str | None,
         origin: MessageOrigin | None,
     ) -> str | None:
-        """V0.3.2 M1：定稿当前助手 segment 并持久化为独立消息。
+        """定稿当前助手 segment 并持久化为独立消息。
 
         消息 id 为 ``assistant:{conversation_id}:{task_id}:{segment_index}``。
-        没有打开的段、或段内既无正文也无思考时不产生消息（计划 5.5：
-        不创建空段；只有思考的段保留为可折叠气泡）。
-        返回刚定稿 segment 的正文，供回执摘要回退使用。
+        没有打开的段、或段内既无正文也无思考时不产生消息；只有思考的段
+        保留为可折叠气泡。返回刚定稿 segment 的正文，供回执摘要使用。
         """
         if not state.is_open():
             return None
@@ -698,6 +604,23 @@ class ConversationOrchestrator:
         task_id: str | None = None,
         timeline_order: int | None = None,
     ) -> Message:
+        history = self._history.setdefault(conversation_id, [])
+        reserved = (
+            self._speech_orders.pop(message_id, None) if message_id is not None else None
+        )
+        if timeline_order is None:
+            # 更新已有消息沿用原序号；角色回复取流式开始时预留的序号；
+            # 其余新消息分配下一个序号。
+            existing = next(
+                (m for m in history if message_id is not None and m.message_id == message_id),
+                None,
+            )
+            if existing is not None:
+                timeline_order = existing.timeline_order
+            elif reserved is not None:
+                timeline_order = reserved
+            else:
+                timeline_order = self._next_timeline_order(conversation_id)
         message_values = {
             "conversation_id": conversation_id,
             "pair_id": self._pair_id_for(conversation_id, pair_id),
@@ -719,24 +642,23 @@ class ConversationOrchestrator:
         # 同一回合内的角色台词与委派卡片可能落在同一个微秒；持久化按
         # (created_at, message_id) 排序，并列会让重开后的顺序由随机的
         # message_id 决定，与内存创建顺序不一致。这里按会话做严格单调。
-        history = self._history.setdefault(conversation_id, [])
         latest = max((m.created_at for m in history), default=None)
         message_values["created_at"] = next_created_at(latest)
         message = Message(**message_values)
         for index, existing in enumerate(history):
             if existing.message_id == message.message_id:
-                # M4.2：同一 message_id 是“更新原消息”而不是追加新消息。
-                # 内存历史与 SQLite 都保持同一条语义，前端按 id 对账。
+                # 同一 message_id 表示更新原消息。内存历史与 SQLite 保持
+                # 同一条记录，前端按 id 对账。
                 history[index] = message
                 break
         else:
             history.append(message)
         if self.store is not None:
             self.store.save_message(message)
-        # B2.6：消息持久化后逐个调用监听器（VoiceRuntime TTS 入口）
+        # 消息持久化后逐个调用监听器（VoiceRuntime TTS 入口）
         for listener in self._message_listeners:
             listener(message)
-        # O2.1：消息产生即推送，UI 增量渲染不等整轮任务结束
+        # 消息产生即推送，UI 增量渲染不等整轮任务结束
         if self.on_message is not None:
             self.on_message(message)
         return message
@@ -744,8 +666,8 @@ class ConversationOrchestrator:
     def _recent_user_messages(self, conversation_id: str) -> list[Message]:
         """返回当前聊天中真实用户输入的最后三条消息。
 
-        M4.3：角色委派会在工作台写入 origin=character_delegation 的镜像
-        消息，它不是用户直接输入，不能进入审查上下文。
+        角色委派在工作台写入的 origin=character_delegation 镜像消息不是
+        用户直接输入，不进入审查上下文。
         """
         return [
             message
@@ -775,45 +697,51 @@ class ConversationOrchestrator:
         user_message: Message,
         event: DialogueEvent,
     ) -> None:
-        """V0.2：把角色对话增量事件转发给桌面桥。
+        """把角色对话增量事件转发给桌面桥。
 
-        聊天模式也照常转发干净 delta（思考与正文流式显示与模式无关）；
-        委派字段等结构信息仍等 character.final 解析。
+        聊天模式也照常转发思考与正文 delta；委派等结构信息等
+        character.final 解析。首个事件为这条角色回复预留时间线序号，
+        流式占位与最终消息共用。
         """
+        speech_id = f"speech:{conversation_id}:{user_message.message_id}"
+        order = self._speech_orders.get(speech_id)
+        if order is None:
+            existing = next(
+                (m for m in self._history.get(conversation_id, ()) if m.message_id == speech_id),
+                None,
+            )
+            order = (
+                existing.timeline_order
+                if existing is not None
+                else self._next_timeline_order(conversation_id)
+            )
+            self._speech_orders[speech_id] = order
         if self.on_dialogue_event is not None:
-            self.on_dialogue_event(conversation_id, user_message, event)
+            self.on_dialogue_event(conversation_id, user_message, event, order)
 
     def _forward_review_event(
-        self,
-        event: str,
-        payload: dict,
-        *,
-        conversation_id: str | None = None,
+        self, event: str, payload: dict, *, conversation_id: str
     ) -> None:
-        """V0.2：把 ApprovalManager 的审查生命周期事件转发给桌面桥。
+        """把 ApprovalManager 的审查生命周期事件转发给桌面桥。
 
-        M4.3：conversation_id 在审查回调创建时捕获，不能读取切换后的
-        ``current_conversation_id``。
+        conversation_id 在任务开始时捕获，不读取切换后的当前聊天。
         """
         if self.on_review_event is not None:
-            forwarded = {**payload}
-            if conversation_id is not None:
-                forwarded["conversation_id"] = conversation_id
-            self.on_review_event(event, forwarded)
+            self.on_review_event(event, {**payload, "conversation_id": conversation_id})
 
     async def handle_character_input(
         self,
         *,
         conversation_id: str,
         text: str,
-        context: ExecutionContext | None = None,
+        context: ExecutionContext,
     ) -> ConversationOutcome:
-        """完整角色回合入口（CLI/语音/测试使用）：快速接受 + 后台处理。"""
+        """完整角色回合入口（CLI 使用）：落库用户消息后处理角色回合。"""
         user = await self.submit_user_message(
             conversation_id=conversation_id,
             text=text,
             target="character",
-            pair_id=context.pair_id if context is not None else None,
+            pair_id=context.pair_id,
         )
         return await self.process_character_turn(
             conversation_id=conversation_id, user_message=user, context=context
@@ -825,13 +753,12 @@ class ConversationOrchestrator:
         conversation_id: str,
         text: str,
         target: str,
-        pair_id: str | None = None,
+        pair_id: str,
     ) -> Message:
-        """V0.2 快速接受（问题 1）：同步落库用户消息并立即返回真实 id。
+        """同步落库用户消息并立即返回真实 id。
 
-        只负责保存与发出 ``message.created``；回合处理由调用方随后启动
-        （桌面桥在后台任务中运行，不再让 ``chat.submit`` 等待整轮完成）。
-        断线或重启后可从快照恢复，处理失败后文字仍在且可重试。
+        只负责保存与发出 ``message.created``；回合处理由调用方随后在后台
+        启动。断线或重启后可从快照恢复，处理失败后文字仍在且可重试。
         """
         target_value = MessageTarget(target)
         async with self._conversation_lock(conversation_id):
@@ -850,36 +777,32 @@ class ConversationOrchestrator:
         *,
         conversation_id: str,
         user_message: Message,
-        context: ExecutionContext | None = None,
+        context: ExecutionContext,
     ) -> ConversationOutcome:
-        """V0.2：在后台运行角色回合（用户消息已落库）。
+        """在后台运行角色回合（用户消息已落库）。
 
-        角色台词在会话锁内串行产生；委派处理（_execute/修改路由）在锁外
-        进行。聊天模式下角色输出的 delegation 一律不执行（问题 4），
-        后端做最终裁决并注入能力边界。V0.3.2 M4：``context`` 是提交时
-        解析的不可变执行上下文；省略时按当前全局状态合成（CLI/单测）。
+        角色台词在会话锁内串行产生；委派处理（任务执行与修改路由）在锁外
+        进行。``context`` 是提交时解析的不可变执行上下文，聊天模式下角色
+        输出的 delegation 一律不执行。
         """
-        exec_context = self._context_or_current(conversation_id, context)
+        exec_context = context
+        self._conversation_pairs[conversation_id] = exec_context.pair_id
         async with self._conversation_lock(conversation_id):
-            # O3.3：执行期间（_execute 未结束）注入压缩进度摘要；
-            # 任务结束后 _progress 已清理，聊天轮回到纯角色对话
+            # 任务执行期间注入压缩进度摘要；任务结束后 _progress 已清理，
+            # 聊天轮回到纯角色对话。
             progress = self._progress.get(conversation_id)
             progress_summary = None
             if progress is not None:
                 progress_summary = CharacterProgressSummary(
                     current_step=progress.current_step,
                     completed_steps=progress.completed_steps,
-                    total_steps=progress.total_steps,
                 )
-            # V0.3.9：三处装配点共用 ``_dialogue_request``——窗口、回合序号与
-            # 运行上下文一致；当前用户消息由 user_message 承载，故按 id 排除。
+            # 当前用户消息由 user_message 承载，按 id 从上下文窗口排除。
             request = self._dialogue_request(
                 conversation_id=conversation_id,
                 user_message=user_message,
                 pair_id=exec_context.pair_id,
-                runtime_context=self._build_runtime_context(
-                    conversation_id, exec_context
-                ),
+                runtime_context=self._build_runtime_context(exec_context),
                 turn_index=self._turn_index_for(
                     conversation_id, user_message.message_id
                 ),
@@ -888,7 +811,7 @@ class ConversationOrchestrator:
             )
             character_turn = None
             async for event in self.dialogue_model.stream_reply(request):
-                # V0.2：增量事件先转发（思考/正文 delta），UI 流式显示
+                # 增量事件先转发（思考与正文 delta），UI 流式显示
                 self._forward_dialogue_event(conversation_id, user_message, event)
                 if event.type == "character.final":
                     character_turn = event.turn
@@ -911,12 +834,9 @@ class ConversationOrchestrator:
             )
             messages = [user_message, character]
 
-        # V0.2 能力边界（问题 4）：聊天模式一律不执行委派。后端最终裁决，
+        # 聊天模式是角色能力边界：后端按提交时的对话模式一律不执行委派，
         # 不依赖按钮禁用或角色提示词。
-        if self.conversation_mode(conversation_id) == "chat" and (
-            isinstance(character_turn.delegation, TaskRequestDraft)
-            or isinstance(character_turn.delegation, TaskAmendmentDraft)
-        ):
+        if exec_context.conversation_mode == "chat" and character_turn.delegation is not None:
             notice = self._message(
                 conversation_id=conversation_id,
                 source=MessageSource.SYSTEM,
@@ -930,46 +850,24 @@ class ConversationOrchestrator:
             )
 
         if character_turn.delegation_missed:
-            # 委派未形成：把失败信息回传角色，自动补一轮让它重新按协议
-            # 委派。只补一轮，重试后仍无结构化委派才落可见系统提示——
-            # 失败必须暴露，但不能让“交给搭档”的空口承诺静默通过。
-            retry_turn = await self._retry_character_delegation(
-                conversation_id=conversation_id,
-                user_message=user_message,
-                context=exec_context,
+            # 模型自报 delegate=true 却没有返回结构化 delegation 是协议违规，
+            # 如实暴露给用户与日志，不重试也不替模型补全委派。
+            logger.warning(
+                "角色自报委派但没有返回结构化 delegation（conversation=%s message=%s）",
+                conversation_id,
+                user_message.message_id,
             )
-            if retry_turn is not None and isinstance(
-                retry_turn.delegation, TaskRequestDraft
-            ):
-                character_turn = retry_turn
-                character = self._message(
-                    conversation_id=conversation_id,
-                    source=MessageSource.CHARACTER,
-                    kind=MessageKind.CHARACTER_SPEECH,
-                    text=retry_turn.speech,
-                    pair_id=exec_context.pair_id,
-                    # 与主轮共用同一个气泡 id：最终消息覆盖临时流，
-                    # 时间线里只保留重试后的角色回复。
-                    message_id=f"speech:{conversation_id}:{user_message.message_id}",
-                    payload=(
-                        {"reasoning": retry_turn.reasoning}
-                        if retry_turn.reasoning
-                        else None
-                    ),
-                )
-                messages = [user_message, character]
-            else:
-                notice = self._message(
-                    conversation_id=conversation_id,
-                    source=MessageSource.SYSTEM,
-                    kind=MessageKind.SYSTEM_STATUS,
-                    text="角色未返回结构化委派，自动重试后仍未成功，本次没有任务交给助手执行。",
-                    pair_id=exec_context.pair_id,
-                )
-                return ConversationOutcome(
-                    messages=tuple((*messages, notice)),
-                    memory_drafts=tuple(character_turn.memory),
-                )
+            notice = self._message(
+                conversation_id=conversation_id,
+                source=MessageSource.SYSTEM,
+                kind=MessageKind.SYSTEM_STATUS,
+                text="角色声明要委派，但没有返回结构化委派，本次没有任务交给助手执行。",
+                pair_id=exec_context.pair_id,
+            )
+            return ConversationOutcome(
+                messages=tuple((*messages, notice)),
+                memory_drafts=tuple(character_turn.memory),
+            )
 
         if isinstance(character_turn.delegation, TaskRequestDraft):
             task = TaskRequest(
@@ -986,8 +884,8 @@ class ConversationOrchestrator:
                     context=exec_context,
                 )
             except BusyTurnError as exc:
-                # O2.4：任务运行中角色再委派新任务——冲突转为用户可见的
-                # 系统提示，不再静默失败；用户直接指令不受影响（走修改路由）。
+                # 任务运行中角色再委派新任务：冲突转为用户可见的系统提示。
+                # 用户直接指令走修改路由，不受影响。
                 notice = self._message(
                     conversation_id=conversation_id,
                     source=MessageSource.SYSTEM,
@@ -1041,73 +939,12 @@ class ConversationOrchestrator:
             memory_drafts=tuple(character_turn.memory),
         )
 
-    async def _retry_character_delegation(
-        self,
-        *,
-        conversation_id: str,
-        user_message: Message,
-        context: ExecutionContext,
-    ) -> CharacterTurn | None:
-        """委派未形成后的自动补一轮：失败信息回传角色，让它重新按协议委派。
-
-        只补一轮，不无限循环；重试后仍无结构化委派就由调用方落系统提示。
-        """
-        synthetic = Message(
-            conversation_id=conversation_id,
-            pair_id=context.pair_id,
-            source=MessageSource.SYSTEM,
-            kind=MessageKind.SYSTEM_STATUS,
-            text=(
-                "上一轮委派未形成，没有任务交给助手执行。请按运行时输出协议"
-                "重新输出本轮结果：需要委派就返回 delegate=true 并带 "
-                "delegation.type=task，把真实任务写入 delegation.instructions；"
-                "不需要就返回 delegate=false。不要只在台词里答应让搭档做事。"
-            ),
-        )
-        # V0.3.9：与主角色轮同窗口、同回合序号、同运行上下文。
-        request = self._dialogue_request(
-            conversation_id=conversation_id,
-            user_message=synthetic,
-            pair_id=context.pair_id,
-            runtime_context=self._build_runtime_context(conversation_id, context),
-            turn_index=self._turn_index_for(conversation_id, user_message.message_id),
-        )
-        turn: CharacterTurn | None = None
-        async for event in self.dialogue_model.stream_reply(request):
-            self._forward_dialogue_event(conversation_id, user_message, event)
-            if event.type == "character.final":
-                turn = event.turn
-        return turn
-
-    async def handle_direct_input(
-        self,
-        *,
-        conversation_id: str,
-        text: str,
-        constraints: tuple[str, ...] = (),
-        context: ExecutionContext | None = None,
-    ) -> ConversationOutcome:
-        """完整直发助手回合入口（CLI/语音/测试使用）：快速接受 + 后台处理。"""
-        user = await self.submit_user_message(
-            conversation_id=conversation_id,
-            text=text,
-            target="assistant",
-            pair_id=context.pair_id if context is not None else None,
-        )
-        return await self.process_direct_input(
-            conversation_id=conversation_id,
-            user_message=user,
-            constraints=constraints,
-            context=context,
-        )
-
     async def process_direct_input(
         self,
         *,
         conversation_id: str,
         user_message: Message,
-        constraints: tuple[str, ...] = (),
-        context: ExecutionContext | None = None,
+        context: ExecutionContext,
     ) -> ConversationOutcome:
         """后台处理直发助手的用户消息（消息已落库）。
 
@@ -1115,7 +952,8 @@ class ConversationOrchestrator:
         TaskAmendment 发给运行中的引擎 turn。并发按聊天划分，其他聊天
         是否忙碌不影响本聊天。
         """
-        exec_context = self._context_or_current(conversation_id, context)
+        exec_context = context
+        self._conversation_pairs[conversation_id] = exec_context.pair_id
         active = self.state.get_for_conversation(conversation_id)
         if active is not None:
             # 运行中直接发给助手的新指令归一为 TaskAmendment 走 amend_turn，
@@ -1146,7 +984,6 @@ class ConversationOrchestrator:
             conversation_id=conversation_id,
             origin_message_id=user_message.message_id,
             instructions=user_message.text,
-            constraints=constraints,
         )
         execution = await self._execute(task, context=exec_context)
         return ConversationOutcome(
@@ -1182,69 +1019,50 @@ class ConversationOrchestrator:
         )
 
     async def cancel_active_task(
-        self, conversation_id: str | None = None, task_id: str | None = None
+        self, conversation_id: str, task_id: str | None = None
     ) -> bool:
-        """定向取消活动任务。
+        """定向取消聊天的活动任务。
 
-        显式传入 ``conversation_id``/``task_id`` 时按聊天与任务双重校验
-        （用户切换聊天后旧按钮不得取消新任务）；省略参数时取消首个活动
-        任务。引擎 turn 尚未绑定时记录取消意图，绑定后由事件循环立即发送
-        interrupt；已绑定则直接发送。无活动任务或生命周期已终态时返回 False。
+        传入 ``task_id`` 时还要求它就是该聊天的活动任务，用户切换聊天后
+        旧按钮不得取消新任务。引擎 turn 尚未绑定时记录取消意图，绑定后由
+        事件循环立即发送 interrupt；已绑定则直接发送。无活动任务或生命
+        周期已离开运行态时返回 False。
         """
-        if conversation_id is not None:
-            active = self.state.get_for_conversation(conversation_id)
-            if active is None:
-                return False
-            if task_id is not None and active.task_id != task_id:
-                return False
-        elif task_id is not None:
-            active = self.state.get_for_task(task_id)
-            if active is None:
-                return False
-        else:
-            tasks = self.state.active_tasks()
-            if not tasks:
-                return False
-            active = tasks[0]
-        lifecycle = self._active_lifecycles.get(active.task_id)
-        if lifecycle is None or lifecycle.status != TaskStatus.RUNNING:
+        active = self.state.get_for_conversation(conversation_id)
+        if active is None or (task_id is not None and active.task_id != task_id):
             return False
-        session = self._sessions.get(active.conversation_id)
-        if active.engine_turn_id is not None and session is None:
+        lifecycle = self._active_lifecycles[active.task_id]
+        if lifecycle.status != TaskStatus.RUNNING:
             return False
         lifecycle.transition(TaskStatus.CANCELLED)
         if active.engine_turn_id is None:
             self.state.request_cancel(active.task_id)
             return True
-        await self.coding_engine.cancel_turn(session, active.engine_turn_id)
+        await self.coding_engine.cancel_turn(
+            self._sessions[conversation_id], active.engine_turn_id
+        )
         return True
 
     async def _execute(
         self,
         task: TaskRequest,
         *,
+        context: ExecutionContext,
         delegation_id: str | None = None,
         origin: MessageOrigin | None = None,
         delegation_retry_depth: int = 0,
-        context: ExecutionContext | None = None,
     ) -> ConversationOutcome:
-        """执行一次助手任务；失败且角色立即重新委派时自动重试一次。
+        """执行一次助手任务；任务失败且角色在结果轮重新委派时再执行一次。
 
-        重试是委派协议的一部分：失败结果回传角色后，角色在结果轮返回
-        ``delegation.type=task`` 即视为立即重试。只自动重试一次（上限），
-        重试后仍失败则不再执行新的委派，并留下可见系统提示——连续失败
-        必须如实暴露，不能无限循环，也不能静默丢弃角色的重试委派。
-
-        ``delegation_retry_depth`` 是当前调用链的局部状态（M4.2），
-        递归重试时显式 +1，不使用可跨会话泄漏的实例字段。
+        角色在失败结果轮返回 ``delegation.type=task`` 即表示立即重试。最多
+        再执行一次；再次失败后角色的新委派不再执行，并留下可见系统提示。
+        ``delegation_retry_depth`` 是当前调用链的局部计数，递归时显式 +1。
         """
         execution = await self._execute_once(
             task, delegation_id=delegation_id, origin=origin, context=context
         )
         retry_draft = execution.retry_delegation
-        if retry_draft is None or (
-            execution.receipt is not None and execution.receipt.status != "failed"
-        ):
+        if retry_draft is None:
             return execution
         if delegation_retry_depth >= 1:
             notice = self._message(
@@ -1252,9 +1070,7 @@ class ConversationOrchestrator:
                 source=MessageSource.SYSTEM,
                 kind=MessageKind.SYSTEM_STATUS,
                 text="已自动重试一次仍未成功，角色的再次委派没有执行。",
-                pair_id=self._context_or_current(
-                    task.conversation_id, context
-                ).pair_id,
+                pair_id=context.pair_id,
             )
             return ConversationOutcome(
                 messages=(*execution.messages, notice),
@@ -1288,20 +1104,18 @@ class ConversationOrchestrator:
         self,
         task: TaskRequest,
         *,
+        context: ExecutionContext,
         delegation_id: str | None = None,
         origin: MessageOrigin | None = None,
-        context: ExecutionContext | None = None,
     ) -> ConversationOutcome:
         """单次任务执行（不含失败重试路由）。
 
-        V0.2：``delegation_id``/``origin`` 标记任务消息归属——角色委派产生
-        的执行记录 origin=character_delegation 且带 delegation_id，直发
-        助手的执行记录保持 user 来源。Presenter 按此把两类记录都归入工作台，
-        委派卡通过 delegation_id 连接角色区与工作台。
+        ``delegation_id`` 与 ``origin`` 标记任务消息归属：角色委派产生的
+        执行记录 origin=character_delegation 且带 delegation_id，直发助手
+        的执行记录保持 user 来源。两类记录都归入工作台，委派卡通过
+        delegation_id 连接角色区与工作台。
         """
-        # V0.3.2 M4：项目、pair、审批模式与助手提示词都来自提交时解析的
-        # 不可变上下文；省略时回退当前全局选择（CLI/单测）。
-        exec_context = self._context_or_current(task.conversation_id, context)
+        exec_context = context
         task_project = exec_context.project
         task_pair_id = exec_context.pair_id
         task_approval_mode = exec_context.approval_mode
@@ -1331,40 +1145,30 @@ class ConversationOrchestrator:
             checks: list[str] = []
             engine_turn_id = "unavailable"
             sequence = 0
-            # V0.3.2 M1：per-task segment 累加器与工具时间线序号
+            # 本任务的 segment 累加器与工具时间线序号
             segment_state = _SegmentState()
             tool_orders: dict[str, int] = {}
-            # O3.1：已被原生审批请求（requestApproval）裁决过的工具操作集合。
-            # 引擎侧挂起时已裁决并回复，后续到达的 tool.started 不再重复门控。
-            adjudicated_tool_ids: set[str] = set()
             # 本次执行产生的新消息（含沙箱与审批 system 卡片）从这里开始
             history_start = len(self._history.get(task.conversation_id, []))
             sandbox = ProjectSandbox(Path(task_project.root_path))
-            approval = self._approval_managers.setdefault(
-                task.conversation_id,
-                ApprovalManager(
+            approval = self._approval_managers.get(task.conversation_id)
+            if approval is None:
+                approval = ApprovalManager(
                     mode=task_approval_mode,
                     rules=self.risk_rules,
-                    reviewer=self.reviewer,
-                    on_review=self._forward_review_event,
-                ),
-            )
-            approval.mode = task_approval_mode
-            approval.on_review = (
-                lambda event, payload, _conversation_id=task.conversation_id: (
-                    self._forward_review_event(
-                        event,
-                        payload,
-                        conversation_id=_conversation_id,
-                    )
+                    on_review=partial(
+                        self._forward_review_event,
+                        conversation_id=task.conversation_id,
+                    ),
                 )
-            )
-            # O3.3：执行期间的活动任务进度（事件驱动更新，结束时清理）
+                self._approval_managers[task.conversation_id] = approval
+            approval.mode = task_approval_mode
+            approval.reviewer = self.reviewer
+            # 执行期间的活动任务进度（事件驱动更新，结束时清理）
             progress = self._progress.setdefault(task.conversation_id, _TaskProgress())
             if origin == MessageOrigin.CHARACTER_DELEGATION:
-                # 角色委派被接受时，先写入正式的工作台任务消息。它不是异常兜底，
-                # 而是委派协议本身的起始事件；后续 Codex 成功或抛错都能关联到
-                # 同一个 delegation_id。
+                # 角色委派被接受时先写入工作台任务消息，作为委派的起始记录；
+                # 后续执行成功或失败都关联到同一个 delegation_id。
                 self._message(
                     conversation_id=task.conversation_id,
                     source=MessageSource.USER,
@@ -1399,9 +1203,8 @@ class ConversationOrchestrator:
 
             async with aclosing(self.coding_engine.run_turn(session, task)) as turn_stream:
                 async for raw_event in turn_stream:
-                    # O4.1：事件序号单一源头——到达事件在循环入口统一分配；
-                    # 合成事件（审批 gate/否决/resolved）经同一计数器分配，
-                    # 出口事件流序号连续无碰撞，不再信任适配器自带序号。
+                    # 事件序号由这里统一分配；合成事件（否决、resolved）经
+                    # 同一计数器分配，出口事件流序号连续，不使用适配器自带序号。
                     event = raw_event.model_copy(
                         update={
                             "conversation_id": task.conversation_id,
@@ -1412,30 +1215,17 @@ class ConversationOrchestrator:
                     sequence += 1
                     engine_turn_id = event.engine_turn_id
                     active_turn = self.state.get_for_task(task.task_id)
-                    if active_turn is None:
-                        # M1.2：本地任务已经结束，迟到的引擎 turn id 不得复活
-                        # ActiveTurn；记录为迟到协议事件并请求引擎取消该 turn。
-                        # V0.3.2 M4：判定只看本任务，其他聊天的并发任务不受影响。
-                        errors.append(
-                            f"late engine event after local finish: {engine_turn_id} {event.type}"
-                        )
-                        if session is not None:
-                            try:
-                                await self.coding_engine.cancel_turn(session, engine_turn_id)
-                            except Exception as exc:  # noqa: BLE001 - 保留真实错误
-                                errors.append(f"cancel late engine turn failed: {exc}")
-                        continue
                     if active_turn.engine_turn_id is None:
                         self.state.bind_engine_turn(task.task_id, engine_turn_id)
                     if self.state.get_for_task(task.task_id).cancellation_requested:
                         # 取消意图在引擎 turn id 绑定后立即发送 interrupt
-                        if session is not None:
-                            await self.coding_engine.cancel_turn(session, engine_turn_id)
+                        await self.coding_engine.cancel_turn(session, engine_turn_id)
                         self.state.mark_cancel_sent(task.task_id)
-    
-                    # V0.3.2 M1：推送前完成分段/时间线enrichment。delta 打开
-                    # 当前 segment；TOOL_STARTED 定稿当前段并给首个观察到的
-                    # 工具分配一次工作台序号（后续更新沿用原序号）。
+
+                    # 推送前完成分段与时间线信息：delta 打开当前 segment；
+                    # tool.started 或首次观察到的工具定稿当前段，工具事件
+                    # 首次观察即分配工作台序号，同一 tool_call_id 沿用原序号
+                    # 并写进每个工具事件的 payload；审批请求记录决策方。
                     if event.type in (
                         EngineEventType.ASSISTANT_DELTA,
                         EngineEventType.ASSISTANT_REASONING_DELTA,
@@ -1453,37 +1243,33 @@ class ConversationOrchestrator:
                             f"{segment_state.index}"
                         )
                         event = event.model_copy(update={"payload": payload})
-                    elif event.type == EngineEventType.TOOL_STARTED:
-                        self._finalize_segment(
-                            segment_state,
-                            conversation_id=task.conversation_id,
-                            task_id=task.task_id,
-                            engine_turn_id=engine_turn_id,
-                            pair_id=task_pair_id,
-                            delegation_id=task_delegation_id,
-                            origin=origin,
+                    elif event.type in (
+                        EngineEventType.TOOL_STARTED,
+                        EngineEventType.TOOL_PROGRESS,
+                        EngineEventType.TOOL_FINISHED,
+                    ):
+                        first_seen = (
+                            event.tool_call_id is not None
+                            and event.tool_call_id not in tool_orders
                         )
-                        if event.tool_call_id and event.tool_call_id not in tool_orders:
+                        if event.type == EngineEventType.TOOL_STARTED or first_seen:
+                            self._finalize_segment(
+                                segment_state,
+                                conversation_id=task.conversation_id,
+                                task_id=task.task_id,
+                                engine_turn_id=engine_turn_id,
+                                pair_id=task_pair_id,
+                                delegation_id=task_delegation_id,
+                                origin=origin,
+                            )
+                        if first_seen:
                             tool_orders[event.tool_call_id] = self._next_timeline_order(
                                 task.conversation_id
                             )
                         payload = dict(event.payload)
                         payload["timeline_order"] = tool_orders.get(event.tool_call_id)
                         event = event.model_copy(update={"payload": payload})
-    
-                    # O2.1：原始事件到达即推送（tool.started 先于审批/沙箱结果到达 UI，
-                    # 保证“运行中的工具卡片”立即出现）
-                    self._emit_event(event)
-    
-                    if event.type == EngineEventType.APPROVAL_REQUESTED:
-                        # O3.1：引擎侧挂起通知（app-server requestApproval）——
-                        # 操作尚未执行，这里做真正的裁决：沙箱兜底（越界直接
-                        # 否决）+ ApprovalManager 裁决，结果经 resolve_approval
-                        # 回复引擎。原生审批不再作为独立交互卡片直透 UI。
-                        op = self._operation_from_approval_event(event)
-                        if event.tool_call_id:
-                            adjudicated_tool_ids.add(event.tool_call_id)
-                        # 设计 §6.3：请求 payload 记录决策方（user 或 reviewer）
+                    elif event.type == EngineEventType.APPROVAL_REQUESTED:
                         payload = dict(event.payload)
                         payload.setdefault(
                             "actor",
@@ -1492,48 +1278,46 @@ class ConversationOrchestrator:
                             else "user",
                         )
                         event = event.model_copy(update={"payload": payload})
-                        # O4.1：请求事件在分支入口先入列——出口列表与推送顺序
-                        # 一致（请求→裁决→工具），沙箱否决路径（continue）也不会丢事件
-                        events.append(event)
+
+                    # 事件到达即推送并入列：tool.started 先于审批与沙箱结果
+                    # 到达 UI，运行中的工具卡片立即出现；出口列表与推送顺序一致。
+                    self._emit_event(event)
+                    events.append(event)
+
+                    if event.type == EngineEventType.APPROVAL_REQUESTED:
+                        # 引擎在工具执行前挂起请求：先做沙箱检查（越界直接
+                        # 否决），再由 ApprovalManager 裁决，结果经
+                        # resolve_approval 回复引擎。
+                        op = self._operation_from_approval_event(event)
                         approval_id = str(event.payload.get("approval_id") or "")
                         try:
-                            self._check_sandbox(sandbox, op)
+                            self._check_sandbox(sandbox, op.paths)
                         except SandboxViolation as exc:
                             # 挂起中的越界操作直接否决，引擎不会执行
                             await self.coding_engine.resolve_approval(
                                 session, approval_id, ApprovalDecision.DENY
                             )
-                            denied_run = self._deny_tool_and_notify(
-                                events,
+                            sequence = self._deny_tool(
                                 event,
                                 deny_reason=f"沙箱拦截：{exc}",
                                 message_text=self._sandbox_denial_text(exc),
                                 sequence=sequence,
-                                conversation_id=task.conversation_id,
-                                task_id=task.task_id,
-                                engine_turn_id=engine_turn_id,
+                                events=events,
+                                tool_runs=tool_runs,
+                                tool_orders=tool_orders,
                                 pair_id=task_pair_id,
                             )
-                            if denied_run.tool_call_id:
-                                tool_runs[denied_run.tool_call_id] = denied_run
-                            sequence += 1
                             failed = True
                             errors.append(str(exc))
                             continue
                         outcome = await approval.adjudicate(
                             op,
                             requested_event=event,
-                            conversation_id=task.conversation_id,
-                            task_id=task.task_id,
-                            engine_turn_id=engine_turn_id,
-                            tool_call_id=event.tool_call_id,
                             context=self._recent_user_messages(task.conversation_id),
-                            request_decision=(
-                                lambda op, approval_id, reason, _cid=task.conversation_id, _tid=task.task_id: (
-                                    self._request_approval(
-                                        op, approval_id, reason, _cid, _tid
-                                    )
-                                )
+                            request_decision=partial(
+                                self._request_approval,
+                                conversation_id=task.conversation_id,
+                                task_id=task.task_id,
                             ),
                         )
                         sequence = self._emit_gate_outcome(
@@ -1545,197 +1329,58 @@ class ConversationOrchestrator:
                             pair_id=task_pair_id,
                         )
                         if outcome.decision == ApprovalDecision.DENY:
-                            # M4.1：原生审批请求被用户/审查否决时同样落 denied
-                            # 工具记录，保留裁决理由。
-                            resolved_reason = next(
-                                (
-                                    str(e.payload.get("reason") or "")
-                                    for e in reversed(outcome.events)
-                                    if e.type == EngineEventType.APPROVAL_RESOLVED
-                                ),
-                                "",
-                            ) or "审批否决"
-                            denied_run = self._deny_tool_and_notify(
-                                events,
+                            # 被用户或审查否决时落 denied 工具记录，保留裁决理由。
+                            resolved = outcome.events[-1].payload
+                            deny_reason = str(
+                                resolved["resolution_reason"] or resolved["request_reason"]
+                            )
+                            sequence = self._deny_tool(
                                 event,
-                                deny_reason=resolved_reason,
-                                message_text=resolved_reason,
+                                deny_reason=deny_reason,
+                                message_text=deny_reason,
                                 sequence=sequence,
-                                conversation_id=task.conversation_id,
-                                task_id=task.task_id,
-                                engine_turn_id=engine_turn_id,
+                                events=events,
+                                tool_runs=tool_runs,
+                                tool_orders=tool_orders,
                                 pair_id=task_pair_id,
                             )
-                            if denied_run.tool_call_id:
-                                tool_runs[denied_run.tool_call_id] = denied_run
-                            sequence += 1
-                        # O3.1：统一经 resolve_approval 转发裁决；被否决时
-                        # 不中断执行循环——引擎把拒绝反馈给模型后继续 turn，
-                        # 任务成败由 turn 终态决定。
+                        # 裁决经 resolve_approval 回复引擎；被否决时不中断
+                        # 执行循环，引擎把拒绝反馈给模型后继续 turn，任务成败
+                        # 由 turn 终态决定。
                         await self.coding_engine.resolve_approval(
                             session, approval_id, outcome.decision
                         )
-    
+
                     elif event.type == EngineEventType.TOOL_STARTED:
-                        op = self._operation_from_event(event)
-                        # O4.1：工具事件在门控处理前先入列，出口列表与推送顺序
-                        # 一致（工具开始→审批裁决/否决），序号连续
-                        events.append(event)
-                        # O3.3：当前步骤用中性标签（不泄露命令/路径原文）
+                        # 当前步骤用中性标签，不泄露命令与路径原文
                         progress.current_step = self._step_label(event)
                         try:
-                            self._check_sandbox(sandbox, op)
+                            self._check_sandbox(sandbox, self._tool_paths(event))
                         except SandboxViolation as exc:
-                            denied_run = self._deny_tool_and_notify(
-                                events,
+                            sequence = self._deny_tool(
                                 event,
                                 deny_reason=str(exc),
                                 message_text=self._sandbox_denial_text(exc),
                                 sequence=sequence,
-                                conversation_id=task.conversation_id,
-                                task_id=task.task_id,
-                                engine_turn_id=engine_turn_id,
+                                events=events,
+                                tool_runs=tool_runs,
+                                tool_orders=tool_orders,
                                 pair_id=task_pair_id,
                             )
-                            if denied_run.tool_call_id:
-                                tool_runs[denied_run.tool_call_id] = denied_run
-                            sequence += 1
                             failed = True
                             errors.append(str(exc))
                             break
-    
-                        # Codex 的 item/started 已表示操作开始。真实适配器只接受
-                        # app-server 在执行前发出的 requestApproval，避免在这里
-                        # 展示已经无法阻止执行的审批卡片。演示适配器继续走本地
-                        # 门控，用于离线验证三种审批模式。
-                        if self.coding_engine.native_preexecution_approval:
-                            continue
-    
-                        # O3.1：该工具操作已由原生审批请求裁决并回复
-                        # （adjudicated），兜底 gate 不再重复执行；
-                        # 演示引擎等不产生原生请求的路径仍走完整门控。
-                        if not (
-                            event.tool_call_id
-                            and event.tool_call_id in adjudicated_tool_ids
-                        ):
-                            try:
-                                outcome = await approval.gate(
-                                    op,
-                                    conversation_id=task.conversation_id,
-                                    task_id=task.task_id,
-                                    engine_turn_id=engine_turn_id,
-                                    sequence=sequence,
-                                    tool_call_id=event.tool_call_id,
-                                    context=self._recent_user_messages(
-                                        task.conversation_id
-                                    ),
-                                )
-                                sequence = self._emit_gate_outcome(
-                                    outcome,
-                                    events,
-                                    sequence,
-                                    conversation_id=task.conversation_id,
-                                    engine_turn_id=engine_turn_id,
-                                    pair_id=task_pair_id,
-                                )
-                                if outcome.decision == ApprovalDecision.DENY:
-                                    denied_run = self._deny_tool_and_notify(
-                                        events,
-                                        event,
-                                        deny_reason="审批否决",
-                                        message_text="审批否决",
-                                        sequence=sequence,
-                                        conversation_id=task.conversation_id,
-                                        task_id=task.task_id,
-                                        engine_turn_id=engine_turn_id,
-                                        pair_id=task_pair_id,
-                                    )
-                                    if denied_run.tool_call_id:
-                                        tool_runs[denied_run.tool_call_id] = denied_run
-                                    sequence += 1
-                                    failed = True
-                                    errors.append("审批否决")
-                                    break
-                            except ApprovalRequired as req:
-                                # O4.1：req.event 也走统一计数器（gate 内相对编号
-                                # 不参与出口序号，避免与后续合成事件碰撞）
-                                req.event = req.event.model_copy(update={"sequence": sequence})
-                                sequence += 1
-                                events.append(req.event)
-                                self._emit_event(req.event)
-                                # O1.7：把真实理由与 approval_id 传给回调，UI 不再用
-                                # 命令文本冒充理由，也不再用 FIFO 顺序猜测对应关系
-                                reason = str(
-                                    req.event.payload.get("reason", "") or "需要用户审批"
-                                )
-                                try:
-                                    decision = await self._request_approval(
-                                        req.op,
-                                        req.approval_id,
-                                        reason,
-                                        task.conversation_id,
-                                        task.task_id,
-                                    )
-                                except BaseException:
-                                    # M1.5：回调异常/取消也要清理 _pending，
-                                    # 不能把审批项留在管理器里悬挂。
-                                    approval.resolve(
-                                        req.approval_id, ApprovalDecision.DENY
-                                    )
-                                    raise
-                                op = approval.resolve(req.approval_id, decision)
-                                resolved_event = self._approval_resolved_event(
-                                    req.event, decision, "user", op, sequence
-                                )
-                                sequence += 1
-                                events.append(resolved_event)
-                                self._emit_event(resolved_event)
-                                # 设计 §4.3：用户裁决以 system 卡片留在消息时间线
-                                self._message(
-                                    conversation_id=task.conversation_id,
-                                    source=MessageSource.SYSTEM,
-                                    kind=MessageKind.APPROVAL,
-                                    text=self._decision_text(decision),
-                                    engine_turn_id=engine_turn_id,
-                                    pair_id=task_pair_id,
-                                )
-                                if decision == ApprovalDecision.DENY:
-                                    denied_run = self._deny_tool_and_notify(
-                                        events,
-                                        event,
-                                        deny_reason="用户否决",
-                                        message_text="用户否决",
-                                        sequence=sequence,
-                                        conversation_id=task.conversation_id,
-                                        task_id=task.task_id,
-                                        engine_turn_id=engine_turn_id,
-                                        pair_id=task_pair_id,
-                                    )
-                                    if denied_run.tool_call_id:
-                                        tool_runs[denied_run.tool_call_id] = denied_run
-                                    sequence += 1
-                                    failed = True
-                                    errors.append("用户否决")
-                                    break
-    
-                    if event.type not in (
-                        EngineEventType.APPROVAL_REQUESTED,
-                        EngineEventType.TOOL_STARTED,
-                    ):
-                        # O4.1：这两类事件已在各自分支入口入列，避免重复
-                        events.append(event)
-                    if event.type == EngineEventType.ASSISTANT_FINAL:
+
+                    elif event.type == EngineEventType.ASSISTANT_FINAL:
                         assistant_text = str(event.payload.get("text", ""))
                         if assistant_text.strip() and not segment_state.is_open():
-                            # 只发 final、没有流式 delta 的引擎（如 Codex）：
-                            # final 自身构成 segment 0
+                            # 只发 final、没有流式 delta 时，final 自身构成一个 segment
                             segment_state.index = segment_state.finalized_count
                             segment_state.order = self._next_timeline_order(
                                 task.conversation_id
                             )
-                        # V0.3.2 M1：final 完整正文覆盖当前段的流式累积
+                        # final 完整正文覆盖当前段的流式累积
                         segment_state.final_override = assistant_text
-                        # O3.3：助手进入收尾阶段
                         progress.current_step = "助手整理结果"
                     elif event.type == EngineEventType.ASSISTANT_REASONING_DELTA:
                         text = str(event.payload.get("text", ""))
@@ -1748,7 +1393,7 @@ class ConversationOrchestrator:
                     elif event.type == EngineEventType.FILE_PATCH:
                         path = event.payload.get("path")
                         if path:
-                            # O4.3：同一文件多次 patch 只记一次（保持首次出现顺序）
+                            # 同一文件多次 patch 只记一次（保持首次出现顺序）
                             text = str(path)
                             if text not in changed_files:
                                 changed_files.append(text)
@@ -1763,7 +1408,6 @@ class ConversationOrchestrator:
                                 errors.append(str(event.payload["error"]))
                         if event.payload.get("check"):
                             checks.append(str(event.payload["check"]))
-                        # O3.3：工具步骤收尾后计数
                         progress.completed_steps += 1
                         progress.current_step = "任务收尾中"
                         if event.tool_call_id:
@@ -1790,9 +1434,9 @@ class ConversationOrchestrator:
                         # 先报告一次失败，随后用 completed 收尾。
                         terminal_status = "cancelled" if cancelled else "completed"
 
-            # V0.3.2 M1：任务结束定稿最后一个尚未定稿的 segment（正常、
-            # 失败、取消路径都只收尾本任务自己的段落）。final 未到达时，
-            # 段内已累积的 delta 文本就是该段最终正文。
+            # 任务结束定稿最后一个尚未定稿的 segment（正常、失败、取消路径
+            # 都只收尾本任务自己的段落）。final 未到达时，段内已累积的 delta
+            # 文本就是该段最终正文。
             final_segment_text = self._finalize_segment(
                 segment_state,
                 conversation_id=task.conversation_id,
@@ -1812,7 +1456,7 @@ class ConversationOrchestrator:
             elif terminal_status is not None:
                 target_status = terminal_status
             elif failed:
-                # 本地沙箱或审批否决中断了事件流
+                # 本地沙箱拦截中断了事件流
                 target_status = "failed"
             else:
                 raise RuntimeError(
@@ -1820,7 +1464,7 @@ class ConversationOrchestrator:
                     f"（engine_turn_id={engine_turn_id}）"
                 )
             if target_status == "completed" and not failed and not assistant_text.strip():
-                raise RuntimeError("古代机械未返回最终回复")
+                raise RuntimeError("助手未返回最终回复")
             if TaskStatus(target_status) != lifecycle.status:
                 lifecycle.transition(TaskStatus(target_status))
             status = cast(ReceiptStatus, target_status)
@@ -1833,8 +1477,8 @@ class ConversationOrchestrator:
                 checks=tuple(checks),
                 errors=tuple(errors),
             )
-            for tool_run in tool_runs.values():
-                if self.store is not None:
+            if self.store is not None:
+                for tool_run in tool_runs.values():
                     self.store.save_tool_run(tool_run)
 
             result_summary = CharacterResultSummary(
@@ -1856,15 +1500,13 @@ class ConversationOrchestrator:
                     "委派；结果失败时，可以立即重新委派重试一次。"
                 ),
             )
-            # V0.3.9：结果轮同样使用统一窗口、该任务所属用户回合的序号与
-            # 项目运行上下文（此前三者都缺失）。
+            # 结果轮使用与主角色轮相同的窗口、该任务所属用户回合的序号与
+            # 项目运行上下文。
             dialogue_request = self._dialogue_request(
                 conversation_id=task.conversation_id,
                 user_message=synthetic,
                 pair_id=task_pair_id,
-                runtime_context=self._build_runtime_context(
-                    task.conversation_id, exec_context
-                ),
+                runtime_context=self._build_runtime_context(exec_context),
                 turn_index=self._turn_index_for(
                     task.conversation_id, task.origin_message_id
                 ),
@@ -1906,9 +1548,21 @@ class ConversationOrchestrator:
                     delegation_status,
                     reason=receipt.errors[0] if receipt.errors else None,
                 )
-            # 失败结果轮里角色立即重新委派（delegation.type=task）→ 交给
-            # _execute 的重试路由执行一次；其余情况（成功/取消/修改草稿）
-            # 不触发重试。
+            if result_turn.delegation_missed:
+                logger.warning(
+                    "角色在结果轮自报委派但没有返回结构化 delegation（conversation=%s task=%s）",
+                    task.conversation_id,
+                    task.task_id,
+                )
+                self._message(
+                    conversation_id=task.conversation_id,
+                    source=MessageSource.SYSTEM,
+                    kind=MessageKind.SYSTEM_STATUS,
+                    text="角色声明要委派，但没有返回结构化委派，本次没有任务交给助手执行。",
+                    pair_id=task_pair_id,
+                )
+            # 失败结果轮里角色立即重新委派（delegation.type=task）时交给
+            # _execute 再执行一次；成功、取消或修改草稿都不触发。
             retry_delegation = (
                 result_turn.delegation
                 if receipt.status == "failed"
@@ -1926,8 +1580,8 @@ class ConversationOrchestrator:
                 retry_delegation=retry_delegation,
             )
         finally:
-            # V0.3.2 M1：异常中断也要保留已到达的部分 segment（计划 5.5.7）。
-            # 主异常继续传播；定稿自身的失败单独记录，不吞不掩。
+            # 异常中断也要保留已到达的部分 segment。主异常继续传播，定稿
+            # 自身的失败单独记录日志。
             if segment_state.is_open():
                 try:
                     self._finalize_segment(
@@ -1944,9 +1598,7 @@ class ConversationOrchestrator:
                         "任务异常收尾时定稿助手 segment 失败（task=%s）",
                         task.task_id,
                     )
-            # M1.5：任务结束清理未决本地审批，避免悬挂 pending
-            approval.clear_pending()
-            # O3.3：任务结束清理进度，后续聊天轮不再注入摘要
+            # 任务结束清理进度，后续聊天轮不再注入摘要
             self._progress.pop(task.conversation_id, None)
             self.state.finish(task.task_id)
             self._active_lifecycles.pop(task.task_id, None)
@@ -1954,13 +1606,13 @@ class ConversationOrchestrator:
                 self.on_execution_finished(active_turn)
 
     def _emit_event(self, event: EngineEvent) -> None:
-        """O2.1：把引擎事件立即推送给 UI（流式通道）。"""
+        """把引擎事件立即推送给 UI（流式通道）。"""
         if self.on_engine_event is not None:
             self.on_engine_event(event)
 
     @staticmethod
     def _step_label(event: EngineEvent) -> str:
-        """O3.3：工具步骤的中性标签（不含命令、路径与输出原文）。
+        """工具步骤的中性标签（不含命令、路径与输出原文）。
 
         只区分工具类别，避免把引擎事件里的原始内容带进角色摘要。
         """
@@ -1974,31 +1626,25 @@ class ConversationOrchestrator:
         return "正在处理任务"
 
     @staticmethod
-    def _operation_from_event(event: EngineEvent) -> PendingOperation:
+    def _tool_paths(event: EngineEvent) -> list[str]:
+        """工具开始事件里上报的目标路径。"""
         payload = event.payload
-        tool_kind = payload.get("tool_kind", "shell")
-        return PendingOperation(
-            tool_kind=tool_kind,
-            command=payload.get("command"),
-            paths=[str(p) for p in payload.get("paths", [])] or ([payload["path"]] if payload.get("path") else []),
-            patch_file_count=payload.get("patch_file_count")
-            or len(payload.get("paths", [])),
-            summary=payload.get("title", "") or payload.get("summary", "") or "工具操作",
+        return [str(p) for p in payload.get("paths", [])] or (
+            [str(payload["path"])] if payload.get("path") else []
         )
 
     @staticmethod
     def _operation_from_approval_event(event: EngineEvent) -> PendingOperation:
-        """O3.1：从原生审批请求事件构造待裁决操作。
+        """从审批请求事件构造待裁决操作。
 
-        codec 已把 requestApproval 的字段归一进 payload
-        （tool_kind/command/paths/summary），这里直接透传。
+        适配器已把工具字段归一进 payload（tool_kind、command、paths、
+        summary），这里直接透传。
         """
         payload = event.payload
         return PendingOperation(
             tool_kind=payload.get("tool_kind", "shell"),
             command=payload.get("command"),
             paths=[str(p) for p in payload.get("paths", []) or []],
-            patch_file_count=None,
             summary=str(
                 payload.get("summary") or payload.get("reason") or "工具操作"
             ),
@@ -2006,11 +1652,7 @@ class ConversationOrchestrator:
 
     @staticmethod
     def _sandbox_denial_text(exc: SandboxViolation) -> str:
-        """沙箱拒绝卡片的文案：保留真实拦截原因，并附可操作的落地建议。
-
-        只改善被拦截后的引导，不放宽沙箱本身；路径仍必须以绑定项目目录
-        （或重新选择项目路径）为准。
-        """
+        """沙箱拒绝卡片的文案：保留真实拦截原因，并给出可操作的建议。"""
         return (
             f"沙箱拦截：{exc}。"
             "路径在绑定项目之外；把文件移入项目目录后再试，"
@@ -2018,17 +1660,16 @@ class ConversationOrchestrator:
         )
 
     @staticmethod
-    def _check_sandbox(sandbox: ProjectSandbox, op: PendingOperation) -> None:
-        for path in op.paths:
+    def _check_sandbox(sandbox: ProjectSandbox, paths: Iterable[str]) -> None:
+        for path in paths:
             sandbox.resolve_write_path(path)
-        if op.command is not None and op.tool_kind == "shell":
-            sandbox.enforce_cwd(None)
 
     async def _request_approval(
         self,
         op: PendingOperation,
         approval_id: str,
         reason: str,
+        *,
         conversation_id: str,
         task_id: str,
     ) -> ApprovalDecision:
@@ -2036,27 +1677,6 @@ class ConversationOrchestrator:
             op, approval_id, reason, conversation_id, task_id
         )
 
-    @staticmethod
-    def _deny_tool_event(
-        event: EngineEvent, reason: str, sequence: int
-    ) -> EngineEvent:
-        return EngineEvent(
-            conversation_id=event.conversation_id,
-            task_id=event.task_id,
-            engine_turn_id=event.engine_turn_id,
-            sequence=sequence,
-            type=EngineEventType.TOOL_FINISHED,
-            tool_call_id=event.tool_call_id,
-            payload={
-                # 计划 A3：沙箱越界与审批否决的工具操作以 denied 状态收尾，
-                # 与 ToolRun.status 的 "denied" 枚举值对齐；任务本身仍标记失败。
-                "status": "denied",
-                "title": event.payload.get("title", "工具"),
-                "summary": reason,
-                "details": reason,
-                "error": reason,
-            },
-        )
 
     def _emit_gate_outcome(
         self,
@@ -2068,9 +1688,9 @@ class ConversationOrchestrator:
         engine_turn_id: str | None,
         pair_id: str,
     ) -> int:
-        """裁决事件统一计数入列并推送；返回递增后的序号。
+        """裁决事件统一计数入列并推送，返回递增后的序号。
 
-        设计 §4.3：裁决结果以 system 卡片留在消息时间线。
+        裁决结果以 system 卡片留在消息时间线。
         """
         for gate_event in outcome.events:
             gate_event = gate_event.model_copy(update={"sequence": sequence})
@@ -2089,72 +1709,71 @@ class ConversationOrchestrator:
             )
         return sequence
 
-    def _deny_tool_and_notify(
+    def _deny_tool(
         self,
-        events: list[EngineEvent],
         event: EngineEvent,
         *,
         deny_reason: str,
         message_text: str,
         sequence: int,
-        conversation_id: str,
-        task_id: str,
-        engine_turn_id: str | None,
+        events: list[EngineEvent],
+        tool_runs: dict[str, ToolRun],
+        tool_orders: dict[str, int],
         pair_id: str,
-    ) -> ToolRun:
-        """合成 denied 工具事件入列推送并落 system 状态卡，返回完整 ToolRun。
+    ) -> int:
+        """以 denied 状态收尾被沙箱或审批拦下的工具，返回递增后的序号。
 
-        M4.1：调用方把返回值写入当前 ``tool_runs`` 集合，任务结束时随其他
-        工具记录一起持久化；调用方自行递增 ``sequence``。
+        合成 denied 的 tool.finished 事件入列推送、落 system 状态卡，并把
+        ToolRun 写入 ``tool_runs``，任务结束时随其他工具记录一起持久化。
+        工具还没有工作台序号时（审批请求先于 tool.started 到达）当场分配。
         """
-        denied_event = self._deny_tool_event(event, deny_reason, sequence)
+        tool_call_id = event.tool_call_id
+        order = tool_orders.get(tool_call_id) if tool_call_id else None
+        if order is None:
+            order = self._next_timeline_order(event.conversation_id)
+            if tool_call_id:
+                tool_orders[tool_call_id] = order
+        title = str(event.payload.get("title", "工具"))
+        denied_event = EngineEvent(
+            conversation_id=event.conversation_id,
+            task_id=event.task_id,
+            engine_turn_id=event.engine_turn_id,
+            sequence=sequence,
+            type=EngineEventType.TOOL_FINISHED,
+            tool_call_id=tool_call_id,
+            payload={
+                "status": "denied",
+                "title": title,
+                "summary": deny_reason,
+                "details": deny_reason,
+                "error": deny_reason,
+                "timeline_order": order,
+            },
+        )
         events.append(denied_event)
         self._emit_event(denied_event)
         self._message(
-            conversation_id=conversation_id,
+            conversation_id=event.conversation_id,
             source=MessageSource.SYSTEM,
             kind=MessageKind.SYSTEM_STATUS,
             text=message_text,
-            engine_turn_id=engine_turn_id,
+            engine_turn_id=event.engine_turn_id,
             pair_id=pair_id,
         )
-        return ToolRun(
-            tool_call_id=event.tool_call_id or "",
-            conversation_id=conversation_id,
-            task_id=task_id,
-            engine_turn_id=engine_turn_id or "",
-            sequence=sequence,
-            status="denied",
-            title=str(denied_event.payload.get("title", "工具")),
-            summary=deny_reason,
-            details=deny_reason,
-        )
-
-    @staticmethod
-    def _approval_resolved_event(
-        requested: EngineEvent,
-        decision: ApprovalDecision,
-        actor: str,
-        op: PendingOperation,
-        sequence: int,
-    ) -> EngineEvent:
-        # O4.1：sequence 由调用方（统一计数器）显式传入，
-        # 不再隐式取 requested.sequence + 1
-        return EngineEvent(
-            conversation_id=requested.conversation_id,
-            task_id=requested.task_id,
-            engine_turn_id=requested.engine_turn_id,
-            sequence=sequence,
-            type=EngineEventType.APPROVAL_RESOLVED,
-            tool_call_id=requested.tool_call_id,
-            payload={
-                "approval_id": requested.payload.get("approval_id"),
-                "decision": decision.value,
-                "actor": actor,
-                "reason": op.summary,
-                "suggestion": "",
-            },
-        )
+        if tool_call_id:
+            tool_runs[tool_call_id] = ToolRun(
+                tool_call_id=tool_call_id,
+                conversation_id=event.conversation_id,
+                task_id=event.task_id,
+                engine_turn_id=event.engine_turn_id,
+                sequence=sequence,
+                status="denied",
+                title=title,
+                summary=deny_reason,
+                details=deny_reason,
+                timeline_order=order,
+            )
+        return sequence + 1
 
     @staticmethod
     def _decision_text(decision: ApprovalDecision) -> str:
@@ -2167,7 +1786,7 @@ class ConversationOrchestrator:
 
     @staticmethod
     def _approval_notice(outcome: GateOutcome) -> str | None:
-        """从审批门控结果生成时间线 system 卡片文案。
+        """从审批裁决结果生成时间线 system 卡片文案。
 
         - 完全允许运行与审查模式低风险直接放行不产生提示（返回 None）；
         - 审查智能体的裁决记录理由与调整建议；
@@ -2181,8 +1800,8 @@ class ConversationOrchestrator:
             text = "审查结果：" + (
                 "允许" if payload.get("decision") == "allow" else "否决"
             )
-            if payload.get("reason"):
-                text += f"（{payload['reason']}）"
+            if payload.get("resolution_reason"):
+                text += f"（{payload['resolution_reason']}）"
             if payload.get("suggestion"):
                 text += f"；调整建议：{payload['suggestion']}"
             return text

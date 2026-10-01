@@ -1,18 +1,5 @@
-"""聊天级摘要纯逻辑（V0.3.9 契约冻结 §2）。
-
-契约出处：``.archive/v0.3.9-dual-track-backup-2026-09-10/logic-worktree/V0.3.9-契约冻结.md`` §2（原文、摘要、投影与记忆）。
-
-- 摘要键只含 ``conversation_id``，不得跨聊天读取；
-- 角色消息计数只统计 ``source=user|character``、``origin!=character_delegation``
-  且正文非空的最终消息；流式 delta、助手、工具、思考、系统状态不计数；
-- 自上次成功摘要覆盖终点之后达到 80 条，或这些消息 UTF-8 正文累计达到
-  256 KiB，任一先到即启动压缩；
-- 摘要必须覆盖连续、已最终落库的消息区间；
-- 代码只校验 JSON 结构、身份、连续区间与安全边界，不做语义判断，不改写模型摘要；
-- 失败保存原始错误、保留原投影，不生成空摘要。
-
-本模块是纯逻辑，不读写数据库、不调用模型。
-"""
+# 聊天级摘要的触发判定与结构校验。摘要只属于单个聊天，覆盖连续且已最终落库的消息区间；
+# 代码只校验 JSON 结构、身份、区间与安全边界，不改写模型摘要，失败保存原始错误。
 
 from __future__ import annotations
 
@@ -34,23 +21,20 @@ from .contracts import (
     utc_now,
 )
 
-# ---- 契约 §2 阈值（冻结） ----
+# 自上次成功摘要覆盖终点之后的角色消息达到 80 条，或 UTF-8 正文累计达到
+# 256 KiB，任一先到即启动压缩。
 SUMMARY_TRIGGER_MESSAGE_COUNT = 80
 SUMMARY_TRIGGER_BYTES = 256 * 1024
+# 角色上下文原文上限：触发摘要前 50 条（与世界书扫描缓冲一致），触发后 12 条。
 ROLE_CONTEXT_LIMIT_AFTER_SUMMARY = 12
-# 摘要触发前的角色上下文上限：沿用 V0.3.7 现状（世界书扫描缓冲 50）。
-# 触发摘要后按契约收窄到 ROLE_CONTEXT_LIMIT_AFTER_SUMMARY。
 ROLE_CONTEXT_LIMIT_PRE_SUMMARY = 50
 # 摘要内容安全边界：超过即拒绝（summary_invalid），不静默截断。
 MAX_SUMMARY_CONTENT_BYTES = 256 * 1024
 
-SUMMARY_STATUSES = ("idle", "running", "completed", "failed")
-
-# 契约 §7 错误码（摘要相关）。
+# 摘要相关错误码。
 SUMMARY_PROVIDER_ERROR = "summary_provider_error"
 SUMMARY_INVALID = "summary_invalid"
 SUMMARY_TIMEOUT = "summary_timeout"
-SUMMARY_ERROR_CODES = (SUMMARY_PROVIDER_ERROR, SUMMARY_INVALID, SUMMARY_TIMEOUT)
 
 # "最终消息"：不在途（sending/queued/received/processing）的已落库消息。
 FINAL_MESSAGE_STATUSES = frozenset(
@@ -63,7 +47,7 @@ FINAL_MESSAGE_STATUSES = frozenset(
 
 
 class SummaryError(ValueError):
-    """摘要操作的真实失败；``code`` 为契约错误码。"""
+    """摘要操作的真实失败；``code`` 为错误码。"""
 
     def __init__(self, message: str, *, code: str = SUMMARY_INVALID) -> None:
         super().__init__(message)
@@ -76,7 +60,7 @@ def is_final_message(message: Message) -> bool:
 
 
 def is_role_message(message: Message) -> bool:
-    """契约 §2 的角色消息计数定义。
+    """角色消息计数定义。
 
     只统计 ``source=user|character``、``origin!=character_delegation``、
     正文非空且已最终落库的消息；助手/工具/系统状态与委派镜像不计数。
@@ -91,7 +75,7 @@ def is_role_message(message: Message) -> bool:
 
 
 def role_messages(messages: Iterable[Message]) -> tuple[Message, ...]:
-    """按契约定义过滤角色消息（保持入参顺序）。"""
+    """按角色消息定义过滤（保持入参顺序）。"""
     return tuple(message for message in messages if is_role_message(message))
 
 
@@ -127,7 +111,7 @@ class SummaryTrigger:
 def summary_trigger(
     messages: Iterable[Message], *, covered_to_message_id: str | None = None
 ) -> SummaryTrigger:
-    """契约 §2 触发判定：条数 80 或 UTF-8 正文 256 KiB，任一先到即触发。"""
+    """触发判定：条数 80 或 UTF-8 正文 256 KiB，任一先到即触发。"""
     pending = role_messages(messages_after_coverage(messages, covered_to_message_id))
     utf8_bytes = sum(len(message.text.encode("utf-8")) for message in pending)
     reason: str | None = None
@@ -144,7 +128,7 @@ def summary_trigger(
 
 
 class ConversationSummary(FrozenModel):
-    """一条聊天摘要记录（与 TS ``ConversationSummary`` 同形；契约 §2）。
+    """一条聊天摘要记录（与 TS ``ConversationSummary`` 同形）。
 
     状态为 ``idle|running|completed|failed``：
 
@@ -217,7 +201,7 @@ class ConversationSummary(FrozenModel):
 def validate_summary_coverage(
     messages: Iterable[Message], summary: ConversationSummary
 ) -> None:
-    """校验摘要覆盖真实存在、连续且已最终落库的消息区间（契约 §2）。
+    """校验摘要覆盖真实存在、连续且已最终落库的消息区间。
 
     只做结构校验：区间端点存在、起点不晚于终点、区间内消息全部最终落库、
     区间内角色消息数与 ``covers_message_count`` 一致。不判断摘要语义。
@@ -260,7 +244,7 @@ def validate_summary_coverage(
 def require_summary_conversation(
     summary: ConversationSummary, conversation_id: str
 ) -> None:
-    """摘要只能属于当前聊天（契约 §2：摘要键只含 conversation_id）。"""
+    """摘要只能属于当前聊天（摘要键只含 conversation_id）。"""
     if summary.conversation_id != conversation_id:
         raise SummaryError(
             "摘要不属于当前聊天："
@@ -338,7 +322,7 @@ def summary_event_payload(
     character_ref: str,
     assistant_identity: str,
 ) -> dict:
-    """``summary.started/completed/failed`` 事件载荷（契约 §2）。
+    """``summary.started/completed/failed`` 事件载荷。
 
     失败事件额外携带 ``error_code/error``；不携带隐藏提示内容。
     """
@@ -354,8 +338,7 @@ def summary_event_payload(
         "covers_from_message_id": summary.covers_from_message_id,
         "covers_to_message_id": summary.covers_to_message_id,
         "covers_message_count": summary.covers_message_count,
-        # V039-S4-013：摘要记录必须标注实际生成所用的供应商与模型，
-        # 未观测时为 null（事件字段与落库记录同源，不各自表述）。
+        # 实际生成所用的供应商与模型，未观测时为 null；与落库记录同源。
         "provider": summary.provider,
         "model": summary.model,
         "created_at": summary.created_at,

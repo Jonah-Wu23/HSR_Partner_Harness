@@ -23,6 +23,7 @@ from .contracts import (
     ToolRun,
     VadEvent,
 )
+from .repository import ConversationSnapshot
 
 
 class DialogueModel(ABC):
@@ -32,34 +33,46 @@ class DialogueModel(ABC):
             yield
 
     async def aclose(self) -> None:
-        """O3.2：释放对话模型持有的资源（如自建 HTTP client）。
+        """释放对话模型持有的资源（如自建 HTTP client）。
 
         注入外部 client 的适配器应把关闭留给调用方；默认实现不做任何事。
         """
         return
 
+    @abstractmethod
     async def generate_title(
         self, *, pair_id: str, context: tuple[Message, ...]
-    ) -> str | None:
-        """用助手身份为首次完整回复后的聊天生成一个短标题。"""
-        del pair_id, context
-        return None
+    ) -> str:
+        """用助手身份为首次完整回复后的聊天生成一个短标题。
 
+        请求失败或模型没有给出可用标题时抛出异常，异常信息带原始原因。
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def generate_summary(
         self, *, pair_id: str, assistant_prompt: str, context_text: str
-    ) -> dict | None:
-        """用配置的真实模型生成聊天摘要结构化对象（契约 §2）。
+    ) -> dict[str, Any]:
+        """用配置的真实模型生成聊天摘要结构化对象。
 
-        返回的字典由模型负责；调用方只校验结构与身份，不改写语义。
-        未实现/调用失败返回 None；结构不符由调用方按真实失败处理。
+        返回的字典由模型负责，调用方只校验结构与身份，不改写语义。
+        请求失败或正文不是 JSON 对象时抛出异常，异常信息带原始原因。
         """
-        del pair_id, assistant_prompt, context_text
-        return None
+        raise NotImplementedError
+
+    @abstractmethod
+    async def complete_json(
+        self, *, system: str, user: str, max_tokens: int
+    ) -> dict[str, Any]:
+        """发送一次非流式请求，要求模型只输出一个 JSON 对象并返回解析结果。
+
+        审查、标题与摘要共用这个接口。请求失败、响应为空或正文不是 JSON
+        对象时抛出异常，异常信息带原始原因。
+        """
+        raise NotImplementedError
 
 
 class CodingEngine(ABC):
-    native_preexecution_approval: bool = False
-
     @abstractmethod
     async def open_session(
         self,
@@ -71,11 +84,15 @@ class CodingEngine(ABC):
     ) -> EngineSessionRef:
         """打开（或恢复）引擎会话。
 
-        ``approval_mode`` 是当前任务的审批模式。沙箱与审批裁决由编排器负责；
-        ``native_preexecution_approval`` 为 True 的引擎在任何审批模式下都要在
-        工具执行前发出 APPROVAL_REQUESTED，等待 ``resolve_approval``。
+        ``approval_mode`` 是当前任务的审批模式。沙箱与审批裁决由编排器负责：
+        引擎在任何审批模式下都要在工具执行前发出 APPROVAL_REQUESTED，
+        等待 ``resolve_approval`` 的裁决后再执行或放弃该工具。
         """
         raise NotImplementedError
+
+    async def aclose(self) -> None:
+        """释放引擎持有的资源（如 transport 与子进程）；默认实现不做任何事。"""
+        return
 
     @abstractmethod
     async def run_turn(
@@ -121,35 +138,8 @@ class StateStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def load_conversation(self, conversation_id: str) -> dict[str, Any]:
+    def load_conversation(self, conversation_id: str) -> ConversationSnapshot:
         raise NotImplementedError
-
-    # ---- V0.3.9 普通增量缓冲（contract-v1 第 4 节）----
-    # 批量实现（SQLiteStore）把普通增量合并成 50 条 / 50ms 的事务；
-    # 这里给出的默认实现没有缓冲，直接同步落库并让 flush 成为空操作。
-    # 默认实现不会丢数据，只是不做批量合并，因此端口替换仍然安全。
-
-    def enqueue_message(self, message: Message) -> None:
-        """普通增量入队；默认实现直接同步落库。"""
-        self.save_message(message)
-
-    def enqueue_tool_run(self, tool_run: ToolRun) -> None:
-        """普通增量入队；默认实现直接同步落库。"""
-        self.save_tool_run(tool_run)
-
-    def flush(self) -> int:
-        """强制刷盘挂起的普通增量；默认实现无缓冲，返回 0。"""
-        return 0
-
-    def flush_if_due(self, now: float | None = None) -> bool:
-        """按阈值刷盘；默认实现无缓冲，返回 False。"""
-        del now
-        return False
-
-    def next_flush_deadline(self, now: float | None = None) -> float | None:
-        """下一个刷盘截止时间；默认实现无缓冲，返回 None。"""
-        del now
-        return None
 
 
 class Reviewer(ABC):

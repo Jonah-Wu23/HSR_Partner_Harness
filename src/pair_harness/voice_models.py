@@ -1,14 +1,5 @@
-"""V0.3.2 M6：语音模型不可变产品常量（计划 5.17 节）。
-
-- ASR 固定 ``qwen-audio-3.0-asr-flash-streaming``。
-- TTS、5 次声音复刻和古代机械声音设计的 ``target_model`` 固定
-  ``qwen-audio-3.0-tts-flash``。
-
-用户侧（前端表单、JSONL 命令参数、SQLite 账号配置、环境变量覆盖、
-``.env.example``）一律不提供模型修改入口。后续如确需换模型，必须作为
-新的正式版本修改代码、文档、音色生成并完成真实联调，不能让用户在
-设置页临时切换。
-"""
+# 语音模型是不可变产品常量：ASR、TTS 与声音复刻、声音设计的 target_model 都固定在这里，
+# 前端、JSONL 命令、账号配置与环境变量都不提供修改入口。换模型需要重新生成音色并发布新版本。
 
 from __future__ import annotations
 

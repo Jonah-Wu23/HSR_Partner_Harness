@@ -14,58 +14,45 @@ from .contracts import (
     PendingOperation,
     ReviewerVerdict,
 )
+from .ports import Reviewer
 from .risk_rules import RiskRules, match_high_risk
 
 logger = logging.getLogger(__name__)
 
 
-class ApprovalRequired(RuntimeError):
-    """当前操作需要用户或审查智能体审批。"""
-
-    def __init__(
-        self, approval_id: str, op: PendingOperation, event: EngineEvent
-    ):
-        self.approval_id = approval_id
-        self.op = op
-        self.event = event
-        super().__init__(f"operation requires approval: {approval_id}")
-
-
 @dataclass
 class GateOutcome:
-    """审批门控结果。"""
+    """一次审批裁决的结果与随之产生的 ``approval.resolved`` 事件。"""
 
     decision: ApprovalDecision
     events: tuple[EngineEvent, ...] = ()
 
 
 class ApprovalManager:
-    """项目级审批管理器，支持三种审批模式。"""
+    """单个聊天的审批管理器，支持三种审批模式。"""
 
     def __init__(
         self,
         mode: ApprovalMode,
         rules: RiskRules,
-        reviewer: "Reviewer | None" = None,
-        on_review: "Callable[[str, dict], None] | None" = None,
+        reviewer: Reviewer | None = None,
+        on_review: Callable[[str, dict], None] | None = None,
     ) -> None:
         self.mode = mode
         self.rules = rules
         self.reviewer = reviewer
         self.on_review = on_review
         self._session_allow: set[str] = set()
-        self._pending: dict[str, PendingOperation] = {}
 
     def _signature(self, op: PendingOperation) -> str:
         """操作签名，用于“本对话内允许”缓存。
 
-        O1.5 收紧规则（依据见优化计划 §O1.5）：
         - shell 至少取命令与子命令两个词元：允许过 ``git status`` 后，
           ``git push --force`` 不得同对话内直接放行；
         - file 类签名纳入父目录维度：同目录下同类文件共享签名，
           不同目录不共享；
         - patch 统一为 ``patch``。
-        命中敏感路径或高风险规则的操作不写入缓存（见 :meth:`resolve`）。
+        命中敏感路径或高风险规则的操作不写入缓存（见 :meth:`adjudicate`）。
         """
         if op.tool_kind == "shell" and op.command:
             words = op.command.split()
@@ -74,98 +61,6 @@ class ApprovalManager:
             return "patch"
         parent = PurePath(op.paths[0]).parent.as_posix() if op.paths else ""
         return f"{op.tool_kind}:{parent}"
-
-    async def gate(
-        self,
-        op: PendingOperation,
-        *,
-        conversation_id: str,
-        task_id: str,
-        engine_turn_id: str,
-        sequence: int,
-        tool_call_id: str | None = None,
-        context: list[Message] | None = None,
-    ) -> GateOutcome:
-        """对单个操作进行门控。
-
-        - ``FULL_AUTO``：直接放行，不产生审批事件。
-        - ``REQUEST_APPROVAL``：未缓存时抛出 :class:`ApprovalRequired`。
-        - ``REVIEW``：低风险直接放行；高风险连同近期上下文交审查智能体裁决，
-          并返回审批事件。
-        """
-        if self.mode == ApprovalMode.FULL_AUTO:
-            return GateOutcome(decision=ApprovalDecision.ALLOW)
-
-        if self.mode == ApprovalMode.REQUEST_APPROVAL:
-            sig = self._signature(op)
-            if sig in self._session_allow:
-                return GateOutcome(decision=ApprovalDecision.ALLOW_FOR_CONVERSATION)
-            approval_id = self._new_approval_id()
-            self._pending[approval_id] = op
-            event = self._approval_requested_event(
-                op=op,
-                approval_id=approval_id,
-                reason=op.summary or "需要用户审批",
-                conversation_id=conversation_id,
-                task_id=task_id,
-                engine_turn_id=engine_turn_id,
-                sequence=sequence,
-                tool_call_id=tool_call_id,
-            )
-            raise ApprovalRequired(approval_id, op, event)
-
-        # REVIEW 模式
-        reason = match_high_risk(op, self.rules)
-        if reason is None and self._has_enough_info(op):
-            return GateOutcome(decision=ApprovalDecision.ALLOW)
-        if reason is None:
-            # B1 联调：app-server 0.147.0 的 fileChange 审批请求不带路径
-            # （grantRoot/reason 均为 None），映射出的操作信息不足无法判定
-            # 风险。不得按低风险放行（删除会绕过审查），转审查智能体结合
-            # 近期上下文判断用户意图。
-            reason = "信息不足：无法确认操作目标"
-
-        event = self._approval_requested_event(
-            op=op,
-            approval_id=self._new_approval_id(),
-            reason=reason,
-            conversation_id=conversation_id,
-            task_id=task_id,
-            engine_turn_id=engine_turn_id,
-            sequence=sequence,
-            tool_call_id=tool_call_id,
-            # 计划 A3：审查模式下的裁决由审查智能体做出，actor 记为 reviewer
-            actor="reviewer",
-        )
-        if self.reviewer is None:
-            resolved = self._approval_resolved_event(
-                event=event,
-                decision=ApprovalDecision.DENY,
-                actor="reviewer",
-                reason="未配置审查智能体",
-            )
-            return GateOutcome(
-                decision=ApprovalDecision.DENY,
-                events=(event, resolved),
-            )
-        # 计划 A3：把操作连同近期上下文交给审查智能体
-        verdict = await self._review_op(op, context or [])
-        if verdict.allow:
-            resolved = self._approval_resolved_event(
-                event=event,
-                decision=ApprovalDecision.ALLOW,
-                actor="reviewer",
-                reason="审查通过",
-            )
-            return GateOutcome(decision=ApprovalDecision.ALLOW, events=(event, resolved))
-        resolved = self._approval_resolved_event(
-            event=event,
-            decision=ApprovalDecision.DENY,
-            actor="reviewer",
-            reason=verdict.reason,
-            suggestion=verdict.suggestion,
-        )
-        return GateOutcome(decision=ApprovalDecision.DENY, events=(event, resolved))
 
     async def _review_op(
         self, op: PendingOperation, context: list[Message]
@@ -187,7 +82,7 @@ class ApprovalManager:
                 },
             )
         try:
-            verdict = await self.reviewer.review(op, context or [])
+            verdict = await self.reviewer.review(op, context)
         except Exception as exc:  # noqa: BLE001 - 审查失败按否决处理（fail-closed）
             logger.exception("审查智能体调用失败：%s", op.summary)
             reason = f"审查智能体调用失败：{str(exc) or type(exc).__name__}"
@@ -209,10 +104,8 @@ class ApprovalManager:
     def _has_enough_info(op: PendingOperation) -> bool:
         """操作是否携带足够判定风险的信息。
 
-        B1 联调：真实 app-server 的 fileChange 审批请求不携带路径
-        （grantRoot/reason 均为 None），映射出的操作既无 command 也无
-        paths——这类操作无法区分"创建文件"与"删除文件"，不得在
-        REVIEW 模式下按低风险放行。
+        既无 command 也无 paths 的操作无法区分创建与删除，不得在 REVIEW
+        模式下按低风险放行。
         """
         return bool(op.command or op.paths)
 
@@ -221,26 +114,23 @@ class ApprovalManager:
         op: PendingOperation,
         *,
         requested_event: EngineEvent,
-        conversation_id: str,
-        task_id: str,
-        engine_turn_id: str,
         request_decision: Callable[
             [PendingOperation, str, str], Awaitable[ApprovalDecision]
         ],
-        tool_call_id: str | None = None,
-        context: list[Message] | None = None,
+        context: list[Message],
     ) -> GateOutcome:
-        """裁决引擎侧挂起的原生审批请求。
+        """裁决引擎在工具执行前挂起的审批请求。
 
-        与 :meth:`gate` 的差异：
-        - ``approval_id`` 来自引擎的审批请求 id，由调用方从
-          ``requested_event.payload`` 读取；
-        - 裁决结果由调用方经 ``CodingEngine.resolve_approval`` 回复引擎，
-          本方法不直接接触引擎；
-        - 返回的 ``GateOutcome.events`` 只含 ``approval.resolved``
-          （请求事件由引擎适配器产生，不重复合成）。
-        ``request_decision`` 在“请求批准”模式下询问用户，对应编排器的
-        approval_callback。
+        ``approval_id`` 取自 ``requested_event.payload``；裁决结果由调用方经
+        ``CodingEngine.resolve_approval`` 回复引擎。返回的
+        ``GateOutcome.events`` 只含 ``approval.resolved``，请求事件由引擎
+        适配器产生。``request_decision`` 在“请求批准”模式下询问用户，
+        对应编排器的 approval_callback。
+
+        - ``FULL_AUTO``：直接放行，不产生事件；
+        - ``REQUEST_APPROVAL``：命中“本对话内允许”缓存时放行，否则询问用户；
+        - ``REVIEW``：低风险且信息充分时放行，其余连同近期用户消息交审查
+          智能体裁决。
         """
         approval_id = str(requested_event.payload.get("approval_id") or "")
         reason = str(
@@ -258,121 +148,46 @@ class ApprovalManager:
                 decision == ApprovalDecision.ALLOW_FOR_CONVERSATION
                 and match_high_risk(op, self.rules) is None
             ):
-                # O1.5：命中敏感路径或高风险规则的操作永不写入会话缓存
+                # 命中敏感路径或高风险规则的操作永不写入会话缓存，
+                # 同对话内再次执行时仍要求审批。
                 self._session_allow.add(self._signature(op))
             resolved = self._approval_resolved_event(
                 requested_event,
                 decision,
                 actor="user",
-                reason=reason,
+                request_reason=reason,
+                resolution_reason=None,
             )
             return GateOutcome(decision=decision, events=(resolved,))
 
-        # REVIEW 模式
-        risk_reason = match_high_risk(op, self.rules)
-        if risk_reason is None and self._has_enough_info(op):
+        if match_high_risk(op, self.rules) is None and self._has_enough_info(op):
             return GateOutcome(decision=ApprovalDecision.ALLOW)
-        if risk_reason is None:
-            # B1 联调：信息不足的操作（如 fileChange 审批请求无路径）不得
-            # 按低风险放行，转审查智能体结合近期上下文判断（见 gate）。
-            risk_reason = "信息不足：无法确认操作目标"
+        suggestion = ""
         if self.reviewer is None:
-            resolved = self._approval_resolved_event(
-                requested_event,
-                ApprovalDecision.DENY,
-                actor="reviewer",
-                reason="未配置审查智能体",
-            )
-            return GateOutcome(decision=ApprovalDecision.DENY, events=(resolved,))
-        verdict = await self._review_op(op, context or [])
-        if verdict.allow:
-            resolved = self._approval_resolved_event(
-                requested_event,
-                ApprovalDecision.ALLOW,
-                actor="reviewer",
-                reason="审查通过",
-            )
-            return GateOutcome(decision=ApprovalDecision.ALLOW, events=(resolved,))
+            decision, resolution = ApprovalDecision.DENY, "未配置审查智能体"
+        else:
+            verdict = await self._review_op(op, context)
+            if verdict.allow:
+                decision, resolution = ApprovalDecision.ALLOW, "审查通过"
+            else:
+                decision, resolution = ApprovalDecision.DENY, verdict.reason
+                suggestion = verdict.suggestion
         resolved = self._approval_resolved_event(
             requested_event,
-            ApprovalDecision.DENY,
+            decision,
             actor="reviewer",
-            reason=verdict.reason,
-            suggestion=verdict.suggestion,
+            request_reason=reason,
+            resolution_reason=resolution,
+            suggestion=suggestion,
         )
-        return GateOutcome(decision=ApprovalDecision.DENY, events=(resolved,))
-
-    def resolve(self, approval_id: str, decision: ApprovalDecision) -> PendingOperation:
-        """处理用户或审查智能体的裁决。
-
-        若用户选择“本对话内允许”，则把操作签名写入当前聊天缓存。
-        """
-        op = self._pending.pop(approval_id, None)
-        if op is None:
-            raise KeyError(f"unknown approval_id: {approval_id}")
-        if decision == ApprovalDecision.ALLOW_FOR_CONVERSATION:
-            # O1.5：命中敏感路径或高风险规则的操作永不写入会话缓存，
-            # 保证同对话内再次执行时仍要求审批。
-            if match_high_risk(op, self.rules) is None:
-                self._session_allow.add(self._signature(op))
-        return op
-
-    def clear_pending(self) -> None:
-        """清空未决的本地审批项。
-
-        M1.5：任务取消/回调异常时调用，避免 ``_pending`` 残留悬挂项。
-        仅移除等待裁决的本地审批记录；已发出的 resolved 事件不受影响。
-        """
-        self._pending.clear()
+        return GateOutcome(decision=decision, events=(resolved,))
 
     def clear_session_cache(self) -> None:
-        """聊天结束/切换时清空“本对话内允许”缓存。
+        """聊天结束或切换时清空“本对话内允许”缓存。
 
-        O4.2：由编排器的 :meth:`close_conversation` 在聊天结束/切换
-        钩子处调用（此前无人调用，缓存没有生命周期）。只清理
-        ALLOW_FOR_CONVERSATION 缓存，不影响已挂起的审批请求
-        （``_pending`` 由裁决流程自行消费）。
+        由编排器的 :meth:`close_conversation` 调用。
         """
         self._session_allow.clear()
-
-    @staticmethod
-    def _new_approval_id() -> str:
-        from uuid import uuid4
-
-        return str(uuid4())
-
-    @staticmethod
-    def _approval_requested_event(
-        op: PendingOperation,
-        approval_id: str,
-        reason: str,
-        *,
-        conversation_id: str,
-        task_id: str,
-        engine_turn_id: str,
-        sequence: int,
-        tool_call_id: str | None,
-        actor: str = "user",
-    ) -> EngineEvent:
-        return EngineEvent(
-            conversation_id=conversation_id,
-            task_id=task_id,
-            engine_turn_id=engine_turn_id,
-            sequence=sequence,
-            type=EngineEventType.APPROVAL_REQUESTED,
-            tool_call_id=tool_call_id,
-            payload={
-                "approval_id": approval_id,
-                "summary": op.summary,
-                "reason": reason,
-                "actor": actor,
-                "options": [
-                    ApprovalDecision.ALLOW.value,
-                    ApprovalDecision.ALLOW_FOR_CONVERSATION.value,
-                    ApprovalDecision.DENY.value,
-                ],
-            },
-        )
 
     @staticmethod
     def _approval_resolved_event(
@@ -380,9 +195,15 @@ class ApprovalManager:
         decision: ApprovalDecision,
         *,
         actor: str,
-        reason: str,
+        request_reason: str,
+        resolution_reason: str | None,
         suggestion: str = "",
     ) -> EngineEvent:
+        """生成 approval.resolved 事件。
+
+        ``request_reason`` 是触发审批的理由；``resolution_reason`` 是审查
+        智能体给出的结论，用户裁决时为 None。
+        """
         return EngineEvent(
             conversation_id=event.conversation_id,
             task_id=event.task_id,
@@ -394,7 +215,8 @@ class ApprovalManager:
                 "approval_id": event.payload.get("approval_id"),
                 "decision": decision.value,
                 "actor": actor,
-                "reason": reason,
+                "request_reason": request_reason,
+                "resolution_reason": resolution_reason,
                 "suggestion": suggestion,
             },
         )

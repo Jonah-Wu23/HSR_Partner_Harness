@@ -1,21 +1,6 @@
-"""配对级长期记忆纯逻辑（V0.3.9 契约冻结 §1/§2）。
-
-契约出处：``.archive/v0.3.9-dual-track-backup-2026-09-10/logic-worktree/V0.3.9-契约冻结.md`` §1（权威来源与身份）、§2（记忆）。
-
-作用域（冻结）：
-
-``account_id + project_id + pair_id + character_ref + assistant_identity``
-
-- ``character_ref`` 由服务端从聊天解析：自定义角色为 ``card:<character_card_id>``，
-  内置角色为 ``builtin:<pair.character.id>``；
-- ``assistant_identity`` 必须来自该聊天绑定的权威搭档配置的 ``assistant.id``，
-  每次读写重新解析，``pair_id`` 不可替代助手身份；
-- 项目为空的日常聊天不读写长期记忆；
-- 角色卡删除后原作用域保留为孤立数据（``card:<id>`` 不静默改成内置角色）。
-
-本模块只做结构与作用域校验：不解析、不摘要、不按关键词筛选或截断模型产出的
-记忆内容（Let It Go）。内容语义由模型负责。
-"""
+# 配对级长期记忆的结构与作用域校验。作用域为 account_id + project_id + pair_id + character_ref +
+# assistant_identity；项目为空的日常聊天不读写长期记忆。记忆内容由模型负责，这里不解析、
+# 不摘要、不筛选也不截断。
 
 from __future__ import annotations
 
@@ -29,18 +14,18 @@ from pydantic import Field, field_validator
 
 from .contracts import FrozenModel, utc_now
 
-# 契约 §7 错误码（记忆相关）。
+# 记忆相关错误码。
 MEMORY_SCOPE_MISMATCH = "memory_scope_mismatch"
 MEMORY_NOT_FOUND = "memory_not_found"
-# 结构不合法（作用域/内容类型）。契约要求"至少包括"上述两个码，这里如实细分。
+# 结构不合法（作用域或内容类型）。
 MEMORY_INVALID = "memory_invalid"
 
 BUILTIN_CHARACTER_PREFIX = "builtin:"
 CARD_CHARACTER_PREFIX = "card:"
 
 
-class MemoryError(ValueError):
-    """记忆操作的真实失败；``code`` 为契约错误码。"""
+class PairMemoryError(ValueError):
+    """记忆操作的真实失败；``code`` 为错误码。"""
 
     def __init__(self, message: str, *, code: str) -> None:
         super().__init__(message)
@@ -50,7 +35,7 @@ class MemoryError(ValueError):
 def character_ref_for(
     *, character_card_id: str | None, pair_character_id: str
 ) -> str:
-    """把聊天的角色身份归一化为契约 ``character_ref``。
+    """把聊天的角色身份归一化为 ``character_ref``。
 
     聊天持久化了角色卡 id 时使用 ``card:<id>``（卡已删除也保持原值，
     由调用方按孤立数据处理），否则使用内置角色 ``builtin:<pair.character.id>``。
@@ -60,15 +45,10 @@ def character_ref_for(
         return f"{CARD_CHARACTER_PREFIX}{card_id}"
     builtin_id = (pair_character_id or "").strip()
     if not builtin_id:
-        raise MemoryError("内置角色 id 为空，无法解析 character_ref", code=MEMORY_INVALID)
+        raise PairMemoryError(
+            "内置角色 id 为空，无法解析 character_ref", code=MEMORY_INVALID
+        )
     return f"{BUILTIN_CHARACTER_PREFIX}{builtin_id}"
-
-
-def character_ref_card_id(character_ref: str) -> str | None:
-    """``card:<id>`` 返回卡 id；内置角色返回 None。"""
-    if character_ref.startswith(CARD_CHARACTER_PREFIX):
-        return character_ref[len(CARD_CHARACTER_PREFIX) :]
-    return None
 
 
 def is_card_character_ref(character_ref: str) -> bool:
@@ -93,7 +73,7 @@ class ConversationIdentity:
 
 
 class MemoryScope(FrozenModel):
-    """长期记忆作用域（契约 §1 五分量）。"""
+    """长期记忆作用域（五分量）。"""
 
     account_id: str
     project_id: str
@@ -147,8 +127,7 @@ def resolve_memory_scope(identity: ConversationIdentity) -> MemoryScope | None:
     """解析聊天的长期记忆作用域；项目为空的日常聊天返回 None。
 
     只使用聊天自身持久化的 ``character_card_id`` 与权威搭档配置的
-    ``assistant.id``：角色卡被删除时仍解析为 ``card:<id>``，绝不静默并入
-    内置角色（契约 §1）。
+    ``assistant.id``：角色卡被删除时仍解析为 ``card:<id>``，不并入内置角色。
     """
     if not (identity.project_id or "").strip():
         return None
@@ -165,11 +144,11 @@ def resolve_memory_scope(identity: ConversationIdentity) -> MemoryScope | None:
             assistant_identity=identity.assistant_identity,
         )
     except ValueError as exc:
-        raise MemoryError(str(exc), code=MEMORY_INVALID) from exc
+        raise PairMemoryError(str(exc), code=MEMORY_INVALID) from exc
 
 
 class PairMemory(FrozenModel):
-    """一条配对级长期记忆（契约 §2；与 TS ``PairMemory`` 同形）。"""
+    """一条配对级长期记忆（与 TS ``PairMemory`` 同形）。"""
 
     memory_id: str
     scope: MemoryScope
@@ -188,7 +167,7 @@ class PairMemory(FrozenModel):
     @field_validator("content")
     @classmethod
     def _require_object(cls, value: Any) -> Mapping[str, Any]:
-        # 契约 §2：内容由模型负责，代码只验证"是 JSON 对象"这一结构事实。
+        # 内容由模型负责，代码只验证“是 JSON 对象”这一结构事实。
         if not isinstance(value, Mapping):
             raise ValueError("记忆内容必须是 JSON 对象")
         return dict(value)
@@ -200,9 +179,9 @@ def active_memories(memories: Iterable[PairMemory]) -> tuple[PairMemory, ...]:
 
 
 def require_same_scope(expected: MemoryScope, actual: MemoryScope) -> None:
-    """读写作用域必须与解析出的权威作用域一致（契约 §1）。"""
+    """读写作用域必须与解析出的权威作用域一致。"""
     if expected.scope_key != actual.scope_key:
-        raise MemoryError(
+        raise PairMemoryError(
             "记忆作用域不匹配："
             f"期望 {expected.scope_key}，实际 {actual.scope_key}",
             code=MEMORY_SCOPE_MISMATCH,
@@ -212,12 +191,12 @@ def require_same_scope(expected: MemoryScope, actual: MemoryScope) -> None:
 def require_memory_found(memory: PairMemory | None, memory_id: str) -> PairMemory:
     """按 id 取记忆时找不到即真实失败，不返回空记录。"""
     if memory is None:
-        raise MemoryError(f"记忆不存在：{memory_id}", code=MEMORY_NOT_FOUND)
+        raise PairMemoryError(f"记忆不存在：{memory_id}", code=MEMORY_NOT_FOUND)
     return memory
 
 
 def memory_event_payload(memory: PairMemory, *, conversation_id: str | None = None) -> dict:
-    """``memory.updated``/``memory.deleted`` 事件载荷（契约 §2）。
+    """``memory.updated``/``memory.deleted`` 事件载荷。
 
     事件携带 account/project/conversation/pair/character_ref/assistant_identity
     与记录 id；不携带隐藏提示内容。

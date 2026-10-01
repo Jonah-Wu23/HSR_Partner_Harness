@@ -1,13 +1,7 @@
-"""供应商预设与推理请求形态（B1）。
-
-按 Base URL 识别后端并应用对应请求形态。本模块的识别与档位语义参考
-DeepSeek 的主机识别和推理档位语义取自 DeepSeek-Reasonix。原代码采用
-MIT License，Copyright (c) 2026 Reasonix Contributors：
-https://github.com/esengine/DeepSeek-Reasonix/tree/main-v2/internal/provider/openai
-
-本文件于 2026 年改写为 Python，范围缩减为 DeepSeek 与通用 OpenAI 兼容
-端点。API Key 由环境变量传入。
-"""
+# 按 Base URL 识别供应商并给出推理请求形态。DeepSeek 主机识别与推理档位语义改写自
+# DeepSeek-Reasonix（MIT License，Copyright (c) 2026 Reasonix Contributors）：
+# https://github.com/esengine/DeepSeek-Reasonix/tree/main-v2/internal/provider/openai
+# 2026 年改写为 Python，范围缩减为 DeepSeek 与通用 OpenAI 兼容端点。
 
 from __future__ import annotations
 
@@ -90,10 +84,9 @@ def _is_flash_model(model: str) -> bool:
 def load_reasoning_preset(base_url: str, model: str = "") -> ReasoningPreset:
     """加载后端推理预设。
 
-    DeepSeek 按模型区分档位：``*-flash`` 支持 low（Reasonix 文档——
-    "the only official DeepSeek model with effort=low"），Pro 系列 low/medium
-    归一化为 high。无法判断型号时按 Flash 处理（本项目预设模型
-    deepseek-v4-flash）。
+    DeepSeek 按模型区分档位：``*-flash`` 支持 low（Reasonix 文档说明它是
+    唯一支持 effort=low 的官方 DeepSeek 模型），Pro 系列 low/medium 归一化
+    为 high。无法判断型号时按 Flash 处理（本项目预设模型 deepseek-v4-flash）。
     """
     if detect_provider(base_url) == ProviderKind.DEEPSEEK:
         if model and not _is_flash_model(model):
