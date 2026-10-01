@@ -54,10 +54,14 @@ def _dt(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
+class DatabaseVersionError(RuntimeError):
+    """数据库结构版本高于当前代码支持的版本。"""
+
+
 # O4.3：数据库结构版本。新库由 schema.sql 一次建全，直接标记为该版本；
 # 旧库（user_version=0）按 MIGRATIONS 逐级升级。每次结构变更 +1，
 # 并在 MIGRATIONS 里补对应迁移步骤。
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # contract-v1 第 4 节：普通增量最多 50 条或 50ms 形成一个非空事务，
 # 任一先到即刷盘。关键强刷点（用户提交确认、摘要/记忆完成或失败、审批、
@@ -303,6 +307,18 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         "CREATE INDEX IF NOT EXISTS idx_turn_metrics_assistant "
         "ON turn_metrics(assistant_identity, started_at DESC, metric_id DESC)",
     ),
+    # 版本 12：聊天标题来源与队列项的提交来源、失败原因。已有聊天标题仍是
+    # 「新聊天」的记 default，其余视为用户命名（user）。
+    (
+        "ALTER TABLE conversations ADD COLUMN title_source "
+        "TEXT NOT NULL DEFAULT 'default'",
+        "UPDATE conversations SET title_source = 'user' WHERE title <> '新聊天'",
+        "ALTER TABLE conversation_inbox ADD COLUMN origin "
+        "TEXT NOT NULL DEFAULT 'desktop'",
+        "ALTER TABLE conversation_inbox ADD COLUMN remote_device_key TEXT",
+        "ALTER TABLE conversation_inbox ADD COLUMN remote_device_name TEXT",
+        "ALTER TABLE conversation_inbox ADD COLUMN error TEXT",
+    ),
 )
 
 
@@ -341,6 +357,15 @@ class SQLiteStore(StateStore):
         self.connection = sqlite3.connect(database)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
+        if not fresh:
+            version = int(self.connection.execute("PRAGMA user_version").fetchone()[0])
+            if version > SCHEMA_VERSION:
+                # 更新版本的应用写过这个库，旧代码不认识新结构，不能打开。
+                self.connection.close()
+                raise DatabaseVersionError(
+                    f"数据库 {database} 的结构版本 {version} 高于当前应用支持的 "
+                    f"{SCHEMA_VERSION}，请使用更新版本的应用打开"
+                )
         schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
         self.connection.executescript(schema)
         if fresh:
@@ -416,6 +441,13 @@ class SQLiteStore(StateStore):
                 return
         self.connection.execute(statement)
 
+    def _update_existing(self, sql: str, params: tuple[Any, ...], missing: str) -> None:
+        """执行针对单个已有对象的 UPDATE；没有命中任何行时回滚并抛 KeyError。"""
+        cursor = self.connection.execute(sql, params)
+        if cursor.rowcount == 0:
+            self.connection.rollback()
+            raise KeyError(missing)
+
     def create_project(
         self,
         *,
@@ -462,7 +494,7 @@ class SQLiteStore(StateStore):
         else:
             sql = f"UPDATE projects SET {column} = ? WHERE project_id = ?"
             params = (value, project_id)
-        self.connection.execute(sql, params)
+        self._update_existing(sql, params, f"unknown project: {project_id}")
         self.connection.commit()
 
     def update_project_approval_mode(self, project_id: str, approval_mode: str) -> None:
@@ -537,15 +569,16 @@ class SQLiteStore(StateStore):
         conversation_id: str | None = None,
         account_id: str = "",
         character_card_id: str | None = None,
+        title_source: str = "default",
     ) -> Conversation:
         conversation_id = conversation_id or str(uuid4())
         now = _now()
         self.connection.execute(
             """
             INSERT INTO conversations(
-                conversation_id, account_id, project_id, pair_id, title, last_mode,
-                archived, created_at, updated_at, character_card_id
-            ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                conversation_id, account_id, project_id, pair_id, title, title_source,
+                last_mode, archived, created_at, updated_at, character_card_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
             ON CONFLICT(conversation_id) DO UPDATE SET
                 updated_at=excluded.updated_at
             """,
@@ -555,6 +588,7 @@ class SQLiteStore(StateStore):
                 project_id,
                 pair_id,
                 title,
+                title_source,
                 last_mode,
                 now,
                 now,
@@ -576,6 +610,7 @@ class SQLiteStore(StateStore):
             project_id=row["project_id"],
             pair_id=row["pair_id"],
             title=row["title"],
+            title_source=row["title_source"],
             last_mode=row["last_mode"],
             archived=bool(row["archived"]),
             created_at=_dt(row["created_at"]),
@@ -716,42 +751,41 @@ class SQLiteStore(StateStore):
             )
         self.connection.commit()
 
+    def clear_project_engine_sessions(self, project_id: str) -> list[str]:
+        """删除指定项目下全部聊天的引擎会话引用，返回这些聊天的 id。
+
+        项目目录变化后旧 session 绑定的是旧目录，下一次任务必须新开。
+        """
+        conversation_ids = [
+            row["conversation_id"]
+            for row in self.connection.execute(
+                "SELECT conversation_id FROM conversations WHERE project_id = ?",
+                (project_id,),
+            )
+        ]
+        self.connection.execute(
+            "DELETE FROM engine_sessions WHERE conversation_id IN ("
+            "SELECT conversation_id FROM conversations WHERE project_id = ?"
+            ")",
+            (project_id,),
+        )
+        self.connection.commit()
+        return conversation_ids
+
     def _latest_summary_dict(self, conversation_id: str) -> dict | None:
-        """最近一条摘要记录（core 形状 content=dict）；无则 None。
+        """覆盖终点最新的 completed 摘要（core 形状 content=dict）；无则 None。
 
         restore_conversation 用 core ConversationSummary 校验（content 为
         结构化对象），故此处把存储层 JSON 文本解析回对象；非对象内容
-        返回 None（保持原拟合失败语义，不伪造结构）。
+        返回 None，不伪造结构。
         """
-        try:
-            rows = self.connection.execute(
-                "SELECT * FROM conversation_summaries WHERE conversation_id = ? "
-                "ORDER BY covers_from_message_id, summary_id",
-                (conversation_id,),
-            ).fetchall()
-        except sqlite3.OperationalError:
+        summary = self.latest_completed_summary(conversation_id)
+        if summary is None:
             return None
-        if not rows:
-            return None
-        row = rows[-1]
-        content = _parse_content_field(row["content"])
+        content = _parse_content_field(summary.content)
         if content is None:
             return None
-        return {
-            "summary_id": row["summary_id"],
-            "conversation_id": row["conversation_id"],
-            "status": row["status"],
-            "covers_from_message_id": row["covers_from_message_id"],
-            "covers_to_message_id": row["covers_to_message_id"],
-            "covers_message_count": row["covers_message_count"],
-            "content": content,
-            "provider": row["provider"],
-            "model": row["model"],
-            "error_code": row["error_code"],
-            "error": row["error"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-        }
+        return {**summary.model_dump(mode="json"), "content": content}
 
     def load_conversation(self, conversation_id: str) -> dict:
         conversation = self.get_conversation(conversation_id)
@@ -820,30 +854,49 @@ class SQLiteStore(StateStore):
             raise
 
     def rename_conversation(self, conversation_id: str, title: str) -> None:
-        self.connection.execute(
-            "UPDATE conversations SET title = ?, updated_at = ? WHERE conversation_id = ?",
+        """用户改名：标题来源记为 user，之后自动标题不再写入。"""
+        self._update_existing(
+            "UPDATE conversations SET title = ?, title_source = 'user', updated_at = ? "
+            "WHERE conversation_id = ?",
             (title, _now(), conversation_id),
+            f"unknown conversation: {conversation_id}",
         )
         self.connection.commit()
 
+    def set_auto_title(self, conversation_id: str, title: str) -> bool:
+        """写入助手生成的标题；只在标题来源仍为 default 时生效，返回是否写入。"""
+        cursor = self.connection.execute(
+            "UPDATE conversations SET title = ?, title_source = 'auto', updated_at = ? "
+            "WHERE conversation_id = ? AND title_source = 'default'",
+            (title, _now(), conversation_id),
+        )
+        self.connection.commit()
+        return cursor.rowcount > 0
+
     def update_conversation_mode(self, conversation_id: str, mode: str) -> None:
         """保存桌面端当前聊天模式，不改变历史消息语义。"""
-        self.connection.execute(
+        self._update_existing(
             "UPDATE conversations SET last_mode = ?, updated_at = ? WHERE conversation_id = ?",
             (mode, _now(), conversation_id),
+            f"unknown conversation: {conversation_id}",
         )
         self.connection.commit()
 
     def archive_conversation(self, conversation_id: str) -> None:
         """归档单个聊天；项目和其他聊天保持不变。"""
-        self.connection.execute(
+        self._update_existing(
             "UPDATE conversations SET archived = 1, updated_at = ? WHERE conversation_id = ?",
             (_now(), conversation_id),
+            f"unknown conversation: {conversation_id}",
         )
         self.connection.commit()
 
     def archive_project(self, project_id: str) -> None:
-        self.connection.execute("UPDATE projects SET archived = 1 WHERE project_id = ?", (project_id,))
+        self._update_existing(
+            "UPDATE projects SET archived = 1 WHERE project_id = ?",
+            (project_id,),
+            f"unknown project: {project_id}",
+        )
         self.connection.execute(
             "UPDATE conversations SET archived = 1 WHERE project_id = ?", (project_id,)
         )
@@ -872,8 +925,14 @@ class SQLiteStore(StateStore):
         text: str,
         intent: str = "followup",
         account_id: str = "",
+        origin: str = "desktop",
+        remote_device_key: str | None = None,
+        remote_device_name: str | None = None,
     ) -> dict:
-        """入队（先持久化，再向前端确认）。steer 置队首并重排其余 queued 项。"""
+        """入队（先持久化，再向前端确认）。steer 置队首并重排其余 queued 项。
+
+        ``origin`` 与 ``remote_device_*`` 是提交来源，派发出的回合沿用。
+        """
         queue_item_id = str(uuid4())
         if intent == "steer":
             position = 0
@@ -892,9 +951,22 @@ class SQLiteStore(StateStore):
         self.connection.execute(
             "INSERT INTO conversation_inbox("
             "queue_item_id, account_id, conversation_id, target, text, intent,"
-            "position, status, created_at, source_message_id"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, NULL)",
-            (queue_item_id, account_id, conversation_id, target, text, intent, position, _now()),
+            "position, status, created_at, source_message_id,"
+            "origin, remote_device_key, remote_device_name"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, NULL, ?, ?, ?)",
+            (
+                queue_item_id,
+                account_id,
+                conversation_id,
+                target,
+                text,
+                intent,
+                position,
+                _now(),
+                origin,
+                remote_device_key,
+                remote_device_name,
+            ),
         )
         self.connection.commit()
         return self.get_queue_item(queue_item_id)
@@ -927,9 +999,10 @@ class SQLiteStore(StateStore):
 
     def edit_queue_item(self, queue_item_id: str, text: str) -> dict:
         """编辑尚未派发的队列项文本。"""
-        self.connection.execute(
+        self._update_existing(
             "UPDATE conversation_inbox SET text = ? WHERE queue_item_id = ? AND status = 'queued'",
             (text, queue_item_id),
+            f"queue_item 不存在或已派发: {queue_item_id}",
         )
         self.connection.commit()
         return self.get_queue_item(queue_item_id)
@@ -970,6 +1043,32 @@ class SQLiteStore(StateStore):
         self.connection.commit()
         return self.get_queue_item(queue_item_id)
 
+    def mark_queue_item_failed(self, queue_item_id: str, error: str) -> dict:
+        """派发失败：状态置 failed 并保留原因，不再自动派发。"""
+        self.connection.execute(
+            "UPDATE conversation_inbox SET status = 'failed', error = ? "
+            "WHERE queue_item_id = ?",
+            (error, queue_item_id),
+        )
+        self.connection.commit()
+        return self.get_queue_item(queue_item_id)
+
+    def requeue_processing_queue_items(self) -> None:
+        """启动恢复：全部 processing 队列项退回 queued（派发进程已不存在）。"""
+        self.connection.execute(
+            "UPDATE conversation_inbox SET status = 'queued' WHERE status = 'processing'"
+        )
+        self.connection.commit()
+
+    def conversations_with_processing_delegations(self) -> list[str]:
+        """启动恢复：仍有 processing 委派卡的聊天 id（全部账号）。"""
+        rows = self.connection.execute(
+            "SELECT DISTINCT conversation_id FROM messages "
+            "WHERE json_extract(message_json, '$.origin') = 'character_delegation' "
+            "AND json_extract(message_json, '$.status') = 'processing'"
+        ).fetchall()
+        return [row["conversation_id"] for row in rows]
+
     def delete_queue_item(self, queue_item_id: str) -> None:
         """派发完成即删除（不再占快照）。"""
         self.connection.execute(
@@ -990,6 +1089,10 @@ class SQLiteStore(StateStore):
             "status": row["status"],
             "created_at": row["created_at"],
             "source_message_id": row["source_message_id"],
+            "origin": row["origin"],
+            "remote_device_key": row["remote_device_key"],
+            "remote_device_name": row["remote_device_name"],
+            "error": row["error"],
         }
 
     # ------------------------------------------------------------------ V0.2 M3 本地账号
@@ -1116,9 +1219,10 @@ class SQLiteStore(StateStore):
         return True
 
     def set_onboarding_complete(self, account_id: str, completed: bool = True) -> None:
-        self.connection.execute(
+        self._update_existing(
             "UPDATE accounts SET onboarding_complete = ? WHERE account_id = ?",
             (1 if completed else 0, account_id),
+            f"unknown account: {account_id}",
         )
         self.connection.commit()
 
@@ -1211,9 +1315,10 @@ class SQLiteStore(StateStore):
         allowed = {"theme", "vad_enabled", "last_mode"}
         if key not in allowed:
             raise ValueError(f"unknown preference: {key}")
-        self.connection.execute(
+        self._update_existing(
             f"UPDATE account_preferences SET {key} = ? WHERE account_id = ?",
             (value, account_id),
+            f"unknown account preferences: {account_id}",
         )
         self.connection.commit()
 
@@ -1468,7 +1573,7 @@ class SQLiteStore(StateStore):
         使投影引用不会因重跑而漂移；返回值以数据库当前行为准。
         """
         with self.connection:
-            self.connection.execute(
+            rows = self.connection.execute(
                 """
                 INSERT INTO conversation_summaries(
                     summary_id, conversation_id, covers_from_message_id,
@@ -1487,6 +1592,7 @@ class SQLiteStore(StateStore):
                     error_code=excluded.error_code,
                     error=excluded.error,
                     updated_at=excluded.updated_at
+                RETURNING *
                 """,
                 (
                     summary.summary_id,
@@ -1503,12 +1609,8 @@ class SQLiteStore(StateStore):
                     summary.created_at.isoformat(),
                     summary.updated_at.isoformat(),
                 ),
-            )
-        return self.get_summary_by_range(
-            summary.conversation_id,
-            covers_from_message_id=summary.covers_from_message_id,
-            covers_to_message_id=summary.covers_to_message_id,
-        )
+            ).fetchall()
+        return self._summary_from_row(rows[0])
 
     def update_summary(self, summary_id: str, **fields: Any) -> ConversationSummary:
         """按字段更新摘要；未传字段保持原值，失败原样抛出。"""
@@ -1573,28 +1675,29 @@ class SQLiteStore(StateStore):
     def list_summaries(
         self, conversation_id: str, *, status: str | None = None
     ) -> list[ConversationSummary]:
-        """列出该聊天的摘要（按覆盖区间起点排序，只在本聊天内读取）。"""
-        if status is None:
-            rows = self.connection.execute(
-                "SELECT * FROM conversation_summaries WHERE conversation_id = ? "
-                "ORDER BY covers_from_message_id, summary_id",
-                (conversation_id,),
-            ).fetchall()
-        else:
-            rows = self.connection.execute(
-                "SELECT * FROM conversation_summaries WHERE conversation_id = ? "
-                "AND status = ? ORDER BY covers_from_message_id, summary_id",
-                (conversation_id, status),
-            ).fetchall()
+        """列出该聊天的摘要，按覆盖区间起点消息的时间排序。"""
+        status_clause = "" if status is None else "AND s.status = ? "
+        params: tuple[str, ...] = (
+            (conversation_id,) if status is None else (conversation_id, status)
+        )
+        rows = self.connection.execute(
+            "SELECT s.* FROM conversation_summaries AS s "
+            "LEFT JOIN messages AS m ON m.message_id = s.covers_from_message_id "
+            f"WHERE s.conversation_id = ? {status_clause}"
+            "ORDER BY m.created_at, m.message_id, s.summary_id",
+            params,
+        ).fetchall()
         return [self._summary_from_row(row) for row in rows]
 
     def latest_completed_summary(
         self, conversation_id: str
     ) -> ConversationSummary | None:
-        """最近一条 completed 摘要（压缩终点查询用）。"""
+        """覆盖终点最新的 completed 摘要（按覆盖终点消息的时间取）。"""
         row = self.connection.execute(
-            "SELECT * FROM conversation_summaries WHERE conversation_id = ? "
-            "AND status = ? ORDER BY updated_at DESC, summary_id DESC LIMIT 1",
+            "SELECT s.* FROM conversation_summaries AS s "
+            "JOIN messages AS m ON m.message_id = s.covers_to_message_id "
+            "WHERE s.conversation_id = ? AND s.status = ? "
+            "ORDER BY m.created_at DESC, m.message_id DESC, s.summary_id DESC LIMIT 1",
             (conversation_id, SummaryStatus.COMPLETED.value),
         ).fetchone()
         return self._summary_from_row(row) if row is not None else None
@@ -1802,7 +1905,7 @@ class SQLiteStore(StateStore):
         """
         memory.scope()
         with self.connection:
-            self.connection.execute(
+            rows = self.connection.execute(
                 """
                 INSERT INTO pair_memories(
                     memory_id, account_id, project_id, pair_id, character_ref,
@@ -1818,6 +1921,7 @@ class SQLiteStore(StateStore):
                     provider=excluded.provider,
                     model=excluded.model,
                     updated_at=excluded.updated_at
+                RETURNING *
                 """,
                 (
                     memory.memory_id,
@@ -1834,8 +1938,8 @@ class SQLiteStore(StateStore):
                     memory.created_at.isoformat(),
                     memory.updated_at.isoformat(),
                 ),
-            )
-        return self.get_memory_by_content(memory.scope(), content=memory.content)
+            ).fetchall()
+        return self._memory_from_row(rows[0])
 
     def update_memory(
         self,
@@ -2006,7 +2110,7 @@ class SQLiteStore(StateStore):
                 f"指标终态不可回退：{current.status} -> {metric.status}"
             )
         with self.connection:
-            self.connection.execute(
+            rows = self.connection.execute(
                 """
                 INSERT INTO turn_metrics(
                     metric_id, account_id, project_id, conversation_id, pair_id,
@@ -2046,6 +2150,7 @@ class SQLiteStore(StateStore):
                     origin=excluded.origin,
                     remote_device_key=excluded.remote_device_key,
                     remote_device_name=excluded.remote_device_name
+                RETURNING *
                 """,
                 (
                     metric.metric_id,
@@ -2083,10 +2188,8 @@ class SQLiteStore(StateStore):
                     metric.remote_device_name,
                     metric.created_at.isoformat(),
                 ),
-            )
-        return self.get_turn_metric_by_turn(
-            metric.conversation_id, turn_kind=metric.turn_kind, turn_id=metric.turn_id
-        )
+            ).fetchall()
+        return self._metric_from_row(rows[0])
 
     def update_turn_metric(self, metric_id: str, **fields: Any) -> TurnMetric:
         """按字段更新指标行；未传字段保持原值（None 表示真实缺失）。"""

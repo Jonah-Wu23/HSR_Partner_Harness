@@ -69,6 +69,9 @@ CREATE TABLE IF NOT EXISTS conversations (
     project_id TEXT REFERENCES projects(project_id),
     pair_id TEXT NOT NULL,
     title TEXT NOT NULL,
+    -- 标题来源：default 初始名「新聊天」，auto 助手生成，user 用户命名。
+    -- 自动标题只写入 default 的聊天，用户命名后不再被覆盖。
+    title_source TEXT NOT NULL DEFAULT 'default',
     last_mode TEXT NOT NULL DEFAULT 'chat',
     archived INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -116,7 +119,9 @@ CREATE TABLE IF NOT EXISTS engine_sessions (
 
 -- V0.2 M2（问题 9）：持久化会话队列（conversation_inbox）。
 -- 忙碌时提交先入队（followup），明确选择“立即插入”才是 steer（置队首）。
--- status: queued / processing / withdrawn；派发完成即删除，withdrawn 供撤回历史。
+-- status: queued / processing / withdrawn / failed；派发完成即删除，withdrawn
+-- 供撤回历史，failed 保留派发失败的原因（error）。origin 与 remote_device_*
+-- 记录提交来源，派发出的回合沿用它。
 CREATE TABLE IF NOT EXISTS conversation_inbox (
     queue_item_id TEXT PRIMARY KEY,
     account_id TEXT NOT NULL DEFAULT '',
@@ -127,7 +132,11 @@ CREATE TABLE IF NOT EXISTS conversation_inbox (
     position INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'queued',
     created_at TEXT NOT NULL,
-    source_message_id TEXT
+    source_message_id TEXT,
+    origin TEXT NOT NULL DEFAULT 'desktop',
+    remote_device_key TEXT,
+    remote_device_name TEXT,
+    error TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_conversation_inbox_dispatch
