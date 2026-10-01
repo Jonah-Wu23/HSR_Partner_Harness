@@ -3020,7 +3020,6 @@ class DesktopApplicationService:
                 data=data,
                 kind=record.kind,
                 mime_type=mime,
-                source="duplicate",
                 source_ref=record.asset_id,
                 extension=Path(record.file_path).suffix.lstrip("."),
             )
@@ -3083,7 +3082,10 @@ class DesktopApplicationService:
         return {
             "applied": list(report.applied),
             "preserved": list(report.preserved),
-            "not_executed": list(report.not_executed),
+            "not_executed": [
+                {"category": item.category, "text": item.text}
+                for item in report.not_executed
+            ],
             "normalized_from_root": list(report.normalized_from_root),
             "warnings": list(report.warnings),
             "errors": list(report.errors),
@@ -3289,7 +3291,6 @@ class DesktopApplicationService:
                 data=data,
                 kind="avatar",
                 mime_type="image/png",
-                source="png_import",
                 source_ref=path.name,
             )
         except CharacterAssetError as exc:
@@ -3449,7 +3450,6 @@ class DesktopApplicationService:
             data=data,
             kind="avatar",
             mime_type=mime,
-            source="user_upload",
             source_ref=path.name,
             extension=_asset_extension(mime),
         )
@@ -3535,7 +3535,6 @@ class DesktopApplicationService:
             data=data,
             kind="reference_audio",
             mime_type=mime,
-            source="user_upload",
             source_ref=path.name,
             extension=_asset_extension(mime),
         )

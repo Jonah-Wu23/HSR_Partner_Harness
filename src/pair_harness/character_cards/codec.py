@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from typing import Literal
 
 from pair_harness.character_cards.activation import (
     entry_position,
@@ -105,19 +106,32 @@ class CardImportError(ValueError):
     """角色卡导入失败：JSON 非法、缺必填字段或结构不符，消息携带可读原因。"""
 
 
+# 已保留但不运行条目的类别：世界书字段、非白名单宏、非 turn 的 runtime_trigger、
+# 声明式指令面板。界面按类别分组。
+NotExecutedCategory = Literal["world_book", "macro", "runtime_trigger", "command_panels"]
+
+
+@dataclass(frozen=True)
+class NotExecutedItem:
+    """一条已保留但不运行的内容：``text`` 是字段路径与说明。"""
+
+    category: NotExecutedCategory
+    text: str
+
+
 @dataclass
 class CompatReport:
     """导入兼容报告。
 
     - ``applied``：进入内部模型并在运行时装配的模块。
     - ``preserved``：未识别但合法、原样保留的字段路径。
-    - ``not_executed``：保留但永不作为应用代码执行的字段路径。
+    - ``not_executed``：保留但永不作为应用代码执行的内容，按类别标注。
     - ``normalized_from_root``：因 ``data`` 缺失而取自根级兼容副本的字段。
     """
 
     applied: list[str] = field(default_factory=list)
     preserved: list[str] = field(default_factory=list)
-    not_executed: list[str] = field(default_factory=list)
+    not_executed: list[NotExecutedItem] = field(default_factory=list)
     normalized_from_root: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -248,7 +262,9 @@ def load_card_payload(payload: dict) -> ImportResult:
         report.applied.append("data.extensions.hsr")
         if hsr.command_panels:
             # 声明式面板只作为数据保留与呈现，永不执行。
-            report.not_executed.append("data.extensions.hsr.command_panels")
+            report.not_executed.append(
+                NotExecutedItem("command_panels", "data.extensions.hsr.command_panels")
+            )
     _extend_compat_report(card, report)
     return ImportResult(card=card, report=report)
 
@@ -598,16 +614,20 @@ def _extend_compat_report(card: CharacterCard, report: CompatReport) -> None:
     """静态扫描导入的卡，补充 ``not_executed`` 与 ``warnings``。"""
     book = card.character_book
     if book is not None:
-        report.not_executed.extend(_scan_world_book_not_run(book))
+        report.not_executed.extend(
+            NotExecutedItem("world_book", text) for text in _scan_world_book_not_run(book)
+        )
         for index, entry in enumerate(book.entries):
             _scan_entry_warnings(entry, index, report.warnings)
-    report.not_executed.extend(_scan_card_macros(card))
+    report.not_executed.extend(
+        NotExecutedItem("macro", text) for text in _scan_card_macros(card)
+    )
     if card.hsr is not None:
         _extend_runtime_trigger_not_run(card.hsr, report)
 
 
 def _scan_world_book_not_run(book: CharacterBook) -> list[str]:
-    """世界书中保留但不运行的字段，返回 ``not_executed`` 条目。"""
+    """世界书中保留但不运行的字段，返回 ``world_book`` 类条目文本。"""
     items: list[str] = []
     declared: dict[str, list[int]] = {}
     for index, entry in enumerate(book.entries):
@@ -697,7 +717,7 @@ def _regex_flags(flag_chars: str) -> int:
 
 
 def _scan_card_macros(card: CharacterCard) -> list[str]:
-    """扫描全卡文本字段中的非白名单宏，返回 ``not_executed`` 条目。
+    """扫描全卡文本字段中的非白名单宏，返回 ``macro`` 类条目文本。
 
     只扫描字符串值；同一 (宏 token, 字段路径) 按实际出现次数合并计数。
     """
@@ -780,7 +800,9 @@ def _extend_runtime_trigger_not_run(hsr: HsrExtension, report: CompatReport) -> 
                 if not prefix
                 else f"hsr.event_system.{prefix}.runtime_trigger.kind={kind}"
             )
-            report.not_executed.append(f"{base}（存而不运行）")
+            report.not_executed.append(
+                NotExecutedItem("runtime_trigger", f"{base}（存而不运行）")
+            )
 
 
 def _collect_runtime_trigger_paths(node, prefix: str, out: dict) -> None:

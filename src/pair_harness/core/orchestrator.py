@@ -284,20 +284,20 @@ class ConversationOrchestrator:
             covered_to_message_id=self._summary_coverage.get(conversation_id),
         )
 
-    def _turn_index_for(
-        self, conversation_id: str, source_message_id: str | None
-    ) -> int:
+    def _turn_index_for(self, conversation_id: str, source_message_id: str) -> int:
         """当前用户回合的序号（世界书 atDepth 与确定性触发用）。
 
         以该用户消息之前的用户真实发言数为基准 +1，主角色轮与任务结果轮
-        对同一回合得到同一个值。消息不在历史里时按整段历史统计。
+        对同一回合得到同一个值。用户消息由 ``_message`` 落进历史后才进入
+        回合处理，找不到即为调用方错误。
         """
         history = self._history.get(conversation_id, [])
-        if source_message_id:
-            for index, message in enumerate(history):
-                if message.message_id == source_message_id:
-                    return _conversation_turn_index(history[:index])
-        return _conversation_turn_index(history)
+        for index, message in enumerate(history):
+            if message.message_id == source_message_id:
+                return _conversation_turn_index(history[:index])
+        raise RuntimeError(
+            f"回合源消息 {source_message_id} 不在聊天 {conversation_id} 的历史中"
+        )
 
     def _dialogue_request(
         self,

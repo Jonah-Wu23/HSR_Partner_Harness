@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import tomli_w
+from dotenv import set_key
 
 from pair_harness.adapters.acp.engine import AcpCodingEngine
 from pair_harness.adapters.codex.auth import CodexAuthService
@@ -87,7 +88,7 @@ def _reasonix_config_toml(
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
-    """同目录临时文件写入后原子替换（.env/config.toml 共用）。"""
+    """同目录临时文件写入后原子替换。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
@@ -100,6 +101,30 @@ def _atomic_write_text(path: Path, content: str) -> None:
         os.replace(tmp_path, path)
     except BaseException:
         Path(tmp_path).unlink(missing_ok=True)
+        raise
+
+
+def _write_reasonix_env(path: Path, key: str, value: str) -> None:
+    """``.env`` 只放当前供应商的密钥变量；``value`` 为空时写空文件，内容未变时不改写。
+
+    值由 python-dotenv 的 ``set_key`` 加单引号写出，换行留在引号内。Reasonix 用
+    godotenv 读取，单引号值按原文取回；值含反斜杠或单引号时 godotenv 不还原
+    ``set_key`` 加的转义。先写同目录临时文件，再原子替换。
+    """
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        if value:
+            set_key(tmp_path, key, value)
+        if path.exists() and path.read_bytes() == tmp_path.read_bytes():
+            tmp_path.unlink()
+        else:
+            os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
         raise
 
 
@@ -136,14 +161,10 @@ def ensure_reasonix_home(
     toml = _reasonix_config_toml(
         kind=kind, base_url=base_url, model=model, effort=effort
     )
-    api_key_env = _reasonix_api_key_env(kind)
-    env_body = f"{api_key_env}={api_key}\n" if api_key else ""
     config_path = home / "config.toml"
     if not config_path.exists() or config_path.read_text(encoding="utf-8") != toml:
         _atomic_write_text(config_path, toml)
-    env_path = home / ".env"
-    if not env_path.exists() or env_path.read_text(encoding="utf-8") != env_body:
-        _atomic_write_text(env_path, env_body)
+    _write_reasonix_env(home / ".env", _reasonix_api_key_env(kind), api_key)
     return home
 
 

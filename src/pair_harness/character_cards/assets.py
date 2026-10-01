@@ -63,14 +63,12 @@ class CharacterAssetService:
         data: bytes,
         kind: str,
         mime_type: str,
-        source: str,
         source_ref: str,
         extension: str = "",
     ) -> str:
         """写入一份资产，返回新分配的 asset_id。
 
-        ``extension`` 缺省时按 mime_type 推断，推不出用 ``bin``。表里没有
-        ``source`` 列，来源枚举由调用方写进卡 JSON 的 hsr 引用字段。
+        ``extension`` 缺省时按 mime_type 推断，推不出用 ``bin``。
         """
         asset_id = uuid4().hex
         ext = extension.lstrip(".") if extension else _infer_extension(mime_type)
