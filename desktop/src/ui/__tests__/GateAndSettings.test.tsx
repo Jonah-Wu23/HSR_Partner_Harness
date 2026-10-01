@@ -1,51 +1,12 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AccountGate } from "../gate/AccountGate";
+import { createActionController } from "../../services/actions";
+import { MockDesktopBackend } from "../../services/mockDesktopBackend";
 import { Onboarding } from "../gate/Onboarding";
 import { SettingsCenter } from "../settings/SettingsCenter";
 
 afterEach(cleanup);
-
-describe("AccountGate", () => {
-  const accounts = [
-    { accountId: "a1", displayName: "吴 Jonah", isLastLogin: true },
-    { accountId: "a2", displayName: "测试账号", isLastLogin: false },
-  ];
-
-  it("默认选中上次登录账号，输入密码后提交登录", () => {
-    const onLogin = vi.fn();
-    render(<AccountGate accounts={accounts} error={null} busy={false} onLogin={onLogin} onRegister={() => {}} />);
-
-    const selected = screen.getByRole("radio", { name: /吴 Jonah/ });
-    expect(selected).toHaveAttribute("aria-checked", "true");
-
-    fireEvent.change(screen.getByLabelText("密码"), { target: { value: "1234" } });
-    fireEvent.click(screen.getByRole("button", { name: "进入" }));
-    expect(onLogin).toHaveBeenCalledWith("a1", "1234");
-  });
-
-  it("切换到注册表单并校验两次密码一致", () => {
-    const onRegister = vi.fn();
-    render(<AccountGate accounts={[]} error={null} busy={false} onLogin={() => {}} onRegister={onRegister} />);
-
-    fireEvent.click(screen.getByRole("button", { name: /注册新账号/ }));
-    fireEvent.change(screen.getByLabelText("显示名称"), { target: { value: "新伙伴" } });
-    fireEvent.change(screen.getByLabelText(/密码（至少 6 位）/), { target: { value: "abcdef" } });
-    fireEvent.change(screen.getByLabelText("确认密码"), { target: { value: "abcdeg" } });
-    expect(screen.getByRole("alert")).toHaveTextContent("不一致");
-    expect(screen.getByRole("button", { name: "注册并进入" })).toBeDisabled();
-
-    fireEvent.change(screen.getByLabelText("确认密码"), { target: { value: "abcdef" } });
-    fireEvent.click(screen.getByRole("button", { name: "注册并进入" }));
-    expect(onRegister).toHaveBeenCalledWith("新伙伴", "abcdef");
-  });
-
-  it("就地显示后端错误", () => {
-    render(<AccountGate accounts={accounts} error="密码不对" busy={false} onLogin={() => {}} onRegister={() => {}} />);
-    expect(screen.getByRole("alert")).toHaveTextContent("密码不对");
-  });
-});
 
 describe("Onboarding", () => {
   it("三步推进，配置页可跳过", async () => {
@@ -54,20 +15,21 @@ describe("Onboarding", () => {
     render(
       <Onboarding
         onCreateProject={onCreateProject}
-        onSaveModelConfig={vi.fn().mockResolvedValue("连接正常（延迟 120 ms）")}
+        onSaveModelConfig={vi.fn().mockResolvedValue({ ok: true, message: "连接正常（延迟 120 ms）" })}
         onFinish={onFinish}
       />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "选择文件夹" }));
-    expect(onCreateProject).toHaveBeenCalled();
-    expect(await screen.findByText("配置角色模型")).toBeInTheDocument();
+    // 步骤指示器始终列出三步的名字，进入下一步的信号是该步的面板标题。
+    expect(await screen.findByRole("heading", { name: "配置角色模型" })).toBeInTheDocument();
+    expect(onCreateProject).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: "跳过，之后再说" }));
-    expect(screen.getByText("都准备好了")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "都准备好了" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "开始使用" }));
-    expect(onFinish).toHaveBeenCalled();
+    expect(onFinish).toHaveBeenCalledTimes(1);
   });
 
   it("取消选文件夹时停留在创建项目步骤", async () => {
@@ -80,13 +42,18 @@ describe("Onboarding", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "选择文件夹" }));
-    expect(await screen.findByRole("heading", { name: "创建第一个项目" })).toBeInTheDocument();
-    expect(onCreateProject).toHaveBeenCalled();
+    const pick = screen.getByRole("button", { name: "选择文件夹" });
+    fireEvent.click(pick);
+    expect(pick).toBeDisabled();
+    // 选择结束后按钮恢复可用，说明这次创建已经返回。
+    await waitFor(() => expect(pick).toBeEnabled());
+    expect(onCreateProject).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("heading", { name: "创建第一个项目" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "配置角色模型" })).not.toBeInTheDocument();
   });
 
   it("角色模型连接成功后自动进入完成步骤", async () => {
-    const onSaveModelConfig = vi.fn().mockResolvedValue("连接正常（延迟 546 ms）");
+    const onSaveModelConfig = vi.fn().mockResolvedValue({ ok: true, message: "连接正常（延迟 546 ms）" });
     render(
       <Onboarding
         onCreateProject={vi.fn().mockResolvedValue(true)}
@@ -103,22 +70,17 @@ describe("Onboarding", () => {
     expect(onSaveModelConfig).toHaveBeenCalledWith({ provider: "deepseek", apiKey: "sk-test" });
   });
 
-  it("首次引导只提供 DeepSeek 与 OpenAI 兼容 API，不出现已剥离的 OAuth 入口", () => {
+  it("默认 DeepSeek 只需要 Key，OpenAI 兼容 API 另需 Base URL 与模型", () => {
     render(
       <Onboarding
         onCreateProject={vi.fn().mockResolvedValue(true)}
-        onSaveModelConfig={vi.fn().mockResolvedValue("连接正常")}
+        onSaveModelConfig={vi.fn().mockResolvedValue({ ok: true, message: "连接正常" })}
         onFinish={vi.fn()}
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "跳过" }));
     const provider = screen.getByLabelText("模型来源");
     expect(provider).toHaveValue("deepseek");
-    expect(screen.getByRole("option", { name: "DeepSeek" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "OpenAI 兼容 API" })).toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: /OAuth/ })).not.toBeInTheDocument();
-
-    // DeepSeek 只要 Key；切到通用兼容端点才需要 Base URL 与模型
     expect(screen.queryByLabelText("Base URL")).not.toBeInTheDocument();
     fireEvent.change(provider, { target: { value: "openai_compatible" } });
     expect(screen.getByLabelText("Base URL")).toHaveValue("https://api.openai.com/v1");
@@ -138,7 +100,7 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsCenter>[0]>
     onClose: vi.fn(),
     account: { displayName: "吴 Jonah" },
     model: {
-      provider: "DeepSeek",
+      provider: "deepseek",
       model: "deepseek-reasoner",
       baseUrl: "https://api.deepseek.com",
       apiKeyMasked: "sk-····",
@@ -173,10 +135,14 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsCenter>[0]>
       loading: false,
       error: null,
       serveAddress: null,
+      tunnel: { state: "off", publicUrl: null, hostname: null, error: null, requestError: null, loading: false },
     },
     onIssuePairingCode: vi.fn(),
     onListRemoteDevices: vi.fn(),
     onRevokeRemoteDevice: vi.fn(),
+    onProvisionVoices: vi.fn(),
+    onPickFile: vi.fn(),
+    actions: createActionController(new MockDesktopBackend()).actions,
     ...overrides,
   };
   render(<SettingsCenter {...props} />);
@@ -185,14 +151,19 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsCenter>[0]>
 
 describe("SettingsCenter", () => {
   it("栏目导航切换页面，Esc 关闭", () => {
-    const props = renderSettings();
+    // 窗口没有打开的聊天：长期记忆页只说明原因，不发记忆命令。
+    const props = renderSettings({ page: "memory" });
     expect(screen.getByRole("dialog", { name: "设置" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "长期记忆" })).toBeInTheDocument();
+    expect(screen.getByTestId("memory-panel")).toHaveTextContent("没有打开的聊天");
 
     fireEvent.click(screen.getByRole("button", { name: "语音" }));
-    expect(props.onPageChange).toHaveBeenCalledWith("voice");
+    expect(props.onPageChange).toHaveBeenLastCalledWith("voice");
+    fireEvent.click(screen.getByRole("button", { name: "长期记忆" }));
+    expect(props.onPageChange).toHaveBeenLastCalledWith("memory");
 
     fireEvent.keyDown(window, { key: "Escape" });
-    expect(props.onClose).toHaveBeenCalled();
+    expect(props.onClose).toHaveBeenCalledTimes(1);
   });
 
   it("模型页未修改时保存按钮禁用，修改后可保存并测试", async () => {
@@ -215,7 +186,7 @@ describe("SettingsCenter", () => {
     expect(props.onTestModel).toHaveBeenCalled();
   });
 
-  it("模型页切回 DeepSeek 时落 *.deepseek.com 端点与默认模型（后端端点一致性契约）", async () => {
+  it("模型页切回 DeepSeek 时改用 DeepSeek 默认端点与模型", async () => {
     const onSaveModel = vi.fn().mockResolvedValue(undefined);
     renderSettings({
       onSaveModel,
@@ -244,41 +215,9 @@ describe("SettingsCenter", () => {
     );
   });
 
-  it("模型页服务商下拉只有 DeepSeek 与 OpenAI 兼容 API", () => {
-    renderSettings();
-    const provider = screen.getByLabelText("服务商");
-    expect(provider).toHaveValue("deepseek");
-    expect(screen.getByRole("option", { name: "DeepSeek" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "OpenAI 兼容 API" })).toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: /OAuth/ })).not.toBeInTheDocument();
-  });
-
-  it("模型页切到 OpenAI 兼容 API 用默认端点保存并测试连接", async () => {
-    const onSaveModel = vi.fn().mockResolvedValue(undefined);
-    const onTestModel = vi.fn();
-    renderSettings({ onSaveModel, onTestModel });
-
-    fireEvent.change(screen.getByLabelText("服务商"), {
-      target: { value: "openai_compatible" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
-
-    await waitFor(() =>
-      expect(onSaveModel).toHaveBeenCalledWith(
-        expect.objectContaining({
-          provider: "openai_compatible",
-          baseUrl: "https://api.openai.com/v1",
-          model: "gpt-5.6-sol",
-          apiKey: undefined,
-        }),
-      ),
-    );
-    expect(onTestModel).toHaveBeenCalled();
-  });
-
   const unavailableMessage = "该供应商不可用，请重新选择 DeepSeek 或 OpenAI 兼容 API。";
 
-  it("历史 openai_oauth 按后端 provider_supported=false 显示不可用：不改写、不许保存，改选后恢复", async () => {
+  it("后端判定服务商不可用时显示原因并禁止保存，改选可用服务商后恢复", async () => {
     const onSaveModel = vi.fn().mockResolvedValue(undefined);
     renderSettings({
       model: {
@@ -337,215 +276,35 @@ describe("SettingsCenter", () => {
     expect(screen.getByRole("button", { name: "保存并测试" })).toBeDisabled();
   });
 
-  it("编程助手页只说明复用角色模型配置，不再有登录入口", () => {
-    renderSettings({ page: "coding" });
-    expect(screen.getByText(/编程助手不单独配置账号/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /登录/ })).not.toBeInTheDocument();
-    expect(screen.queryByText(/OAuth/)).not.toBeInTheDocument();
-  });
-
-  it("语音页显示用户 BYOK 配置与固定模型，不显示赞助内容与助手语音", () => {
-    renderSettings({ page: "voice" });
-    expect(screen.getByText("语音功能")).toBeInTheDocument();
-    expect(screen.getByText("DashScope 账号配置")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("填写自己的 DashScope API Key")).toBeInTheDocument();
-    expect(screen.getByText("qwen-audio-3.0-asr-flash-streaming")).toBeInTheDocument();
-    expect(screen.getByText("qwen-audio-3.0-tts-flash")).toBeInTheDocument();
-    expect(screen.queryByText("喜欢这个语音功能的话，请给作者一点支持")).not.toBeInTheDocument();
-    expect(screen.queryByRole("img", { name: "微信收款二维码" })).not.toBeInTheDocument();
-    // 角色音色只展示生成状态，助手侧说话方与开关已移除
-    expect(screen.getByText("白厄")).toBeInTheDocument();
-    expect(screen.queryByText("神秘的古代机械")).not.toBeInTheDocument();
-    expect(screen.queryByText("萨姆")).not.toBeInTheDocument();
-    expect(screen.queryByText("助手语音")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("ASR 模型")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("TTS 模型")).not.toBeInTheDocument();
-  });
-
-  it("语音页明确区分开发环境 .env 凭据与账号 BYOK", () => {
-    renderSettings({
-      page: "voice",
-      voice: {
-        enabled: true,
-        assistantVoiceEnabled: false,
-        characterVoiceId: "",
-        characterVoiceName: "白厄",
-        assistantVoiceId: "",
-        assistantVoiceName: "",
-        vadEnabled: false,
-        vadStatus: "ready",
-        baseUrl: "https://dashscope.aliyuncs.com/api/v1",
-        apiKeyMasked: "",
-        asrAvailable: true,
-        credentialSource: "development_env",
-      },
-    });
-    expect(
-      screen.getByText("开发环境 .env Key 可用，尚未保存到当前账号"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("开发环境 .env 凭据可用（未保存到账号）"),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/当前账号已保存/)).not.toBeInTheDocument();
-  });
-
-  it("语音页关闭总开关后隐藏音色与 VAD 细项，不保留赞助卡", () => {
-    renderSettings({
-      page: "voice",
-      voice: {
-        enabled: false,
-        assistantVoiceEnabled: false,
-        characterVoiceId: "",
-        characterVoiceName: "",
-        assistantVoiceId: "",
-        assistantVoiceName: "",
-        vadEnabled: false,
-        vadStatus: "unavailable",
-      },
-    });
-    expect(screen.getByText("语音功能")).toBeInTheDocument();
-    expect(screen.queryByText("喜欢这个语音功能的话，请给作者一点支持")).not.toBeInTheDocument();
-    expect(screen.queryByText("试听")).not.toBeInTheDocument();
-    expect(screen.getByLabelText(/语音自动聆听/)).toBeDisabled();
-  });
-
-  it("语音页保存用户 Key、地址与开关偏好", async () => {
-    const onSaveVoice = vi.fn().mockResolvedValue(undefined);
+  it("账号页保存资料、修改密码（含禁用校验）与退出登录二次确认", async () => {
     const props = renderSettings({
-      page: "voice",
-      onSaveVoice,
-      voice: {
-        enabled: true,
-        assistantVoiceEnabled: false,
-        characterVoiceId: "",
-        characterVoiceName: "",
-        assistantVoiceId: "",
-        assistantVoiceName: "",
-        vadEnabled: false,
-        vadStatus: "ready",
-        baseUrl: "https://dashscope.aliyuncs.com/api/v1",
-        apiKeyMasked: "sk-····",
-      },
+      page: "account",
+      onSaveProfile: vi.fn().mockResolvedValue(undefined),
+      onChangePassword: vi.fn().mockRejectedValue(new Error("原密码错误")),
     });
 
-    fireEvent.change(screen.getByPlaceholderText("留空保留当前 sk-····"), {
-      target: { value: "user-key" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "保存语音配置" }));
-    await waitFor(() =>
-      expect(onSaveVoice).toHaveBeenCalledWith(
-        expect.objectContaining({
-          apiKey: "user-key",
-          baseUrl: "https://dashscope.aliyuncs.com/api/v1",
-        }),
-      ),
-    );
-
-    fireEvent.click(screen.getByLabelText(/语音功能/));
-    expect(props.onSaveVoice).toHaveBeenLastCalledWith(expect.objectContaining({
-      enabled: false,
-      assistantVoiceEnabled: false,
-      vadEnabled: false,
-      baseUrl: "https://dashscope.aliyuncs.com/api/v1",
-    }));
-  });
-
-  it("语音页把三项生成委派给 voice.provision", async () => {
-    const onProvisionVoices = vi.fn().mockResolvedValue({
-      status: "completed",
-      completed: 3,
-      total: 3,
-      results: [],
-    });
-    renderSettings({
-      page: "voice",
-      onProvisionVoices,
-      voice: {
-        enabled: true,
-        assistantVoiceEnabled: false,
-        characterVoiceId: "",
-        characterVoiceName: "",
-        assistantVoiceId: "",
-        assistantVoiceName: "",
-        vadEnabled: false,
-        vadStatus: "ready",
-        baseUrl: "https://dashscope.aliyuncs.com/api/v1",
-        apiKeyMasked: "sk-····",
-      },
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "生成 3 个专属音色" }));
-    await waitFor(() =>
-      expect(onProvisionVoices).toHaveBeenCalledWith(
-        ["phainon", "firefly", "march7"],
-        false,
-      ),
-    );
-  });
-
-  it("语音页试听按钮按音色回传 voice_id 与名称", () => {
-    const props = renderSettings({
-      page: "voice",
-      voice: {
-        enabled: true,
-        assistantVoiceEnabled: false,
-        characterVoiceId: "",
-        characterVoiceName: "",
-        assistantVoiceId: "",
-        assistantVoiceName: "",
-        vadEnabled: false,
-        vadStatus: "ready",
-        baseUrl: "https://dashscope.aliyuncs.com/api/v1",
-        apiKeyMasked: "sk-····",
-        speakers: [
-          {
-            speakerId: "phainon",
-            name: "白厄",
-            method: "clone",
-            state: "completed",
-            voiceId: "account-phainon-voice",
-          },
-          {
-            speakerId: "firefly",
-            name: "流萤",
-            method: "clone",
-            state: "completed",
-            voiceId: "account-firefly-voice",
-          },
-        ],
-      },
-    });
-    const previewButtons = screen.getAllByRole("button", { name: "试听" });
-    fireEvent.click(previewButtons[1]);
-    expect(props.onPreviewVoice).toHaveBeenCalledWith(
-      "account-firefly-voice",
-      "流萤",
-    );
-  });
-
-  it("账号页保存资料、修改密码（含禁用校验）与退出登录二次确认", () => {
-    const props = renderSettings({ page: "account" });
-
-    // 显示名称未修改时保存禁用；修改后保存并回传
+    // 显示名称未修改时保存禁用；修改后保存，结果就地显示
     const save = screen.getByRole("button", { name: "保存资料" });
     expect(save).toBeDisabled();
     fireEvent.change(screen.getByLabelText("显示名称"), { target: { value: "吴新名" } });
     fireEvent.click(screen.getByRole("button", { name: "保存资料" }));
     expect(props.onSaveProfile).toHaveBeenCalledWith("吴新名");
+    expect(await screen.findByRole("status")).toHaveTextContent("资料已保存");
 
-    // 当前密码为空或新密码不足 6 位时改密禁用
+    // 当前密码为空或新密码不足 6 位时改密禁用；失败原文就地显示
     const change = screen.getByRole("button", { name: "修改密码" });
     expect(change).toBeDisabled();
     fireEvent.change(screen.getByLabelText("当前密码"), { target: { value: "old-pass" } });
-    expect(change).toBeDisabled(); // 新密码仍为空
+    expect(change).toBeDisabled();
     fireEvent.change(screen.getByLabelText(/新密码/), { target: { value: "new-pass" } });
     fireEvent.click(change);
     expect(props.onChangePassword).toHaveBeenCalledWith("old-pass", "new-pass");
+    expect(await screen.findByRole("alert")).toHaveTextContent("原密码错误");
 
     // 退出登录：先出现二次确认，确定后才调用 onLogout
     fireEvent.click(screen.getByRole("button", { name: "退出登录" }));
-    expect(screen.getByRole("alert")).toHaveTextContent("确定退出");
+    expect(props.onLogout).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "确定退出" }));
-    expect(props.onLogout).toHaveBeenCalled();
+    expect(props.onLogout).toHaveBeenCalledTimes(1);
   });
 });

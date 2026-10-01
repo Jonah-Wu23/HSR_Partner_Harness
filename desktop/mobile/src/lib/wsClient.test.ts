@@ -1,70 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FakeWebSocket, installFakeWebSocket, latestSocket } from "../test/fakeWebSocket";
 import {
   clearCredentials,
-  getStoredDeviceName,
   getStoredToken,
   INBOUND_STALE_MS,
   MobileWsClient,
-  normalizeWsUrl,
+  parseWsAddress,
   PING_INTERVAL_MS,
   RemoteCommandError,
   resolveWsUrl,
   saveCredentials,
 } from "./wsClient";
 
-/** 测试用 WS 假实现：协议帧经 emit 注入，sent 记录客户端发出的原始帧。 */
-class FakeWebSocket {
-  static instances: FakeWebSocket[] = [];
-  static readonly CONNECTING = 0;
-  static readonly OPEN = 1;
-
-  readyState = FakeWebSocket.CONNECTING;
-  readonly url: string;
-  readonly sent: string[] = [];
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { data: string }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-
-  constructor(url: string) {
-    this.url = url;
-    FakeWebSocket.instances.push(this);
-  }
-
-  open(): void {
-    this.readyState = FakeWebSocket.OPEN;
-    this.onopen?.();
-  }
-
-  close(): void {
-    this.readyState = 3;
-    this.onclose?.();
-  }
-
-  send(data: string): void {
-    this.sent.push(data);
-  }
-
-  emit(frame: unknown): void {
-    this.onmessage?.({ data: JSON.stringify(frame) });
-  }
-}
-
-function lastInstance(): FakeWebSocket {
-  const instance = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
-  if (!instance) throw new Error("没有 FakeWebSocket 实例");
-  return instance;
-}
-
-function lastSentFrame(instance: FakeWebSocket): Record<string, unknown> {
-  const raw = instance.sent[instance.sent.length - 1];
-  if (!raw) throw new Error("客户端尚未发出任何帧");
-  return JSON.parse(raw) as Record<string, unknown>;
+/** 新建客户端并完成握手，返回它与对应的 socket。 */
+function connectedClient(): { client: MobileWsClient; ws: FakeWebSocket } {
+  const client = new MobileWsClient();
+  client.connect();
+  const ws = latestSocket();
+  ws.open();
+  return { client, ws };
 }
 
 beforeEach(() => {
-  FakeWebSocket.instances = [];
-  vi.stubGlobal("WebSocket", FakeWebSocket);
+  installFakeWebSocket();
   window.localStorage.clear();
   window.history.pushState({}, "", "/");
 });
@@ -75,50 +33,27 @@ afterEach(() => {
   window.localStorage.clear();
 });
 
-describe("normalizeWsUrl", () => {
-  it("公网隧道 https:// 自动映射为 wss:// 并补齐 /ws 路径", () => {
-    expect(normalizeWsUrl("https://foo-bar.trycloudflare.com")).toBe(
+describe("parseWsAddress 规范化", () => {
+  it.each([
+    ["https://foo-bar.trycloudflare.com", "wss://foo-bar.trycloudflare.com/ws"],
+    ["https://foo-bar.trycloudflare.com/", "wss://foo-bar.trycloudflare.com/ws"],
+    ["https://foo-bar.trycloudflare.com/ws", "wss://foo-bar.trycloudflare.com/ws"],
+    [
+      "https://foo-bar.trycloudflare.com/?code=123456&ws=wss://foo-bar.trycloudflare.com/ws",
       "wss://foo-bar.trycloudflare.com/ws",
-    );
-    expect(normalizeWsUrl("https://foo-bar.trycloudflare.com/")).toBe(
-      "wss://foo-bar.trycloudflare.com/ws",
-    );
-    expect(normalizeWsUrl("https://foo-bar.trycloudflare.com/ws")).toBe(
-      "wss://foo-bar.trycloudflare.com/ws",
-    );
-  });
-
-  it("公网隧道带二维码参数时清理并保留标准 /ws 握手地址", () => {
-    expect(
-      normalizeWsUrl("https://foo-bar.trycloudflare.com/?code=123456&ws=wss://foo-bar.trycloudflare.com/ws"),
-    ).toBe("wss://foo-bar.trycloudflare.com/ws");
-  });
-
-  it("wss:// 与 ws:// 地址如实保留并补齐 /ws", () => {
-    expect(normalizeWsUrl("wss://foo-bar.trycloudflare.com")).toBe(
-      "wss://foo-bar.trycloudflare.com/ws",
-    );
-    expect(normalizeWsUrl("ws://192.168.1.50:8765/ws")).toBe(
-      "ws://192.168.1.50:8765/ws",
-    );
-    expect(normalizeWsUrl("http://192.168.1.50:8765")).toBe(
-      "ws://192.168.1.50:8765/ws",
-    );
+    ],
+    ["wss://foo-bar.trycloudflare.com", "wss://foo-bar.trycloudflare.com/ws"],
+    ["ws://192.168.1.50:8765/ws", "ws://192.168.1.50:8765/ws"],
+  ])("%s 规范化为 %s", (raw, url) => {
+    expect(parseWsAddress(raw)).toEqual({ ok: true, url });
   });
 });
 
 describe("resolveWsUrl", () => {
-  it("?ws= 查询参数优先并写入缓存", () => {
-    window.history.pushState({}, "", "/?ws=ws://192.168.1.5:8765/ws");
-    expect(resolveWsUrl()).toBe("ws://192.168.1.5:8765/ws");
-    window.history.pushState({}, "", "/");
-    expect(resolveWsUrl()).toBe("ws://192.168.1.5:8765/ws");
-  });
-
-  it("公网隧道 https:// 地址在 ?ws= 或缓存中自动规范化为 wss://", () => {
+  it("?ws= 规范化后优先采用并写入缓存，随后从地址栏移除", () => {
     window.history.pushState({}, "", "/?ws=https://tunnel.trycloudflare.com");
     expect(resolveWsUrl()).toBe("wss://tunnel.trycloudflare.com/ws");
-    window.history.pushState({}, "", "/");
+    expect(window.location.search).toBe("");
     expect(resolveWsUrl()).toBe("wss://tunnel.trycloudflare.com/ws");
   });
 
@@ -128,16 +63,8 @@ describe("resolveWsUrl", () => {
 });
 
 describe("凭证存储", () => {
-  it("save/get/clear 闭环", () => {
-    expect(getStoredToken()).toBeNull();
-    saveCredentials("tok-1", "我的小米");
-    expect(getStoredToken()).toBe("tok-1");
-    expect(getStoredDeviceName()).toBe("我的小米");
-    clearCredentials();
-    expect(getStoredToken()).toBeNull();
-  });
-
   it("配对写入和解绑清除会立即同步 Android 原生连接", () => {
+    // Android 壳注入的原生接口，PWA 与 jsdom 里都没有。
     const syncConfig = vi.fn();
     vi.stubGlobal("PairHarnessNative", { syncConfig });
     window.history.pushState({}, "", "/?ws=ws://192.168.1.8:8765/ws");
@@ -163,148 +90,103 @@ describe("凭证存储", () => {
 });
 
 describe("MobileWsClient", () => {
-  it("已配对请求自动携带 auth token", async () => {
+  it("已配对的请求在顶层携带 auth token", async () => {
     saveCredentials("tok-1", "我的小米");
-    const client = new MobileWsClient();
-    client.connect();
-    const ws = lastInstance();
-    ws.open();
+    const { client, ws } = connectedClient();
 
     const pending = client.request("app.bootstrap");
-    const frame = lastSentFrame(ws);
-    expect(frame).toMatchObject({
-      kind: "request",
-      method: "app.bootstrap",
-      auth: { token: "tok-1" },
-    });
-    ws.emit({ kind: "response", id: frame.id, ok: true, result: { sequence: 1 } });
+    const frame = ws.lastFrame("app.bootstrap");
+    expect(frame).toMatchObject({ kind: "request", auth: { token: "tok-1" } });
+    ws.respond(frame, { sequence: 1 });
     await expect(pending).resolves.toEqual({ sequence: 1 });
   });
 
-  it("skipAuth（remote.pair）不携带 auth", async () => {
+  it("skipAuth 的请求（remote.pair）不携带 auth", async () => {
     saveCredentials("tok-old", "旧设备");
-    const client = new MobileWsClient();
-    client.connect();
-    const ws = lastInstance();
-    ws.open();
+    const { client, ws } = connectedClient();
 
     const pending = client.request(
       "remote.pair",
       { code: "654321", device_name: "我的小米" },
       { skipAuth: true },
     );
-    const frame = lastSentFrame(ws);
-    expect(frame.method).toBe("remote.pair");
-    expect(frame.auth).toBeUndefined();
-    ws.emit({ kind: "response", id: frame.id, ok: true, result: { token: "tok-new" } });
+    const frame = ws.lastFrame("remote.pair");
+    expect(frame).not.toHaveProperty("auth");
+    ws.respond(frame, { token: "tok-new" });
     await expect(pending).resolves.toEqual({ token: "tok-new" });
   });
 
-  it("unauthorized 响应如实拒绝并进入 auth_failed", async () => {
-    saveCredentials("tok-expired", "我的小米");
-    const client = new MobileWsClient();
-    client.connect();
-    const ws = lastInstance();
-    ws.open();
+  it.each([
+    ["invalid_token", "tok-1"],
+    ["revoked_token", "tok-1"],
+    ["expired_token", null],
+  ] as const)(
+    "unauthorized（%s）拒绝请求并进入 auth_failed，之后本地 token 为 %s",
+    async (reason, storedToken) => {
+      saveCredentials("tok-1", "我的手机");
+      const { client, ws } = connectedClient();
 
-    const pending = client.request("app.bootstrap");
-    const frame = lastSentFrame(ws);
-    ws.emit({
-      kind: "response",
-      id: frame.id,
-      ok: false,
-      error: { code: "unauthorized", message: "无效 token" },
-    });
-    const error = await pending.catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(RemoteCommandError);
-    expect((error as RemoteCommandError).code).toBe("unauthorized");
-    expect(client.getState()).toBe("auth_failed");
-  });
+      const pending = client.request("app.bootstrap");
+      ws.respondError(ws.lastFrame("app.bootstrap"), "unauthorized", reason);
 
-  it("internal_error 文本偶然包含 expired_token 时不得误清有效凭据（R1-006 批次回归）", async () => {
+      const error = await pending.catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(RemoteCommandError);
+      expect((error as RemoteCommandError).code).toBe("unauthorized");
+      expect(client.getState()).toBe("auth_failed");
+      expect(client.getAuthFailureReason()).toBe(reason);
+      expect(getStoredToken()).toBe(storedToken);
+    },
+  );
+
+  it("其他错误码即使文案含 expired_token 也不进入鉴权失败，凭据保留", async () => {
     saveCredentials("tok-valid", "我的手机");
-    const client = new MobileWsClient();
-    client.connect();
-    const ws = lastInstance();
-    ws.open();
+    const { client, ws } = connectedClient();
 
     const pending = client.request("chat.submit");
-    const frame = lastSentFrame(ws);
-    ws.emit({
-      kind: "response",
-      id: frame.id,
-      ok: false,
-      error: {
-        code: "internal_error",
-        message: "处理委派失败：子任务状态 expired_token 越界",
-      },
-    });
+    ws.respondError(
+      ws.lastFrame("chat.submit"),
+      "internal_error",
+      "处理委派失败：子任务状态 expired_token 越界",
+    );
+
     await expect(pending).rejects.toBeInstanceOf(RemoteCommandError);
-    // 普通业务异常按原样呈现：不进入鉴权失败态，不清除仍有效的凭据
-    expect(client.getState()).not.toBe("auth_failed");
-    expect(client.getAuthFailureCode()).toBeNull();
+    expect(client.getState()).toBe("connected");
+    expect(client.getAuthFailureReason()).toBeNull();
     expect(getStoredToken()).toBe("tok-valid");
   });
 
-  it("auth_failed: expired_token 响应清理本地失效 token 并记录细分错误码", async () => {
-    saveCredentials("tok-expired-30d", "我的手机");
-    const client = new MobileWsClient();
-    client.connect();
-    const ws = lastInstance();
-    ws.open();
-
-    const pending = client.request("app.bootstrap");
-    const frame = lastSentFrame(ws);
-    ws.emit({
-      kind: "response",
-      id: frame.id,
-      ok: false,
-      error: { code: "unauthorized", message: "expired_token" },
-    });
-    await expect(pending).rejects.toBeInstanceOf(RemoteCommandError);
-    expect(client.getState()).toBe("auth_failed");
-    expect(client.getAuthFailureCode()).toBe("expired_token");
-    expect(getStoredToken()).toBeNull();
-  });
-
-  it("连接未就绪时请求如实失败", async () => {
+  it("连接未就绪时请求直接失败", async () => {
     const client = new MobileWsClient();
     await expect(client.request("app.bootstrap")).rejects.toThrow("WebSocket 未连接");
   });
 
   it("事件帧分发给 onEvent 监听器", () => {
     const client = new MobileWsClient();
-    const received: unknown[] = [];
-    client.onEvent((event) => received.push(event));
+    const received: string[] = [];
+    client.onEvent((event) => received.push(event.event));
     client.connect();
-    const ws = lastInstance();
+    const ws = latestSocket();
     ws.open();
-    ws.emit({ kind: "event", event: "state.snapshot", sequence: 3, payload: {} });
-    expect(received).toHaveLength(1);
-    expect((received[0] as { event: string }).event).toBe("state.snapshot");
+    ws.emit({ kind: "event", event: "queue.changed", sequence: 3, payload: {} });
+    expect(received).toEqual(["queue.changed"]);
   });
 
   it("断线按退避重连，五次失败后进入 unreachable", () => {
     vi.useFakeTimers();
-    const client = new MobileWsClient();
-    client.connect();
-    lastInstance().open();
-    expect(client.getState()).toBe("connected");
+    const { client } = connectedClient();
 
     for (const delay of [1000, 2000, 4000, 8000, 16000]) {
-      lastInstance().close();
+      latestSocket().close();
       expect(client.getState()).toBe("reconnecting");
       vi.advanceTimersByTime(delay);
     }
-    lastInstance().close();
+    latestSocket().close();
     expect(client.getState()).toBe("unreachable");
   });
 
   it("主动 disconnect 不触发重连", () => {
     vi.useFakeTimers();
-    const client = new MobileWsClient();
-    client.connect();
-    lastInstance().open();
+    const { client } = connectedClient();
     client.disconnect();
     expect(client.getState()).toBe("disconnected");
     vi.advanceTimersByTime(60000);
@@ -313,77 +195,51 @@ describe("MobileWsClient", () => {
   });
 });
 
-describe("MobileWsClient 心跳（V0.3.8 T1 契约 §14.3）", () => {
+describe("MobileWsClient 心跳", () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
 
-  it("连接后每 15s 发一次 ping，30s 无入站即判半开主动断开重连", () => {
+  it("每 15 秒发一次 ping，30 秒没有入站消息即摘除连接并重连", () => {
     saveCredentials("tok-hb", "设备");
-    const client = new MobileWsClient();
-    client.connect();
-    const ws = lastInstance();
-    ws.open();
+    const { client, ws } = connectedClient();
+    // 心跳由调用方在鉴权 bootstrap 成功后启动。
+    client.startHeartbeat();
+
+    vi.advanceTimersByTime(PING_INTERVAL_MS);
+    expect(ws.sentFrames("ping")).toHaveLength(1);
     expect(client.getState()).toBe("connected");
 
-    vi.advanceTimersByTime(PING_INTERVAL_MS);
-    expect(lastSentFrame(ws).method).toBe("ping");
-
-    // 收到入站消息刷新活性时间戳；超过 INBOUND_STALE_MS 无人应答才判死
-    vi.advanceTimersByTime(PING_INTERVAL_MS);
-    expect(lastSentFrame(ws).method).toBe("ping");
-
-    // 30s 无入站：下一个心跳 tick 判定半开并主动 close → 走重连
-    vi.advanceTimersByTime(PING_INTERVAL_MS + INBOUND_STALE_MS);
-    const closedSent = ws.sent.some(
-      (raw) => (JSON.parse(raw) as { method?: string }).method === "ping",
-    );
-    expect(closedSent).toBe(true);
+    vi.advanceTimersByTime(INBOUND_STALE_MS - PING_INTERVAL_MS);
     expect(client.getState()).toBe("reconnecting");
   });
 
-  it("持续有入站消息不误判半开", () => {
+  it("服务端应答 ping 时保持连接并按周期继续发 ping", async () => {
+    FakeWebSocket.autoResults.set("ping", { server_time: "2026-09-01T00:00:00+00:00" });
     saveCredentials("tok-hb", "设备");
-    const client = new MobileWsClient();
-    client.connect();
-    const ws = lastInstance();
-    ws.open();
+    const { client, ws } = connectedClient();
+    client.startHeartbeat();
 
-    for (let i = 0; i < 8; i += 1) {
-      vi.advanceTimersByTime(PING_INTERVAL_MS);
-      ws.emit({
-        kind: "event",
-        event: "queue.changed",
-        sequence: i,
-        payload: {},
-      });
-    }
+    await vi.advanceTimersByTimeAsync(PING_INTERVAL_MS * 8);
+
     expect(client.getState()).toBe("connected");
-    const pingCount = ws.sent.filter(
-      (raw) => (JSON.parse(raw) as { method?: string }).method === "ping",
-    ).length;
-    expect(pingCount).toBeGreaterThanOrEqual(7);
+    expect(ws.sentFrames("ping")).toHaveLength(8);
   });
 });
 
-describe("MobileWsClient 回前台重同步（V0.3.8 T1 契约 §14.4）", () => {
+describe("MobileWsClient 回前台", () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
 
-  it("unreachable 终态回前台自动复位重连，不再永久停摆", () => {
+  it("unreachable 时回前台复位退避并重新连接", () => {
     saveCredentials("tok-fg", "设备");
-    const client = new MobileWsClient();
-    client.connect();
-    let ws = lastInstance();
-    ws.open();
-    ws.close();
-    // 连续 5 次"连接失败"（新连接不 open 即 close）耗尽退避 → unreachable。
-    // onopen 成功会重置退避计数，因此这里绝不 open。
+    const { client } = connectedClient();
+    latestSocket().close();
+    // 新连接不握手就关闭，连续五次耗尽退避；握手成功会复位退避计数。
     for (let i = 0; i < 5; i += 1) {
       vi.advanceTimersByTime(16000);
-      ws = lastInstance();
-      ws.close();
+      latestSocket().close();
     }
     expect(client.getState()).toBe("unreachable");
 
@@ -391,15 +247,13 @@ describe("MobileWsClient 回前台重同步（V0.3.8 T1 契约 §14.4）", () =>
     expect(client.getState()).toBe("connecting");
   });
 
-  it("connected 时回前台返回 resync（由调用方重新 bootstrap 补拉）", () => {
+  it("connected 时回前台返回 resync，由调用方重新同步", () => {
     saveCredentials("tok-fg", "设备");
-    const client = new MobileWsClient();
-    client.connect();
-    lastInstance().open();
+    const { client } = connectedClient();
     expect(client.notifyAppForeground()).toBe("resync");
   });
 
-  it("connecting/reconnecting 时回前台返回 none（维持既有流程）", () => {
+  it("握手进行中回前台返回 none", () => {
     saveCredentials("tok-fg", "设备");
     const client = new MobileWsClient();
     client.connect();

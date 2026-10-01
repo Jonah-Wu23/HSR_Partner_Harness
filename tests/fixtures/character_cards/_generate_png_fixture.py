@@ -1,21 +1,8 @@
-"""生成角色卡 PNG 二进制 fixture（白厄（3.4前）.png）。
-
-用途：契约 §12 规定 PNG fixture 由「白厄 JSON + 程序合成最小真实 PNG
-头像字节（zlib 构造 IHDR/IDAT/IEND，不新增依赖）经 write_png_card 生成，
-入库为二进制 fixture」。
-
-本脚本用标准库 zlib/struct 合成 64x64、RGB、8-bit 的最小真实 PNG 头像
-（含正确 CRC），读取同目录 ``白厄（3.4前）.json``，经
-``load_card_json`` + ``write_png_card`` 产出 ``白厄（3.4前）.png``。
-
-再生成方法（仓库根目录，Git Bash）：
-
-    ./.venv/Scripts/python.exe tests/fixtures/character_cards/_generate_png_fixture.py
-
-生成后建议用测试验证 fixture 内容有效：
-
-    ./.venv/Scripts/python.exe -m pytest -q tests/unit/test_character_card_png.py
-"""
+# 生成角色卡 PNG 夹具「白厄（3.4前）.png」：用标准库 zlib/struct 合成 64x64、RGB、
+# 8-bit 的真实 PNG 头像，读取同目录的白厄 JSON，经 load_card_json 与 write_png_card
+# 写出。在仓库根目录运行：
+#
+#     ./.venv/Scripts/python.exe tests/fixtures/character_cards/_generate_png_fixture.py
 
 from __future__ import annotations
 
@@ -23,7 +10,8 @@ import struct
 import zlib
 from pathlib import Path
 
-from pair_harness.character_cards import load_card_json, write_png_card
+from pair_harness.character_cards.codec import load_card_json
+from pair_harness.character_cards.png import write_png_card
 
 HERE = Path(__file__).resolve().parent
 JSON_PATH = HERE / "白厄（3.4前）.json"

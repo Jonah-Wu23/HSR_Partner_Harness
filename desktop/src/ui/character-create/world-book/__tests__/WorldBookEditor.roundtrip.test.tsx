@@ -1,8 +1,9 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { clone, deepFreeze } from "../../__tests__/editorHelpers";
 import { WorldBookEditor } from "../WorldBookEditor";
-import { RICH_BOOK, clone, deepFreeze, entryOf, makeHarness } from "./helpers";
+import { RICH_BOOK, entryOf, makeHarness } from "./helpers";
 
 afterEach(cleanup);
 
@@ -24,25 +25,12 @@ describe("WorldBookEditor 编辑往返保真", () => {
     fireEvent.change(screen.getByTestId("wb-entry-2-depth"), { target: { value: "3" } });
     fireEvent.change(screen.getByTestId("wb-token-budget"), { target: { value: "1800" } });
 
-    const latest = getLatest();
-    expect(latest).not.toBeNull();
-
-    // 未触及字段逐一核对：条目级存而不运行字段、未知 extras、书级未知键
-    const e0 = entryOf(latest!, 0);
-    expect(e0.extensions).toEqual(RICH_BOOK_EXTENSIONS_0_WITH_LOGIC(2));
-    expect((e0.extensions as Record<string, unknown>).unknown_ext).toEqual([1, "two"]);
-    expect(entryOf(latest!, 1).future_unknown).toEqual({ nested: true });
-    expect(entryOf(latest!, 3).position).toBe("EMTop");
-    expect(latest!.recursive_scanning).toBe(true);
-    expect(latest!.extensions).toEqual(RICH_BOOK.extensions);
-
-    // 全量对比
     const expected = clone(RICH_BOOK);
     entryOf(expected, 0).comment = "世界观总纲（改）";
     entryOf(expected, 1).keys = ["药房"];
     entryOf(expected, 2).extensions = { depth: 3, role: "user" };
     expected.token_budget = 1800;
-    expect(latest).toEqual(expected);
+    expect(getLatest()).toEqual(expected);
   });
 
   it("新建条目只追加默认条目，既有内容全部保留", () => {
@@ -105,39 +93,38 @@ describe("WorldBookEditor 编辑往返保真", () => {
     expect(latest.entries).toEqual(RICH_BOOK.entries);
   });
 
-  it("空书呈现引导空态；null book 也走空态；非对象 entries 如实暴露", () => {
-    const empty = makeHarness({});
-    render(<empty.Harness />);
-    expect(screen.getByTestId("wb-empty-entries")).toHaveTextContent("这个世界书还没有条目");
-    expect(screen.getByTestId("wb-empty-entries")).toHaveTextContent("新建条目");
+  it.each<[string, Record<string, unknown> | null]>([
+    ["空对象", {}],
+    ["空条目列表", { name: "只有名字", entries: [] }],
+    ["null", null],
+  ])("%s 的世界书呈现引导空态", (_label, book) => {
+    render(<WorldBookEditor book={book} onChange={() => {}} />);
+
+    const empty = screen.getByTestId("wb-empty-entries");
+    expect(empty).toHaveTextContent("这个世界书还没有条目");
+    expect(empty).toHaveTextContent("新建条目");
+  });
+
+  it("空书新建条目写入默认条目并保留书级字段", () => {
+    const { Harness, getLatest } = makeHarness(deepFreeze({ name: "空书", entries: [] }));
+    render(<Harness />);
+
     fireEvent.click(screen.getByTestId("wb-add-entry"));
-    expect(empty.getLatest()).toEqual({ entries: [expect.any(Object)] });
-    const added = (empty.getLatest()!.entries as Record<string, unknown>[])[0];
-    expect(added.enabled).toBe(true);
-    expect(added.insertion_order).toBe(100);
-    expect(added.position).toBe("before_char");
-    cleanup();
 
-    const emptyList = makeHarness({ name: "只有名字", entries: [] });
-    render(<emptyList.Harness />);
-    expect(screen.getByTestId("wb-empty-entries")).toBeInTheDocument();
-    cleanup();
+    const latest = getLatest()!;
+    expect(latest.name).toBe("空书");
+    expect(latest.entries).toEqual([
+      expect.objectContaining({ enabled: true, insertion_order: 100, position: "before_char" }),
+    ]);
+  });
 
-    render(
-      <WorldBookEditor book={null} onChange={() => {}} />,
-    );
-    expect(screen.getByTestId("wb-empty-entries")).toBeInTheDocument();
-    cleanup();
+  it.each<[string, unknown, string, string]>([
+    ["book 不是对象", "不是对象", "wb-editor-invalid", "数据保持原样"],
+    ["entries 不是数组", { entries: { note: "不是数组" } }, "wb-entries-malformed", "entries 不是数组"],
+  ])("%s 时如实提示数据异常", (_label, book, testId, text) => {
+    render(<WorldBookEditor book={book as Record<string, unknown>} onChange={() => {}} />);
 
-    render(
-      <WorldBookEditor book={"不是对象" as unknown as Record<string, unknown>} onChange={() => {}} />,
-    );
-    expect(screen.getByTestId("wb-editor-invalid")).toHaveTextContent("数据保持原样");
-    cleanup();
-
-    const malformed = makeHarness({ entries: { note: "不是数组" } });
-    render(<malformed.Harness />);
-    expect(screen.getByTestId("wb-entries-malformed")).toHaveTextContent("entries 不是数组");
+    expect(screen.getByTestId(testId)).toHaveTextContent(text);
   });
 
   it("readOnly 模式无任何编辑入口且输入禁用", () => {
@@ -151,13 +138,6 @@ describe("WorldBookEditor 编辑往返保真", () => {
     expect(screen.queryByTestId("wb-entry-up-0")).not.toBeInTheDocument();
     expect(screen.queryByTestId("wb-entry-copy-0")).not.toBeInTheDocument();
     expect(screen.queryByTestId("wb-entry-remove-0")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("wb-book-notrun")).not.toBeNull();
+    expect(screen.getByTestId("wb-book-notrun")).toBeInTheDocument();
   });
 });
-
-/** entry0.extensions 的期望值（selectiveLogic 可变，其余原样）。 */
-function RICH_BOOK_EXTENSIONS_0_WITH_LOGIC(logic: number): Record<string, unknown> {
-  const extensions = clone((entryOf(RICH_BOOK, 0).extensions ?? {}) as Record<string, unknown>);
-  extensions.selectiveLogic = logic;
-  return extensions;
-}

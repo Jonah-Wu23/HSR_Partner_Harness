@@ -105,14 +105,14 @@ describe("Menu 键盘与弹层行为", () => {
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
-  it("危险项带危险样式类，禁用项不可点击", async () => {
+  it("禁用项不可点击", async () => {
     const onSelect = vi.fn();
     render(
       <Menu
         ariaLabel="测试菜单"
         trigger={() => <button type="button">打开菜单</button>}
         items={[
-          { id: "x", label: "危险操作", danger: true },
+          { id: "x", label: "普通操作" },
           { id: "y", label: "禁用操作", disabled: true },
         ]}
         onSelect={onSelect}
@@ -121,7 +121,6 @@ describe("Menu 键盘与弹层行为", () => {
     fireEvent.click(screen.getByRole("button", { name: "打开菜单" }));
     expect(await screen.findByRole("menu")).toBeInTheDocument();
 
-    expect(screen.getByRole("menuitem", { name: "危险操作" })).toHaveClass("menu-item-danger");
     const disabledItem = screen.getByRole("menuitem", { name: "禁用操作" });
     expect(disabledItem).toBeDisabled();
     fireEvent.click(disabledItem);

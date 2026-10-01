@@ -1,47 +1,74 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type {
-  ActiveTask,
   ConversationOpenResult,
-  ConversationSummary,
   DesktopEvent,
-  DesktopSnapshot,
+  DesktopEventName,
+  HostEvent,
   MemoryWirePayload,
-  PairMemory,
-  PendingApproval,
   PowerStatusPayload,
-  RemoteControlState,
   ToolRun,
-  TurnMetric,
 } from "../contracts/protocol";
-import { createMockScenario } from "../mocks/scenarios";
+import { createMockScenario, message } from "../mocks/scenarios";
 import { presentAppShell } from "../presenters/presenters";
-import {
-  desktopStore,
-  selectActiveMemories,
-  selectApprovalCountByConversation,
-  selectApprovalsForConversation,
-  selectBackendDemoMode,
-  selectLatestSummary,
-  type PromptAssemblyDiagnostics,
-} from "./desktopStore";
+import { createActionController } from "../services/actions";
+import { MockDesktopBackend } from "../services/mockDesktopBackend";
+import { desktopStore, selectComposerTarget, selectWindowMode } from "./desktopStore";
 
-describe("desktopStore event projection", () => {
-  beforeEach(() => {
-    // M5.4 后 hydrate 会保留本地 Toast/config 缓存，且会重放水合前暂存事件；
-    // 单测之间显式清空这些跨用例状态，避免前一个用例污染后续断言。
-    desktopStore.setState({
-      toasts: [],
-      configSnapshot: null,
-      lastSequence: -1,
-      needsBootstrap: false,
-      eventBuffer: [],
-      streamId: null,
-    });
-    desktopStore.getState().hydrate(createMockScenario("single-project").snapshot);
-  });
+/** 清空跨用例状态后按 single-project 水合；连接代次由各用例的快照或事件建立。 */
+function resetStore() {
+  desktopStore.setState(desktopStore.getInitialState(), true);
+  desktopStore.getState().hydrate(createMockScenario("single-project").snapshot);
+  desktopStore.setState({ streamId: null });
+}
 
-  it("keeps streaming messages and tools attached to their origin chat", () => {
+function event(name: DesktopEventName, payload: object, sequence: number): DesktopEvent {
+  return { kind: "event", event: name, sequence, payload: payload as Record<string, unknown> };
+}
+
+/** Rust 宿主合成的连接事件与错误通道事件，不带序号。 */
+function hostEvent(name: HostEvent["event"], payload: Record<string, unknown>): HostEvent {
+  return { kind: "event", event: name, payload };
+}
+
+const singleProjectSnapshot = () => createMockScenario("single-project").snapshot;
+
+/** 指定连接代次里 conv-1 的一条助手消息。 */
+function assistantMessage(
+  sequence: number,
+  messageId: string,
+  streamId: string,
+  text = `消息 ${sequence}`,
+): DesktopEvent {
+  return {
+    ...event(
+      "message.created",
+      { message: message(messageId, "conv-1", "assistant", "assistant.natural_language", text) },
+      sequence,
+    ),
+    stream_id: streamId,
+  };
+}
+
+function snapshotEvent(sequence: number, streamId: string): DesktopEvent {
+  return {
+    ...event("state.snapshot", { ...singleProjectSnapshot(), stream_id: streamId, sequence }, sequence),
+    stream_id: streamId,
+  };
+}
+
+/** Rust publish_disconnected 随 connection.status 一起发出的断连通知。 */
+const disconnectNotice = {
+  code: "backend_disconnected",
+  message: "Python Sidecar 已断开，正在重连…",
+  severity: "recoverable",
+  source: "sidecar",
+};
+
+describe("desktopStore 事件投影", () => {
+  beforeEach(resetStore);
+
+  it("流式消息与工具记录归属到各自来源的聊天", () => {
     const events: DesktopEvent[] = [
       {
         kind: "event",
@@ -53,6 +80,7 @@ describe("desktopStore event projection", () => {
           source: "assistant",
           kind: "assistant.natural_language",
           delta: "来自另一聊天",
+          timeline_order: 1,
         },
       },
       {
@@ -70,6 +98,7 @@ describe("desktopStore event projection", () => {
             title: "读取文件",
             summary: "进行中",
             details: "",
+            timeline_order: 2,
           } satisfies ToolRun,
         },
       },
@@ -84,19 +113,21 @@ describe("desktopStore event projection", () => {
     expect(state.messageIdsByConversation["conv-1"]).toEqual(["message-1", "message-2"]);
   });
 
-  it("M4.4: 切回 chat 模式时 composerTarget 强制回到 character", () => {
-    desktopStore.getState().setMode("collaboration");
-    desktopStore.getState().setComposerTarget("assistant");
-    expect(desktopStore.getState().composerTarget).toBe("assistant");
+  it("聊天模式下发送对象固定为角色，协作模式沿用用户选择", () => {
+    const conversation = desktopStore.getState().conversationsById["conv-1"];
+    const modeChanged = (sequence: number, lastMode: "chat" | "collaboration") =>
+      event("conversation.changed", { conversation: { ...conversation, last_mode: lastMode } }, sequence);
 
-    desktopStore.getState().setMode("chat");
-    expect(desktopStore.getState().mode).toBe("chat");
-    expect(desktopStore.getState().composerTarget).toBe("character");
+    desktopStore.getState().applyEvents([modeChanged(1, "collaboration")]);
+    desktopStore.getState().setComposerTarget("assistant");
+    expect(selectComposerTarget(desktopStore.getState())).toBe("assistant");
+
+    desktopStore.getState().applyEvents([modeChanged(2, "chat")]);
+    expect(selectWindowMode(desktopStore.getState())).toBe("chat");
+    expect(selectComposerTarget(desktopStore.getState())).toBe("character");
   });
 
-  it("M4.1: 两个会话复用同一 tool_call_id 时互不覆盖", () => {
-    const base = createMockScenario("single-project").snapshot;
-    desktopStore.getState().hydrate({ ...base, sequence: 0 });
+  it("两个会话复用同一 tool_call_id 时按会话分别保存", () => {
     desktopStore.getState().applyEvents([
       {
         kind: "event",
@@ -113,6 +144,7 @@ describe("desktopStore event projection", () => {
             title: "A 会话工具",
             summary: "",
             details: "",
+            timeline_order: 1,
           } satisfies ToolRun,
         },
       },
@@ -131,6 +163,7 @@ describe("desktopStore event projection", () => {
             title: "B 会话工具",
             summary: "沙箱拦截",
             details: "沙箱拦截",
+            timeline_order: 1,
           } satisfies ToolRun,
         },
       },
@@ -141,16 +174,12 @@ describe("desktopStore event projection", () => {
     expect(state.toolRunsById["tool-dup"]).toBeUndefined();
   });
 
-  it("把角色思考与正文合并到同一条流式消息", () => {
-    const messageId = "speech:conv-1:user-1";
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "message.delta",
-        sequence: 1,
-        payload: {
-          message_id: messageId,
-          conversation_id: "conv-1",
+  it.each([
+    [
+      "角色 reasoning 通道",
+      "speech:conv-1:user-1",
+      [
+        {
           source: "character",
           kind: "character.speech",
           channel: "reasoning",
@@ -158,188 +187,93 @@ describe("desktopStore event projection", () => {
           started: true,
           reasoning_streaming: true,
         },
-      },
-      {
-        kind: "event",
-        event: "message.delta",
-        sequence: 2,
-        payload: {
-          message_id: messageId,
-          conversation_id: "conv-1",
-          source: "character",
-          kind: "character.speech",
-          delta: "你好。",
-        },
-      },
-      {
-        kind: "event",
-        event: "message.created",
-        sequence: 3,
-        payload: {
-          message: {
-            message_id: messageId,
-            conversation_id: "conv-1",
-            pair_id: "pair-1",
-            engine_turn_id: null,
-            source: "character",
-            kind: "character.speech",
-            text: "你好。",
-            payload: { reasoning: "先看看" },
-            tts_eligible: true,
-            created_at: "2026-08-11T00:00:00Z",
-          },
-        },
-      },
-    ]);
-
-    const state = desktopStore.getState();
-    expect(state.messageIdsByConversation["conv-1"]?.filter((id) => id === messageId)).toHaveLength(1);
-    expect(state.messagesById[messageId]?.text).toBe("你好。");
-    expect(state.messagesById[messageId]?.payload.reasoning).toBe("先看看");
-    expect(state.messagesById[messageId]?.streaming).toBeUndefined();
-  });
-
-  it("把助手思考与正文合并到同一条流式消息", () => {
-    const messageId = "assistant:conv-1:task-1";
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "message.delta",
-        sequence: 1,
-        payload: {
-          message_id: messageId,
-          conversation_id: "conv-1",
+        { source: "character", kind: "character.speech", delta: "你好。" },
+      ],
+      { text: "你好。", payload: { reasoning: "先看看", reasoning_streaming: true } },
+    ],
+    [
+      "助手 assistant.reasoning 分片",
+      "assistant:conv-1:task-1",
+      [
+        {
           source: "assistant",
           kind: "assistant.reasoning",
           channel: "summary",
           delta: "先检查项目。",
           reasoning_streaming: true,
         },
-      },
-      {
-        kind: "event",
-        event: "message.delta",
-        sequence: 2,
-        payload: {
-          message_id: messageId,
-          conversation_id: "conv-1",
+        {
           source: "assistant",
           kind: "assistant.natural_language",
           delta: "项目已检查。",
           reasoning_streaming: false,
         },
-      },
+      ],
+      { text: "项目已检查。", payload: { reasoning: "先检查项目。", reasoning_streaming: false } },
+    ],
+  ])("%s的思考与正文合并到同一条流式消息", (_name, messageId, deltas, expected) => {
+    desktopStore.getState().applyEvents(
+      deltas.map((delta, index) =>
+        event(
+          "message.delta",
+          { message_id: messageId, conversation_id: "conv-1", timeline_order: 10, ...delta },
+          index + 1,
+        ),
+      ),
+    );
+
+    const state = desktopStore.getState();
+    expect(state.messageIdsByConversation["conv-1"]?.filter((id) => id === messageId)).toHaveLength(1);
+    expect(state.messagesById[messageId]).toMatchObject({ ...expected, streaming: true });
+  });
+
+  it("message.created 用最终记录替换同 id 的流式消息，不重复追加", () => {
+    const messageId = "speech:conv-1:user-1";
+    const final = {
+      ...message(messageId, "conv-1", "character", "character.speech", "你好。"),
+      payload: { reasoning: "先看看" },
+    };
+    desktopStore.getState().applyEvents([
+      event(
+        "message.delta",
+        {
+          message_id: messageId,
+          conversation_id: "conv-1",
+          source: "character",
+          kind: "character.speech",
+          delta: "你好。",
+          timeline_order: final.timeline_order,
+        },
+        1,
+      ),
+      event("message.created", { message: final }, 2),
     ]);
 
     const state = desktopStore.getState();
     expect(state.messageIdsByConversation["conv-1"]?.filter((id) => id === messageId)).toHaveLength(1);
-    expect(state.messagesById[messageId]?.text).toBe("项目已检查。");
-    expect(state.messagesById[messageId]?.payload.reasoning).toBe("先检查项目。");
-    expect(state.messagesById[messageId]?.payload.reasoning_streaming).toBe(false);
+    expect(state.messagesById[messageId]).toEqual(final);
   });
 
-  it("connection.status 断线切换状态但保留已加载内容", () => {
+  it("error.reported 进 Toast 队列：同 code 与 message 去重，最多保留 5 条", () => {
+    const reported = (code: string, message: string) =>
+      hostEvent("error.reported", { code, message, severity: "recoverable", source: "sidecar" });
     desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "connection.status",
-        sequence: 1,
-        payload: { status: "disconnected" },
-      },
-      {
-        kind: "event",
-        event: "error.reported",
-        sequence: 2,
-        payload: {
-          code: "backend_disconnected",
-          message: "Python Sidecar 已断开，正在重连…",
-          severity: "recoverable",
-          source: "sidecar",
-        },
-      },
-    ]);
-    const state = desktopStore.getState();
-    expect(state.status).toBe("disconnected");
-    expect(state.needsBootstrap).toBe(false);
-    expect(state.error).toBe("Python Sidecar 已断开，正在重连…");
-    // 已加载内容保留，不整屏接管
-    expect(state.conversationsById["conv-1"]).toBeDefined();
-    expect(state.messagesById["message-1"]).toBeDefined();
-  });
-
-  it("connection.status 恢复后进入 booting 并请求重新 bootstrap", () => {
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "connection.status",
-        sequence: 1,
-        payload: { status: "disconnected" },
-      },
-      {
-        kind: "event",
-        event: "connection.status",
-        sequence: 2,
-        payload: { status: "connected" },
-      },
-    ]);
-    const state = desktopStore.getState();
-    expect(state.status).toBe("booting");
-    expect(state.needsBootstrap).toBe(true);
-  });
-
-  it("V0.3.4 serve.started 上报地址进 remotePairing.serveAddress；缺字段不覆盖", () => {
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "serve.started",
-        sequence: 1,
-        payload: { host: "192.168.1.42", port: 8765 },
-      },
-    ]);
-    expect(desktopStore.getState().remotePairing.serveAddress).toEqual({
-      host: "192.168.1.42",
-      port: 8765,
-    });
-
-    // 载荷缺 port：协议违规必须如实暴露——地址此刻不可知，不得继续展示
-    // 上一次的二维码成功态（V039-S4-004 复核）。
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "serve.started",
-        sequence: 2,
-        payload: { host: "192.168.1.99" },
-      },
-    ]);
-    const violated = desktopStore.getState().remotePairing;
-    expect(violated.serveAddress).toBeNull();
-    expect(violated.serveFailure).toContain("缺少 port");
-  });
-
-  it("error.reported recoverable 入 Toast 队列（同 code+message 去重，最多 5 条）", () => {
-    const reported = (sequence: number, code: string, message: string) => ({
-      kind: "event" as const,
-      event: "error.reported" as const,
-      sequence,
-      payload: { code, message, severity: "recoverable", source: "sidecar" },
-    });
-    desktopStore.getState().applyEvents([
-      reported(1, "backend_disconnected", "Python Sidecar 已断开，正在重连…"),
-      reported(2, "backend_disconnected", "Python Sidecar 已断开，正在重连…"),
-      reported(3, "voice.tts", "语音合成失败：服务无响应"),
-      reported(4, "dialogue.deepseek", "请求超时"),
+      reported("backend_disconnected", "Python Sidecar 已断开，正在重连…"),
+      reported("backend_disconnected", "Python Sidecar 已断开，正在重连…"),
+      reported("voice.tts", "语音合成失败：服务无响应"),
+      reported("dialogue.deepseek", "请求超时"),
     ]);
     let state = desktopStore.getState();
-    // 同 code+message 去重；fatal 之外的错误保留 error 字段（既有语义）
+    // 非 fatal 错误同样写入 error 字段
     expect(state.toasts).toHaveLength(3);
     expect(state.toasts[0].kind).toBe("warning");
     expect(state.error).toBe("请求超时");
 
     // 超过 5 条只保留最新 5 条（最早的 Sidecar 断开被挤出）
     desktopStore.getState().applyEvents([
-      reported(5, "a", "错误五"),
-      reported(6, "b", "错误六"),
-      reported(7, "c", "错误七"),
+      reported("a", "错误五"),
+      reported("b", "错误六"),
+      reported("c", "错误七"),
     ]);
     state = desktopStore.getState();
     expect(state.toasts).toHaveLength(5);
@@ -361,42 +295,72 @@ describe("desktopStore event projection", () => {
     ]);
   });
 
-  it("error.reported info 进 Toast，fatal 维持整屏接管", () => {
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "error.reported",
-        sequence: 1,
-        payload: { code: "voice.asr", message: "麦克风不可用", severity: "info" },
-      },
-    ]);
-    expect(desktopStore.getState().toasts).toHaveLength(1);
-    expect(desktopStore.getState().toasts[0].kind).toBe("info");
-
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "error.reported",
-        sequence: 2,
-        payload: { code: "sidecar", message: "后端崩溃", severity: "fatal" },
-      },
-    ]);
+  it("error.reported 的 info 级别以 info 通知进 Toast，不影响连接状态", () => {
+    desktopStore
+      .getState()
+      .applyEvents([
+        hostEvent("error.reported", { code: "voice.asr", message: "麦克风不可用", severity: "info" }),
+      ]);
     const state = desktopStore.getState();
-    expect(state.status).toBe("error");
-    expect(state.toasts).toHaveLength(1); // fatal 不进 Toast
+    expect(state.toasts).toMatchObject([{ kind: "info", text: "麦克风不可用" }]);
+    expect(state.status).toBe("ready");
   });
 
-  it("error.reported 缺失 severity 按 fatal 处理", () => {
+  it.each([
+    [
+      "Sidecar 启动失败（severity=fatal）",
+      event(
+        "error.reported",
+        {
+          code: "startup_error",
+          message: "启动失败：数据库被占用",
+          severity: "fatal",
+          fatal: true,
+          source: "sidecar",
+        },
+        0,
+      ),
+      "启动失败：数据库被占用",
+    ],
+    [
+      "宿主报告的非法输出（不带 severity 与序号）",
+      hostEvent("error.reported", {
+        code: "invalid_sidecar_json",
+        message: "Sidecar 输出不是合法 JSON",
+      }),
+      "Sidecar 输出不是合法 JSON",
+    ],
+  ])("首次引导期间，%s整屏接管，不进 Toast，也不触发重新同步", (_name, reported, message) => {
+    // 启动失败时还没有快照：错误到达时窗口仍处于首次引导。
+    desktopStore.setState(desktopStore.getInitialState(), true);
+    desktopStore.getState().applyEvents([reported]);
+
+    const state = desktopStore.getState();
+    expect(state.status).toBe("error");
+    expect(state.error).toBe(message);
+    expect(state.toasts).toEqual([]);
+    expect(state.needsBootstrap).toBe(false);
+  });
+
+  it("Sidecar 编号的 error.reported 推进序号，下一条事件照常应用，不触发重新同步", () => {
+    const failure = "远程服务启动失败（端口 8765）：地址已在使用";
+    desktopStore.getState().hydrate({ ...singleProjectSnapshot(), stream_id: "s1", sequence: 2 });
     desktopStore.getState().applyEvents([
       {
-        kind: "event",
-        event: "error.reported",
-        sequence: 1,
-        payload: { message: "未知错误" },
+        ...event(
+          "error.reported",
+          { code: "serve_start_failed", message: failure, severity: "error", fatal: false, source: "sidecar" },
+          3,
+        ),
+        stream_id: "s1",
       },
+      assistantMessage(4, "after-error", "s1"),
     ]);
-    expect(desktopStore.getState().status).toBe("error");
-    expect(desktopStore.getState().toasts).toHaveLength(0);
+
+    const state = desktopStore.getState();
+    expect(state).toMatchObject({ needsBootstrap: false, resyncing: false, lastSequence: 4 });
+    expect(state.messagesById["after-error"]?.text).toBe("消息 4");
+    expect(state.toasts.map((toast) => toast.text)).toEqual([failure]);
   });
 
   it("account.changed 水合当前账号与账号列表", () => {
@@ -447,7 +411,7 @@ describe("desktopStore event projection", () => {
     expect(state.accounts.find((item) => item.is_last_login)?.account_id).toBe("alice-1");
   });
 
-  it("state.snapshot 保持事件序号，后续引导完成事件继续生效", () => {
+  it("state.snapshot 水合后按快照序号继续应用后续事件", () => {
     const pending = createMockScenario("onboarding-pending").snapshot;
     desktopStore.getState().hydrate({ ...pending, sequence: 0 });
     const pendingAccount = pending.current_account!;
@@ -486,145 +450,53 @@ describe("desktopStore event projection", () => {
     expect(desktopStore.getState().needsBootstrap).toBe(false);
   });
 
-  it("没有序号的协议错误不会触发重新引导", () => {
-    desktopStore.getState().hydrate({ ...createMockScenario("onboarding-pending").snapshot, sequence: 2 });
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "error.reported",
-        sequence: undefined as unknown as number,
-        payload: { message: "未知协议错误" },
-      },
-    ]);
-    expect(desktopStore.getState().needsBootstrap).toBe(false);
-    expect(desktopStore.getState().lastSequence).toBe(2);
-  });
+  it("project.changed 只带项目字段时沿用已知的会话列表", () => {
+    const { conversations, ...projectFields } = desktopStore.getState().projectsById["project-1"];
+    expect(conversations.length).toBeGreaterThan(0);
 
-  it("project.changed 只带项目字段时合并现有记录，不丢 conversations（白屏回归）", () => {
-    const projectId = "project-1";
-    const before = desktopStore.getState();
-    const beforeProject = before.projectsById[projectId];
-    expect(beforeProject?.conversations.length).toBeGreaterThan(0);
-    const beforeConversationIds =
-      beforeProject?.conversations.map((c) => c.conversation_id) ?? [];
-
+    // project.update_settings 广播的 project.changed 不带 conversations。
     desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "project.changed",
-        sequence: 1,
-        payload: {
-          // 后端设置类命令的定向响应形状：无 conversations 字段
-          project: {
-            project_id: projectId,
-            name: "改名后的项目",
-            root_path: before.projectsById[projectId].root_path,
-            approval_mode: "review",
-            reasoning_effort: "max",
-            archived: false,
-            created_at: null,
-            last_opened_at: null,
-            path_available: true,
-          } as unknown as DesktopEvent["payload"],
-        },
-      },
+      event(
+        "project.changed",
+        { project: { ...projectFields, name: "改名后的项目", approval_mode: "review", reasoning_effort: "max" } },
+        1,
+      ),
     ]);
 
     const state = desktopStore.getState();
-    const project = state.projectsById[projectId];
-    expect(project.approval_mode).toBe("review");
-    expect(project.reasoning_effort).toBe("max");
-    // conversations 保留——presentAppShell 不会对 undefined 调用 map
-    expect(project.conversations.map((c) => c.conversation_id)).toEqual(beforeConversationIds);
-    const viewModel = presentAppShell(state).navigation?.projects.find(
-      (item) => item.project_id === projectId,
-    );
-    expect(viewModel?.conversations).toBeDefined();
+    expect(state.projectsById["project-1"]).toMatchObject({
+      name: "改名后的项目",
+      approval_mode: "review",
+      reasoning_effort: "max",
+      conversations,
+    });
+    expect(
+      presentAppShell(state).navigation?.projects[0].conversations.map((item) => item.conversation_id),
+    ).toEqual(conversations.map((item) => item.conversation_id));
   });
 
-  it("conversation.changed 同步更新项目内会话条目（标题自动生成可见）", () => {
+  it("conversation.changed 同步更新侧栏项目内的会话标题", () => {
     const projectId = "project-1";
+    const conversation = desktopStore.getState().conversationsById["conv-1"];
     desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "conversation.changed",
-        sequence: 1,
-        payload: {
-          conversation: {
-            conversation_id: "conv-1",
-            project_id: projectId,
-            pair_id: "pair-1",
-            title: "正在整理项目介绍",
-            last_mode: "chat",
-            archived: false,
-            created_at: "2026-08-13T00:00:00Z",
-            updated_at: "2026-08-13T00:00:00Z",
-          },
-        },
-      },
+      event("conversation.changed", { conversation: { ...conversation, title: "正在整理项目介绍" } }, 1),
     ]);
     const state = desktopStore.getState();
-    // 侧栏渲染源 projectsById[].conversations 必须同步
+    // 侧栏按 projectsById[].conversations 渲染
     expect(state.projectsById[projectId].conversations[0].title).toBe("正在整理项目介绍");
     expect(presentAppShell(state).navigation?.projects[0].conversations[0].title).toBe(
       "正在整理项目介绍",
     );
   });
 
-  it("turn.status_changed failed 清掉该会话 streaming 占位（三点不卡死）", () => {
-    const messageId = "speech:conv-1:user-1";
-    const turn = (
-      sequence: number,
-      status: string,
-    ): DesktopEvent => ({
-      kind: "event",
-      event: sequence === 2 ? "turn.started" : "turn.status_changed",
-      sequence,
-      payload: {
-        turn: {
-          turn_id: "turn-1",
-          account_id: "default-local",
-          project_id: "project-1",
-          conversation_id: "conv-1",
-          target: "character",
-          source_message_id: "user-1",
-          status,
-          created_at: "2026-08-13T00:00:00Z",
-          updated_at: "2026-08-13T00:00:00Z",
-        },
-      },
-    });
+  it("审批按钮锁定到 approval.resolved 到达，终态移出待审批队列", () => {
     desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "message.delta",
-        sequence: 1,
-        payload: {
-          message_id: messageId,
-          conversation_id: "conv-1",
-          source: "character",
-          kind: "character.speech",
-          delta: "",
-          started: true,
-        },
-      },
-      turn(2, "running"),
-    ]);
-    expect(desktopStore.getState().messagesById[messageId]?.streaming).toBe(true);
-
-    desktopStore.getState().applyEvents([turn(3, "failed")]);
-    expect(desktopStore.getState().messagesById[messageId]?.streaming).toBe(false);
-  });
-
-  it("locks approval actions until the resolved event arrives", () => {
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "approval.requested",
-        sequence: 1,
-        payload: {
+      event(
+        "approval.requested",
+        {
           approval_id: "approval-1",
           conversation_id: "conv-1",
+          task_id: "task-1",
           operation: {
             tool_kind: "shell",
             command: "pytest -q",
@@ -634,73 +506,61 @@ describe("desktopStore event projection", () => {
           },
           reason: "需要审批",
         },
-      },
+        1,
+      ),
     ]);
     desktopStore.getState().setApprovalResolving("approval-1", true);
     expect(presentAppShell(desktopStore.getState()).approval.pending[0].resolving).toBe(true);
 
+    // 手机端先应答，桌面收到的终态来自另一端。
     desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "approval.resolved",
-        sequence: 2,
-        payload: { approval_id: "approval-1" },
-      },
+      event(
+        "approval.resolved",
+        {
+          approval_id: "approval-1",
+          conversation_id: "conv-1",
+          task_id: "task-1",
+          decision: "allow",
+          resolved_by: "remote",
+          actor: "user",
+          request_reason: "需要审批",
+          resolution_reason: null,
+          resolved_at: "2026-08-13T00:00:00+00:00",
+          error_code: null,
+        },
+        2,
+      ),
     ]);
     expect(presentAppShell(desktopStore.getState()).approval.pending).toEqual([]);
     expect(desktopStore.getState().approvalResolvingById).toEqual({});
   });
 
-  it("V0.3.0: hydrateSnapshotState 正确水合 pairs 目录并在 snapshot 没有 pairs 时用 pair 兜底", () => {
-    const scenario = createMockScenario("multi-pair");
-    desktopStore.getState().hydrate(scenario.snapshot);
-    const state = desktopStore.getState();
-    expect(state.pairs).toHaveLength(3);
-    expect(state.pairs.map((p) => p.pair_id)).toEqual([
-      "phainon_ancient_machine",
-      "firefly_sam",
-      "march7_fourth_mirror",
-    ]);
-
-    // 没有 pairs 字段时，以 pair 构成单项目录兜底
-    const { pairs: _pairs, ...withoutPairs } = scenario.snapshot;
-    desktopStore.getState().hydrate(withoutPairs as unknown as DesktopSnapshot);
-    expect(desktopStore.getState().pairs).toHaveLength(1);
-    expect(desktopStore.getState().pairs[0].pair_id).toBe(scenario.snapshot.pair.pair_id);
-  });
-
-  it("M5: 全局快照不丢失其他已打开聊天的记录与搭档", () => {
+  it("全局快照只替换当前聊天，保留本窗口其他已打开聊天的记录与搭档", () => {
     const scenario = createMockScenario("multi-pair");
     const baseSequence = scenario.snapshot.sequence;
     desktopStore.getState().hydrate(scenario.snapshot);
     desktopStore.getState().openConversationTab("conv-phainon");
     desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "message.created",
-        sequence: baseSequence + 1,
-        payload: {
-          message: {
-            message_id: "cached-phainon-message",
-            conversation_id: "conv-phainon",
-            pair_id: "phainon_ancient_machine",
-            engine_turn_id: null,
-            source: "character",
-            kind: "character.speech",
-            text: "应保留的白厄聊天记录",
-            payload: {},
-            tts_eligible: true,
-            created_at: "2026-08-17T00:00:00Z",
-          },
+      event(
+        "message.created",
+        {
+          message: message(
+            "cached-phainon-message",
+            "conv-phainon",
+            "character",
+            "character.speech",
+            "应保留的白厄聊天记录",
+          ),
         },
-      },
+        baseSequence + 1,
+      ),
     ]);
 
     // Sidecar 的全局快照仍指向流萤，但本窗口正聚焦白厄标签。
     desktopStore.getState().hydrate({
       ...scenario.snapshot,
       messages: scenario.snapshot.messages.filter(
-        (message) => message.conversation_id === scenario.snapshot.current_conversation_id,
+        (item) => item.conversation_id === scenario.snapshot.current_conversation_id,
       ),
       tool_runs: scenario.snapshot.tool_runs.filter(
         (run) => run.conversation_id === scenario.snapshot.current_conversation_id,
@@ -724,274 +584,92 @@ describe("desktopStore event projection", () => {
     expect(state.pair?.pair_id).toBe("phainon_ancient_machine");
   });
 
-  it("M2.1: 新代次缓存业务事件，快照水合后只重放快照序号之后的事件", () => {
-    const base = createMockScenario("single-project").snapshot;
-    desktopStore.getState().hydrate({ ...base, stream_id: "old-stream", sequence: 2 });
+  it("新连接代次先暂存业务事件，快照水合后按序重放", () => {
+    desktopStore.getState().hydrate({ ...singleProjectSnapshot(), stream_id: "old-stream", sequence: 2 });
     desktopStore.getState().applyEvents([
       {
-        kind: "event",
-        event: "connection.status",
-        sequence: 99,
+        ...hostEvent("connection.status", { status: "connected", stream_id: "new-stream" }),
         stream_id: "new-stream",
-        payload: { status: "connected", stream_id: "new-stream" },
       },
-      {
-        kind: "event",
-        event: "message.created",
-        sequence: 3,
-        stream_id: "new-stream",
-        payload: {
-          message: {
-            message_id: "stream-msg-3",
-            conversation_id: "conv-1",
-            pair_id: "pair-1",
-            engine_turn_id: null,
-            source: "assistant",
-            kind: "assistant.natural_language",
-            text: "新代次消息 3",
-            payload: {},
-            tts_eligible: true,
-            created_at: "2026-08-14T00:00:00Z",
-          },
-        },
-      },
-      {
-        kind: "event",
-        event: "message.created",
-        sequence: 4,
-        stream_id: "new-stream",
-        payload: {
-          message: {
-            message_id: "stream-msg-4",
-            conversation_id: "conv-1",
-            pair_id: "pair-1",
-            engine_turn_id: null,
-            source: "assistant",
-            kind: "assistant.natural_language",
-            text: "新代次消息 4",
-            payload: {},
-            tts_eligible: true,
-            created_at: "2026-08-14T00:00:00Z",
-          },
-        },
-      },
+      assistantMessage(3, "stream-msg-3", "new-stream"),
+      assistantMessage(4, "stream-msg-4", "new-stream"),
     ]);
     let state = desktopStore.getState();
     expect(state.streamId).toBe("new-stream");
     expect(state.needsBootstrap).toBe(true);
     expect(state.messagesById["stream-msg-3"]).toBeUndefined();
 
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "state.snapshot",
-        sequence: 2,
-        stream_id: "new-stream",
-        payload: { ...base, stream_id: "new-stream", sequence: 2 },
-      },
-    ]);
+    desktopStore.getState().applyEvents([snapshotEvent(2, "new-stream")]);
     state = desktopStore.getState();
     expect(state.status).toBe("ready");
     expect(state.needsBootstrap).toBe(false);
-    expect(state.messagesById["stream-msg-3"]?.text).toBe("新代次消息 3");
-    expect(state.messagesById["stream-msg-4"]?.text).toBe("新代次消息 4");
+    expect(state.messagesById["stream-msg-3"]?.text).toBe("消息 3");
+    expect(state.messagesById["stream-msg-4"]?.text).toBe("消息 4");
   });
 
-  it("M2.1: 旧代次快照不能覆盖新代次状态", () => {
-    const base = createMockScenario("single-project").snapshot;
-    desktopStore.getState().hydrate({ ...base, stream_id: "new-stream", sequence: 2 });
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "state.snapshot",
-        sequence: 5,
-        stream_id: "old-stream",
-        payload: { ...base, stream_id: "old-stream", sequence: 5 },
-      },
-    ]);
+  it("旧连接代次的快照不覆盖新代次状态", () => {
+    desktopStore.getState().hydrate({ ...singleProjectSnapshot(), stream_id: "new-stream", sequence: 2 });
+    desktopStore.getState().applyEvents([snapshotEvent(5, "old-stream")]);
     const state = desktopStore.getState();
     expect(state.streamId).toBe("new-stream");
     expect(state.status).toBe("ready");
-    expect(state.currentConversationId).toBe("conv-1");
+    expect(state.lastSequence).toBe(2);
   });
 
-  it("M2.1: Rust 数字代次与 Python 字符串代次归一到同一连接", () => {
-    const base = createMockScenario("single-project").snapshot;
-    desktopStore.getState().hydrate({ ...base, stream_id: "1", sequence: 2 });
+  it("同代次重复序号的事件直接丢弃", () => {
+    desktopStore.getState().hydrate({ ...singleProjectSnapshot(), stream_id: "s1", sequence: 2 });
     desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "connection.status",
-        sequence: 10,
-        stream_id: 2,
-        payload: { status: "connected", stream_id: 2 },
-      },
-      {
-        kind: "event",
-        event: "state.snapshot",
-        sequence: 2,
-        stream_id: "2",
-        payload: { ...base, stream_id: "2", sequence: 2 },
-      },
-      {
-        kind: "event",
-        event: "message.created",
-        sequence: 3,
-        stream_id: "2",
-        payload: {
-          message: {
-            message_id: "mixed-stream-msg",
-            conversation_id: "conv-1",
-            pair_id: "pair-1",
-            engine_turn_id: null,
-            source: "assistant",
-            kind: "assistant.natural_language",
-            text: "代次类型一致",
-            payload: {},
-            tts_eligible: true,
-            created_at: "2026-08-14T00:00:00Z",
-          },
-        },
-      },
+      assistantMessage(3, "dup-msg", "s1", "第一次"),
+      assistantMessage(3, "dup-msg", "s1", "重复"),
     ]);
-
-    const state = desktopStore.getState();
-    expect(state.streamId).toBe("2");
-    expect(state.status).toBe("ready");
-    expect(state.messagesById["mixed-stream-msg"]?.text).toBe("代次类型一致");
-  });
-
-  it("M2.1: 同代次重复序号直接丢弃", () => {
-    const base = createMockScenario("single-project").snapshot;
-    desktopStore.getState().hydrate({ ...base, stream_id: "s1", sequence: 2 });
-    const event = (sequence: number): DesktopEvent => ({
-      kind: "event",
-      event: "message.created",
-      sequence,
-      stream_id: "s1",
-      payload: {
-        message: {
-          message_id: "dup-msg",
-          conversation_id: "conv-1",
-          pair_id: "pair-1",
-          engine_turn_id: null,
-          source: "assistant",
-          kind: "assistant.natural_language",
-          text: `重复 ${sequence}`,
-          payload: {},
-          tts_eligible: true,
-          created_at: "2026-08-14T00:00:00Z",
-        },
-      },
-    });
-    desktopStore.getState().applyEvents([event(3), event(3)]);
-    expect(desktopStore.getState().messagesById["dup-msg"]?.text).toBe("重复 3");
+    expect(desktopStore.getState().messagesById["dup-msg"]?.text).toBe("第一次");
     expect(desktopStore.getState().lastSequence).toBe(3);
   });
 
-  it("M2.1: 序号缺口触发 bootstrap 并暂存后续事件，快照核对后重放", () => {
-    const base = createMockScenario("single-project").snapshot;
-    desktopStore.getState().hydrate({ ...base, stream_id: "s1", sequence: 2 });
-    const messageEvent = (sequence: number, messageId: string): DesktopEvent => ({
-      kind: "event",
-      event: "message.created",
-      sequence,
-      stream_id: "s1",
-      payload: {
-        message: {
-          message_id: messageId,
-          conversation_id: "conv-1",
-          pair_id: "pair-1",
-          engine_turn_id: null,
-          source: "assistant",
-          kind: "assistant.natural_language",
-          text: `消息 ${sequence}`,
-          payload: {},
-          tts_eligible: true,
-          created_at: "2026-08-14T00:00:00Z",
-        },
-      },
+  it("序号缺口时界面保持可用并重新同步，快照核对后重放暂存事件", () => {
+    desktopStore.getState().hydrate({ ...singleProjectSnapshot(), stream_id: "s1", sequence: 2 });
+    desktopStore.getState().applyEvents([assistantMessage(4, "gap-msg-4", "s1")]);
+    let state = desktopStore.getState();
+    expect(state).toMatchObject({
+      status: "ready",
+      needsBootstrap: true,
+      resyncing: true,
+      lastSequence: 2,
     });
-    desktopStore.getState().applyEvents([messageEvent(4, "gap-msg-4")]);
-    expect(desktopStore.getState().needsBootstrap).toBe(true);
-    expect(desktopStore.getState().messagesById["gap-msg-4"]).toBeUndefined();
+    expect(state.messagesById["gap-msg-4"]).toBeUndefined();
 
-    desktopStore.getState().applyEvents([messageEvent(5, "gap-msg-5")]);
-    expect(desktopStore.getState().eventBuffer).toHaveLength(2);
+    desktopStore.getState().applyEvents([assistantMessage(5, "gap-msg-5", "s1")]);
+    expect(desktopStore.getState().eventBuffer.map((item) => item.sequence)).toEqual([4, 5]);
 
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "state.snapshot",
-        sequence: 3,
-        stream_id: "s1",
-        payload: { ...base, stream_id: "s1", sequence: 3 },
-      },
-    ]);
-    const state = desktopStore.getState();
+    desktopStore.getState().applyEvents([snapshotEvent(3, "s1")]);
+    state = desktopStore.getState();
     expect(state.needsBootstrap).toBe(false);
+    expect(state.resyncing).toBe(false);
     expect(state.messagesById["gap-msg-4"]?.text).toBe("消息 4");
     expect(state.messagesById["gap-msg-5"]?.text).toBe("消息 5");
   });
 
-  it("M5.4: message.status_changed 携带完整 Message 时先于 message.created 也能 upsert", () => {
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "message.status_changed",
-        sequence: 1,
-        payload: {
-          message: {
-            message_id: "early-status",
-            conversation_id: "conv-1",
-            pair_id: "pair-1",
-            engine_turn_id: null,
-            source: "user",
-            kind: "user.text",
-            text: "状态先到",
-            payload: {},
-            tts_eligible: false,
-            created_at: "2026-08-15T00:00:00Z",
-            status: "received",
-          },
-        },
-      },
-    ]);
+  it("message.status_changed 携带完整消息时先于 message.created 到达也能落库", () => {
+    const early = {
+      ...message("early-status", "conv-1", "user", "user.text", "状态先到"),
+      status: "received" as const,
+    };
+    desktopStore.getState().applyEvents([event("message.status_changed", { message: early }, 1)]);
     const state = desktopStore.getState();
-    expect(state.messagesById["early-status"]?.text).toBe("状态先到");
-    expect(state.messagesById["early-status"]?.status).toBe("received");
+    expect(state.messagesById["early-status"]).toEqual(early);
     expect(state.messageIdsByConversation["conv-1"]).toContain("early-status");
   });
 
-  it("M5.4: message.status_changed 缺少必要字段时触发 bootstrap 而不是静默丢弃", () => {
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "message.status_changed",
-        sequence: 1,
-        payload: { message: { message_id: "incomplete" } },
-      },
-    ]);
+  it("message.status_changed 缺少必要字段时重新同步快照，不静默丢弃", () => {
+    desktopStore
+      .getState()
+      .applyEvents([event("message.status_changed", { message: { message_id: "incomplete" } }, 1)]);
     const state = desktopStore.getState();
     expect(state.needsBootstrap).toBe(true);
     expect(state.messagesById["incomplete"]).toBeUndefined();
   });
 
-  it("M5.4: backend.ready 进入新 stream bootstrap 流程", () => {
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "backend.ready",
-        sequence: 1,
-        payload: { pid: 1234 },
-      },
-    ]);
-    const state = desktopStore.getState();
-    expect(state.status).toBe("booting");
-    expect(state.needsBootstrap).toBe(true);
-  });
-
-  it("M5.4: state.snapshot 水合保留仍有效的 Toast 与 config 缓存", () => {
+  it("state.snapshot 水合保留 Toast 与配置缓存", () => {
     desktopStore.getState().pushToast({
       id: "keep:toast",
       kind: "error",
@@ -1009,8 +687,8 @@ describe("desktopStore event projection", () => {
     expect(state.configSnapshot).toEqual({ engine: "deepseek" });
   });
 
-  it("M5.4: A 会话任务不会让 B 会话显示为自己的 busy", () => {
-    const base = createMockScenario("single-project").snapshot;
+  it("一个会话的活动任务不让本窗口的另一会话显示忙碌", () => {
+    const base = singleProjectSnapshot();
     const project = base.projects[0];
     const otherConversation = {
       ...project.conversations[0],
@@ -1024,32 +702,41 @@ describe("desktopStore event projection", () => {
       current_conversation: otherConversation,
       sequence: 3,
     });
+    const task = {
+      project_id: "project-1",
+      conversation_id: "conv-1",
+      task_id: "task-a",
+      engine_turn_id: null,
+    };
     desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "task.busy_changed",
-        sequence: 4,
-        payload: {
-          busy: true,
-          active_task: {
-            project_id: "project-1",
-            conversation_id: "conv-1",
-            task_id: "task-a",
-            engine_turn_id: null,
-          },
-        },
-      },
+      event(
+        "task.busy_changed",
+        { conversation_id: "conv-1", busy: true, active_task: task, active_tasks: [task] },
+        4,
+      ),
     ]);
     expect(desktopStore.getState().busy).toBe(false);
     expect(desktopStore.getState().activeTask).toBeNull();
-    expect(desktopStore.getState().activeTasksByConversation["conv-1"]?.conversation_id).toBe(
-      "conv-1",
-    );
+    expect(desktopStore.getState().activeTasksByConversation["conv-1"]).toEqual(task);
   });
 
-  it("conversation.open 快照后重放请求期间的新消息事件", () => {
-    const base = createMockScenario("single-project").snapshot;
+  it("conversation.open 装载后重放请求期间到达的新消息，同序号的重复事件只应用一次", () => {
+    const base = singleProjectSnapshot();
     const conversation = base.current_conversation;
+    const live = message(
+      "live-message",
+      conversation.conversation_id,
+      "character",
+      "character.speech",
+      "请求期间的新消息",
+    );
+    const duplicate = message(
+      "duplicate-ignored",
+      conversation.conversation_id,
+      "character",
+      "character.speech",
+      "同序号重复",
+    );
     desktopStore.setState({ lastSequence: 30 });
     desktopStore.getState().hydrateConversationView(
       {
@@ -1065,276 +752,201 @@ describe("desktopStore event projection", () => {
         stream_id: "stream-current",
       },
       [
-        {
-          kind: "event",
-          event: "message.created",
-          stream_id: "stream-current",
-          sequence: 11,
-          payload: {
-            message: {
-              message_id: "live-message",
-              conversation_id: conversation.conversation_id,
-              pair_id: conversation.pair_id,
-              engine_turn_id: null,
-              source: "character",
-              kind: "character.speech",
-              text: "请求期间的新消息",
-              payload: {},
-              tts_eligible: true,
-              created_at: "2026-08-22T00:00:00Z",
-            },
-          },
-        },
-        {
-          kind: "event",
-          event: "message.created",
-          stream_id: "stream-current",
-          sequence: 11,
-          payload: { message: { message_id: "duplicate-ignored" } },
-        },
+        { ...event("message.created", { message: live }, 11), stream_id: "stream-current" },
+        { ...event("message.created", { message: duplicate }, 11), stream_id: "stream-current" },
       ],
     );
 
     expect(desktopStore.getState().lastSequence).toBe(30);
     expect(desktopStore.getState().messagesById["duplicate-ignored"]).toBeUndefined();
-    expect(desktopStore.getState().messagesById["live-message"]?.text).toBe(
-      "请求期间的新消息",
-    );
+    expect(desktopStore.getState().messagesById["live-message"]).toEqual(live);
   });
 
-  it("账号切换原子清除上一账号的业务与配对状态", () => {
-    const current = desktopStore.getState().currentAccount!;
-    desktopStore.setState({
-      messagesById: { stale: { message_id: "stale" } as never },
-      approvals: [{ approval_id: "approval-old" } as never],
-      pair: { pair_id: "pair-old" } as never,
-      pairs: [{ pair_id: "pair-old" } as never],
-      voice: { ...desktopStore.getState().voice, supported: true },
-      composerDraft: "旧账号草稿",
-      mainView: "characterCreate",
-      characterLibrary: {
-        cards: [{ cardId: "old-card" } as never],
-        loading: false,
-        error: null,
-        loaded: true,
-      },
-      characterCreate: {
-        cardId: "old-card",
-        card: { name: "旧角色" },
-        readOnly: false,
-        loading: false,
-        error: null,
-      },
-      remotePairing: {
-        code: "654321",
-        ttlSeconds: 300,
-        issuedAtEpochMs: Date.now(),
-        devices: [{ device_name: "旧手机" } as never],
-        loading: false,
-        error: null,
-        serveAddress: { host: "192.168.1.2", port: 8765 },
+  it("conversation.open 结果已包含的 message.delta 经常驻订阅到达时不重复追加", () => {
+    const base = singleProjectSnapshot();
+    const conversation = base.current_conversation;
+    desktopStore.setState({ lastSequence: 10, streamId: "stream-current" });
+    const delta = (sequence: number, text: string): DesktopEvent => ({
+      kind: "event",
+      event: "message.delta",
+      stream_id: "stream-current",
+      sequence,
+      payload: {
+        message_id: "streaming",
+        conversation_id: conversation.conversation_id,
+        source: "character",
+        kind: "character.speech",
+        delta: text,
+        timeline_order: 1,
       },
     });
-
-    desktopStore.getState().applyEvents([
+    desktopStore.getState().hydrateConversationView(
       {
-        kind: "event",
-        event: "account.changed",
-        sequence: 1,
-        payload: { account: { ...current, account_id: "account-b" } },
+        conversation,
+        project: base.current_project,
+        pair: base.pair,
+        messages: [
+          {
+            message_id: "streaming",
+            conversation_id: conversation.conversation_id,
+            pair_id: conversation.pair_id,
+            engine_turn_id: null,
+            source: "character",
+            kind: "character.speech",
+            text: "你好",
+            payload: {},
+            tts_eligible: true,
+            created_at: "2026-08-22T00:00:00Z",
+            timeline_order: 1,
+            streaming: true,
+          },
+        ],
+        tool_runs: [],
+        turns: [],
+        queue_items: [],
+        active_task: null,
+        sequence: 12,
+        stream_id: "stream-current",
       },
-    ]);
+      [delta(12, "好")],
+    );
+    // 序号 11、12 已包含在装载结果里，13 是之后的新分片
+    desktopStore.getState().applyEvents([delta(11, "你"), delta(12, "好"), delta(13, "呀")]);
 
     const state = desktopStore.getState();
-    expect(state.messagesById).toEqual({});
-    expect(state.approvals).toEqual([]);
-    expect(state.pair).toBeNull();
-    expect(state.pairs).toEqual([]);
-    expect(state.voice.supported).toBe(false);
-    expect(state.composerDraft).toBe("");
-    expect(state.accountGeneration).toBeGreaterThan(0);
-    expect(state.mainView).toBe("chat");
-    expect(state.characterLibrary).toEqual({
-      cards: [],
-      loading: false,
-      error: null,
-      loaded: false,
-    });
-    expect(state.characterCreate).toMatchObject({ cardId: null, card: null });
-    expect(state.remotePairing).toMatchObject({
-      code: null,
-      devices: [],
-      serveAddress: null,
-    });
+    expect(state.messagesById["streaming"]?.text).toBe("你好呀");
+    expect(state.lastSequence).toBe(13);
+    expect(state.needsBootstrap).toBe(false);
   });
 
-  it("M6: 账号切换后忽略旧账号迟到的音色进度事件", () => {
-    const current = desktopStore.getState().currentAccount;
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "account.changed",
-        sequence: 1,
-        payload: {
-          account: { ...current, account_id: "account-b" },
-        },
-      },
-      {
-        kind: "event",
-        event: "voice.provision_changed",
-        sequence: 2,
-        payload: {
-          account_id: "demo-account",
+  it("切换账号清空上一账号的聊天、审批、角色卡与配对状态", async () => {
+    const backend = new MockDesktopBackend("approval-request");
+    const { actions, loadBootstrap } = createActionController(backend);
+    const unsubscribe = backend.subscribe((item) => desktopStore.getState().applyEvents([item]));
+    try {
+      await loadBootstrap();
+      await actions.openCharacterLibrary();
+      await actions.openCharacterCreate("card-saved-002");
+      await actions.issuePairingCode();
+      await actions.listRemoteDevices();
+      backend.emit("serve.started", { host: "192.168.1.2", port: 8765, mode: "lan", tls: false });
+      const before = desktopStore.getState();
+      expect(Object.keys(before.messagesById).length).toBeGreaterThan(0);
+      expect(before.approvals).toHaveLength(1);
+      expect(before.voice.supported).toBe(true);
+      expect(before.characterLibrary.loaded).toBe(true);
+      expect(before.characterCreate.cardId).toBe("card-saved-002");
+      expect(before.remotePairing.code).not.toBeNull();
+      expect(before.remotePairing.devices.length).toBeGreaterThan(0);
+      expect(before.remotePairing.serveAddress).not.toBeNull();
+
+      // 退出登录回到默认账号，Sidecar 广播 account.changed。
+      await backend.request({ kind: "request", id: "logout", method: "account.logout", params: {} });
+
+      const state = desktopStore.getState();
+      expect(state.currentAccountId).toBe("default-local");
+      expect(state.accountGeneration).toBe(before.accountGeneration + 1);
+      expect(state.messagesById).toEqual({});
+      expect(state.approvals).toEqual([]);
+      expect(state.pair).toBeNull();
+      expect(state.pairs).toEqual([]);
+      expect(state.voice.supported).toBe(false);
+      expect(state.mainView).toBe("chat");
+      expect(state.characterLibrary).toEqual({
+        cards: [],
+        loading: false,
+        error: null,
+        loaded: false,
+      });
+      expect(state.characterCreate).toMatchObject({ cardId: null, card: null });
+      expect(state.remotePairing).toMatchObject({
+        code: null,
+        devices: [],
+        serveAddress: null,
+      });
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("切换账号后忽略旧账号迟到的音色进度事件", () => {
+    const current = desktopStore.getState().currentAccount!;
+    const accountB = { ...current, account_id: "account-b", username: "b", display_name: "账号 B" };
+    const provisionChanged = (sequence: number, accountId: string, state: string, voiceId: string | null) =>
+      event(
+        "voice.provision_changed",
+        {
+          account_id: accountId,
           speaker_id: "phainon",
-          state: "completed",
-          completed: 1,
+          state,
+          completed: state === "completed" ? 1 : 0,
           total: 6,
           error: null,
+          voice_id: voiceId,
         },
-      },
+        sequence,
+      );
+    desktopStore.getState().applyEvents([
+      event(
+        "account.changed",
+        { account: accountB, accounts: [{ ...accountB, is_last_login: true }] },
+        1,
+      ),
+      provisionChanged(2, "demo-account", "completed", "voice-old"),
     ]);
     expect(desktopStore.getState().configSnapshot).toBeNull();
 
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "voice.provision_changed",
-        sequence: 3,
-        payload: {
-          account_id: "account-b",
-          speaker_id: "phainon",
-          state: "creating",
-          completed: 0,
-          total: 6,
-          error: null,
-          voice_id: "voice-phainon",
-        },
-      },
-    ]);
+    desktopStore.getState().applyEvents([provisionChanged(3, "account-b", "creating", "voice-phainon")]);
     expect(desktopStore.getState().configSnapshot?.voice).toMatchObject({
-      speakers: [
-        {
-          speaker_id: "phainon",
-          state: "creating",
-          voice_id: "voice-phainon",
-        },
-      ],
+      speakers: [{ speaker_id: "phainon", state: "creating", voice_id: "voice-phainon" }],
     });
   });
 
-  it("V0.3.5：approval.resolved 从 pending 移入 resolvedApprovals 并保留 resolved_by", () => {
-    const approval: PendingApproval = {
-      approval_id: "app-v35",
-      conversation_id: "conv-1",
-      operation: {
-        tool_kind: "file_write",
-        command: null,
-        paths: ["src/config.ts"],
-        patch_file_count: 1,
-        summary: "写入配置",
-      },
-      reason: "需要确认",
-      task_id: "task-v35",
-    };
-    desktopStore.setState({ approvals: [approval] });
+  it("voice.card_provision_changed 同步角色库中该卡的音色状态", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    await createActionController(backend).actions.listCards();
+    const cardState = (cardId: string) =>
+      desktopStore.getState().characterLibrary.cards.find((card) => card.cardId === cardId)?.voiceState;
+    expect(cardState("card-draft-001")).toBe("voice_unconfigured");
 
     desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "approval.resolved",
-        sequence: 1,
-        payload: {
-          approval_id: "app-v35",
-          conversation_id: "conv-1",
-          decision: "allow",
-          resolved_by: "mobile",
-          task_id: "task-v35",
-        },
-      },
+      event(
+        "voice.card_provision_changed",
+        { card_id: "card-draft-001", state: "voice_ready", voice_id: "voice-abc", error: null },
+        1,
+      ),
     ]);
 
-    const state = desktopStore.getState();
-    expect(state.approvals).toHaveLength(0);
-    expect(state.resolvedApprovals).toContainEqual({
-      approval_id: "app-v35",
-      conversation_id: "conv-1",
-      decision: "allow",
-      resolved_by: "mobile",
-      task_id: "task-v35",
-    });
+    expect(cardState("card-draft-001")).toBe("voice_ready");
   });
 
-  it("V0.3.5：voice.card_provision_changed 同步角色库与创作页音色状态", () => {
-    desktopStore.setState({
-      characterLibrary: {
-        cards: [
-          {
-            cardId: "card-voice-001",
-            name: "测试角色",
-            state: "saved",
-            source: "user_created",
-            updatedAt: "",
-            hasAvatar: false,
-            voiceState: "voice_unconfigured",
-            active: false,
-            readOnly: false,
-            archived: false,
-          },
-        ],
-        loading: false,
-        error: null,
-        loaded: true,
-      },
-      characterCreate: {
-        cardId: "card-voice-001",
-        card: { spec: "chara_card_v3", voice_state: "voice_unconfigured" },
-        readOnly: false,
-        loading: false,
-        error: null,
-      },
-    });
+  it("voice.card_provision_changed 不改写创作页载入的整卡 JSON", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    const { actions } = createActionController(backend);
+    await actions.openCharacterCreate("card-saved-002");
+    const loaded = (await actions.cardGet("card-saved-002")).card;
+    expect(desktopStore.getState().characterCreate.card).toEqual(loaded);
 
     desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "voice.card_provision_changed",
-        sequence: 1,
-        payload: {
-          card_id: "card-voice-001",
-          state: "voice_ready",
-          voice_id: "voice-abc",
-          error: null,
-        },
-      },
+      event(
+        "voice.card_provision_changed",
+        { card_id: "card-saved-002", state: "voice_ready", voice_id: "voice-abc", error: null },
+        1,
+      ),
     ]);
 
-    const state = desktopStore.getState();
-    expect(state.characterLibrary.cards[0]?.voiceState).toBe("voice_ready");
-    expect(state.characterCreate.card).toMatchObject({
-      voice_state: "voice_ready",
-      voice_id: "voice-abc",
-    });
+    expect(desktopStore.getState().characterCreate.card).toEqual(loaded);
   });
 });
 
-describe("desktopStore power slice（V0.3.7 U5）", () => {
-  beforeEach(() => {
-    desktopStore.setState({
-      powerStatus: null,
-      powerError: null,
-      powerQueryInFlight: false,
-      powerPromptDismissed: false,
-      lastSequence: -1,
-      needsBootstrap: false,
-      eventBuffer: [],
-      streamId: null,
-    });
-  });
+describe("电源状态", () => {
+  beforeEach(resetStore);
 
+  /** Windows 上远程服务开启、AC 睡眠超时低于阈值时 power.get_status 的结果。 */
   function powerPayload(overrides: Partial<PowerStatusPayload> = {}): PowerStatusPayload {
     return {
       supported: true,
-      platform: "windows",
+      platform: "win32",
       plan_name: "平衡",
       ac_sleep_timeout_seconds: 600,
       dc_sleep_timeout_seconds: 0,
@@ -1343,122 +955,79 @@ describe("desktopStore power slice（V0.3.7 U5）", () => {
       at_risk: true,
       reason: "AC 睡眠超时 600 秒低于阈值 900 秒",
       checked_at: "2026-09-02T10:00:00+08:00",
+      warnings: [],
       ...overrides,
     };
   }
 
-  function powerEvent(sequence: number, payload: PowerStatusPayload): DesktopEvent {
-    return {
-      kind: "event",
-      event: "power.status_changed",
-      sequence,
-      // 线缆载荷为无类型 JSON；运行时形状由 powerPayload 按契约 §1.5 保证。
-      payload: payload as unknown as Record<string, unknown>,
-    };
-  }
+  const queryFailure = "读取电源状态失败：PowerGetActiveScheme 失败（错误码 5）：拒绝访问。";
 
-  it("power.status_changed 事件写入 powerStatus 并清除旧查询错误", () => {
-    desktopStore.getState().setPowerError("power_status_unavailable: powercfg 退出码 1");
-    desktopStore.getState().applyEvents([powerEvent(1, powerPayload())]);
+  it.each([
+    [
+      "power.status_changed 事件",
+      () => desktopStore.getState().applyEvents([event("power.status_changed", powerPayload(), 1)]),
+    ],
+    ["power.get_status 查询结果", () => desktopStore.getState().setPowerStatus(powerPayload())],
+  ])("%s写入电源状态并清除上一次查询错误", (_source, receive) => {
+    desktopStore.getState().setPowerError(queryFailure);
+    receive();
 
     const state = desktopStore.getState();
     expect(state.powerStatus).toEqual(powerPayload());
     expect(state.powerError).toBeNull();
   });
 
-  it("at_risk 消失（false 事件）复位关闭标记，再次出现时允许重新提示", () => {
-    desktopStore.getState().applyEvents([powerEvent(1, powerPayload())]);
-    desktopStore.getState().dismissPowerPrompt();
-    expect(desktopStore.getState().powerPromptDismissed).toBe(true);
-
-    // 状态消失：复位关闭标记
-    desktopStore
-      .getState()
-      .applyEvents([powerEvent(2, powerPayload({ at_risk: false, reason: "AC/DC 睡眠超时均不低于阈值" }))]);
-    expect(desktopStore.getState().powerPromptDismissed).toBe(false);
-
-    // 状态再次出现：用户尚未关闭，允许提示
-    desktopStore.getState().applyEvents([powerEvent(3, powerPayload())]);
-    expect(desktopStore.getState().powerPromptDismissed).toBe(false);
-  });
-
-  it("setPowerStatus 在 at_risk 持续期间保留用户关闭标记", () => {
+  it("风险期内再次查询到风险时保留用户的关闭标记", () => {
     desktopStore.getState().setPowerStatus(powerPayload());
     desktopStore.getState().dismissPowerPrompt();
 
-    // 同一次 at_risk 持续期内的新读取（60 秒轮询事件）不重置关闭标记
+    // 打开设置页时 PowerStatusSection 挂载并重新查询，风险仍在
     desktopStore.getState().setPowerStatus(powerPayload({ checked_at: "2026-09-02T10:01:00+08:00" }));
     expect(desktopStore.getState().powerPromptDismissed).toBe(true);
   });
 
-  it("主动查询成功清除旧错误；查询失败如实记录原文", () => {
-    desktopStore.getState().setPowerError("power_status_unavailable: 输出不可解析");
+  it("查询失败如实记录原文，保留最近一次成功读取的状态", () => {
     desktopStore.getState().setPowerStatus(powerPayload());
-    expect(desktopStore.getState().powerError).toBeNull();
+    desktopStore.getState().setPowerError(queryFailure);
 
-    desktopStore.getState().setPowerError("power_status_unavailable: powercfg 超时");
-    expect(desktopStore.getState().powerError).toBe("power_status_unavailable: powercfg 超时");
-    // 查询失败不伪造状态：powerStatus 保持最近一次成功读取
-    expect(desktopStore.getState().powerStatus).toEqual(powerPayload());
-  });
-
-  it("非 Windows unsupported 载荷如实落库，不抛错不伪造数值", () => {
-    const unsupported = powerPayload({
-      supported: false,
-      platform: "linux",
-      plan_name: "",
-      ac_sleep_timeout_seconds: null,
-      dc_sleep_timeout_seconds: null,
-      at_risk: false,
-      reason: "unsupported platform",
-    });
-    desktopStore.getState().applyEvents([powerEvent(1, unsupported)]);
-
-    expect(desktopStore.getState().powerStatus).toEqual(unsupported);
+    const state = desktopStore.getState();
+    expect(state.powerError).toBe(queryFailure);
+    expect(state.powerStatus).toEqual(powerPayload());
   });
 });
 
-describe("V0.3.9 契约消费（摘要/记忆/租约/指标/诊断/审批终态）", () => {
-  const baseSnapshot = (): DesktopSnapshot => createMockScenario("single-project").snapshot;
+describe("摘要、记忆与聊天装载", () => {
+  beforeEach(resetStore);
 
-  function summary(overrides: Partial<ConversationSummary> = {}): ConversationSummary {
+  /** summary.* 事件载荷（core.summary.summary_event_payload）；失败记录额外带 error_code 与 error。 */
+  function summaryPayload(overrides: Record<string, unknown> = {}) {
     return {
       summary_id: "s1",
       conversation_id: "conv-1",
       status: "running",
+      account_id: "demo-account",
+      project_id: "project-1",
+      pair_id: "phainon_ancient_machine",
+      character_ref: "builtin:phainon",
+      assistant_identity: "ancient_machine",
       covers_from_message_id: "message-1",
       covers_to_message_id: "message-2",
       covers_message_count: 2,
-      content: null,
       provider: null,
       model: null,
-      error_code: null,
-      error: null,
-      created_at: "2026-01-01T00:00:00Z",
-      updated_at: "2026-01-01T00:00:00Z",
+      created_at: "2026-01-01T00:00:00+00:00",
+      updated_at: "2026-01-01T00:00:00+00:00",
       ...overrides,
     };
   }
 
-  /** 前端记录（快照/只读装载路径直接携带记录，非线缆载荷）。 */
-  function memory(overrides: Partial<PairMemory> = {}): PairMemory {
-    return {
-      memory_id: "mem-1",
-      scope: {
-        account_id: "acc-1",
-        project_id: "project-1",
-        pair_id: "phainon_ancient_machine",
-        character_ref: "builtin:phainon",
-        assistant_identity: "ancient_machine",
-      },
-      content: { text: "用户喜欢安静的训练场" },
-      status: "active",
-      updated_at: "2026-01-01T00:00:00Z",
-      ...overrides,
-    };
-  }
+  const failedSummary = summaryPayload({
+    status: "failed",
+    error_code: "summary_timeout",
+    error: "provider timeout",
+  });
 
-  /** 线缆载荷：服务端 _memory_payload 恒为扁平五分量（无嵌套 scope）。 */
+  /** 服务端 _memory_payload：扁平五分量，按会话广播时带 conversation_id。 */
   function memoryPayload(overrides: Partial<MemoryWirePayload> = {}): MemoryWirePayload {
     return {
       memory_id: "mem-1",
@@ -1469,115 +1038,64 @@ describe("V0.3.9 契约消费（摘要/记忆/租约/指标/诊断/审批终态�
       assistant_identity: "ancient_machine",
       content: { text: "用户喜欢安静的训练场" },
       status: "active",
-      updated_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00+00:00",
+      conversation_id: "conv-1",
       ...overrides,
     };
   }
 
-  function event(
-    name: DesktopEvent["event"],
-    payload: object,
-    sequence: number,
-  ): DesktopEvent {
-    return { kind: "event", event: name, sequence, payload: payload as Record<string, unknown> };
-  }
+  const summaries = () => desktopStore.getState().summariesByConversation["conv-1"];
 
-  beforeEach(() => {
-    desktopStore.setState({
-      toasts: [],
-      configSnapshot: null,
-      lastSequence: -1,
-      needsBootstrap: false,
-      eventBuffer: [],
-      streamId: null,
-      summariesByConversation: {},
-      memories: [],
-      remoteControl: null,
-      approvalsByConversation: {},
-      approvalOutcomesById: {},
-      turnMetrics: [],
-      metricsCursor: null,
-      metricsLoading: false,
-      metricsError: null,
-      promptAssembly: null,
-      promptAssemblyLoading: false,
-      promptAssemblyError: null,
-      promptAssemblyRevealed: false,
-      playbackInterruption: null,
+  it("摘要失败保留原始错误与覆盖区间，并留下重新生成目标", () => {
+    desktopStore.getState().applyEvents([event("summary.started", summaryPayload(), 1)]);
+    expect(summaries()).toMatchObject([{ summary_id: "s1", status: "running" }]);
+
+    desktopStore.getState().applyEvents([event("summary.failed", failedSummary, 2)]);
+
+    expect(summaries()).toMatchObject([
+      {
+        status: "failed",
+        error_code: "summary_timeout",
+        error: "provider timeout",
+        covers_to_message_id: "message-2",
+        content: null,
+      },
+    ]);
+    expect(desktopStore.getState().summaryRegenerateTarget).toEqual({
+      summary_id: "s1",
+      conversation_id: "conv-1",
     });
-    desktopStore.getState().hydrate(baseSnapshot());
   });
 
-  it("summary 事件按 summary_id 覆盖，failed 保留原始错误且不生成空摘要", () => {
+  it("重新生成完成后按 summary_id 覆盖失败记录并清除重新生成目标", () => {
     desktopStore.getState().applyEvents([
-      event("summary.started", { ...summary(), status: "running" }, 1),
-    ]);
-    expect(selectLatestSummary(desktopStore.getState(), "conv-1")?.status).toBe("running");
-
-    desktopStore.getState().applyEvents([
-      event(
-        "summary.failed",
-        {
-          conversation_id: "conv-1",
-          summary_id: "s1",
-          status: "failed",
-          error_code: "summary_timeout",
-          error: "provider timeout",
-        },
-        2,
-      ),
-    ]);
-
-    const failed = selectLatestSummary(desktopStore.getState(), "conv-1");
-    expect(failed?.status).toBe("failed");
-    expect(failed?.error_code).toBe("summary_timeout");
-    expect(failed?.error).toBe("provider timeout");
-    // 契约 §9：失败后投影仍引用原消息区间，不被清空。
-    expect(failed?.covers_to_message_id).toBe("message-2");
-    expect(failed?.content).toBeNull();
-  });
-
-  it("summary.completed 写入模型内容，未被事件覆盖的字段保持 null", () => {
-    desktopStore.getState().applyEvents([
+      event("summary.failed", failedSummary, 1),
+      // summary.regenerate 广播的 summary.started 载荷是重新生成前的失败记录。
+      event("summary.started", failedSummary, 2),
       event(
         "summary.completed",
-        {
-          summary_id: "s2",
-          conversation_id: "conv-1",
-          status: "completed",
-          content: { text: "角色与用户确认了训练计划" },
-          provider: "deepseek",
-          model: "deepseek-chat",
-          covers_message_count: 80,
-          created_at: "2026-01-02T00:00:00Z",
-          updated_at: "2026-01-02T00:00:00Z",
-        },
-        1,
+        summaryPayload({ status: "completed", provider: "deepseek", model: "deepseek-chat" }),
+        3,
       ),
     ]);
 
-    const completed = selectLatestSummary(desktopStore.getState(), "conv-1");
-    expect(completed?.status).toBe("completed");
-    expect(completed?.model).toBe("deepseek-chat");
-    expect(completed?.covers_from_message_id).toBeNull();
+    expect(summaries()).toMatchObject([
+      { summary_id: "s1", status: "completed", model: "deepseek-chat", error_code: null, error: null },
+    ]);
+    expect(desktopStore.getState().summaryRegenerateTarget).toBeNull();
   });
 
-  it("memory.updated 按扁平线缆载荷落库，五分量解码为作用域；未知 id 不造记录", () => {
+  it("memory.updated 按扁平载荷落库，作用域解码为嵌套 scope 并按会话归档", () => {
     desktopStore.getState().applyEvents([
       event("memory.updated", memoryPayload(), 1),
-      event("memory.updated", memoryPayload({ memory_id: "mem-2" }), 2),
-      event("memory.updated", memoryPayload({ memory_id: "mem-3", content: { text: "第二版" } }), 3),
+      event("memory.updated", memoryPayload({ memory_id: "mem-2", content: { text: "第二条" } }), 2),
     ]);
 
     const state = desktopStore.getState();
-    expect(state.memories).toHaveLength(3);
-    // 内容原样落库（不筛选、不改写）
-    expect(state.memories.find((item) => item.memory_id === "mem-3")?.content).toEqual({
-      text: "第二版",
-    });
-    // 作用域来自服务端下发的扁平五分量，界面按嵌套 scope 消费（此前恒为 undefined）
-    const first = selectActiveMemories(state).find((item) => item.memory_id === "mem-1");
-    expect(first?.scope).toEqual({
+    expect(state.memories.map((item) => item.memory_id)).toEqual(["mem-1", "mem-2"]);
+    expect(state.memoriesByConversation["conv-1"]).toEqual(state.memories);
+    expect(state.memories[1].content).toEqual({ text: "第二条" });
+    expect(state.memories[0].scope).toEqual({
       account_id: "acc-1",
       project_id: "project-1",
       pair_id: "phainon_ancient_machine",
@@ -1586,441 +1104,107 @@ describe("V0.3.9 契约消费（摘要/记忆/租约/指标/诊断/审批终态�
     });
   });
 
-  it("memory.deleted 带完整记录按记录落库；只带 id 时标记 deleted，未知 id 不造记录", () => {
+  it("memory.deleted 用服务端下发的删除记录覆盖同一条记忆", () => {
     desktopStore.getState().applyEvents([
-      event("memory.updated", memoryPayload({ memory_id: "mem-2" }), 1),
-      event("memory.deleted", { memory_id: "mem-2" }, 2),
-      event("memory.deleted", { memory_id: "mem-unknown" }, 3),
-      event("memory.updated", memoryPayload({ memory_id: "mem-4" }), 4),
-      event(
-        "memory.deleted",
-        memoryPayload({ memory_id: "mem-4", status: "deleted" }),
-        5,
-      ),
+      event("memory.updated", memoryPayload(), 1),
+      event("memory.deleted", memoryPayload({ status: "deleted" }), 2),
     ]);
 
     const state = desktopStore.getState();
-    expect(state.memories.find((item) => item.memory_id === "mem-2")?.status).toBe("deleted");
-    expect(state.memories.some((item) => item.memory_id === "mem-unknown")).toBe(false);
-    // 完整记录删除：status 与内容都按服务端下发落库
-    const deleted = state.memories.find((item) => item.memory_id === "mem-4");
-    expect(deleted?.status).toBe("deleted");
-    expect(deleted?.scope.assistant_identity).toBe("ancient_machine");
+    expect(state.memories).toMatchObject([{ memory_id: "mem-1", status: "deleted" }]);
+    expect(state.memoriesByConversation["conv-1"]).toEqual(state.memories);
   });
 
-  it("remote.control_changed 非法载荷保持 null，不伪造 free", () => {
-    const held: RemoteControlState = {
-      state: "held",
-      device_key: "device-a",
-      expires_at: "2026-01-01T00:00:45Z",
-      grace_expires_at: null,
-      reason: null,
-    };
-    desktopStore.getState().applyEvents([
-      event("remote.control_changed", { ...held } as unknown as Record<string, unknown>, 1),
-    ]);
-    expect(desktopStore.getState().remoteControl).toEqual(held);
-
-    desktopStore.getState().applyEvents([event("remote.control_changed", {}, 2)]);
-    expect(desktopStore.getState().remoteControl).toBeNull();
-
-    desktopStore.getState().applyEvents([
-      event("remote.control_changed", { state: "unknown-state" }, 3),
-    ]);
-    expect(desktopStore.getState().remoteControl).toBeNull();
-  });
-
-  it("approval.resolved 超时终态保留 timeout/system 与 error_code，缺失来源不伪造成 desktop", () => {
+  it("聊天绑定的角色卡已删除时，服务端提示进 Toast 队列", () => {
     desktopStore.getState().applyEvents([
       event(
-        "approval.requested",
+        "conversation.card_missing",
         {
-          approval_id: "a1",
           conversation_id: "conv-1",
-          task_id: "t1",
-          operation: {
-            tool_kind: "file_write",
-            command: null,
-            paths: ["a.txt"],
-            patch_file_count: null,
-            summary: "写入文件",
-          },
-          reason: "需要确认",
+          card_id: "card-x",
+          message: "该聊天绑定的角色卡已被删除，本轮起回退为内置角色",
         },
         1,
       ),
     ]);
-    expect(selectApprovalsForConversation(desktopStore.getState(), "conv-1")).toHaveLength(1);
-
-    desktopStore.getState().applyEvents([
-      event(
-        "approval.resolved",
-        {
-          approval_id: "a1",
-          conversation_id: "conv-1",
-          task_id: "t1",
-          decision: "timeout",
-          resolved_by: "system",
-          actor: "system",
-          reason: "等待审批超时",
-          resolved_at: "2026-01-01T00:00:00Z",
-          error_code: "approval_timeout",
-        },
-        2,
-      ),
-    ]);
-
-    const state = desktopStore.getState();
-    expect(selectApprovalsForConversation(state, "conv-1")).toHaveLength(0);
-    expect(state.approvalOutcomesById.a1).toEqual({
-      approval_id: "a1",
-      conversation_id: "conv-1",
-      task_id: "t1",
-      decision: "timeout",
-      resolved_by: "system",
-      actor: "system",
-      reason: "等待审批超时",
-      resolved_at: "2026-01-01T00:00:00Z",
-      error_code: "approval_timeout",
-    });
-
-    // 迟到点击的幂等终态：缺失来源字段保持 null，不得伪造 desktop。
-    desktopStore.getState().applyEvents([
-      event("approval.resolved", { approval_id: "a2", conversation_id: "conv-1", decision: "deny" }, 3),
-    ]);
-    expect(desktopStore.getState().approvalOutcomesById.a2).toEqual({
-      approval_id: "a2",
-      conversation_id: "conv-1",
-      task_id: null,
-      decision: "deny",
-      resolved_by: null,
-      actor: null,
-      reason: null,
-      resolved_at: "",
-      error_code: null,
-    });
-    expect(
-      desktopStore.getState().resolvedApprovals.some((item) => item.approval_id === "a2"),
-    ).toBe(false);
-  });
-
-  it("conversation.card_missing 作为真实失败进入 Toast，不静默吞掉", () => {
-    desktopStore.getState().applyEvents([
-      event("conversation.card_missing", { conversation_id: "conv-1", character_card_id: "card-x" }, 1),
-    ]);
     const toast = desktopStore.getState().toasts.at(-1);
     expect(toast?.kind).toBe("warning");
-    expect(toast?.text).toContain("card-x");
+    expect(toast?.id).toContain("card-x");
+    expect(toast?.text).toBe("该聊天绑定的角色卡已被删除，本轮起回退为内置角色");
   });
 
-  it("voice.playback_interrupted 保留 null 字段，不补默认来源", () => {
-    desktopStore.getState().applyEvents([
-      event("voice.playback_interrupted", { conversation_id: "conv-1" }, 1),
-    ]);
-    expect(desktopStore.getState().playbackInterruption).toEqual({
-      conversation_id: "conv-1",
-      message_id: null,
-      reason: null,
-      occurred_at: null,
-    });
-  });
-
-  it("hydrate 消费快照的 summaries/memories/remote_control，缺字段即空/ null", () => {
-    desktopStore.getState().hydrate({
-      ...baseSnapshot(),
-      summaries: [summary({ status: "completed" })],
-      memories: [memory()],
-      remote_control: {
-        state: "grace",
-        device_key: "device-a",
-        expires_at: "2026-01-01T00:00:45Z",
-        grace_expires_at: "2026-01-01T00:01:00Z",
-        reason: "disconnected",
-      },
-    });
-    const state = desktopStore.getState();
-    expect(selectLatestSummary(state, "conv-1")?.status).toBe("completed");
-    expect(state.memories).toHaveLength(1);
-    expect(state.remoteControl?.state).toBe("grace");
-
-    desktopStore.getState().hydrate(baseSnapshot());
-    expect(desktopStore.getState().summariesByConversation).toEqual({});
-    expect(desktopStore.getState().memories).toEqual([]);
-    expect(desktopStore.getState().remoteControl).toBeNull();
-  });
-
-  it("conversation.open 消费全量 active_tasks 与摘要/记忆/审批/租约", () => {
-    const snapshot = baseSnapshot();
-    const conversation = snapshot.projects[0].conversations[0];
-    const result: ConversationOpenResult & { active_tasks?: ActiveTask[] } = {
+  it("conversation.open 结果写入本会话的活动任务，聚焦后本窗口显示忙碌", () => {
+    const snapshot = singleProjectSnapshot();
+    const conversation = snapshot.current_conversation;
+    const result: ConversationOpenResult = {
       conversation,
-      project: snapshot.projects[0],
+      project: snapshot.current_project,
       pair: snapshot.pair,
       messages: snapshot.messages,
       tool_runs: snapshot.tool_runs,
       turns: snapshot.turns,
       queue_items: [],
-      active_task: null,
-      approvals: [
-        {
-          approval_id: "open-a1",
-          conversation_id: conversation.conversation_id,
-          operation: {
-            tool_kind: "shell",
-            command: "ls",
-            paths: [],
-            patch_file_count: null,
-            summary: "列出目录",
-          },
-          reason: "需要确认",
-        },
-      ],
-      summaries: [summary({ conversation_id: conversation.conversation_id })],
-      memories: [memory()],
-      remote_control: {
-        state: "held",
-        device_key: "device-b",
-        expires_at: null,
-        grace_expires_at: null,
-        reason: null,
+      active_task: {
+        project_id: "project-1",
+        conversation_id: conversation.conversation_id,
+        task_id: "task-1",
+        engine_turn_id: null,
       },
-      active_tasks: [
-        {
-          project_id: "project-1",
-          conversation_id: conversation.conversation_id,
-          task_id: "task-1",
-          engine_turn_id: null,
-        },
-      ],
       sequence: 5,
+      stream_id: snapshot.stream_id,
     };
     desktopStore.getState().hydrateConversationView(result);
 
     const state = desktopStore.getState();
     expect(state.activeTasksByConversation[conversation.conversation_id]?.task_id).toBe("task-1");
-    expect(selectApprovalsForConversation(state, conversation.conversation_id)).toHaveLength(1);
-    expect(state.summariesByConversation[conversation.conversation_id]).toHaveLength(1);
-    expect(state.memories).toHaveLength(1);
-    expect(state.remoteControl?.device_key).toBe("device-b");
-  });
-
-  it("metrics 与诊断保留 null/0 差异，关闭诊断抽屉清除隐藏内容", () => {
-    const metric: TurnMetric = {
-      metric_id: "m1",
-      account_id: "acc-1",
-      project_id: "project-1",
-      conversation_id: "conv-1",
-      pair_id: "phainon_ancient_machine",
-      character_ref: "builtin:phainon",
-      assistant_identity: "character",
-      turn_kind: "character_turn",
-      turn_id: "turn-1",
-      task_id: null,
-      engine_turn_id: null,
-      provider: null,
-      model: null,
-      engine_type: null,
-      reasoning_effort: null,
-      status: "completed",
-      started_at: "2026-01-01T00:00:00Z",
-      first_event_at: null,
-      completed_at: null,
-      duration_ms: null,
-      input_tokens: null,
-      output_tokens: null,
-      total_tokens: null,
-      tool_rounds: 0,
-      compression_count: 0,
-      approval_count: 0,
-      failure_type: null,
-      failure_message: null,
-      origin: "desktop",
-      remote_device_key: null,
-      remote_device_name: null,
-    };
-    desktopStore.getState().setMetricsPage({ metrics: [metric], cursor: null });
-    const stored = desktopStore.getState().turnMetrics[0];
-    expect(stored.input_tokens).toBeNull();
-    expect(stored.tool_rounds).toBe(0);
-
-    const diagnostics: PromptAssemblyDiagnostics = {
-      conversation_id: "conv-1",
-      modules: [
-        {
-          name: "character_frame",
-          kind: "description",
-          source_field: "description",
-          title: "角色设定",
-          char_count: 12,
-          char_start: 0,
-          char_end: 12,
-          hash: "abc",
-          diagnostics: null,
-          hidden_content: "隐藏提示原文",
-        },
-      ],
-      summary_injected: true,
-      memory_injected: false,
-      diagnostics: { unexpanded_macros: [] },
-      hidden_content_included: true,
-    };
-    desktopStore.getState().setPromptAssembly(diagnostics);
-    expect(desktopStore.getState().promptAssemblyRevealed).toBe(true);
-    desktopStore.getState().closePromptAssembly();
-    expect(desktopStore.getState().promptAssembly).toBeNull();
-    expect(desktopStore.getState().promptAssemblyRevealed).toBe(false);
-
-    // 未请求隐藏内容时不展开。
-    desktopStore.getState().setPromptAssembly({ ...diagnostics, hidden_content_included: false });
-    expect(desktopStore.getState().promptAssemblyRevealed).toBe(false);
-  });
-
-  it("setMetricsPage append 追加第二页并去重，replace 整体覆盖", () => {
-    const metricRecord = (metricId: string): TurnMetric => ({
-      metric_id: metricId,
-      account_id: "acc-1",
-      project_id: "project-1",
-      conversation_id: "conv-1",
-      pair_id: "phainon_ancient_machine",
-      character_ref: "builtin:phainon",
-      assistant_identity: "character",
-      turn_kind: "character_turn",
-      turn_id: `turn-${metricId}`,
-      task_id: null,
-      engine_turn_id: null,
-      provider: null,
-      model: null,
-      engine_type: null,
-      reasoning_effort: null,
-      status: "completed",
-      started_at: "2026-01-01T00:00:00Z",
-      first_event_at: null,
-      completed_at: null,
-      duration_ms: null,
-      input_tokens: null,
-      output_tokens: null,
-      total_tokens: null,
-      tool_rounds: 0,
-      compression_count: 0,
-      approval_count: 0,
-      failure_type: null,
-      failure_message: null,
-      origin: "desktop",
-      remote_device_key: null,
-      remote_device_name: null,
-    });
-
-    // 第一页（首屏，replace）：2 条且有下一页。
-    desktopStore.getState().setMetricsPage({
-      metrics: [metricRecord("m1"), metricRecord("m2")],
-      cursor: "c1",
-    });
-    // 第二页（加载更多，append）：新增 1 条并重复 1 条已读记录。
-    desktopStore.getState().setMetricsPage(
-      { metrics: [metricRecord("m3"), metricRecord("m2")], cursor: null },
-      "append",
-    );
-
-    const appended = desktopStore.getState();
-    // 旧页在前，重复的 m2 只保留第一次出现的一条。
-    expect(appended.turnMetrics.map((m) => m.metric_id)).toEqual(["m1", "m2", "m3"]);
-    expect(appended.metricsCursor).toBeNull();
-
-    // replace 对照：整体覆盖，不保留旧行。
-    desktopStore.getState().setMetricsPage({ metrics: [metricRecord("m9")], cursor: "c2" });
-    expect(desktopStore.getState().turnMetrics.map((m) => m.metric_id)).toEqual(["m9"]);
-    expect(desktopStore.getState().metricsCursor).toBe("c2");
-  });
-
-  it("selectApprovalCountByConversation 只给计数，不泄露其他聊天内容", () => {
-    desktopStore.getState().applyEvents([
-      event(
-        "approval.requested",
-        {
-          approval_id: "a-other",
-          conversation_id: "other-conversation",
-          operation: {
-            tool_kind: "shell",
-            command: "ls",
-            paths: [],
-            patch_file_count: null,
-            summary: "列出目录",
-          },
-          reason: "需要确认",
-        },
-        1,
-      ),
-    ]);
-    expect(selectApprovalCountByConversation(desktopStore.getState())).toEqual({
-      "other-conversation": 1,
-    });
-    expect(selectApprovalsForConversation(desktopStore.getState(), "conv-1")).toEqual([]);
+    expect(state.activeConversationId).toBe(conversation.conversation_id);
+    expect(state.busy).toBe(true);
   });
 });
 
-describe("本地服务连接状态与远程地址（V039-S4-007 / V039-S4-004）", () => {
-  const disconnectNotice = {
-    code: "backend_disconnected",
-    message: "Python Sidecar 已断开，正在重连…",
-    severity: "recoverable",
-    source: "sidecar",
-  };
+describe("本地服务连接与远程接入地址", () => {
+  beforeEach(resetStore);
 
-  function event(
-    name: DesktopEvent["event"],
-    payload: object,
-    sequence: number,
-  ): DesktopEvent {
-    return { kind: "event", event: name, sequence, payload: payload as Record<string, unknown> };
-  }
+  it("本地服务断开时连接记为断开，保留已加载内容并提示断连原因", () => {
+    desktopStore.getState().applyEvents([
+      hostEvent("connection.status", { status: "disconnected" }),
+      hostEvent("error.reported", disconnectNotice),
+    ]);
 
-  beforeEach(() => {
-    desktopStore.setState({
-      status: "ready",
-      error: null,
-      toasts: [],
+    const state = desktopStore.getState();
+    expect(state).toMatchObject({
+      status: "disconnected",
       needsBootstrap: false,
-      eventBuffer: [],
-      streamId: null,
-      lastSequence: -1,
+      error: disconnectNotice.message,
     });
+    expect(state.toasts).toMatchObject([{ kind: "warning", text: disconnectNotice.message }]);
+    // 已加载内容保留，界面不整屏接管
+    expect(state.conversationsById["conv-1"]).toBeDefined();
+    expect(state.messagesById["message-1"]).toBeDefined();
   });
 
-  it("V039-S4-007：断连错误本身即把连接状态落为断开（两路同源，任一路被丢弃都不能让药丸说谎）", () => {
+  it("连接恢复后进入重新引导，并撤回「正在重连…」通知", () => {
     desktopStore.getState().applyEvents([
-      event("error.reported", disconnectNotice, 1),
+      hostEvent("connection.status", { status: "disconnected" }),
+      hostEvent("error.reported", disconnectNotice),
+      hostEvent("connection.status", { status: "connected" }),
     ]);
 
     const state = desktopStore.getState();
-    expect(state.status).toBe("disconnected");
-    expect(state.needsBootstrap).toBe(false);
-    expect(state.error).toBe("Python Sidecar 已断开，正在重连…");
-    expect(state.toasts).toHaveLength(1);
+    expect(state).toMatchObject({ status: "booting", needsBootstrap: true, error: null });
+    expect(state.toasts).toEqual([]);
   });
 
-  it("V039-S4-007：恢复后撤回「正在重连…」瞬时通知，不再与「已连接」同屏矛盾", () => {
+  it("连接恢复只撤回断连通知，其他错误继续留在队列里", () => {
     desktopStore.getState().applyEvents([
-      event("connection.status", { status: "disconnected" }, 1),
-      event("error.reported", disconnectNotice, 2),
-      event("connection.status", { status: "connected" }, 3),
-    ]);
-
-    const state = desktopStore.getState();
-    expect(state.status).toBe("booting");
-    expect(state.needsBootstrap).toBe(true);
-    expect(state.toasts).toHaveLength(0);
-    expect(state.error).toBeNull();
-  });
-
-  it("V039-S4-007：恢复只撤回断连通知，其他真实错误继续留在队列里", () => {
-    desktopStore.getState().applyEvents([
-      event("error.reported", disconnectNotice, 1),
-      event(
-        "error.reported",
-        { code: "voice.tts", message: "语音合成失败：服务无响应", severity: "recoverable" },
-        2,
-      ),
-      event("connection.status", { status: "connected" }, 3),
+      hostEvent("connection.status", { status: "disconnected" }),
+      hostEvent("error.reported", disconnectNotice),
+      hostEvent("error.reported", {
+        code: "voice.tts",
+        message: "语音合成失败：服务无响应",
+        severity: "recoverable",
+      }),
+      hostEvent("connection.status", { status: "connected" }),
     ]);
 
     const state = desktopStore.getState();
@@ -2028,104 +1212,83 @@ describe("本地服务连接状态与远程地址（V039-S4-007 / V039-S4-004）
     expect(state.error).toBe("语音合成失败：服务无响应");
   });
 
-  it("V039-S4-004：serve.started 的 host=null 如实记为「已监听但无局域网地址」并保留端口与原因", () => {
+  it.each([
+    [
+      "局域网地址",
+      { host: "192.168.1.42", port: 8765, mode: "lan", tls: false },
+      {
+        serveAddress: { host: "192.168.1.42", port: 8765, mode: "lan", tls: false },
+        servePort: 8765,
+        serveUnavailableReason: null,
+        serveFailure: null,
+      },
+    ],
+    [
+      "已监听但没有局域网地址（host=null）",
+      { host: null, port: 8765, mode: "lan", tls: false, reason: "no_lan_address" },
+      { serveAddress: null, servePort: 8765, serveUnavailableReason: "no_lan_address", serveFailure: null },
+    ],
+    [
+      "缺少 port 的违规报文",
+      { host: "192.168.1.99" },
+      {
+        serveAddress: null,
+        serveUnavailableReason: null,
+        serveFailure: "远程服务地址报文不符合协议：缺少 port",
+      },
+    ],
+  ])("serve.started 上报%s时整体替换上一次的接入地址", (_name, payload, expected) => {
     desktopStore.getState().applyEvents([
-      event("serve.started", { host: null, port: 8765, reason: "no_lan_address" }, 1),
+      event("serve.started", { host: "10.0.0.2", port: 9000, mode: "lan", tls: false }, 1),
+      event("serve.started", payload, 2),
     ]);
 
-    const remote = desktopStore.getState().remotePairing;
-    expect(remote.serveAddress).toBeNull();
-    expect(remote.servePort).toBe(8765);
-    expect(remote.serveUnavailableReason).toBe("no_lan_address");
+    expect(desktopStore.getState().remotePairing).toMatchObject(expected);
   });
 
-  it("V039-S4-004：serve_start_failed 的真实报文进远程页，随后成功的 serve.started 清除它", () => {
+  it("远程服务启动失败的报文进远程设备页，重启本地服务后成功的 serve.started 清除它", () => {
+    const failure = "远程服务启动失败（端口 8765）：[WinError 10048] 地址已在使用";
     desktopStore.getState().applyEvents([
-      event(
-        "error.reported",
-        {
-          code: "serve_start_failed",
-          message: "远程服务启动失败（端口 8765）：[WinError 10048] 地址已在使用",
-          severity: "error",
-          source: "sidecar",
-        },
-        1,
-      ),
+      {
+        ...event(
+          "error.reported",
+          { code: "serve_start_failed", message: failure, severity: "error", fatal: false, source: "sidecar" },
+          1,
+        ),
+        stream_id: "stream-1",
+      },
     ]);
-    expect(desktopStore.getState().remotePairing.serveFailure).toBe(
-      "远程服务启动失败（端口 8765）：[WinError 10048] 地址已在使用",
-    );
+    expect(desktopStore.getState().remotePairing.serveFailure).toBe(failure);
 
+    // 重启本地服务：新连接代次引导完成后，新进程上报监听成功。
     desktopStore.getState().applyEvents([
-      event("serve.started", { host: "192.168.1.7", port: 8765 }, 2),
+      {
+        ...hostEvent("connection.status", { status: "connected", stream_id: "stream-2" }),
+        stream_id: "stream-2",
+      },
     ]);
-    const remote = desktopStore.getState().remotePairing;
-    expect(remote.serveFailure).toBeNull();
-    expect(remote.serveAddress).toEqual({ host: "192.168.1.7", port: 8765 });
-    expect(remote.serveUnavailableReason).toBeNull();
-  });
-
-  it("V039-S4-004：remote.issue_code 同形的 serve_address 也能合并（一次性事件错过时仍可出二维码）", () => {
-    desktopStore.getState().setServeAddress({ host: "192.168.1.9", port: 8765 });
-
-    expect(desktopStore.getState().remotePairing.serveAddress).toEqual({
-      host: "192.168.1.9",
-      port: 8765,
-    });
-
-    // host=null：服务在监听但无局域网地址，地址清空、端口与原因保留
-    desktopStore.getState().setServeAddress({ host: null, port: 8765, reason: "no_lan_address" });
-    const remote = desktopStore.getState().remotePairing;
-    expect(remote.serveAddress).toBeNull();
-    expect(remote.servePort).toBe(8765);
-    expect(remote.serveUnavailableReason).toBe("no_lan_address");
-  });
-
-  it("V039-S4-004：serve_address 缺 port 时清空地址并暴露协议违规", () => {
-    desktopStore.getState().setServeAddress({ host: "192.168.1.9", port: 8765 });
-    desktopStore.getState().setServeAddress({ host: "192.168.1.99" });
-
-    const remote = desktopStore.getState().remotePairing;
-    expect(remote.serveAddress).toBeNull();
-    expect(remote.serveFailure).toContain("缺少 port");
-  });
-
-  it("V039-S4-002：backend.ready 保留 Sidecar 自报的演示模式与来源，未上报即未知", () => {
+    desktopStore.getState().hydrate({ ...singleProjectSnapshot(), stream_id: "stream-2", sequence: 3 });
     desktopStore.getState().applyEvents([
-      event(
-        "backend.ready",
-        { pid: 4321, demo: true, mode_source: "flag" },
-        1,
-      ),
+      {
+        ...event("serve.started", { host: "192.168.1.7", port: 8765, mode: "lan", tls: false }, 4),
+        stream_id: "stream-2",
+      },
     ]);
-
-    expect(selectBackendDemoMode(desktopStore.getState())).toBe(true);
-    expect(desktopStore.getState().backendInfo).toEqual({
-      pid: 4321,
-      demo: true,
-      modeSource: "flag",
+    expect(desktopStore.getState().remotePairing).toMatchObject({
+      serveFailure: null,
+      serveAddress: { host: "192.168.1.7", port: 8765 },
+      serveUnavailableReason: null,
     });
   });
 
-  it("V039-S4-002：backend.ready 未带 demo 字段时为未知，绝不默认成真实模式", () => {
-    desktopStore.getState().applyEvents([event("backend.ready", { pid: 77 }, 1)]);
+  it("backend.ready 记录 Sidecar 自报的运行模式并进入新连接的引导", () => {
+    desktopStore
+      .getState()
+      .applyEvents([event("backend.ready", { pid: 4321, demo: true, mode_source: "explicit_demo" }, 1)]);
 
-    expect(desktopStore.getState().backendInfo).toEqual({
-      pid: 77,
-      demo: null,
-      modeSource: null,
-    });
-    expect(selectBackendDemoMode(desktopStore.getState())).toBeNull();
-  });
-
-  it("V039-S4-004：host 为空串时按未获得地址处理，不伪造可达地址", () => {
-    desktopStore.getState().applyEvents([
-      event("serve.started", { host: "", port: 8765 }, 1),
-    ]);
-
-    const remote = desktopStore.getState().remotePairing;
-    expect(remote.serveAddress).toBeNull();
-    expect(remote.serveUnavailableReason).toBeNull();
-    expect(remote.servePort).toBe(8765);
+    const state = desktopStore.getState();
+    expect(state.backendInfo).toEqual({ pid: 4321, demo: true, modeSource: "explicit_demo" });
+    expect(state.status).toBe("booting");
+    expect(state.needsBootstrap).toBe(true);
   });
 });

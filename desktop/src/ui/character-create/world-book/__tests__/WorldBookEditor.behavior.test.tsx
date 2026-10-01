@@ -1,7 +1,8 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { RICH_BOOK, clone, deepFreeze, entryOf, makeHarness } from "./helpers";
+import { clone, deepFreeze } from "../../__tests__/editorHelpers";
+import { RICH_BOOK, entryOf, makeHarness } from "./helpers";
 
 afterEach(cleanup);
 
@@ -51,7 +52,24 @@ describe("WorldBookEditor 行为", () => {
     expect(e1.insertion_order).toBe(50);
   });
 
-  it("atDepth 缺省显示 4/system，留空 depth 删键回缺省", () => {
+  it("ST 条目按 extensions.position 显示位置，改位置时同步写入数值", () => {
+    const book = {
+      entries: [{ keys: ["k"], content: "c", position: "after_char", extensions: { position: 4, depth: 2 } }],
+    };
+    const { Harness, getLatest } = makeHarness(deepFreeze(clone(book)));
+    render(<Harness />);
+    fireEvent.click(screen.getByTestId("wb-entry-toggle-0"));
+
+    const select = screen.getByTestId("wb-entry-0-position") as HTMLSelectElement;
+    expect(select.value).toBe("atDepth");
+
+    fireEvent.change(select, { target: { value: "before_char" } });
+    const e0 = entryOf(getLatest()!, 0);
+    expect(e0.position).toBe("before_char");
+    expect(e0.extensions).toEqual({ position: 0, depth: 2 });
+  });
+
+  it("atDepth 条目展示深度与角色，留空深度删除 depth 键", () => {
     const { Harness, getLatest } = renderRichHarness();
     fireEvent.click(screen.getByTestId("wb-entry-toggle-2"));
 
@@ -108,45 +126,18 @@ describe("WorldBookEditor 行为", () => {
     expect(entries[3]).toEqual(entryOf(RICH_BOOK, 3));
   });
 
-  it("列表摘要展示启用态/常驻/位置/关键字", () => {
+  it.each<[number, (string | RegExp)[]]>([
+    [0, ["启用", "角色定义前", /临海、\/雨\\d\+天\/g/]],
+    [1, ["常驻", "角色定义后"]],
+    [2, ["已停用", "对话深度 6 · user"]],
+    [3, [/不支持的位置 EMTop/]],
+  ])("条目 %i 的列表摘要展示启用态、常驻、位置与关键字", (index, texts) => {
     renderRichHarness();
 
-    const row0 = screen.getByTestId("wb-entry-row-0");
-    expect(within(row0).getByText("启用")).toBeInTheDocument();
-    expect(within(row0).getByText("角色定义前")).toBeInTheDocument();
-    expect(within(row0).getByText(/临海、\/雨\\d\+天\/g/)).toBeInTheDocument();
-
-    const row1 = screen.getByTestId("wb-entry-row-1");
-    expect(within(row1).getByText("常驻")).toBeInTheDocument();
-    expect(within(row1).getByText("角色定义后")).toBeInTheDocument();
-
-    const row2 = screen.getByTestId("wb-entry-row-2");
-    expect(within(row2).getByText("已停用")).toBeInTheDocument();
-    expect(within(row2).getByText("对话深度 6 · user")).toBeInTheDocument();
-
-    const row3 = screen.getByTestId("wb-entry-row-3");
-    expect(within(row3).getByText(/不支持的位置 EMTop/)).toBeInTheDocument();
-  });
-
-  it("空条目列表呈现引导空态并新建默认条目", () => {
-    const { Harness, getLatest } = makeHarness(deepFreeze({ name: "空书", entries: [] })) as ReturnType<
-      typeof makeHarness
-    >;
-    render(<Harness />);
-
-    const empty = screen.getByTestId("wb-empty-entries");
-    expect(empty).toHaveTextContent("这个世界书还没有条目");
-    expect(empty).toHaveTextContent("关键字");
-    expect(empty).toHaveTextContent("常驻");
-
-    fireEvent.click(screen.getByTestId("wb-add-entry"));
-    const latest = getLatest()!;
-    expect(latest.name).toBe("空书");
-    const entries = latest.entries as Record<string, unknown>[];
-    expect(entries).toHaveLength(1);
-    expect(entries[0].enabled).toBe(true);
-    expect(entries[0].insertion_order).toBe(100);
-    expect(entries[0].position).toBe("before_char");
+    const row = screen.getByTestId(`wb-entry-row-${index}`);
+    for (const text of texts) {
+      expect(within(row).getByText(text)).toBeInTheDocument();
+    }
   });
 
   it("非法正则关键字只警告不阻断，且不改写关键字", () => {

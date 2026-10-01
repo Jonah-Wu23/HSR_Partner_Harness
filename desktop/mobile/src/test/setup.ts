@@ -1,33 +1,9 @@
 import "@testing-library/jest-dom/vitest";
+import { installConversationListLayout } from "@shared/test/conversationListLayout";
 
-const layoutTestWindow = window as typeof window & { __conversationListLayoutMock?: boolean };
-if (!layoutTestWindow.__conversationListLayoutMock) {
-  layoutTestWindow.__conversationListLayoutMock = true;
-  const getBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
-  HTMLElement.prototype.getBoundingClientRect = function () {
-    const rect = getBoundingClientRect.call(this);
-    if (this.classList.contains("mobile-chat-scroll")) {
-      return new DOMRect(rect.x, rect.y, 390, 640);
-    }
-    if (this.classList.contains("mobile-virtual-row")) {
-      return new DOMRect(rect.x, rect.y, 366, 80);
-    }
-    return rect;
-  };
-  Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
-    configurable: true,
-    get() {
-      if (this.classList.contains("mobile-chat-scroll")) return 390;
-      if (this.classList.contains("mobile-virtual-row")) return 366;
-      return 0;
-    },
-  });
-  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
-    configurable: true,
-    get() {
-      if (this.classList.contains("mobile-chat-scroll")) return 640;
-      if (this.classList.contains("mobile-virtual-row")) return 80;
-      return 0;
-    },
-  });
+// jsdom 的 CSS 命名空间没有 supports；按不支持任何特性处理，组件走脚本测量路径。
+if (typeof CSS.supports !== "function") {
+  Object.defineProperty(CSS, "supports", { value: () => false, configurable: true });
 }
+
+installConversationListLayout({ width: 390, height: 640 }, { width: 366, height: 80 });

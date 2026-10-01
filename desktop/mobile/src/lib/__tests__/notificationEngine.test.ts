@@ -1,18 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  setNotificationTitleResolver,
-  startNotificationEngine,
-} from "../notificationEngine";
-import {
-  resetShellEnvironmentWatch,
-  setNotificationModuleLoader,
-} from "../shellCapabilities";
-import { mobileWsClient } from "../mobileStore";
-import type { WireEvent } from "../wsClient";
+  createChannel,
+  isPermissionGranted,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
+import type { ConversationRecord, PendingApproval, Turn } from "@shared/contracts/protocol";
+import { startNotificationEngine } from "../notificationEngine";
+import { mobileWsClient, useMobileStore } from "../mobileStore";
 import {
   saveNotificationPreferences,
   DEFAULT_NOTIFICATION_PREFERENCES,
 } from "../../components/NotificationPreferences";
+import { installFakeWebSocket, latestSocket } from "../../test/fakeWebSocket";
+
+// 通知插件是原生平台边界：jsdom 里没有 Tauri 运行时，这里换成桩函数。系统授权状态经
+// vi.mocked 设定；sendNotification 与 createChannel 收到的参数就是交给系统的通知与渠道。
+vi.mock("@tauri-apps/plugin-notification", () => ({
+  isPermissionGranted: vi.fn(),
+  requestPermission: vi.fn(),
+  sendNotification: vi.fn(),
+  createChannel: vi.fn(),
+}));
 
 const ANDROID_SHELL_UA =
   "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
@@ -32,126 +40,149 @@ function stubVisibility(state: "visible" | "hidden"): void {
   });
 }
 
-let sendNotification: ReturnType<typeof vi.fn>;
 let disposeEngine: (() => void) | null = null;
+let sequence = 0;
 
-function event(name: string, payload: unknown, sequence = 1): WireEvent {
-  return { kind: "event", event: name, sequence, payload: payload as Record<string, unknown> };
+/** 按真实协议向 mobileWsClient 推送一条带序号的事件，通知引擎与 store 都会收到。 */
+function emitEvent(event: string, payload: object): void {
+  sequence += 1;
+  latestSocket().emit({ kind: "event", event, sequence, payload });
 }
 
-function turnEvent(
-  target: string,
-  status: string,
-  conversationId = "conv-1",
-): WireEvent {
-  return event("turn.status_changed", {
-    turn: { conversation_id: conversationId, target, status },
-  });
+function turn(target: Turn["target"], status: Turn["status"]): Turn {
+  return {
+    turn_id: "turn-1",
+    account_id: "acc",
+    project_id: "p1",
+    conversation_id: "conv-1",
+    target,
+    source_message_id: "m1",
+    status,
+    created_at: "2026-09-01T00:00:00Z",
+    updated_at: "2026-09-01T00:00:00Z",
+  };
 }
 
-function approvalEvent(conversationId = "conv-2"): WireEvent {
-  return event("approval.requested", {
-    approval_id: "appr-1",
-    conversation_id: conversationId,
-    operation: { summary: "写入文件 config.json" },
-    reason: "需要确认",
-  });
-}
+const APPROVAL: PendingApproval = {
+  approval_id: "appr-1",
+  conversation_id: "conv-2",
+  task_id: "task-1",
+  operation: {
+    tool_kind: "file_write",
+    command: null,
+    paths: ["config.json"],
+    patch_file_count: null,
+    summary: "写入文件 config.json",
+  },
+  reason: "需要确认",
+};
 
-/** 启动引擎并等权限探测 promise resolve（engineReady 就位）。 */
+/** 启动引擎并等到权限查询完成：查到已授权后引擎随即创建通知渠道。 */
 async function startEngineAndWaitReady(): Promise<void> {
   disposeEngine = startNotificationEngine();
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await vi.waitFor(() => expect(createChannel).toHaveBeenCalled());
 }
 
-beforeEach(() => {
-  resetShellEnvironmentWatch();
+/** 给事件处理与插件调用留出时间，再断言没有发送通知。 */
+function settle(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 30));
+}
+
+beforeEach(async () => {
+  installFakeWebSocket();
+  // disconnect 把会话级状态复位到初值，通知正文里的会话标题取自其中的会话记录。
+  await useMobileStore.getState().disconnect();
+  useMobileStore.getState().start();
+  mobileWsClient.connect();
+  latestSocket().open();
+  sequence = 0;
   delete window.__TAURI_INTERNALS__;
   delete window.__TAURI__;
   window.localStorage.clear();
   stubVisibility("hidden");
-  sendNotification = vi.fn();
-  setNotificationModuleLoader(async () => ({
-    isPermissionGranted: async () => true,
-    requestPermission: async () => true,
-    sendNotification,
-    createChannel: vi.fn(),
-  }));
-  setNotificationTitleResolver(null);
+  vi.mocked(isPermissionGranted).mockReset().mockResolvedValue(true);
+  vi.mocked(sendNotification).mockReset();
+  vi.mocked(createChannel).mockReset().mockResolvedValue(undefined);
 });
 
 afterEach(() => {
   disposeEngine?.();
   disposeEngine = null;
+  mobileWsClient.disconnect();
+  vi.unstubAllGlobals();
   delete window.__TAURI_INTERNALS__;
   delete window.__TAURI__;
-  setNotificationModuleLoader(null);
-  setNotificationTitleResolver(null);
   stubVisibility("visible");
   vi.restoreAllMocks();
 });
 
-describe("notificationEngine 规则映射", () => {
-  it("任务完成：target=character 的 turn 终态在后台触发通知", async () => {
+describe("notificationEngine 通知规则", () => {
+  it.each([
+    ["character", "completed", "任务完成", "已完成"],
+    ["character", "failed", "任务完成", "失败"],
+    ["character", "cancelled", "任务完成", "已取消"],
+    ["assistant", "completed", "委派结果", "已完成"],
+  ] as const)(
+    "target=%s 的回合进入 %s 时发送「%s」",
+    async (target, status, title, statusText) => {
+      stubAndroidShell();
+      await startEngineAndWaitReady();
+
+      emitEvent("turn.status_changed", { turn: turn(target, status) });
+
+      await vi.waitFor(() => expect(sendNotification).toHaveBeenCalledTimes(1));
+      expect(sendNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ title, body: `「新聊天」${statusText}` }),
+      );
+    },
+  );
+
+  it.each(["queued", "accepted", "running"] as const)("回合处于 %s 时不发送通知", async (status) => {
     stubAndroidShell();
     await startEngineAndWaitReady();
 
-    mobileWsClient.emitTestEvent(turnEvent("character", "completed"));
-    await vi.waitFor(() => expect(sendNotification).toHaveBeenCalledTimes(1));
-    expect(sendNotification).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "任务完成" }),
-    );
-  });
+    emitEvent("turn.status_changed", { turn: turn("character", status) });
+    await settle();
 
-  it("委派结果：target=assistant 的 turn 终态标题为「委派结果」", async () => {
-    stubAndroidShell();
-    await startEngineAndWaitReady();
-
-    mobileWsClient.emitTestEvent(turnEvent("assistant", "completed"));
-    await vi.waitFor(() => expect(sendNotification).toHaveBeenCalledTimes(1));
-    expect(sendNotification).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "委派结果" }),
-    );
-  });
-
-  it("失败与取消同样是终态，运行中状态不通知", async () => {
-    stubAndroidShell();
-    await startEngineAndWaitReady();
-
-    mobileWsClient.emitTestEvent(turnEvent("character", "running"));
-    mobileWsClient.emitTestEvent(turnEvent("character", "queued"));
-    await new Promise((resolve) => setTimeout(resolve, 30));
     expect(sendNotification).not.toHaveBeenCalled();
-
-    mobileWsClient.emitTestEvent(turnEvent("character", "failed"));
-    await vi.waitFor(() => expect(sendNotification).toHaveBeenCalledTimes(1));
-    const options = sendNotification.mock.calls[0][0] as { body: string };
-    expect(options.body).toContain("失败");
   });
 
-  it("审批请求：payload 的 operation.summary 进入通知正文", async () => {
+  it("审批请求以 operation.summary 为正文", async () => {
     stubAndroidShell();
     await startEngineAndWaitReady();
 
-    mobileWsClient.emitTestEvent(approvalEvent());
+    emitEvent("approval.requested", APPROVAL);
+
     await vi.waitFor(() => expect(sendNotification).toHaveBeenCalledTimes(1));
-    const options = sendNotification.mock.calls[0][0] as { title: string; body: string };
-    expect(options.title).toBe("审批请求");
-    expect(options.body).toContain("写入文件 config.json");
+    expect(sendNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "审批请求", body: "「新聊天」写入文件 config.json" }),
+    );
   });
 
-  it("会话标题经注入解析，缺失时兜底「新聊天」", async () => {
-    setNotificationTitleResolver((id) => (id === "conv-1" ? "白厄的训练日志" : "新聊天"));
+  it("正文使用 store 中的会话标题", async () => {
+    const conversation: ConversationRecord = {
+      conversation_id: "conv-1",
+      project_id: "p1",
+      pair_id: "pair-default",
+      title: "白厄的训练日志",
+      last_mode: "chat",
+      archived: false,
+      created_at: "2026-09-01T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+    };
     stubAndroidShell();
     await startEngineAndWaitReady();
 
-    mobileWsClient.emitTestEvent(turnEvent("character", "completed", "conv-1"));
+    emitEvent("conversation.changed", { conversation });
+    emitEvent("turn.status_changed", { turn: turn("character", "completed") });
+
     await vi.waitFor(() => expect(sendNotification).toHaveBeenCalledTimes(1));
-    const options = sendNotification.mock.calls[0][0] as { body: string };
-    expect(options.body).toContain("白厄的训练日志");
+    expect(sendNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ body: "「白厄的训练日志」已完成" }),
+    );
   });
 
-  it("偏好关闭后不发送（enabled=false）", async () => {
+  it("该类通知在偏好中关闭时不发送", async () => {
     saveNotificationPreferences({
       ...DEFAULT_NOTIFICATION_PREFERENCES,
       taskCompleted: { enabled: false, importance: "default" },
@@ -159,92 +190,83 @@ describe("notificationEngine 规则映射", () => {
     stubAndroidShell();
     await startEngineAndWaitReady();
 
-    mobileWsClient.emitTestEvent(turnEvent("character", "completed"));
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    emitEvent("turn.status_changed", { turn: turn("character", "completed") });
+    await settle();
+
     expect(sendNotification).not.toHaveBeenCalled();
   });
 
-  it("静默档（silent）发送到低优先级独立渠道", async () => {
-    saveNotificationPreferences({
-      ...DEFAULT_NOTIFICATION_PREFERENCES,
-      approvalRequested: { enabled: true, importance: "silent" },
-    });
-    stubAndroidShell();
-    await startEngineAndWaitReady();
+  // 渠道 importance 取插件 Importance 枚举：Low=2、Default=3、High=4。
+  it.each([
+    ["high", 4],
+    ["default", 3],
+    ["silent", 2],
+  ] as const)(
+    "提醒方式为 %s 时经已创建的 importance=%i 渠道发送",
+    async (importance, channelImportance) => {
+      saveNotificationPreferences({
+        ...DEFAULT_NOTIFICATION_PREFERENCES,
+        approvalRequested: { enabled: true, importance },
+      });
+      stubAndroidShell();
+      await startEngineAndWaitReady();
 
-    mobileWsClient.emitTestEvent(approvalEvent());
-    await vi.waitFor(() => expect(sendNotification).toHaveBeenCalledTimes(1));
-    expect(sendNotification.mock.calls[0][0]).toMatchObject({
-      channelId: "phm_approval_requested_silent",
-    });
-  });
+      emitEvent("approval.requested", APPROVAL);
 
-  it("前台（visible）不发送", async () => {
+      await vi.waitFor(() => expect(sendNotification).toHaveBeenCalledTimes(1));
+      const { channelId } = vi.mocked(sendNotification).mock.calls[0][0] as { channelId: string };
+      await vi.waitFor(() => {
+        const created = vi.mocked(createChannel).mock.calls.map(([channel]) => channel);
+        expect(created.find((channel) => channel.id === channelId)?.importance).toBe(
+          channelImportance,
+        );
+      });
+    },
+  );
+
+  it("应用在前台时不发送", async () => {
     stubVisibility("visible");
     stubAndroidShell();
     await startEngineAndWaitReady();
 
-    mobileWsClient.emitTestEvent(turnEvent("character", "completed"));
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    emitEvent("turn.status_changed", { turn: turn("character", "completed") });
+    await settle();
+
     expect(sendNotification).not.toHaveBeenCalled();
   });
 });
 
 describe("notificationEngine 环境与生命周期", () => {
-  it("非 Android 壳（PWA）不启动：事件不产生通知", async () => {
-    await startEngineAndWaitReady();
+  it("PWA 下不激活，事件不产生通知", async () => {
+    disposeEngine = startNotificationEngine();
 
-    mobileWsClient.emitTestEvent(turnEvent("character", "completed"));
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    emitEvent("turn.status_changed", { turn: turn("character", "completed") });
+    await settle();
+
     expect(sendNotification).not.toHaveBeenCalled();
   });
 
   it("dispose 后不再监听事件", async () => {
     stubAndroidShell();
-    const dispose = startNotificationEngine();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    dispose();
+    await startEngineAndWaitReady();
+    disposeEngine?.();
+    disposeEngine = null;
 
-    mobileWsClient.emitTestEvent(turnEvent("character", "completed"));
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    emitEvent("turn.status_changed", { turn: turn("character", "completed") });
+    await settle();
+
     expect(sendNotification).not.toHaveBeenCalled();
   });
 
-  it("壳环境晚于引擎启动就绪（internals 注入竞态）时，订阅到 android_shell 后仍激活并发送", async () => {
-    // 启动时 PWA（模拟首帧 internals 未注入）；随后注入 android_shell——
-    // 引擎必须经 onShellEnvironmentChange 订阅激活，而不是一次性判定死退。
+  it("壳注入晚于引擎启动时，环境变为 android_shell 后激活并发送", async () => {
     disposeEngine = startNotificationEngine();
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(sendNotification).not.toHaveBeenCalled();
+    await settle();
+    expect(createChannel).not.toHaveBeenCalled();
 
     stubAndroidShell();
-    await new Promise((resolve) => setTimeout(resolve, 400)); // 轮询探测周期
-    mobileWsClient.emitTestEvent(turnEvent("character", "completed"));
-    await vi.waitFor(() => expect(sendNotification).toHaveBeenCalledTimes(1));
-  });
-
-  it("激活并授权后创建三类通知渠道（Android 8+ 前置）", async () => {
-    const createChannel = vi.fn();
-    setNotificationModuleLoader(async () => ({
-      isPermissionGranted: async () => true,
-      requestPermission: async () => true,
-      sendNotification,
-      createChannel,
-    }));
-    stubAndroidShell();
-    disposeEngine = startNotificationEngine();
     await vi.waitFor(() => expect(createChannel).toHaveBeenCalled());
-    const ids = createChannel.mock.calls.map((c) => c[0].id).sort();
-    expect(ids).toEqual([
-      "phm_approval_requested_default",
-      "phm_approval_requested_high",
-      "phm_approval_requested_silent",
-      "phm_delegation_result_default",
-      "phm_delegation_result_high",
-      "phm_delegation_result_silent",
-      "phm_task_completed_default",
-      "phm_task_completed_high",
-      "phm_task_completed_silent",
-    ]);
+    emitEvent("turn.status_changed", { turn: turn("character", "completed") });
+
+    await vi.waitFor(() => expect(sendNotification).toHaveBeenCalledTimes(1));
   });
 });

@@ -1,11 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import {
   DEFAULT_NOTIFICATION_PREFERENCES,
   NotificationPreferences,
   loadNotificationPreferences,
 } from "../NotificationPreferences";
-import { setNotificationModuleLoader } from "../../lib/shellCapabilities";
+
+// 通知插件是原生平台边界：jsdom 里没有 Tauri 运行时，这里换成桩函数，
+// 各用例经 vi.mocked 设定系统授权状态与申请结果。
+vi.mock("@tauri-apps/plugin-notification", () => ({
+  isPermissionGranted: vi.fn(),
+  requestPermission: vi.fn(),
+  sendNotification: vi.fn(),
+  createChannel: vi.fn(),
+}));
+
+const STORAGE_KEY = "phm.notificationPreferences.v1";
 
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
@@ -27,106 +38,105 @@ function stubBrowser(): void {
   });
 }
 
-function moduleStub(overrides: {
-  isPermissionGranted?: () => Promise<boolean>;
-  requestPermission?: () => Promise<boolean>;
-}) {
-  return async () => ({
-    isPermissionGranted:
-      overrides.isPermissionGranted ?? (async () => true),
-    requestPermission: overrides.requestPermission ?? (async () => true),
-    sendNotification: vi.fn(), createChannel: vi.fn(),
-  });
-}
-
-/**
- * 状态化 stub：模拟真实系统授权协议——requestPermission 授予后，
- * 后续 isPermissionGranted（checkPermissions）如实返回 granted。
- * 修复前测试用「固定 false」夹具与真实协议矛盾（申请成功但重查仍
- * false 在真实系统里不会发生）；申请后组件会重查，夹具必须一致。
- */
-function statefulPermissionModuleStub(initialGranted = false) {
-  let granted = initialGranted;
-  return async () => ({
-    isPermissionGranted: async () => granted,
-    requestPermission: async () => {
-      granted = true;
-      return true;
-    },
-    sendNotification: vi.fn(), createChannel: vi.fn(),
-  });
-}
-
 beforeEach(() => {
   delete window.__TAURI_INTERNALS__;
   delete window.__TAURI__;
   stubBrowser();
-  setNotificationModuleLoader(null);
   window.localStorage.clear();
+  vi.mocked(isPermissionGranted).mockReset();
+  vi.mocked(requestPermission).mockReset();
 });
 
 afterEach(() => {
   cleanup();
   delete window.__TAURI_INTERNALS__;
   delete window.__TAURI__;
-  setNotificationModuleLoader(null);
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("NotificationPreferences 组件", () => {
-  it("PWA 下如实说明本地通知仅在 Android 壳内可用，不提供任何伪造开关", async () => {
+  it.each([
+    {
+      label: "PWA",
+      setup: () => undefined,
+      testId: "notif-unavailable-pwa",
+      text: "本地通知仅在 Android 壳内可用",
+      foregroundNote: false,
+    },
+    {
+      label: "壳内通知能力探测中",
+      setup: () => {
+        stubAndroidShell();
+        vi.mocked(isPermissionGranted).mockReturnValue(new Promise(() => {}));
+      },
+      testId: "notif-probing",
+      text: "正在检测当前环境的通知能力",
+      foregroundNote: true,
+    },
+    {
+      label: "壳内通知插件调用失败",
+      setup: () => {
+        stubAndroidShell();
+        vi.spyOn(console, "warn").mockImplementation(() => {});
+        vi.mocked(isPermissionGranted).mockRejectedValue(
+          new Error("plugin:notification|is_permission_granted failed"),
+        );
+      },
+      testId: "notif-unavailable-plugin",
+      text: "当前壳内未能加载通知能力",
+      foregroundNote: true,
+    },
+  ].map((row) => [row.label, row] as const))("%s 时说明原因，不渲染偏好开关", async (_label, row) => {
+    const { setup, testId, text, foregroundNote } = row;
+    setup();
     const { container } = render(<NotificationPreferences />);
 
-    const note = await screen.findByTestId("notif-unavailable-pwa");
-    expect(note).toHaveTextContent("本地通知仅在 Android 壳内可用");
+    expect(await screen.findByTestId(testId)).toHaveTextContent(text);
     expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
     expect(container.querySelectorAll("select")).toHaveLength(0);
-    expect(screen.queryByTestId("notif-foreground-note")).toBeNull();
+    expect(screen.queryByTestId("notif-foreground-note") !== null).toBe(foregroundNote);
   });
 
-  it("能力探测进行中显示检测提示", async () => {
+  it("系统已授权时按默认偏好展示三类可编辑通知", async () => {
     stubAndroidShell();
-    setNotificationModuleLoader(() => new Promise(() => {}));
-
-    render(<NotificationPreferences />);
-    expect(await screen.findByTestId("notif-probing")).toHaveTextContent(
-      "正在检测当前环境的通知能力",
-    );
-  });
-
-  it("壳内通知插件不可用时如实说明，不渲染开关", async () => {
-    stubAndroidShell();
-    setNotificationModuleLoader(async () => null);
-
-    const { container } = render(<NotificationPreferences />);
-    await screen.findByTestId("notif-unavailable-plugin");
-    expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
-  });
-
-  it("壳内权限已授予时渲染三类可编辑偏好并按默认值展示", async () => {
-    stubAndroidShell();
-    setNotificationModuleLoader(moduleStub({}));
+    vi.mocked(isPermissionGranted).mockResolvedValue(true);
 
     render(<NotificationPreferences />);
     await screen.findByTestId("notif-permission-granted");
 
     for (const key of ["taskCompleted", "delegationResult", "approvalRequested"]) {
-      expect(screen.getByTestId(`notif-row-${key}`)).toBeInTheDocument();
       expect(screen.getByTestId(`notif-toggle-${key}`)).toBeChecked();
     }
-    // 默认：审批请求高优先级，其余常规
     expect(screen.getByTestId("notif-importance-taskCompleted")).toHaveValue("default");
     expect(screen.getByTestId("notif-importance-approvalRequested")).toHaveValue("high");
-    // Android 壳内呈现常驻通知说明
-    expect(screen.getByTestId("notif-foreground-note")).toHaveTextContent(
-      "保持连接中",
-    );
+    expect(screen.getByTestId("notif-foreground-note")).toHaveTextContent("保持连接中");
   });
 
-  it("关闭「任务完成」并调整「审批请求」提醒方式后立即持久化到 localStorage", async () => {
+  it("展示 localStorage 中已保存的偏好", async () => {
     stubAndroidShell();
-    setNotificationModuleLoader(moduleStub({}));
+    vi.mocked(isPermissionGranted).mockResolvedValue(true);
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        ...DEFAULT_NOTIFICATION_PREFERENCES,
+        taskCompleted: { enabled: false, importance: "silent" },
+      }),
+    );
+
+    render(<NotificationPreferences />);
+    await screen.findByTestId("notif-permission-granted");
+
+    expect(screen.getByTestId("notif-toggle-taskCompleted")).not.toBeChecked();
+    expect(screen.getByTestId("notif-importance-taskCompleted")).toHaveValue("silent");
+    expect(screen.getByTestId("notif-toggle-delegationResult")).toBeChecked();
+  });
+
+  it("关闭「任务完成」并调整「审批请求」提醒方式后立即写入 localStorage 并同步原生常驻连接", async () => {
+    stubAndroidShell();
+    vi.mocked(isPermissionGranted).mockResolvedValue(true);
+    // Android 壳注入的原生接口，PWA 与 jsdom 里都没有。
     const syncConfig = vi.fn();
     vi.stubGlobal("PairHarnessNative", { syncConfig });
 
@@ -152,138 +162,81 @@ describe("NotificationPreferences 组件", () => {
     expect(screen.getByTestId("notif-importance-taskCompleted")).toBeDisabled();
   });
 
-  it("尚未授权时提供权限申请入口：申请成功切换为已授权（含申请后重查）", async () => {
+  it("申请权限获准后显示已授权", async () => {
     stubAndroidShell();
-    setNotificationModuleLoader(statefulPermissionModuleStub(false));
+    let granted = false;
+    vi.mocked(isPermissionGranted).mockImplementation(async () => granted);
+    vi.mocked(requestPermission).mockImplementation(async () => {
+      granted = true;
+      return "granted";
+    });
 
     render(<NotificationPreferences />);
-    await screen.findByTestId("notif-permission-missing");
+    fireEvent.click(await screen.findByTestId("btn-request-permission"));
 
-    fireEvent.click(screen.getByTestId("btn-request-permission"));
     expect(await screen.findByTestId("notif-permission-granted")).toBeInTheDocument();
   });
 
-  it("申请被拒时如实呈现仍未授权，不伪装成功", async () => {
+  it("申请被拒时提示仍未获得系统通知权限", async () => {
     stubAndroidShell();
-    setNotificationModuleLoader(
-      moduleStub({
-        isPermissionGranted: async () => false,
-        requestPermission: async () => false,
-      }),
-    );
+    vi.mocked(isPermissionGranted).mockResolvedValue(false);
+    vi.mocked(requestPermission).mockResolvedValue("denied");
 
     render(<NotificationPreferences />);
-    await screen.findByTestId("notif-permission-missing");
+    fireEvent.click(await screen.findByTestId("btn-request-permission"));
 
-    fireEvent.click(screen.getByTestId("btn-request-permission"));
-    const error = await screen.findByTestId("notif-permission-error");
-    expect(error).toHaveTextContent("仍未获得系统通知权限");
+    expect(await screen.findByTestId("notif-permission-error")).toHaveTextContent(
+      "仍未获得系统通知权限",
+    );
     expect(screen.queryByTestId("notif-permission-granted")).toBeNull();
   });
 
-  it("权限申请调用抛错时展示原始错误信息", async () => {
+  it("权限申请调用失败时展示原始错误", async () => {
     stubAndroidShell();
-    setNotificationModuleLoader(
-      moduleStub({
-        isPermissionGranted: async () => false,
-        requestPermission: async () => {
-          throw new Error("plugin:notification|request_permission failed");
-        },
-      }),
+    vi.mocked(isPermissionGranted).mockResolvedValue(false);
+    vi.mocked(requestPermission).mockRejectedValue(
+      new Error("plugin:notification|request_permission failed"),
     );
 
     render(<NotificationPreferences />);
-    await screen.findByTestId("notif-permission-missing");
+    fireEvent.click(await screen.findByTestId("btn-request-permission"));
 
-    fireEvent.click(screen.getByTestId("btn-request-permission"));
     expect(await screen.findByTestId("notif-permission-error")).toHaveTextContent(
       "plugin:notification|request_permission failed",
     );
   });
 
-  it("localStorage 偏好损坏时按默认值处理并保留原始解析错误日志", async () => {
+  it("申请权限超时未返回时以重新查询的系统授权状态为准", async () => {
     stubAndroidShell();
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    setNotificationModuleLoader(moduleStub({}));
-    window.localStorage.setItem("phm.notificationPreferences.v1", "{not-json");
-
-    render(<NotificationPreferences />);
-    await screen.findByTestId("notif-permission-granted");
-
-    expect(screen.getByTestId("notif-toggle-taskCompleted")).toBeChecked();
-    expect(loadNotificationPreferences()).toEqual(DEFAULT_NOTIFICATION_PREFERENCES);
-    expect(warnSpy).toHaveBeenCalled();
-  });
-
-  it("支持 initialPreferences 注入并通过 onPreferencesChange 回传变更", async () => {
-    stubAndroidShell();
-    setNotificationModuleLoader(moduleStub({}));
-    const onPreferencesChange = vi.fn();
-
-    render(
-      <NotificationPreferences
-        initialPreferences={{
-          taskCompleted: { enabled: false, importance: "silent" },
-          delegationResult: { enabled: true, importance: "default" },
-          approvalRequested: { enabled: true, importance: "high" },
-        }}
-        onPreferencesChange={onPreferencesChange}
-      />,
-    );
-    await screen.findByTestId("notif-permission-granted");
-
-    expect(screen.getByTestId("notif-toggle-taskCompleted")).not.toBeChecked();
-    fireEvent.click(screen.getByTestId("notif-toggle-delegationResult"));
-    expect(onPreferencesChange).toHaveBeenCalledTimes(1);
-    expect(onPreferencesChange.mock.calls[0][0].delegationResult.enabled).toBe(false);
-  });
-
-  it("插件 requestPermission 悬死（上游已授权空分支缺陷）时超时兜底，重查已授权则如实显示", async () => {
-    stubAndroidShell();
-    // 初始未授权；点申请后系统实际授予（isPermissionGranted 变 true），但
-    // 插件的 requestPermission promise 永不 resolve（模拟 2.4.0 已授权空分支
-    // 缺陷：回调丢失、invoke 悬死）。最终 UI 应以超时后的重查为准。
+    // 插件 2.4.0 在 Android 13+ 已授权时 requestPermission 不返回：系统已授权，回调不回到 JS。
     let granted = false;
-    setNotificationModuleLoader(async () => ({
-      isPermissionGranted: async () => granted,
-      requestPermission: () => {
-        granted = true; // 系统弹窗授予已发生，但回调未回到 JS
-        return new Promise<boolean>(() => {});
-      },
-      sendNotification: vi.fn(), createChannel: vi.fn(),
-    }));
+    vi.mocked(isPermissionGranted).mockImplementation(async () => granted);
+    vi.mocked(requestPermission).mockImplementation(() => {
+      granted = true;
+      return new Promise(() => {});
+    });
 
     render(<NotificationPreferences />);
     await screen.findByTestId("notif-permission-missing");
 
     vi.useFakeTimers();
     fireEvent.click(screen.getByTestId("btn-request-permission"));
-    // 超时（8s）后进入 finally 重查 → 系统已授予 → 如实显示已授权，按钮不再卡申请中。
     await vi.advanceTimersByTimeAsync(8500);
     vi.useRealTimers();
+
     expect(await screen.findByTestId("notif-permission-granted")).toBeInTheDocument();
     expect(screen.queryByText("正在申请权限")).toBeNull();
   });
 
-  it("回前台（visibilitychange→visible）自动重探：从系统设置开启权限后返回即更新", async () => {
+  it("回到前台时重新探测授权状态，在系统设置里开启后即显示已授权", async () => {
     stubAndroidShell();
-    // 状态化：初始未授权，模拟用户在系统设置手动授予后 isPermissionGranted 变 true。
     let granted = false;
-    setNotificationModuleLoader(async () => ({
-      isPermissionGranted: async () => granted,
-      requestPermission: async () => true,
-      sendNotification: vi.fn(), createChannel: vi.fn(),
-    }));
+    vi.mocked(isPermissionGranted).mockImplementation(async () => granted);
 
     render(<NotificationPreferences />);
     await screen.findByTestId("notif-permission-missing");
 
-    granted = true; // 用户去系统设置手动开启
-    Object.defineProperty(document, "visibilityState", {
-      value: "hidden",
-      configurable: true,
-    });
-    document.dispatchEvent(new Event("visibilitychange"));
+    granted = true;
     Object.defineProperty(document, "visibilityState", {
       value: "visible",
       configurable: true,
@@ -293,13 +246,17 @@ describe("NotificationPreferences 组件", () => {
     expect(await screen.findByTestId("notif-permission-granted")).toBeInTheDocument();
   });
 
-  it("渲染各平台真实能力矩阵，如实展示 Android 壳与 Web/PWA 差异及通知点击限制", async () => {
+  it("localStorage 偏好损坏时按默认值处理并记录解析错误", async () => {
+    stubAndroidShell();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(isPermissionGranted).mockResolvedValue(true);
+    window.localStorage.setItem(STORAGE_KEY, "{not-json");
+
     render(<NotificationPreferences />);
-    const limits = screen.getByTestId("notif-platform-limits");
-    expect(limits).toBeInTheDocument();
-    expect(limits).toHaveTextContent("Android 壳");
-    expect(limits).toHaveTextContent("Android 浏览器 / iOS Safari / iOS PWA");
-    expect(limits).toHaveTextContent("通知点击");
-    expect(limits).toHaveTextContent("真机待验");
+    await screen.findByTestId("notif-permission-granted");
+
+    expect(screen.getByTestId("notif-toggle-taskCompleted")).toBeChecked();
+    expect(loadNotificationPreferences()).toEqual(DEFAULT_NOTIFICATION_PREFERENCES);
+    expect(warnSpy).toHaveBeenCalled();
   });
 });

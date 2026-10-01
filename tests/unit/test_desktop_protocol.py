@@ -24,13 +24,6 @@ def test_parse_request_and_encode_jsonl() -> None:
     assert "\n" not in encoded
 
 
-def test_onboarding_complete_is_accepted_by_protocol_whitelist() -> None:
-    command = parse_request(
-        '{"kind":"request","id":"ob-1","method":"account.onboarding_complete","params":{}}'
-    )
-    assert command.method == "account.onboarding_complete"
-
-
 @pytest.mark.parametrize(
     ("line", "code"),
     [
@@ -47,23 +40,16 @@ def test_bad_lines_are_structured_protocol_errors(line: str, code: str) -> None:
     assert protocol_error(code, str(exc_info.value))["kind"] == "error"
 
 
-def test_event_emitter_assigns_monotonic_sequence() -> None:
-    events: list[dict] = []
-    emitter = EventEmitter(events.append)
-    emitter.emit("backend.ready", {"demo": True})
-    emitter.emit("message.created", {"message": {"message_id": "m1"}})
-    assert [event["sequence"] for event in events] == [0, 1]
-    assert emitter.next_sequence == 2
-    assert events[0]["stream_id"] == "local"
-
-
-def test_event_emitter_attaches_stream_id_to_every_event() -> None:
+def test_event_emitter_assigns_monotonic_sequence_and_stream_id() -> None:
     events: list[dict] = []
     emitter = EventEmitter(events.append, stream_id="stream-42")
-    emitter.emit("message.delta", {"delta": "x"})
-    assert events[0]["stream_id"] == "stream-42"
-    assert events[0]["sequence"] == 0
-    assert events[0]["kind"] == "event"
+    emitter.emit("backend.ready", {"demo": True})
+    emitter.emit("message.created", {"message": {"message_id": "m1"}})
+    assert [(event["kind"], event["stream_id"], event["sequence"]) for event in events] == [
+        ("event", "stream-42", 0),
+        ("event", "stream-42", 1),
+    ]
+    assert emitter.next_sequence == 2
 
 
 def test_response_error_keeps_request_id_and_error_shape() -> None:

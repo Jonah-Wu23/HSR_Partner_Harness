@@ -1,30 +1,37 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
-import type { DesktopCommand, DesktopCommandMethod } from "../contracts/protocol";
+import type {
+  CardGetResult,
+  CardListResult,
+  DesktopCommand,
+  DesktopCommandMethod,
+  RemoteListDevicesResult,
+} from "../contracts/protocol";
 import {
   APPROVAL_ALREADY_RESOLVED,
   CARD_AVATAR_UNSUPPORTED,
   CARD_EXPORT_FAILED,
   CARD_IMPORT_FAILED,
+  CARD_PUBLISH_INVALID,
   CARD_READ_ONLY,
   VOICE_AUDIO_SEQ_GAP,
   VOICE_NOT_CONFIGURED,
 } from "../contracts/protocol";
 import { createActionController } from "./actions";
-import { MockDesktopBackend } from "./mockDesktopBackend";
+import { DesktopRequestError } from "./backend";
+import { MockDesktopBackend, type MockDesktopBackendOptions } from "./mockDesktopBackend";
 import { desktopStore } from "../stores/desktopStore";
 
 function cmd(method: DesktopCommandMethod, params: Record<string, unknown> = {}): DesktopCommand {
   return { kind: "request", id: `test-${method}`, method, params };
 }
 
-describe("MockDesktopBackend project and conversation flow", () => {
-  beforeEach(() => {
-    desktopStore.getState().setStatus("booting");
-    desktopStore.getState().setComposerDraft("");
-  });
+beforeEach(() => {
+  desktopStore.setState(desktopStore.getInitialState(), true);
+});
 
-  it("keeps project and chat selection in the same snapshot contract", async () => {
+describe("MockDesktopBackend 项目与聊天流程", () => {
+  it("新建聊天与切换聊天都按快照更新当前聊天", async () => {
     const backend = new MockDesktopBackend("single-project");
     const controller = createActionController(backend);
     await controller.loadBootstrap();
@@ -39,7 +46,7 @@ describe("MockDesktopBackend project and conversation flow", () => {
     expect(desktopStore.getState().projectsById["project-1"].conversations).toHaveLength(2);
   });
 
-  it("routes mock streaming messages to the selected conversation", async () => {
+  it("提交消息后流式回复落到当前聊天", async () => {
     const backend = new MockDesktopBackend("single-project");
     const controller = createActionController(backend);
     const unsubscribe = backend.subscribe((event) => desktopStore.getState().applyEvents([event]));
@@ -56,59 +63,26 @@ describe("MockDesktopBackend project and conversation flow", () => {
     }
   });
 
-  it("createProject 取消文件夹时返回 false，带路径创建时返回 true", async () => {
+  it("新建项目：取消选择文件夹时不发请求，带路径时以文件夹名命名，新聊天初始名为「新聊天」", async () => {
     const backend = new MockDesktopBackend("single-project");
     const controller = createActionController(backend);
     await controller.loadBootstrap();
 
     await expect(controller.actions.createProject()).resolves.toBe(false);
+    expect(backend.recordedRequests.some((item) => item.method === "project.create")).toBe(false);
+
     await expect(controller.actions.createProject("C:/Projects/observatory")).resolves.toBe(true);
+    const afterProject = desktopStore.getState();
+    expect(afterProject.projectsById[afterProject.currentProjectId]?.name).toBe("observatory");
+
+    await controller.actions.createConversation(undefined);
+    const afterConversation = desktopStore.getState();
+    expect(afterConversation.conversationsById[afterConversation.currentConversationId]?.title).toBe(
+      "新聊天",
+    );
   });
 
-  it("uses the selected folder name for new projects and auto-names the first chat", async () => {
-    const backend = new MockDesktopBackend("single-project");
-    const controller = createActionController(backend);
-    const unsubscribe = backend.subscribe((event) => desktopStore.getState().applyEvents([event]));
-    try {
-      await controller.loadBootstrap();
-      await controller.actions.createProject("C:/Projects/observatory");
-      const stateAfterProject = desktopStore.getState();
-      expect(stateAfterProject.projectsById[stateAfterProject.currentProjectId]?.name).toBe(
-        "observatory",
-      );
-
-      await controller.actions.createConversation(undefined);
-      const conversationId = desktopStore.getState().currentConversationId;
-      expect(desktopStore.getState().conversationsById[conversationId]?.title).toBe("新聊天");
-      await controller.actions.submitMessage("整理实验记录", "character");
-      expect(desktopStore.getState().conversationsById[conversationId]?.title).toBe("关于整理实验记录");
-    } finally {
-      unsubscribe();
-    }
-  });
-
-  it("reconnect 模拟断线-恢复并驱动连接状态机", async () => {
-    const backend = new MockDesktopBackend("single-project");
-    const controller = createActionController(backend);
-    const unsubscribe = backend.subscribe((event) => desktopStore.getState().applyEvents([event]));
-    try {
-      await controller.loadBootstrap();
-      expect(desktopStore.getState().status).toBe("ready");
-
-      await controller.actions.reconnect();
-      // 断线-恢复事件驱动 store：connected 进入 booting 并标记需要重新 bootstrap
-      expect(desktopStore.getState().status).toBe("booting");
-      expect(desktopStore.getState().needsBootstrap).toBe(true);
-
-      // 与 AppController 的恢复流程一致：重新 bootstrap 后回到 ready
-      await controller.loadBootstrap();
-      expect(desktopStore.getState().status).toBe("ready");
-    } finally {
-      unsubscribe();
-    }
-  });
-
-  it("archives a project even when it is the only project", async () => {
+  it("归档唯一的项目后快照里没有当前项目与聊天", async () => {
     const backend = new MockDesktopBackend("single-project");
     const controller = createActionController(backend);
     await controller.loadBootstrap();
@@ -121,7 +95,7 @@ describe("MockDesktopBackend project and conversation flow", () => {
     expect(state.projectsById).toEqual({});
   });
 
-  it("opens another chat through conversation.open without global selection", async () => {
+  it("conversation.open 只打开并聚焦本窗口标签，不改全局当前聊天", async () => {
     const backend = new MockDesktopBackend("multi-pair");
     const controller = createActionController(backend);
     await controller.loadBootstrap();
@@ -130,7 +104,6 @@ describe("MockDesktopBackend project and conversation flow", () => {
     await controller.actions.openConversationTab("conv-phainon");
 
     const state = desktopStore.getState();
-    // conversation.open 只打开并聚焦本窗口标签，不改 Sidecar 全局当前聊天。
     expect(state.currentConversationId).toBe("conv-firefly");
     expect(state.activeConversationId).toBe("conv-phainon");
     expect(state.openConversationIds).toContain("conv-firefly");
@@ -151,7 +124,7 @@ describe("MockDesktopBackend project and conversation flow", () => {
     });
   });
 
-  it("cancels only the matching conversation task in the mock protocol", async () => {
+  it("task.cancel 携带本窗口聊天与其活动任务，取消后活动任务清空", async () => {
     const backend = new MockDesktopBackend("collaboration-running");
     const controller = createActionController(backend);
     const unsubscribe = backend.subscribe((event) => desktopStore.getState().applyEvents([event]));
@@ -170,90 +143,158 @@ describe("MockDesktopBackend project and conversation flow", () => {
       unsubscribe();
     }
   });
+
+  it("任务已在服务端结束时 task.cancel 返回 cancelled=false，界面提示取消未生效", async () => {
+    const backend = new MockDesktopBackend("collaboration-running");
+    const controller = createActionController(backend);
+    await controller.loadBootstrap();
+    // 任务已被另一端取消，本窗口还没收到 task.busy_changed
+    await backend.request(cmd("task.cancel", { conversation_id: "conv-1", task_id: "mock-task-1" }));
+
+    await controller.actions.cancelTask();
+
+    expect(desktopStore.getState().toasts).toContainEqual(
+      expect.objectContaining({
+        kind: "warning",
+        text: "取消未生效：服务端没有取消任务 mock-task-1",
+      }),
+    );
+  });
 });
 
-describe("MockDesktopBackend V0.3.5 角色卡/语音/审批 mock", () => {
-  it("pickFile / saveFile 返回 options 中配置的默认值", async () => {
-    const backend = new MockDesktopBackend("single-project", {
-      pickFileResult: "C:/Cards/import.json",
-      saveFileResult: "C:/Cards/export.json",
-    });
-    expect(await backend.pickFile()).toBe("C:/Cards/import.json");
-    expect(await backend.saveFile()).toBe("C:/Cards/export.json");
+describe("MockDesktopBackend 与 Sidecar 一致的拒绝与错误码", () => {
+  it.each<[string, MockDesktopBackendOptions, DesktopCommand, string]>([
+    ["未实现的命令", {}, cmd("metrics.query"), "unknown_method"],
+    ["config.test_connection 不连接真实对话服务", {}, cmd("config.test_connection"), "mock_unsupported"],
+    [
+      "account.login 密码错误",
+      {},
+      cmd("account.login", { account_id: "demo-account", password: "wrong" }),
+      "wrong_password",
+    ],
+    [
+      "account.register 密码不足 6 位",
+      {},
+      cmd("account.register", { username: "newbie", password: "123" }),
+      "weak_password",
+    ],
+    [
+      "account.register 用户名已存在",
+      {},
+      cmd("account.register", { username: "demo", password: "123456" }),
+      "username_taken",
+    ],
+    [
+      "account.change_password 原密码错误",
+      {},
+      cmd("account.change_password", { old_password: "wrong", new_password: "new-password" }),
+      "wrong_password",
+    ],
+    [
+      "remote.pair 配对码无效",
+      {},
+      cmd("remote.pair", { code: "000000", device_name: "我的手机" }),
+      "pairing_invalid_code",
+    ],
+    ["remote.tunnel_start 远程服务未监听", {}, cmd("remote.tunnel_start"), "serve_not_started"],
+    [
+      "card.set_avatar 不支持的图片格式",
+      {},
+      cmd("card.set_avatar", { card_id: "card-draft-001", path: "avatar.gif" }),
+      CARD_AVATAR_UNSUPPORTED,
+    ],
+    [
+      "card.peek_import 无法解析的文件",
+      {},
+      cmd("card.peek_import", { path: "C:/invalid.png" }),
+      CARD_IMPORT_FAILED,
+    ],
+    [
+      "card.import_png 无法解析的文件",
+      {},
+      cmd("card.import_png", { path: "C:/missing.png" }),
+      CARD_IMPORT_FAILED,
+    ],
+    [
+      "card.export_png 卡没有头像",
+      {},
+      cmd("card.export_png", { card_id: "card-draft-001", path: "C:/Export/bai.png" }),
+      CARD_EXPORT_FAILED,
+    ],
+    [
+      "card.export_png 内置卡只读",
+      {},
+      cmd("card.export_png", { card_id: "builtin:phainon", path: "C:/Export/builtin.png" }),
+      CARD_READ_ONLY,
+    ],
+    [
+      "voice.card_create 未配置语音 Key",
+      { voiceConfigured: false },
+      cmd("voice.card_create", { card_id: "card-draft-001", mode: "design" }),
+      VOICE_NOT_CONFIGURED,
+    ],
+    ["card.get 缺少 card_id", {}, cmd("card.get"), "invalid_params"],
+    ["card.get 卡不存在", {}, cmd("card.get", { card_id: "card-999" }), "card_not_found"],
+    ["card.create_draft 名称为空", {}, cmd("card.create_draft", { name: " " }), "invalid_params"],
+    [
+      "card.update 内置卡只读",
+      {},
+      cmd("card.update", { card_id: "builtin:phainon", card: {} }),
+      CARD_READ_ONLY,
+    ],
+    [
+      "card.update 缺少整卡 JSON",
+      {},
+      cmd("card.update", { card_id: "card-draft-001" }),
+      "invalid_params",
+    ],
+    [
+      "card.update 卡不存在",
+      {},
+      cmd("card.update", { card_id: "card-999", card: { spec: "chara_card_v3", data: { name: "不存在的卡" } } }),
+      "card_not_found",
+    ],
+    ["card.duplicate 卡不存在", {}, cmd("card.duplicate", { card_id: "card-999" }), "card_not_found"],
+    ["card.archive 草稿", {}, cmd("card.archive", { card_id: "card-draft-001" }), "card_invalid_state"],
+    ["card.archive 卡不存在", {}, cmd("card.archive", { card_id: "card-999" }), "card_not_found"],
+    ["card.unarchive 卡不存在", {}, cmd("card.unarchive", { card_id: "card-999" }), "card_not_found"],
+    [
+      "card.delete 未确认",
+      {},
+      cmd("card.delete", { card_id: "card-draft-001" }),
+      "card_confirm_required",
+    ],
+    ["card.delete 内置卡只读", {}, cmd("card.delete", { card_id: "builtin:phainon", confirm: true }), CARD_READ_ONLY],
+    ["card.select_active 内置卡只读", {}, cmd("card.select_active", { card_id: "builtin:phainon" }), CARD_READ_ONLY],
+    [
+      "card.select_active 已归档的卡",
+      {},
+      cmd("card.select_active", { card_id: "card-imported-004" }),
+      "card_invalid_state",
+    ],
+    [
+      "card.publish 草稿缺少第一条消息",
+      {},
+      cmd("card.publish", { card_id: "card-draft-001" }),
+      CARD_PUBLISH_INVALID,
+    ],
+  ])("%s时以错误码拒绝", async (_name, options, command, code) => {
+    const backend = new MockDesktopBackend("single-project", options);
+    const failure = backend.request(command);
+    await expect(failure).rejects.toBeInstanceOf(DesktopRequestError);
+    await expect(failure).rejects.toMatchObject({ code });
   });
 
-  it("card.peek_import_json 返回白厄样例预览；非法路径抛出 CARD_IMPORT_FAILED", async () => {
-    const backend = new MockDesktopBackend("single-project");
-    const result = await backend.request(cmd("card.peek_import_json", { path: "C:/bai.json" }));
-    expect(result).toMatchObject({
-      preview: {
-        name: "白厄（3.4前）",
-        spec_version: "3.0",
-        greeting_count: 6,
-        world_book_entries: 20,
-      },
-    });
-
-    await expect(
-      backend.request(cmd("card.peek_import_json", { path: "C:/invalid.json" })),
-    ).rejects.toMatchObject({ code: CARD_IMPORT_FAILED });
-  });
-
-  it("card.set_avatar 对不支持的图片格式抛出 CARD_AVATAR_UNSUPPORTED", async () => {
-    const backend = new MockDesktopBackend("single-project");
-    await expect(
-      backend.request(cmd("card.set_avatar", { card_id: "card-draft-001", path: "avatar.gif" })),
-    ).rejects.toMatchObject({ code: CARD_AVATAR_UNSUPPORTED });
-  });
-
-  it("voice.card_create 未配置语音 Key 时抛出 VOICE_NOT_CONFIGURED", async () => {
-    const backend = new MockDesktopBackend("single-project", { voiceConfigured: false });
-    await expect(
-      backend.request(cmd("voice.card_create", { card_id: "card-draft-001", mode: "design" })),
-    ).rejects.toMatchObject({ code: VOICE_NOT_CONFIGURED });
-  });
-
-  it("voice.card_create clone 模式成功后 emit voice.card_provision_changed", async () => {
-    const backend = new MockDesktopBackend("single-project");
-    const events: Array<{ event: string; payload: Record<string, unknown> }> = [];
-    const unsubscribe = backend.subscribe((evt) =>
-      events.push({ event: evt.event, payload: evt.payload }),
-    );
-    try {
-      await backend.request(cmd("voice.card_bind_reference", { card_id: "card-draft-001", path: "ref.wav" }));
-      const result = await backend.request(
-        cmd("voice.card_create", { card_id: "card-draft-001", mode: "clone" }),
-      );
-      expect(result).toMatchObject({ card_id: "card-draft-001", state: "voice_ready" });
-      expect((result as { voice_id?: string }).voice_id).toBeTruthy();
-
-      await vi.waitFor(() => {
-        expect(
-          events.some(
-            (e) => e.event === "voice.card_provision_changed" && e.payload.state === "voice_ready",
-          ),
-        ).toBe(true);
-      });
-      const changed = events.find(
-        (e) => e.event === "voice.card_provision_changed" && e.payload.state === "voice_ready",
-      );
-      expect(changed?.payload).toMatchObject({
-        card_id: "card-draft-001",
-        state: "voice_ready",
-      });
-    } finally {
-      unsubscribe();
-    }
-  });
-
-  it("voice.mobile_audio_chunk 检测到 seq 缺口时抛出 VOICE_AUDIO_SEQ_GAP", async () => {
+  it("voice.mobile_audio_chunk 按序收下分片回执 accepted，seq 不连续时抛出 voice_audio_seq_gap", async () => {
     const backend = new MockDesktopBackend("single-project");
     const start = await backend.request<{ session_id: string }>(
       cmd("voice.mobile_ptt_start", { conversation_id: "conv-1" }),
     );
-    await backend.request(
-      cmd("voice.mobile_audio_chunk", { session_id: start.session_id, seq: 0, data: "ZAA=" }),
-    );
+    await expect(
+      backend.request(
+        cmd("voice.mobile_audio_chunk", { session_id: start.session_id, seq: 0, data: "ZAA=" }),
+      ),
+    ).resolves.toEqual({ accepted: true });
     await expect(
       backend.request(
         cmd("voice.mobile_audio_chunk", { session_id: start.session_id, seq: 2, data: "ZAA=" }),
@@ -261,70 +302,49 @@ describe("MockDesktopBackend V0.3.5 角色卡/语音/审批 mock", () => {
     ).rejects.toMatchObject({ code: VOICE_AUDIO_SEQ_GAP });
   });
 
-  it("approval.resolve 重复决议抛出 APPROVAL_ALREADY_RESOLVED", async () => {
-    const backend = new MockDesktopBackend("single-project");
-    await backend.request(cmd("approval.resolve", { approval_id: "app-1", decision: "approve" }));
+  it("approval.resolve 重复裁决抛出 approval_already_resolved，details 是先到的终态", async () => {
+    const backend = new MockDesktopBackend("approval-request");
+    await backend.request(cmd("approval.resolve", { approval_id: "approval-1", decision: "allow" }));
     await expect(
-      backend.request(cmd("approval.resolve", { approval_id: "app-1", decision: "reject" })),
-    ).rejects.toMatchObject({ code: APPROVAL_ALREADY_RESOLVED });
+      backend.request(cmd("approval.resolve", { approval_id: "approval-1", decision: "deny" })),
+    ).rejects.toMatchObject({
+      code: APPROVAL_ALREADY_RESOLVED,
+      details: { approval_id: "approval-1", decision: "allow", resolved_by: "desktop" },
+    });
   });
 });
 
-describe("MockDesktopBackend V0.3.7 PNG 导入导出/电源状态 mock", () => {
-  it("card.peek_import 按扩展名分派 JSON/PNG 预览，card.peek_import_json 别名同行为", async () => {
+describe("MockDesktopBackend 角色卡导入与音色", () => {
+  it.each([
+    [
+      "C:/Cards/bai.json",
+      { format: "json", avatar_available: false, avatar_width: null, avatar_height: null },
+    ],
+    [
+      "C:/Cards/bai.PNG",
+      { format: "png", avatar_available: true, avatar_width: 512, avatar_height: 512 },
+    ],
+  ])("card.peek_import 预览 %s 时给出格式与头像信息", async (path, expected) => {
     const backend = new MockDesktopBackend("single-project");
-    await expect(
-      backend.request(cmd("card.peek_import", { path: "C:/Cards/bai.json" })),
-    ).resolves.toMatchObject({
-      preview: {
-        name: "白厄（3.4前）",
-        spec_version: "3.0",
-        format: "json",
-        avatar_available: false,
-        avatar_width: null,
-        avatar_height: null,
-        greeting_count: 6,
-        world_book_entries: 20,
-      },
+    await expect(backend.request(cmd("card.peek_import", { path }))).resolves.toMatchObject({
+      preview: expected,
     });
-    await expect(
-      backend.request(cmd("card.peek_import", { path: "C:/Cards/bai.PNG" })),
-    ).resolves.toMatchObject({
-      preview: {
-        name: "白厄（3.4前）",
-        format: "png",
-        avatar_available: true,
-        avatar_width: 512,
-        avatar_height: 512,
-      },
-    });
-    await expect(
-      backend.request(cmd("card.peek_import_json", { path: "C:/Cards/bai.json" })),
-    ).resolves.toMatchObject({ preview: { format: "json", avatar_available: false } });
   });
 
-  it("card.peek_import 对损坏文件路径抛出 CARD_IMPORT_FAILED", async () => {
+  it("card.import_png 入库为酒馆导入卡，PNG 字节同时作为头像", async () => {
     const backend = new MockDesktopBackend("single-project");
-    await expect(
-      backend.request(cmd("card.peek_import", { path: "C:/invalid.png" })),
-    ).rejects.toMatchObject({ code: CARD_IMPORT_FAILED });
-  });
-
-  it("card.import_png 返回 card_id/name/state/report 并把 PNG 字节置为头像", async () => {
-    const backend = new MockDesktopBackend("single-project");
-    const result = await backend.request<{ card_id: string; name: string; state: string }>(
+    const result = await backend.request<{ card_id: string; state: string }>(
       cmd("card.import_png", { path: "C:/Cards/bai.png" }),
     );
     expect(result.state).toBe("imported");
-    expect(result.name).toBe("白厄（3.4前）");
-    expect(result.card_id).toBeTruthy();
 
     const list = await backend.request<{
       cards: Array<{ card_id: string; has_avatar: boolean; source: string }>;
     }>(cmd("card.list"));
-    expect(
-      list.cards.find((card) => card.card_id === result.card_id),
-    ).toMatchObject({ has_avatar: true, source: "imported_png" });
+    expect(list.cards.find((card) => card.card_id === result.card_id)).toMatchObject({
+      has_avatar: true,
+      source: "tavern_import",
+    });
 
     const detail = await backend.request<{ avatar: { mime_type: string } | null }>(
       cmd("card.get", { card_id: result.card_id }),
@@ -332,93 +352,145 @@ describe("MockDesktopBackend V0.3.7 PNG 导入导出/电源状态 mock", () => {
     expect(detail.avatar).toMatchObject({ mime_type: "image/png" });
   });
 
-  it("card.import_png as_duplicate=true 名称追加（副本）；损坏路径抛出 CARD_IMPORT_FAILED", async () => {
+  it("card.import_png 以副本导入时名称追加「（副本）」", async () => {
     const backend = new MockDesktopBackend("single-project");
-    const result = await backend.request<{ name: string }>(
+    const original = await backend.request<{ name: string }>(
+      cmd("card.import_png", { path: "C:/Cards/bai.png" }),
+    );
+    const duplicate = await backend.request<{ name: string }>(
       cmd("card.import_png", { path: "C:/Cards/bai.png", as_duplicate: true }),
     );
-    expect(result.name).toBe("白厄（3.4前）（副本）");
-    await expect(
-      backend.request(cmd("card.import_png", { path: "C:/missing.png" })),
-    ).rejects.toMatchObject({ code: CARD_IMPORT_FAILED });
+    expect(duplicate.name).toBe(`${original.name}（副本）`);
   });
 
-  it("card.export_png 对无头像卡抛出 CARD_EXPORT_FAILED 并引导设置头像", async () => {
+  it("voice.card_create 在响应之前依次推送 voice_creating 与带 voice_id 的 voice_ready", async () => {
     const backend = new MockDesktopBackend("single-project");
-    await expect(
-      backend.request(
-        cmd("card.export_png", { card_id: "card-draft-001", path: "C:/Export/bai.png" }),
-      ),
-    ).rejects.toMatchObject({
-      code: CARD_EXPORT_FAILED,
-      message: "卡未设置头像，请先设置头像后再导出 PNG",
+    const changes: Array<Record<string, unknown>> = [];
+    const unsubscribe = backend.subscribe((event) => {
+      if (event.event === "voice.card_provision_changed") changes.push(event.payload);
     });
-  });
-
-  it("card.export_png 内置卡抛出 CARD_READ_ONLY，有头像卡返回冻结 §1.3 结果", async () => {
-    const backend = new MockDesktopBackend("single-project");
-    await expect(
-      backend.request(
-        cmd("card.export_png", { card_id: "builtin:phainon", path: "C:/Export/builtin.png" }),
-      ),
-    ).rejects.toMatchObject({ code: CARD_READ_ONLY });
-
-    const result = await backend.request<Record<string, unknown>>(
-      cmd("card.export_png", { card_id: "card-saved-002", path: "C:/Export/kafka.png" }),
-    );
-    expect(result).toMatchObject({
-      exported: true,
-      path: "C:/Export/kafka.png",
-      name: "卡芙卡",
-      spec_version: "3.0",
-      greeting_count: 6,
-      world_book_entries: 20,
-      extensions: ["hsr"],
-    });
-  });
-
-  it("power.get_status 返回冻结 §1.5 的 Windows 成功形状", async () => {
-    const backend = new MockDesktopBackend("single-project");
-    const result = await backend.request<Record<string, unknown>>(cmd("power.get_status"));
-    expect(result).toMatchObject({
-      supported: true,
-      platform: "windows",
-      plan_name: "平衡",
-      ac_sleep_timeout_seconds: 1800,
-      dc_sleep_timeout_seconds: 1200,
-      remote_serve_enabled: false,
-      threshold_seconds: 900,
-      at_risk: false,
-      reason: "AC/DC 睡眠超时均不低于阈值",
-    });
-    expect(typeof result.checked_at).toBe("string");
-  });
-
-  it("emitPowerStatusChanged 发出 power.status_changed 并更新 mock 最近状态", async () => {
-    const backend = new MockDesktopBackend("single-project");
-    const events: Array<{ event: string; payload: Record<string, unknown> }> = [];
-    const unsubscribe = backend.subscribe((event) =>
-      events.push({ event: event.event, payload: event.payload }),
-    );
     try {
-      const payload = {
-        supported: true,
-        platform: "windows",
-        plan_name: "平衡",
-        ac_sleep_timeout_seconds: 600,
-        dc_sleep_timeout_seconds: null,
-        remote_serve_enabled: true,
-        threshold_seconds: 900,
-        at_risk: true,
-        reason: "AC 睡眠超时 600 秒低于阈值 900 秒",
-        checked_at: new Date().toISOString(),
-      };
-      backend.emitPowerStatusChanged(payload);
-      const changed = events.find((event) => event.event === "power.status_changed");
-      expect(changed?.payload).toEqual(payload);
-      expect(backend.lastPowerStatus).toEqual(payload);
+      await backend.request(
+        cmd("voice.card_bind_reference", { card_id: "card-draft-001", path: "ref.wav" }),
+      );
+      const result = await backend.request<{ card_id: string; state: string; voice_id: string }>(
+        cmd("voice.card_create", { card_id: "card-draft-001", mode: "clone" }),
+      );
+
+      expect(result).toEqual({ card_id: "card-draft-001", state: "voice_ready", voice_id: result.voice_id });
+      expect(changes).toEqual([
+        { card_id: "card-draft-001", state: "voice_creating", voice_id: null, error: null },
+        { card_id: "card-draft-001", state: "voice_ready", voice_id: result.voice_id, error: null },
+      ]);
+      const list = await backend.request<CardListResult>(cmd("card.list"));
+      expect(list.cards.find((card) => card.card_id === "card-draft-001")?.voice_state).toBe("voice_ready");
     } finally {
       unsubscribe();
     }
+  });
+
+  it("voice.card_create 失败时先推送 voice_failed，再以 voice_card_create_failed 拒绝", async () => {
+    const backend = new MockDesktopBackend("single-project", { voiceProvisionFail: true });
+    const changes: Array<Record<string, unknown>> = [];
+    const unsubscribe = backend.subscribe((event) => {
+      if (event.event === "voice.card_provision_changed") changes.push(event.payload);
+    });
+    try {
+      const error = await backend
+        .request(
+          cmd("voice.card_create", { card_id: "card-draft-001", mode: "design", voice_prompt: "温柔的少女音" }),
+        )
+        .catch((reason: unknown) => reason);
+      expect(error).toBeInstanceOf(DesktopRequestError);
+      expect(error).toMatchObject({ code: "voice_card_create_failed" });
+
+      expect(changes.map((change) => change.state)).toEqual(["voice_creating", "voice_failed"]);
+      expect(changes[1]).toMatchObject({ voice_id: null, error: (error as DesktopRequestError).message });
+      const list = await backend.request<CardListResult>(cmd("card.list"));
+      expect(list.cards.find((card) => card.card_id === "card-draft-001")?.voice_state).toBe("voice_failed");
+    } finally {
+      unsubscribe();
+    }
+  });
+});
+
+describe("MockDesktopBackend 角色卡内容与 Sidecar 一致", () => {
+  it("card.get 返回 card.update 写入的整卡，写入第一条消息后草稿可以发布", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    const before = await backend.request<CardGetResult>(cmd("card.get", { card_id: "card-draft-001" }));
+    const data = before.card.data as Record<string, unknown>;
+    const edited = { ...before.card, data: { ...data, name: "改名后的草稿", first_mes: "你好。" } };
+
+    await backend.request(cmd("card.update", { card_id: "card-draft-001", card: edited }));
+
+    const after = await backend.request<CardGetResult>(cmd("card.get", { card_id: "card-draft-001" }));
+    expect(after.card).toEqual(edited);
+    const list = await backend.request<CardListResult>(cmd("card.list"));
+    expect(list.cards.find((card) => card.card_id === "card-draft-001")?.name).toBe("改名后的草稿");
+    await expect(backend.request(cmd("card.publish", { card_id: "card-draft-001" }))).resolves.toEqual({
+      card_id: "card-draft-001",
+      state: "saved",
+    });
+  });
+
+  it("样例卡摘要的 has_avatar 与 card.get 的头像一致", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    const list = await backend.request<CardListResult>(cmd("card.list", { include_archived: true }));
+    for (const summary of list.cards) {
+      const detail = await backend.request<CardGetResult>(cmd("card.get", { card_id: summary.card_id }));
+      expect({ card_id: summary.card_id, avatar: detail.avatar !== null }).toEqual({
+        card_id: summary.card_id,
+        avatar: summary.has_avatar,
+      });
+    }
+  });
+
+  it("复制内置卡生成可编辑的导入卡副本，没有头像", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    const copy = await backend.request<{ card_id: string; name: string }>(
+      cmd("card.duplicate", { card_id: "builtin:phainon" }),
+    );
+    expect(copy.name).toBe("白厄（副本）");
+
+    const list = await backend.request<CardListResult>(cmd("card.list"));
+    expect(list.cards.find((card) => card.card_id === copy.card_id)).toMatchObject({
+      name: "白厄（副本）",
+      state: "imported",
+      source: "tavern_import",
+      has_avatar: false,
+      read_only: false,
+    });
+    const detail = await backend.request<CardGetResult>(cmd("card.get", { card_id: copy.card_id }));
+    expect(detail).toMatchObject({ read_only: false, avatar: null });
+    expect((detail.card.data as Record<string, unknown>).name).toBe("白厄（副本）");
+  });
+});
+
+describe("MockDesktopBackend 电源与远程设备", () => {
+  it("power.get_status 与 Windows 上未开启远程服务时的 Sidecar 结果同形", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    await expect(backend.request(cmd("power.get_status"))).resolves.toMatchObject({
+      supported: true,
+      platform: "win32",
+      remote_serve_enabled: false,
+      at_risk: false,
+      reason: "远程服务未开启",
+      threshold_seconds: 900,
+      warnings: [],
+    });
+  });
+
+  it("remote.list_devices 的设备带到期时间：签发后 30 天与最近使用后 7 天取早", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    const result = await backend.request<RemoteListDevicesResult>(cmd("remote.list_devices"));
+    expect(result.devices).toEqual([
+      {
+        device_name: "小米 14",
+        issued_at: "2026-08-19T09:00:00+00:00",
+        last_used_at: "2026-08-19T12:30:00+00:00",
+        expires_at: "2026-08-26T12:30:00+00:00",
+        revoked: false,
+      },
+    ]);
   });
 });

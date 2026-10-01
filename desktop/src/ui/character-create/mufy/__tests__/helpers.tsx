@@ -1,21 +1,5 @@
 import { useState } from "react";
-import type { ReactElement } from "react";
 import { MufyAdvancedEditor } from "../MufyAdvancedEditor";
-
-export function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
-}
-
-/** 深冻结：任何对既有数据的原地修改都会在严格模式下抛 TypeError，锁定不突变。 */
-export function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === "object") {
-    for (const child of Object.values(value as Record<string, unknown>)) {
-      deepFreeze(child);
-    }
-    Object.freeze(value);
-  }
-  return value;
-}
 
 export function makeHarness(initial: Record<string, unknown>, options?: { readOnly?: boolean }) {
   let latest: Record<string, unknown> | null = null;

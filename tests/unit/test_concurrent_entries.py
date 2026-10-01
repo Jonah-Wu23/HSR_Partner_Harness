@@ -1,10 +1,3 @@
-"""O2.5：编排器入口并发防护测试。
-
-同一会话的入口按 asyncio.Lock 串行化：聊天轮（用户消息+角色台词）
-整体落库、轮内顺序固定且互不交错；任务执行不在锁内——执行期间
-到达的聊天轮可与运行中任务并发，运行中直接输入仍归一为修改。
-"""
-
 import asyncio
 from collections.abc import AsyncIterator
 
@@ -23,7 +16,20 @@ from pair_harness.core.contracts import (
     TaskRequestDraft,
 )
 from pair_harness.core.orchestrator import ConversationOrchestrator
-from tests.fakes import FixedDialogueModel
+from tests.fakes import (
+    FixedDialogueModel,
+    direct_input,
+    make_context,
+    unexpected_approval,
+)
+
+PROJECT = ProjectRef(project_id="p", name="p", root_path="C:\\project")
+
+
+def _context(conversation_id: str):
+    return make_context(
+        PROJECT, conversation_id=conversation_id, approval_mode=ApprovalMode.FULL_AUTO
+    )
 
 
 class PausingEngine(ScriptedCodingEngine):
@@ -36,11 +42,7 @@ class PausingEngine(ScriptedCodingEngine):
         self._started_per_conversation: dict[str, asyncio.Event] = {}
 
     def started_for(self, conversation_id: str) -> asyncio.Event:
-        """指定会话的 tool.started 事件（与会话绑定，可独立等待）。
-
-        ``_started`` 是全局布尔事件，置位后 ``wait()`` 立即返回，无法
-        区分"哪个会话推了 tool.started"；多会话测试按会话等待。
-        """
+        """指定会话推送 tool.started 的事件，多会话测试按会话等待。"""
         return self._started_per_conversation.setdefault(
             conversation_id, asyncio.Event()
         )
@@ -60,12 +62,10 @@ def _make_orchestrator(
     engine: ScriptedCodingEngine, *turns: CharacterTurn
 ) -> ConversationOrchestrator:
     return ConversationOrchestrator(
-        pair_id="phainon_ancient_machine",
-        project=ProjectRef(project_id="p", name="p", root_path="C:\\project"),
         dialogue_model=FixedDialogueModel(*turns),
         coding_engine=engine,
         store=None,
-        approval_mode=ApprovalMode.FULL_AUTO,
+        approval_callback=unexpected_approval,
     )
 
 
@@ -75,12 +75,7 @@ def _chat_round_indices(history, texts) -> list[int]:
 
 
 class AwaitingDialogueModel(FixedDialogueModel):
-    """stream_reply 内部让出事件循环——制造锁内挂起点。
-
-    没有这个挂起点时两条协程顺序跑完，``_conversation_lock`` 从未发生
-    竞争，测试对"锁被删除"这一回归是断臂的；有了挂起点，第二条协程
-    会在锁外被阻塞，锁的互斥才被真实验证。
-    """
+    """stream_reply 内部让出事件循环，在会话锁内制造挂起点，让并发轮真正争用锁。"""
 
     async def stream_reply(self, request):
         await asyncio.sleep(0)
@@ -91,29 +86,26 @@ class AwaitingDialogueModel(FixedDialogueModel):
 
 @pytest.mark.asyncio
 async def test_concurrent_chat_rounds_serialized_in_arrival_order() -> None:
-    """O2.5：并发纯聊天——聊天轮按到达顺序整体落库，互不交错。
-
-    对话模型在锁内让出事件循环：若会话锁被删除，乙轮的用户消息会插进
-    甲轮的用户/角色台词之间（甲、乙、我在、我也在），本测试随即变红。
-    """
     engine = ScriptedCodingEngine()
     orchestrator = ConversationOrchestrator(
-        pair_id="phainon_ancient_machine",
-        project=ProjectRef(project_id="p", name="p", root_path="C:\\project"),
         dialogue_model=AwaitingDialogueModel(
             CharacterTurn(speech="我在，慢慢说。", delegation=None),
             CharacterTurn(speech="我也在，慢慢说。", delegation=None),
         ),
         coding_engine=engine,
         store=None,
-        approval_mode=ApprovalMode.FULL_AUTO,
+        approval_callback=unexpected_approval,
     )
 
     round_a = asyncio.create_task(
-        orchestrator.handle_character_input(conversation_id="c", text="甲")
+        orchestrator.handle_character_input(
+            conversation_id="c", text="甲", context=_context("c")
+        )
     )
     round_b = asyncio.create_task(
-        orchestrator.handle_character_input(conversation_id="c", text="乙")
+        orchestrator.handle_character_input(
+            conversation_id="c", text="乙", context=_context("c")
+        )
     )
     await asyncio.gather(round_a, round_b)
 
@@ -125,12 +117,13 @@ async def test_concurrent_chat_rounds_serialized_in_arrival_order() -> None:
 
 @pytest.mark.asyncio
 async def test_running_task_keeps_origin_project_and_pair_after_context_switch() -> None:
-    """M4：切换聊天时，执行中的任务继续使用发起聊天的上下文。"""
+    """其他聊天以不同上下文处理回合时，执行中的任务继续使用发起聊天的上下文。"""
     started = asyncio.Event()
     release = asyncio.Event()
     engine = PausingEngine(started=started, release=release)
     orchestrator = _make_orchestrator(
         engine,
+        CharacterTurn(speech="另一个聊天里的回应。", delegation=None),
         CharacterTurn(
             speech="交给古代机械。",
             delegation=TaskRequestDraft(instructions="检查项目"),
@@ -139,15 +132,25 @@ async def test_running_task_keeps_origin_project_and_pair_after_context_switch()
     )
 
     task = asyncio.create_task(
-        orchestrator.handle_direct_input(conversation_id="origin", text="检查项目")
+        direct_input(
+            orchestrator,
+            conversation_id="origin",
+            text="检查项目",
+            context=_context("origin"),
+        )
     )
     await started.wait()
-    orchestrator.select_context(
-        project=ProjectRef(project_id="other", name="other", root_path="C:\\other"),
-        pair_id="other_pair",
+    # 执行期间另一个聊天以不同项目与搭档的上下文处理一轮
+    await orchestrator.handle_character_input(
         conversation_id="other-conversation",
-        approval_mode=ApprovalMode.FULL_AUTO,
-        assistant_instructions="other instructions",
+        text="切到另一个聊天",
+        context=make_context(
+            ProjectRef(project_id="other", name="other", root_path="C:\\other"),
+            conversation_id="other-conversation",
+            pair_id="other_pair",
+            approval_mode=ApprovalMode.FULL_AUTO,
+            assistant_instructions="other instructions",
+        ),
     )
     release.set()
     await task
@@ -161,10 +164,9 @@ async def test_running_task_keeps_origin_project_and_pair_after_context_switch()
 
 @pytest.mark.asyncio
 async def test_chat_rounds_and_amendment_during_execution() -> None:
-    """O2.5：执行中并发聊天轮 + 直接输入——历史确定、修改路由生效。
+    """执行期间并发的聊天轮与直接输入不等任务结束即完成，历史顺序确定。
 
-    聊天轮不等任务结束即完成（不与执行串行排队）；两轮消息各自相邻；
-    运行中直接输入归一为用户来源 amendment。
+    两轮聊天消息各自相邻，运行中直接输入归一为用户来源的修改。
     """
     engine = PausingEngine(started=asyncio.Event(), release=asyncio.Event())
     orchestrator = _make_orchestrator(
@@ -178,19 +180,30 @@ async def test_chat_rounds_and_amendment_during_execution() -> None:
         CharacterTurn(speech="做完了。", delegation=None),
     )
     first = asyncio.create_task(
-        orchestrator.handle_character_input(conversation_id="c", text="请让古代机械跑测试")
+        orchestrator.handle_character_input(
+            conversation_id="c", text="请让古代机械跑测试", context=_context("c")
+        )
     )
     try:
         await asyncio.wait_for(engine._started.wait(), timeout=5)
 
         round_a = asyncio.create_task(
-            orchestrator.handle_character_input(conversation_id="c", text="甲")
+            orchestrator.handle_character_input(
+                conversation_id="c", text="甲", context=_context("c")
+            )
         )
         round_b = asyncio.create_task(
-            orchestrator.handle_character_input(conversation_id="c", text="乙")
+            orchestrator.handle_character_input(
+                conversation_id="c", text="乙", context=_context("c")
+            )
         )
         direct = asyncio.create_task(
-            orchestrator.handle_direct_input(conversation_id="c", text="改成先跑冒烟")
+            direct_input(
+                orchestrator,
+                conversation_id="c",
+                text="改成先跑冒烟",
+                context=_context("c"),
+            )
         )
         await asyncio.wait_for(asyncio.gather(round_a, round_b, direct), timeout=5)
 
@@ -225,10 +238,6 @@ async def test_chat_rounds_and_amendment_during_execution() -> None:
 
 @pytest.mark.asyncio
 async def test_direct_input_from_other_conversation_runs_concurrently() -> None:
-    """V0.3.2 M4：并发单位是 conversation。
-
-    聊天 A 的任务运行中，聊天 B 的直发输入立即启动自己的任务——不再被
-    全局单任务闸门拒绝，也不会归一为 A 的 amendment。"""
     engine = PausingEngine(started=asyncio.Event(), release=asyncio.Event())
     orchestrator = _make_orchestrator(
         engine,
@@ -240,17 +249,21 @@ async def test_direct_input_from_other_conversation_runs_concurrently() -> None:
         CharacterTurn(speech="B 结果收到。"),
     )
     running = asyncio.create_task(
-        orchestrator.handle_character_input(conversation_id="chat-a", text="开始")
+        orchestrator.handle_character_input(
+            conversation_id="chat-a", text="开始", context=_context("chat-a")
+        )
     )
     try:
         await asyncio.wait_for(engine._started.wait(), timeout=5)
         direct = asyncio.create_task(
-            orchestrator.handle_direct_input(
-                conversation_id="chat-b", text="改成只跑单测"
+            direct_input(
+                orchestrator,
+                conversation_id="chat-b",
+                text="改成只跑单测",
+                context=_context("chat-b"),
             )
         )
-        # B 的回合推进到自己的工具事件：按会话等待（共享 started 事件已被
-        # A 置位，wait() 会立即返回，不能作为 B 的同步点）
+        # 共享的 started 事件已被 A 置位，B 按自己的会话事件同步
         await asyncio.wait_for(engine.started_for("chat-b").wait(), timeout=5)
         assert orchestrator.state.get_for_conversation("chat-a") is not None
         assert orchestrator.state.get_for_conversation("chat-b") is not None

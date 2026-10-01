@@ -1,151 +1,63 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 
-import type { HarnessActions } from "../../../contracts/actions";
-import type { ApprovalViewModel } from "../../../contracts/view-models";
+import { presentAppShell } from "../../../presenters/presenters";
+import { createActionController } from "../../../services/actions";
+import { MockDesktopBackend } from "../../../services/mockDesktopBackend";
+import { desktopStore } from "../../../stores/desktopStore";
 import { ApprovalBar } from "../../approval/ApprovalBar";
 
-function makeActions(overrides: Partial<HarnessActions> = {}): HarnessActions {
-  return {
-    createProject: vi.fn(),
-    renameProject: vi.fn(),
-    repairProjectPath: vi.fn(),
-    selectProject: vi.fn(),
-    archiveProject: vi.fn(),
-    createConversation: vi.fn(),
-    selectConversation: vi.fn(),
-    openConversationTab: vi.fn(),
-    closeConversationTab: vi.fn(),
-    openConversationWindow: vi.fn(),
-    renameConversation: vi.fn(),
-    archiveConversation: vi.fn(),
-    switchMode: vi.fn(),
-    switchTheme: vi.fn(),
-    submitMessage: vi.fn(),
-    editQueueItem: vi.fn(),
-    withdrawQueueItem: vi.fn(),
-    prioritizeQueueItem: vi.fn(),
-    editQueueFromStrip: vi.fn(),
-    cancelTask: vi.fn(),
-    resolveApproval: vi.fn(),
-    setApprovalMode: vi.fn(),
-    setReasoningEffort: vi.fn(),
-    openCharacterLibrary: vi.fn(),
-    openCharacterCreate: vi.fn(),
-    openChat: vi.fn(),
-    createCardDraft: vi.fn(),
-    deleteCard: vi.fn(),
-    exportCard: vi.fn(),
-    duplicateCard: vi.fn(),
-    listCards: vi.fn(),
-    saveDraft: vi.fn(),
-    openSettings: vi.fn(),
-    openVoicePreview: vi.fn(),
-    ...overrides,
-  } as unknown as HarnessActions;
+/** background-tasks 场景：conv-1 有 1 项待审批，conv-3 有 2 项，conv-2 没有。 */
+async function renderApprovalBar(currentConversationId: string) {
+  const backend = new MockDesktopBackend("background-tasks");
+  const controller = createActionController(backend);
+  backend.subscribe((event) => desktopStore.getState().applyEvents([event]));
+  await controller.loadBootstrap();
+  render(
+    <ApprovalBar
+      approval={presentAppShell(desktopStore.getState()).approval}
+      actions={controller.actions}
+      currentConversationId={currentConversationId}
+    />,
+  );
+  return backend;
 }
 
-function makePending(id: string, convId: string, summary: string) {
-  return {
-    approval_id: id,
-    conversation_id: convId,
-    operation: {
-      tool_kind: "shell" as const,
-      command: "pytest",
-      paths: [],
-      patch_file_count: null,
-      summary,
-    },
-    reason: `理由：${summary}`,
-    resolving: false,
-  };
-}
+describe("ApprovalBar 按当前聊天过滤待审批", () => {
+  afterEach(() => {
+    cleanup();
+    desktopStore.setState(desktopStore.getInitialState(), true);
+  });
 
-describe("V0.3.9 V01 ApprovalBar 过滤当前聊天与全量 pending 展示", () => {
-  afterEach(cleanup);
+  it("当前聊天的待审批全部渲染，其他聊天只给计数", async () => {
+    const backend = await renderApprovalBar("conv-3");
 
-  it("当前聊天存在多项待审批时，全量渲染而非只渲染第 1 项", () => {
-    const actions = makeActions();
-    const approval: ApprovalViewModel = {
-      mode: "request_approval",
-      pending: [
-        makePending("app-1", "conv-current", "命令 1"),
-        makePending("app-2", "conv-current", "命令 2"),
-      ],
-      resolved: [],
-      reviewActive: false,
-      reviewText: null,
-    };
+    expect(screen.getByText("写入甜点配方")).toBeInTheDocument();
+    expect(screen.getByText("删除旧文件")).toBeInTheDocument();
+    expect(screen.queryByText("当前聊天里的测试命令")).not.toBeInTheDocument();
+    expect(screen.getByText("其他聊天另有 1 项待审批操作")).toBeInTheDocument();
 
-    render(
-      <ApprovalBar
-        approval={approval}
-        actions={actions}
-        currentConversationId="conv-current"
-      />,
-    );
-
-    expect(screen.getByText("命令 1")).toBeInTheDocument();
-    expect(screen.getByText("命令 2")).toBeInTheDocument();
     const allowButtons = screen.getAllByRole("button", { name: "允许" });
     expect(allowButtons).toHaveLength(2);
-
     fireEvent.click(allowButtons[1]);
-    expect(actions.resolveApproval).toHaveBeenCalledWith("app-2", "allow");
+    await waitFor(() => {
+      const resolves = backend.recordedRequests.filter((request) => request.method === "approval.resolve");
+      expect(resolves.map((request) => request.params)).toEqual([
+        { approval_id: "approval-other-2", decision: "allow" },
+      ]);
+    });
   });
 
-  it("当前聊天无审批但其他聊天有审批时，渲染跨聊天待审批入口与计数", () => {
-    const actions = makeActions();
-    const approval: ApprovalViewModel = {
-      mode: "request_approval",
-      pending: [
-        makePending("app-other-1", "conv-other", "其他聊天命令 1"),
-        makePending("app-other-2", "conv-other", "其他聊天命令 2"),
-      ],
-      resolved: [],
-      reviewActive: false,
-      reviewText: null,
-    };
+  it("当前聊天没有待审批时只显示跨聊天入口，前往处理打开对应聊天", async () => {
+    const backend = await renderApprovalBar("conv-2");
 
-    render(
-      <ApprovalBar
-        approval={approval}
-        actions={actions}
-        currentConversationId="conv-current"
-      />,
-    );
+    expect(screen.queryByRole("button", { name: "允许" })).not.toBeInTheDocument();
+    expect(screen.getByText("其他聊天有 3 项待审批操作")).toBeInTheDocument();
 
-    expect(screen.queryByText("其他聊天命令 1")).not.toBeInTheDocument();
-    expect(screen.getByText("其他聊天有 2 项待审批操作")).toBeInTheDocument();
-
-    const jumpBtn = screen.getByRole("button", { name: "前往处理" });
-    expect(jumpBtn).toBeInTheDocument();
-    fireEvent.click(jumpBtn);
-    expect(actions.openConversationTab).toHaveBeenCalledWith("conv-other");
-  });
-
-  it("当前聊天与其他聊天均有审批时，渲染当前全部审批并附带跨聊天提示", () => {
-    const actions = makeActions();
-    const approval: ApprovalViewModel = {
-      mode: "request_approval",
-      pending: [
-        makePending("app-1", "conv-current", "当前命令"),
-        makePending("app-other-1", "conv-other", "其他命令"),
-      ],
-      resolved: [],
-      reviewActive: false,
-      reviewText: null,
-    };
-
-    render(
-      <ApprovalBar
-        approval={approval}
-        actions={actions}
-        currentConversationId="conv-current"
-      />,
-    );
-
-    expect(screen.getByText("当前命令")).toBeInTheDocument();
-    expect(screen.getByText("其他聊天另有 1 项待审批操作")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "前往处理" }));
+    await waitFor(() => {
+      const open = backend.recordedRequests.find((request) => request.method === "conversation.open");
+      expect(open?.params).toMatchObject({ conversation_id: "conv-1" });
+    });
   });
 });

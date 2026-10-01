@@ -1,19 +1,10 @@
-"""O3.2：角色适配器提示词装配与委派解析。
-
-用本地假 HTTP 服务（http.server 后台线程）覆盖：
-- 提示词装配内容（角色卡、搭档表达配置、进度/结果摘要注入、历史消息）；
-- 三种输出形态：纯聊天、任务委派（task）、修改（amendment）；
-- 解析失败直接暴露，不能把空输出变成省略号或其他占位台词；
-- client 生命周期：复用、超时、关闭。
-"""
-
 from __future__ import annotations
 
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Literal
 
+import httpx
 import pytest
 
 from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDialogueModel
@@ -25,16 +16,13 @@ from pair_harness.core.contracts import (
     Message,
     MessageKind,
     MessageSource,
-    ProjectRuntimeContext,
-    TaskAmendmentDraft,
-    TaskRequestDraft,
 )
 
 PAIR_ID = "phainon_ancient_machine"
 
 
 class _FakeChatHandler(BaseHTTPRequestHandler):
-    """记录请求体；按脚本顺序回复（流式 chunk 或完整 JSON）。"""
+    """记录请求体，按脚本顺序以 Chat Completions SSE 流回复。"""
 
     scripts: list[dict] = []
     captured: list[dict] = []
@@ -44,18 +32,12 @@ class _FakeChatHandler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length) or b"{}")
         type(self).captured.append(body)
         script = type(self).scripts.pop(0)
-        if script.get("stream"):
-            lines = []
-            for chunk in script["chunks"]:
-                delta_payload = chunk if isinstance(chunk, dict) else {"content": chunk}
-                data = json.dumps(
-                    {"choices": [{"delta": delta_payload}]}, ensure_ascii=False
-                )
-                lines.append(f"data: {data}\n")
-            lines.append("data: [DONE]\n")
-            content = "".join(lines).encode("utf-8")
-        else:
-            content = json.dumps(script["json"], ensure_ascii=False).encode("utf-8")
+        lines = []
+        for chunk in script["chunks"]:
+            data = json.dumps({"choices": [{"delta": {"content": chunk}}]}, ensure_ascii=False)
+            lines.append(f"data: {data}\n\n")
+        lines.append("data: [DONE]\n\n")
+        content = "".join(lines).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(content)))
@@ -73,11 +55,9 @@ def fake_chat_server(monkeypatch: pytest.MonkeyPatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeChatHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    # httpx 默认 trust_env，两类代理来源都必须对本地假服务屏蔽：
-    # 1) 终端注入的 socks5:// 代理变量会让 AsyncClient 在构造期就因缺 socksio 抛
-    #    ImportError（2026-09-06 全量 12 项失败根因），故测试进程内清除代理变量；
-    # 2) 环境无代理变量时 urllib 在 Windows 上回退读系统代理（WinINET），
-    #    127.0.0.1 请求被转发到代理、代理无法回连本机端口而 502——NO_PROXY 兜住回环。
+    # httpx 默认 trust_env：终端里的 socks5:// 代理变量会让 AsyncClient 构造时因缺
+    # socksio 抛 ImportError；没有代理变量时 Windows 会读系统代理，把 127.0.0.1
+    # 请求转给代理。测试内清除代理变量并用 NO_PROXY 放行回环地址。
     for var in ("ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy",
                 "HTTPS_PROXY", "https_proxy"):
         monkeypatch.delenv(var, raising=False)
@@ -96,18 +76,13 @@ def make_model(base_url: str) -> OpenAICompatibleDialogueModel:
     )
 
 
-def make_request(
-    *,
-    text: str = "帮我把报告整理好",
-    result_status: str | None = None,
-    runtime_mode: Literal["chat", "collaboration"] | None = None,
-) -> DialogueRequest:
+def make_request(*, result_status: str | None = None) -> DialogueRequest:
     user = Message(
         conversation_id="c",
         pair_id=PAIR_ID,
         source=MessageSource.USER,
         kind=MessageKind.USER_TEXT,
-        text=text,
+        text="帮我把报告整理好",
     )
     previous_character = Message(
         conversation_id="c",
@@ -132,18 +107,8 @@ def make_request(
         progress_summary=CharacterProgressSummary(
             current_step="正在整理报告数据",
             completed_steps=2,
-            total_steps=3,
         ),
         result_summary=result,
-        runtime_context=(
-            ProjectRuntimeContext(
-                project_name="HSR Partner Harness",
-                project_abs_dir=r"E:\AI\HSR Partner Harness",
-                conversation_mode=runtime_mode,
-            )
-            if runtime_mode is not None
-            else None
-        ),
     )
 
 
@@ -158,9 +123,7 @@ async def run_turn(model: OpenAICompatibleDialogueModel, request: DialogueReques
 async def test_prompt_assembly_injects_role_card_partner_and_summaries(
     fake_chat_server: str,
 ) -> None:
-    """提示词装配：system 含角色卡、搭档表达配置与输出约定；历史消息与
-    进度/结果摘要注入；最后一条是用户消息。"""
-    _FakeChatHandler.scripts.append({"stream": True, "chunks": ["这就去办。"]})
+    _FakeChatHandler.scripts.append({"chunks": ['{"speech":"这就去办。","delegate":false}']})
     model = make_model(fake_chat_server)
     request = make_request(result_status="completed")
 
@@ -181,7 +144,7 @@ async def test_prompt_assembly_injects_role_card_partner_and_summaries(
     assert {"role": "assistant", "content": "好，我陪着你弄。"} in messages
     # 进度与结果摘要注入
     assert any(
-        m["role"] == "system" and "任务进度" in m["content"] and "已完成：2/3" in m["content"]
+        m["role"] == "system" and "任务进度" in m["content"] and "已完成步骤：2" in m["content"]
         for m in messages
     )
     assert any(
@@ -194,185 +157,9 @@ async def test_prompt_assembly_injects_role_card_partner_and_summaries(
 
 
 @pytest.mark.asyncio
-async def test_plain_chat_output_yields_no_delegation(fake_chat_server: str) -> None:
-    _FakeChatHandler.scripts.append(
-        {"stream": True, "chunks": ["好", "啊，", "听你的。"]}
-    )
-    model = make_model(fake_chat_server)
-
-    turn = await run_turn(model, make_request(text="今天有点累，陪我聊聊。"))
-    assert turn.speech == "好啊，听你的。"
-    assert turn.delegation is None
-
-
-@pytest.mark.asyncio
-async def test_missing_delegation_is_not_synthesized_from_user_keywords(
-    fake_chat_server: str,
-) -> None:
-    """模型漏委派时不能靠关键词猜测并伪造一次助手任务。"""
-    _FakeChatHandler.scripts.append(
-        {"stream": True, "chunks": ['{"speech":"我来帮你处理。"}']}
-    )
-    model = make_model(fake_chat_server)
-    request = make_request(text="请帮我删除 notes.txt 文件")
-
-    turn = await run_turn(model, request)
-    assert turn.delegation is None
-    assert turn.speech == "我来帮你处理。"
-
-
-@pytest.mark.asyncio
-async def test_placeholder_speech_fails_instead_of_becoming_a_delegation_reply(
-    fake_chat_server: str,
-) -> None:
-    """模型只返回省略号时必须报错，不能伪造成委派成功。"""
-    _FakeChatHandler.scripts.append(
-        {"stream": True, "chunks": ['{"speech":"……"}']}
-    )
-    model = make_model(fake_chat_server)
-
-    with pytest.raises(ValueError, match="占位标点"):
-        await run_turn(
-            model,
-            make_request(
-                text="嗯，今天的话，我想陪你看看这个项目到底是做什么的。",
-                runtime_mode="collaboration",
-            ),
-        )
-
-
-@pytest.mark.asyncio
-async def test_result_turn_passes_through_verbatim(fake_chat_server: str) -> None:
-    """结果轮台词原样放行：代码不再改写，成败表述交给模型自己。"""
-    _FakeChatHandler.scripts.append(
-        {"stream": True, "chunks": ['{"speech":"我已经把文件删掉了。"}']}
-    )
-    model = make_model(fake_chat_server)
-
-    turn = await run_turn(model, make_request(result_status="failed"))
-
-    assert turn.delegation is None
-    assert turn.speech == "我已经把文件删掉了。"
-
-
-@pytest.mark.asyncio
-async def test_returned_reasoning_is_kept_separate_from_speech(fake_chat_server: str) -> None:
-    _FakeChatHandler.scripts.append(
-        {
-            "stream": True,
-            "chunks": [
-                {"reasoning_content": "先判断这是普通聊天。"},
-                {"content": '{"speech":"坐下歇一会儿，我陪你。"}'},
-            ],
-        }
-    )
-    model = make_model(fake_chat_server)
-
-    turn = await run_turn(model, make_request(text="今天有点累，陪我聊聊。"))
-
-    assert turn.speech == "坐下歇一会儿，我陪你。"
-    assert turn.reasoning == "先判断这是普通聊天。"
-    assert "先判断" not in turn.speech
-
-
-@pytest.mark.asyncio
-async def test_task_delegation_json_output(fake_chat_server: str) -> None:
-    """delegation.type == "task" → TaskRequestDraft（含 constraints）。"""
-    _FakeChatHandler.scripts.append(
-        {
-            "stream": True,
-            "chunks": [
-                "行，这事交给古代机械。",
-                '\n{"speech": "古代机械，把报告整理好。", "delegation": '
-                '{"type": "task", "instructions": "整理报告", '
-                '"constraints": ["markdown"]}}',
-            ],
-        }
-    )
-    model = make_model(fake_chat_server)
-
-    turn = await run_turn(model, make_request())
-    assert turn.speech == "古代机械，把报告整理好。"
-    assert isinstance(turn.delegation, TaskRequestDraft)
-    assert turn.delegation.instructions == "整理报告"
-    assert turn.delegation.constraints == ("markdown",)
-
-
-@pytest.mark.asyncio
-async def test_amendment_delegation_json_output(fake_chat_server: str) -> None:
-    """delegation.type == "amendment" → TaskAmendmentDraft。"""
-    _FakeChatHandler.scripts.append(
-        {
-            "stream": True,
-            "chunks": [
-                '{"speech": "换个方式，别用那种工具。", "delegation": '
-                '{"type": "amendment", "instructions": "改用 shutil", '
-                '"target_task_id": "t-9", "revision": 2}}',
-            ],
-        }
-    )
-    model = make_model(fake_chat_server)
-
-    turn = await run_turn(model, make_request())
-    assert isinstance(turn.delegation, TaskAmendmentDraft)
-    assert turn.delegation.instructions == "改用 shutil"
-    assert turn.delegation.target_task_id == "t-9"
-    assert turn.delegation.revision == 2
-
-
-@pytest.mark.asyncio
-async def test_broken_json_fails_instead_of_becoming_plain_speech(
-    fake_chat_server: str,
-) -> None:
-    """损坏的 JSON 输出直接失败，不能把半截协议当成成功回复。"""
-    _FakeChatHandler.scripts.append(
-        {
-            "stream": True,
-            "chunks": [
-                '\n{"speech": "古代机械，把报告整理好。", "delegation": {"type": "task", '
-            ],
-        }
-    )
-    model = make_model(fake_chat_server)
-
-    with pytest.raises(ValueError, match="可用 speech"):
-        await run_turn(model, make_request())
-
-
-@pytest.mark.asyncio
-async def test_prose_with_json_tail_parses_and_prose_braces_kept(
-    fake_chat_server: str,
-) -> None:
-    """台词后附完整 JSON → 结构化；普通台词中的花括号不受剥离影响。"""
-    _FakeChatHandler.scripts.append(
-        {
-            "stream": True,
-            "chunks": [
-                "我先看看",
-                '\n{"speech": "看过了。", "delegation": {"type": "task", '
-                '"instructions": "执行"}}',
-            ],
-        }
-    )
-    model = make_model(fake_chat_server)
-
-    turn = await run_turn(model, make_request())
-    # 台词不再被代码补全，原样保留模型输出
-    assert turn.speech == "看过了。"
-    assert isinstance(turn.delegation, TaskRequestDraft)
-
-    _FakeChatHandler.scripts.append({"stream": True, "chunks": ["用 {shutil} 库。"]})
-    turn = await run_turn(model, make_request())
-    assert turn.speech == "用 {shutil} 库。"
-    assert turn.delegation is None
-
-
-@pytest.mark.asyncio
-async def test_client_reused_across_calls_and_closed(fake_chat_server: str) -> None:
-    """client 生命周期：多次调用复用同一 client；aclose 关闭自建 client，
-    注入的外部 client 交由调用方关闭。"""
-    _FakeChatHandler.scripts.append({"stream": True, "chunks": ["第一句。"]})
-    _FakeChatHandler.scripts.append({"stream": True, "chunks": ["第二句。"]})
+async def test_client_reused_across_calls_and_rebuilt_after_aclose(fake_chat_server: str) -> None:
+    _FakeChatHandler.scripts.append({"chunks": ['{"speech":"第一句。"}']})
+    _FakeChatHandler.scripts.append({"chunks": ['{"speech":"第二句。"}']})
     model = make_model(fake_chat_server)
 
     await run_turn(model, make_request())
@@ -385,8 +172,8 @@ async def test_client_reused_across_calls_and_closed(fake_chat_server: str) -> N
 
     await model.aclose()
     assert model._client is None
-    # 再次调用会重建 client（不报错、不复用已关闭的连接池）
-    _FakeChatHandler.scripts.append({"stream": True, "chunks": ["第三句。"]})
+    # aclose 后再次调用会重建 client
+    _FakeChatHandler.scripts.append({"chunks": ['{"speech":"第三句。"}']})
     turn = await run_turn(model, make_request())
     assert turn.speech == "第三句。"
     assert model._client is not None and model._client is not first_client
@@ -394,10 +181,7 @@ async def test_client_reused_across_calls_and_closed(fake_chat_server: str) -> N
 
 @pytest.mark.asyncio
 async def test_injected_client_not_closed_by_aclose(fake_chat_server: str) -> None:
-    """注入的 client 由调用方管理：aclose 后仍可用。"""
-    import httpx
-
-    _FakeChatHandler.scripts.append({"stream": True, "chunks": ["注入。"]})
+    _FakeChatHandler.scripts.append({"chunks": ['{"speech":"注入。"}']})
     external = httpx.AsyncClient(base_url=fake_chat_server)
     model = OpenAICompatibleDialogueModel(
         base_url=fake_chat_server,

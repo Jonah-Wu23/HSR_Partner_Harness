@@ -1,344 +1,243 @@
-import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type {
+  PendingApproval,
+  PowerStatusPayload,
+  ProjectRecord,
+} from "@shared/contracts/protocol";
+import { mobileWsClient, useMobileStore } from "../../../lib/mobileStore";
+import { getStoredToken, saveCredentials } from "../../../lib/wsClient";
+import { FakeWebSocket, installFakeWebSocket, latestSocket } from "../../../test/fakeWebSocket";
 import { ChatListPage } from "../ChatListPage";
-import { useMobileStore } from "../../../lib/mobileStore";
-import * as router from "../../../lib/router";
-import type { PowerStatusPayload, ProjectRecord } from "@shared/contracts/protocol";
 
-const initialStoreState = useMobileStore.getState();
+const PROJECTS: ProjectRecord[] = [
+  {
+    project_id: "p1",
+    name: "主工程",
+    root_path: "/workspace/p1",
+    approval_mode: "request_approval",
+    reasoning_effort: "medium",
+    archived: false,
+    created_at: "2026-08-20T10:00:00Z",
+    last_opened_at: "2026-08-20T12:00:00Z",
+    path_available: true,
+    conversations: [
+      {
+        conversation_id: "c1",
+        project_id: "p1",
+        pair_id: "pair-1",
+        title: "核心开发",
+        last_mode: "collaboration",
+        archived: false,
+        created_at: "2026-08-20T10:00:00Z",
+        updated_at: "2026-08-20T14:30:00Z",
+      },
+      {
+        conversation_id: "c2-archived",
+        project_id: "p1",
+        pair_id: "pair-1",
+        title: "已归档聊天",
+        last_mode: "chat",
+        archived: true,
+        created_at: "2026-08-20T08:00:00Z",
+        updated_at: "2026-08-20T09:00:00Z",
+      },
+    ],
+  },
+  {
+    project_id: "p2",
+    name: "空聊天工程",
+    root_path: "/workspace/p2",
+    approval_mode: "request_approval",
+    reasoning_effort: "medium",
+    archived: false,
+    created_at: "2026-08-20T10:00:00Z",
+    last_opened_at: "2026-08-20T12:00:00Z",
+    path_available: true,
+    conversations: [],
+  },
+];
 
-describe("ChatListPage 组件", () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-    useMobileStore.setState({
-      connection: "disconnected",
-      deviceName: null,
-      projects: [],
-      conversationsById: {},
-      activeConversationId: null,
-      messages: [],
-      toolRuns: [],
-      approvals: [],
-      lastSequence: 0,
-      bootstrapped: false,
-      powerStatus: null,
-    });
+/**
+ * 首次同步完成后的列表数据。生产中由 app.bootstrap 快照写入，这里作为前置条件；
+ * 之后的事件序号从 11 起。
+ */
+function syncedState(projects: ProjectRecord[]): void {
+  useMobileStore.setState({ projects, bootstrapped: true, lastSequence: 10 });
+}
+
+function emitEvent(event: string, sequence: number, payload: unknown): void {
+  latestSocket().emit({ kind: "event", event, sequence, payload });
+}
+
+/** 已配对的手机重新连上桌面端，回放 app.bootstrap 的失败响应。 */
+async function failBootstrap(code: string, message: string): Promise<void> {
+  saveCredentials("tok-paired", "我的手机");
+  useMobileStore.getState().reconnect();
+  const socket = latestSocket();
+  socket.open();
+  await vi.waitFor(() => socket.lastFrame("app.bootstrap"));
+  socket.respondError(socket.lastFrame("app.bootstrap"), code, message);
+}
+
+describe("ChatListPage 聊天列表", () => {
+  beforeEach(async () => {
+    installFakeWebSocket();
+    window.localStorage.clear();
+    window.location.hash = "#/list";
+    // disconnect 把会话级状态复位到初值。
+    await useMobileStore.getState().disconnect();
+    useMobileStore.getState().start();
+    mobileWsClient.connect();
+    latestSocket().open();
   });
 
   afterEach(() => {
     cleanup();
-    vi.restoreAllMocks();
-    useMobileStore.setState(initialStoreState);
+    vi.unstubAllGlobals();
+    window.localStorage.clear();
   });
 
-  it("未水合（!bootstrapped）且处于连接中时展示骨架屏", () => {
-    useMobileStore.setState({
-      bootstrapped: false,
-      connection: "connecting",
-      projects: [],
-    });
-
+  it("首次同步完成前展示骨架屏", () => {
     render(<ChatListPage />);
+
     expect(screen.getByTestId("chat-list-skeleton")).toBeInTheDocument();
     expect(screen.queryByTestId("chat-list-empty")).toBeNull();
     expect(screen.queryByTestId("chat-list-content")).toBeNull();
   });
 
-  it("未水合且处于 unreachable 时展示真实错误与重试按钮", () => {
-    const reconnectSpy = vi.fn();
-    useMobileStore.setState({
-      bootstrapped: false,
-      connection: "unreachable",
-      reconnect: reconnectSpy,
-      projects: [],
-    });
+  it("重连退避用尽后展示无法连接的原因与通知偏好，点击重试重新建立连接", async () => {
+    vi.useFakeTimers();
+    try {
+      latestSocket().close();
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        vi.runOnlyPendingTimers();
+        latestSocket().close();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(useMobileStore.getState().connection).toBe("unreachable");
 
     render(<ChatListPage />);
-    expect(screen.getByTestId("chat-list-error")).toBeInTheDocument();
-    expect(screen.getByText("无法连接到电脑桌面端", { exact: false })).toBeInTheDocument();
+    expect(screen.getByTestId("chat-list-error")).toHaveTextContent("无法连接到电脑桌面端");
+    // 通知偏好是本机设置，同步失败时也能查看。
+    expect(await screen.findByTestId("notif-unavailable-pwa")).toBeInTheDocument();
 
-    const retryBtn = screen.getByTestId("chat-list-btn-retry");
-    fireEvent.click(retryBtn);
-    expect(reconnectSpy).toHaveBeenCalled();
+    const socketsBefore = FakeWebSocket.instances.length;
+    fireEvent.click(screen.getByTestId("chat-list-btn-retry"));
+
+    expect(FakeWebSocket.instances).toHaveLength(socketsBefore + 1);
+    await waitFor(() => expect(screen.getByTestId("chat-list-skeleton")).toBeInTheDocument());
   });
 
-  it("未水合且处于 auth_failed 时「重新配对」先清凭据再跳转", async () => {
-    const navigateSpy = vi.spyOn(router, "navigate");
-    const disconnectSpy = vi.spyOn(useMobileStore.getState(), "disconnect");
-    useMobileStore.setState({
-      bootstrapped: false,
-      connection: "auth_failed",
-      projects: [],
-    });
+  it("配对失效时「重新配对」清除本机凭据并跳转配对页", async () => {
+    await failBootstrap("unauthorized", "revoked_token");
+    await waitFor(() => expect(useMobileStore.getState().connection).toBe("auth_failed"));
 
     render(<ChatListPage />);
-    expect(screen.getByTestId("chat-list-error")).toBeInTheDocument();
-    expect(screen.getByText("配对鉴权已失效或设备已被撤销", { exact: false })).toBeInTheDocument();
-
-    const repairBtn = screen.getByTestId("chat-list-btn-repair");
-    fireEvent.click(repairBtn);
-    // 只 navigate 会被 App 路由守卫按 token 存在性弹回列表页，必须先 disconnect 清凭据
-    expect(disconnectSpy).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith({ name: "pair" }));
-  });
-
-  it("重新配对释放失败显示错误且不跳转", async () => {
-    const navigateSpy = vi.spyOn(router, "navigate");
-    vi.spyOn(useMobileStore.getState(), "disconnect").mockRejectedValue(new Error("release failed"));
-    useMobileStore.setState({connection:"auth_failed", bootstrapped:false});
-    render(<ChatListPage />);
+    expect(screen.getByTestId("chat-list-error")).toHaveTextContent(
+      "配对鉴权已失效或设备已被撤销",
+    );
     fireEvent.click(screen.getByTestId("chat-list-btn-repair"));
-    expect(await screen.findByRole("alert")).toHaveTextContent("release failed");
-    expect(navigateSpy).not.toHaveBeenCalled();
+
+    // 凭据已失效，服务端不会接受释放控制权，直接清凭据后跳转。
+    await waitFor(() => expect(window.location.hash).toBe("#/pair"));
+    expect(getStoredToken()).toBeNull();
+    expect(latestSocket().sentFrames("remote.release_control")).toHaveLength(0);
   });
 
-  it("已水合并且项目为空时展示空态引导", () => {
-    useMobileStore.setState({
-      bootstrapped: true,
-      connection: "connected",
-      projects: [],
-    });
+  it("状态同步失败时展示原始错误，点击重新同步再次发出 app.bootstrap", async () => {
+    await failBootstrap("internal_error", "快照生成失败：数据库被占用");
 
     render(<ChatListPage />);
-    expect(screen.getByTestId("chat-list-empty")).toBeInTheDocument();
-    expect(screen.getByText("还没有项目。请在电脑端创建项目后，手机端将自动同步项目与聊天。")).toBeInTheDocument();
+    expect(await screen.findByTestId("chat-list-sync-error-text")).toHaveTextContent(
+      "快照生成失败：数据库被占用",
+    );
+    fireEvent.click(screen.getByTestId("chat-list-btn-resync"));
+
+    await vi.waitFor(() => expect(latestSocket().sentFrames("app.bootstrap")).toHaveLength(2));
   });
 
-  it("已水合时按项目分组渲染会话，过滤 archived，点击可跳转聊天页", () => {
-    const navigateSpy = vi.spyOn(router, "navigate");
-
-    const mockProjects: ProjectRecord[] = [
-      {
-        project_id: "p1",
-        name: "主工程",
-        root_path: "/workspace/p1",
-        approval_mode: "request_approval",
-        reasoning_effort: "medium",
-        archived: false,
-        created_at: "2026-08-20T10:00:00Z",
-        last_opened_at: "2026-08-20T12:00:00Z",
-        path_available: true,
-        conversations: [
-          {
-            conversation_id: "c1",
-            project_id: "p1",
-            pair_id: "pair-1",
-            title: "核心开发",
-            last_mode: "collaboration",
-            archived: false,
-            created_at: "2026-08-20T10:00:00Z",
-            updated_at: "2026-08-20T14:30:00Z",
-          },
-          {
-            conversation_id: "c2-archived",
-            project_id: "p1",
-            pair_id: "pair-1",
-            title: "已归档聊天",
-            last_mode: "chat",
-            archived: true,
-            created_at: "2026-08-20T08:00:00Z",
-            updated_at: "2026-08-20T09:00:00Z",
-          },
-        ],
-      },
-      {
-        project_id: "p2",
-        name: "空聊天工程",
-        root_path: "/workspace/p2",
-        approval_mode: "request_approval",
-        reasoning_effort: "medium",
-        archived: false,
-        created_at: "2026-08-20T10:00:00Z",
-        last_opened_at: "2026-08-20T12:00:00Z",
-        path_available: true,
-        conversations: [],
-      },
-    ];
-
-    useMobileStore.setState({
-      bootstrapped: true,
-      connection: "connected",
-      projects: mockProjects,
-    });
-
+  it("同步完成且没有项目时展示空态引导与连接详情入口", () => {
+    syncedState([]);
     render(<ChatListPage />);
-    expect(screen.getByTestId("chat-list-content")).toBeInTheDocument();
+
+    expect(screen.getByTestId("chat-list-empty")).toHaveTextContent(
+      "还没有项目。请在电脑端创建项目后，手机端将自动同步项目与聊天。",
+    );
+    expect(screen.getByTestId("btn-toggle-connection-details")).toBeInTheDocument();
+  });
+
+  it("按项目分组渲染未归档的会话，点击会话进入聊天页", () => {
+    syncedState(PROJECTS);
+    render(<ChatListPage />);
+
     expect(screen.getByText("主工程")).toBeInTheDocument();
     expect(screen.getByText("核心开发")).toBeInTheDocument();
     expect(screen.getByText("委派")).toBeInTheDocument();
     expect(screen.queryByText("已归档聊天")).toBeNull();
-
     expect(screen.getByText("空聊天工程")).toBeInTheDocument();
     expect(screen.getByText("暂无活跃聊天")).toBeInTheDocument();
 
-    const convItem = screen.getByTestId("conversation-item-c1");
-    fireEvent.click(convItem);
-    expect(navigateSpy).toHaveBeenCalledWith({ name: "chat", conversationId: "c1" });
+    fireEvent.click(screen.getByTestId("conversation-item-c1"));
+    expect(window.location.hash).toBe("#/chat/c1");
   });
-});
 
-describe("ChatListPage V0.3.7 接线（电源状态与通知偏好）", () => {
-  const atRiskStatus: PowerStatusPayload = {
-    supported: true,
-    platform: "windows",
-    plan_name: "平衡",
-    ac_sleep_timeout_seconds: 600,
-    dc_sleep_timeout_seconds: 1800,
-    remote_serve_enabled: true,
-    threshold_seconds: 900,
-    at_risk: true,
-    reason: "AC 睡眠超时 600 秒低于阈值 900 秒",
-    checked_at: "2026-09-02T10:00:00",
-  };
+  it("task.busy_changed 与 approval.requested 到达后会话行显示运行中与待审批徽章", async () => {
+    syncedState(PROJECTS);
+    render(<ChatListPage />);
 
-  beforeEach(() => {
-    vi.restoreAllMocks();
-    window.localStorage.clear();
-    useMobileStore.setState({
-      connection: "connected",
-      deviceName: "测试手机",
-      projects: [],
-      conversationsById: {},
-      activeConversationId: null,
-      messages: [],
-      toolRuns: [],
-      approvals: [],
-      lastSequence: 0,
-      bootstrapped: true,
-      powerStatus: null,
+    const activeTask = { project_id: "p1", conversation_id: "c1", task_id: "t1", engine_turn_id: "e1" };
+    emitEvent("task.busy_changed", 11, {
+      conversation_id: "c1",
+      busy: true,
+      active_task: activeTask,
+      active_tasks: [activeTask],
+    });
+    const approval: PendingApproval = {
+      approval_id: "a1",
+      conversation_id: "c1",
+      task_id: "t1",
+      operation: {
+        tool_kind: "shell",
+        command: "npm test",
+        paths: [],
+        patch_file_count: null,
+        summary: "运行单元测试",
+      },
+      reason: "需要执行命令",
+    };
+    emitEvent("approval.requested", 12, approval);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("badge-running-c1")).toHaveTextContent("运行中");
+      expect(screen.getByTestId("badge-approvals-c1")).toHaveTextContent("待审批 1");
     });
   });
 
-  afterEach(() => {
-    cleanup();
-    vi.restoreAllMocks();
-    window.localStorage.clear();
-    useMobileStore.setState(initialStoreState);
-  });
-
-  it("at_risk 时在列表页顶部展示「电脑可能休眠」警示条，reason 原文呈现", () => {
-    useMobileStore.setState({ powerStatus: atRiskStatus });
+  it("电源警示点「知道了」后收起，power.status_changed 带来新的检查时间时重新出现", async () => {
+    const atRiskStatus: PowerStatusPayload = {
+      supported: true,
+      platform: "windows",
+      plan_name: "平衡",
+      ac_sleep_timeout_seconds: 600,
+      dc_sleep_timeout_seconds: 1800,
+      remote_serve_enabled: true,
+      threshold_seconds: 900,
+      at_risk: true,
+      reason: "AC 睡眠超时 600 秒低于阈值 900 秒",
+      checked_at: "2026-09-02T10:00:00",
+      warnings: [],
+    };
+    syncedState([]);
     render(<ChatListPage />);
-    expect(screen.getByTestId("power-status-banner")).toHaveClass("is-at-risk");
-    expect(screen.getByTestId("power-status-title")).toHaveTextContent("电脑可能休眠");
-    expect(screen.getByTestId("power-status-reason")).toHaveTextContent(
-      "AC 睡眠超时 600 秒低于阈值 900 秒",
-    );
-  });
 
-  it("点击「知道了」收敛警示条；电脑状态再次变化（新 checked_at）时重新出现", () => {
-    useMobileStore.setState({ powerStatus: atRiskStatus });
-    render(<ChatListPage />);
-    fireEvent.click(screen.getByTestId("btn-power-dismiss"));
+    emitEvent("power.status_changed", 11, atRiskStatus);
+    fireEvent.click(await screen.findByTestId("btn-power-dismiss"));
     expect(screen.queryByTestId("power-status-banner")).toBeNull();
 
-    act(() => {
-      useMobileStore.setState({
-        powerStatus: { ...atRiskStatus, checked_at: "2026-09-02T10:05:00" },
-      });
-    });
-    expect(screen.getByTestId("power-status-banner")).toBeInTheDocument();
-  });
-
-  it("远程服务未开启时弱化展示 reason 原文，不冒充休眠风险", () => {
-    useMobileStore.setState({
-      powerStatus: { ...atRiskStatus, at_risk: false, remote_serve_enabled: false, reason: "远程服务未开启" },
-    });
-    render(<ChatListPage />);
-    expect(screen.getByTestId("power-status-banner")).toHaveClass("is-muted");
-    expect(screen.getByTestId("power-status-reason")).toHaveTextContent("远程服务未开启");
-    expect(screen.queryByTestId("power-status-title")).toBeNull();
-  });
-
-  it("无电源数据时不渲染警示条", () => {
-    render(<ChatListPage />);
-    expect(screen.queryByTestId("power-status-banner")).toBeNull();
-  });
-
-  it("PWA 下通知偏好区如实说明仅 Android 壳内可用，不渲染任何开关", async () => {
-    const { container } = render(<ChatListPage />);
-    const note = await screen.findByTestId("notif-unavailable-pwa");
-    expect(note).toHaveTextContent("本地通知仅在 Android 壳内可用");
-    expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
-  });
-
-  it("V0.3.9 V01：会话行根据 store 真实数据渲染运行中与待审批徽章", () => {
-    const mockProjects: ProjectRecord[] = [
-      {
-        project_id: "p1",
-        name: "主工程",
-        root_path: "/workspace/p1",
-        approval_mode: "request_approval",
-        reasoning_effort: "medium",
-        archived: false,
-        created_at: "2026-08-20T10:00:00Z",
-        last_opened_at: "2026-08-20T12:00:00Z",
-        path_available: true,
-        conversations: [
-          {
-            conversation_id: "c1",
-            project_id: "p1",
-            pair_id: "pair-1",
-            title: "核心开发",
-            last_mode: "collaboration",
-            archived: false,
-            created_at: "2026-08-20T10:00:00Z",
-            updated_at: "2026-08-20T14:30:00Z",
-          },
-        ],
-      },
-    ];
-
-    useMobileStore.setState({
-      bootstrapped: true,
-      connection: "connected",
-      projects: mockProjects,
-      activeTask: {
-        project_id: "p1",
-        task_id: "t1",
-        conversation_id: "c1",
-        engine_turn_id: "e1",
-      },
-      activeTasks: [
-        {
-          project_id: "p1",
-          task_id: "t1",
-          conversation_id: "c1",
-          engine_turn_id: "e1",
-        },
-      ],
-      approvals: [
-        {
-          approval_id: "a1",
-          conversation_id: "c1",
-          task_id: "t1",
-          decision: "allow",
-          operation: { type: "command", summary: "test" },
-          created_at: "2026-08-20T10:00:00Z",
-        } as unknown as import("@shared/contracts/protocol").PendingApproval,
-      ],
-    });
-
-    render(<ChatListPage />);
-    expect(screen.getByTestId("badge-running-c1")).toHaveTextContent("运行中");
-    expect(screen.getByTestId("badge-approvals-c1")).toHaveTextContent("待审批 1");
-  });
-
-  it("V0.3.9 V06：已水合状态下挂载连接详情抽屉，点击可展开收起", () => {
-    useMobileStore.setState({
-      bootstrapped: true,
-      connection: "connected",
-      projects: [],
-    });
-
-    render(<ChatListPage />);
-    const toggle = screen.getByTestId("btn-toggle-connection-details");
-    expect(toggle).toBeInTheDocument();
-    expect(screen.queryByTestId("lease-status-panel")).toBeNull();
-
-    fireEvent.click(toggle);
-    expect(screen.getByTestId("lease-status-panel")).toBeInTheDocument();
-    expect(screen.getByTestId("device-list-panel")).toBeInTheDocument();
+    emitEvent("power.status_changed", 12, { ...atRiskStatus, checked_at: "2026-09-02T10:05:00" });
+    expect(await screen.findByTestId("power-status-banner")).toHaveTextContent("电脑可能休眠");
   });
 });

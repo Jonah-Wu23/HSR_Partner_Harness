@@ -1,13 +1,16 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
-import type { HarnessActions } from "../../contracts/actions";
 import type { ComposerViewModel, VoiceViewModel } from "../../contracts/view-models";
+import { createActionController } from "../../services/actions";
+import { DesktopRequestError } from "../../services/backend";
+import { MockDesktopBackend } from "../../services/mockDesktopBackend";
+import { desktopStore } from "../../stores/desktopStore";
+import { fakeBackend, unexpectedCommand } from "../../test/fakeBackend";
 import { Composer } from "../composer/Composer";
 
 const composer: ComposerViewModel = {
   target: "character",
-  draft: "",
   enabled: true,
   approvalMode: "request_approval",
   reasoningEffort: "low",
@@ -28,85 +31,101 @@ const voice: VoiceViewModel = {
   canPushToTalk: true,
 };
 
-function stubActions(): HarnessActions {
-  return {
-    submitMessage: vi.fn(),
-    setVadEnabled: vi.fn(),
-    startPushToTalk: vi.fn(),
-    stopPushToTalk: vi.fn(),
-    stopSpeech: vi.fn(),
-    skipSpeech: vi.fn(),
-    setReasoningEffort: vi.fn(),
-  } as unknown as HarnessActions;
+const VOICE_BUTTONS = ["VAD", "按键说话", "停止播报"];
+const RIGHT_ALT = { code: "AltRight", key: "Alt", location: 2 };
+
+afterEach(() => {
+  cleanup();
+  desktopStore.setState(desktopStore.getInitialState(), true);
+});
+
+/** 启动 single-project 场景（活动聊天 conv-1），返回 MockDesktopBackend 与真实 actions。 */
+async function connectMockBackend() {
+  const backend = new MockDesktopBackend("single-project");
+  const controller = createActionController(backend);
+  await controller.loadBootstrap();
+  return { backend, actions: controller.actions };
 }
 
-afterEach(cleanup);
+/** 启动快照之后输入区发出的命令。 */
+function composerCommands(backend: MockDesktopBackend) {
+  return backend.recordedRequests
+    .filter((command) => command.method !== "app.bootstrap")
+    .map(({ method, params }) => ({ method, params }));
+}
 
 describe("Composer 语音按钮组", () => {
-  it("voice.enabled=true 时显示 VAD/按键说话/停止播报与状态", () => {
-    render(<Composer composer={composer} voice={voice} mode="chat" actions={stubActions()} />);
-    expect(screen.getByRole("button", { name: "VAD" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "按键说话" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "停止播报" })).toBeInTheDocument();
+  it.each([
+    { enabled: true, label: "显示", visible: VOICE_BUTTONS },
+    { enabled: false, label: "整体隐藏", visible: [] },
+  ])("voice.enabled=$enabled 时语音按钮组$label", ({ enabled, visible }) => {
+    const { actions } = createActionController(new MockDesktopBackend("single-project"));
+    render(<Composer composer={composer} voice={{ ...voice, enabled }} mode="chat" actions={actions} />);
+
+    expect(VOICE_BUTTONS.filter((name) => screen.queryByRole("button", { name }))).toEqual(visible);
   });
 
-  it("voice.enabled=false 时语音按钮组整体隐藏", () => {
-    render(
-      <Composer
-        composer={composer}
-        voice={{ ...voice, enabled: false }}
-        mode="chat"
-        actions={stubActions()}
-      />,
-    );
-    expect(screen.queryByRole("button", { name: "VAD" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "按键说话" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "停止播报" })).not.toBeInTheDocument();
-  });
-
-  it("VAD 按钮切换，PTT 点击开始/结束聆听", () => {
-    const actions = stubActions();
+  it("点击 VAD 下发开启 VAD，点击按键说话依次下发开始与结束聆听", async () => {
+    const { backend, actions } = await connectMockBackend();
     render(<Composer composer={composer} voice={voice} mode="chat" actions={actions} />);
-    fireEvent.click(screen.getByRole("button", { name: "VAD" }));
-    expect(actions.setVadEnabled).toHaveBeenCalledWith(true);
 
+    fireEvent.click(screen.getByRole("button", { name: "VAD" }));
     const ptt = screen.getByRole("button", { name: "按键说话" });
     fireEvent.click(ptt);
-    expect(actions.startPushToTalk).toHaveBeenCalledWith("character");
+    expect(ptt).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(ptt);
-    expect(actions.stopPushToTalk).toHaveBeenCalled();
+    expect(ptt).toHaveAttribute("aria-pressed", "false");
+
+    expect(composerCommands(backend)).toEqual([
+      { method: "voice.vad_set", params: { enabled: true } },
+      { method: "voice.ptt_start", params: { target: "character", conversation_id: "conv-1" } },
+      { method: "voice.ptt_stop", params: {} },
+    ]);
   });
 
-  it("右 Alt 作为默认 PTT 键位，按下切换，松开不结束", () => {
-    const actions = stubActions();
+  it("右 Alt 按下切换聆听，松开不结束", async () => {
+    const { backend, actions } = await connectMockBackend();
     render(<Composer composer={composer} voice={voice} mode="chat" actions={actions} />);
 
-    fireEvent.keyDown(window, { code: "AltRight", key: "Alt", location: 2 });
-    expect(actions.startPushToTalk).toHaveBeenCalledWith("character");
-    fireEvent.keyUp(window, { code: "AltRight", key: "Alt", location: 2 });
-    expect(actions.stopPushToTalk).not.toHaveBeenCalled();
-    fireEvent.keyDown(window, { code: "AltRight", key: "Alt", location: 2 });
-    expect(actions.stopPushToTalk).toHaveBeenCalled();
+    fireEvent.keyDown(window, RIGHT_ALT);
+    fireEvent.keyUp(window, RIGHT_ALT);
+    expect(composerCommands(backend)).toEqual([
+      { method: "voice.ptt_start", params: { target: "character", conversation_id: "conv-1" } },
+    ]);
+
+    fireEvent.keyDown(window, RIGHT_ALT);
+    expect(composerCommands(backend).map(({ method }) => method)).toEqual([
+      "voice.ptt_start",
+      "voice.ptt_stop",
+    ]);
   });
 });
 
-describe("Composer M5.3 发送失败保留草稿", () => {
-  it("请求失败时保留输入文字并显示错误", async () => {
-    const actions = stubActions();
-    actions.submitMessage = vi.fn().mockRejectedValue(new Error("Sidecar 已断开"));
-    render(<Composer composer={composer} voice={voice} mode="chat" actions={actions} />);
+describe("Composer 发送", () => {
+  it("请求失败时保留输入文字并显示错误原文", async () => {
+    const { backend } = fakeBackend((command) => {
+      if (command.method !== "chat.submit") return unexpectedCommand(command);
+      throw new DesktopRequestError("no_active_conversation", "请先创建或选择项目");
+    });
+    render(
+      <Composer
+        composer={composer}
+        voice={voice}
+        mode="chat"
+        actions={createActionController(backend).actions}
+      />,
+    );
 
     const textarea = screen.getByLabelText("消息输入");
     fireEvent.change(textarea, { target: { value: "这句话不能丢" } });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
 
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Sidecar 已断开"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("请先创建或选择项目");
     expect(textarea).toHaveValue("这句话不能丢");
   });
 
-  it("收到 accepted/queued 回执后才清空草稿", async () => {
-    const actions = stubActions();
-    actions.submitMessage = vi.fn().mockResolvedValue({ status: "received" });
+  it("后端接收消息后清空草稿", async () => {
+    const { backend, actions } = await connectMockBackend();
     render(<Composer composer={composer} voice={voice} mode="chat" actions={actions} />);
 
     const textarea = screen.getByLabelText("消息输入");
@@ -114,6 +133,11 @@ describe("Composer M5.3 发送失败保留草稿", () => {
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
 
     await waitFor(() => expect(textarea).toHaveValue(""));
-    expect(actions.submitMessage).toHaveBeenCalledWith("发送成功", "character");
+    expect(composerCommands(backend)).toEqual([
+      {
+        method: "chat.submit",
+        params: { conversation_id: "conv-1", target: "character", text: "发送成功" },
+      },
+    ]);
   });
 });

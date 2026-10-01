@@ -1,129 +1,85 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ConnectionBanner } from "../ConnectionBanner";
-import { useMobileStore } from "../../lib/mobileStore";
-import * as router from "../../lib/router";
+import { mobileWsClient, useMobileStore } from "../../lib/mobileStore";
+import { getStoredToken, saveCredentials } from "../../lib/wsClient";
+import { FakeWebSocket, installFakeWebSocket, latestSocket } from "../../test/fakeWebSocket";
 
-describe("ConnectionBanner 组件", () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
+const DISCONNECTED_HINT = "电脑休眠、关机或 Sidecar 未运行时也会表现为断连。";
+
+describe("ConnectionBanner 连接状态条", () => {
+  beforeEach(async () => {
+    installFakeWebSocket();
+    window.localStorage.clear();
+    window.location.hash = "#/list";
+    // disconnect 把会话级状态复位到初值，并断开上一条用例留下的连接。
+    await useMobileStore.getState().disconnect();
+    useMobileStore.getState().start();
   });
 
   afterEach(() => {
     cleanup();
-    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    window.localStorage.clear();
   });
 
-  it("connected 态完全收起（返回 null）", () => {
+  it("已连接时不渲染", () => {
     const { container } = render(<ConnectionBanner connection="connected" />);
     expect(container.firstChild).toBeNull();
   });
 
-  it("connecting 态展示警示色且无操作按钮", () => {
-    render(<ConnectionBanner connection="connecting" />);
-    const banner = screen.getByTestId("connection-banner");
-    expect(banner).toHaveClass("is-warn");
-    expect(banner).toHaveTextContent("正在连接桌面端…");
-    expect(screen.queryByTestId("btn-repair")).toBeNull();
-    expect(screen.queryByTestId("btn-reconnect")).toBeNull();
+  it.each([
+    { connection: "connecting", message: "正在连接桌面端…", hint: false, action: null },
+    { connection: "reconnecting", message: "与桌面端连接中断，正在重连…", hint: false, action: null },
+    { connection: "unreachable", message: "无法连接到桌面端", hint: true, action: "btn-reconnect" },
+    { connection: "disconnected", message: "已断开与桌面端的连接", hint: true, action: "btn-reconnect" },
+    { connection: "auth_failed", message: "配对已失效或设备已被撤销", hint: false, action: "btn-repair" },
+  ] as const)("$connection 时展示状态文案与对应操作", ({ connection, message, hint, action }) => {
+    render(<ConnectionBanner connection={connection} />);
+
+    expect(screen.getByTestId("connection-banner")).toHaveTextContent(message);
+    expect(screen.queryByTestId("conn-banner-hint") !== null).toBe(hint);
+    if (hint) expect(screen.getByTestId("conn-banner-hint")).toHaveTextContent(DISCONNECTED_HINT);
+    for (const button of ["btn-reconnect", "btn-repair"]) {
+      expect(screen.queryByTestId(button) !== null).toBe(button === action);
+    }
   });
 
-  it("reconnecting 态展示警示色且文案提示重连中", () => {
-    render(<ConnectionBanner connection="reconnecting" />);
-    const banner = screen.getByTestId("connection-banner");
-    expect(banner).toHaveClass("is-warn");
-    expect(banner).toHaveTextContent("与桌面端连接中断，正在重连…");
+  it.each([
+    { reason: "expired_token", message: "登录令牌已过期（最长30天或7天未使用），请重新配对。" },
+    { reason: "revoked_token", message: "本设备已被桌面端撤销授权，请重新配对。" },
+    { reason: "invalid_token", message: "配对已失效或设备已被撤销，请重新配对" },
+  ] as const)("鉴权失败原因 $reason 展示对应文案", ({ reason, message }) => {
+    render(<ConnectionBanner connection="auth_failed" authFailureReason={reason} />);
+    expect(screen.getByTestId("connection-banner")).toHaveTextContent(message);
   });
 
-  it("unreachable 态展示醒目红色并提供「重试」按钮，点击调用 store.reconnect", () => {
-    const reconnectSpy = vi.spyOn(useMobileStore.getState(), "reconnect");
+  it("点击「重试」重新建立连接", () => {
     render(<ConnectionBanner connection="unreachable" />);
-    const banner = screen.getByTestId("connection-banner");
-    expect(banner).toHaveClass("is-down");
-    expect(banner).toHaveTextContent("无法连接到桌面端");
+    const socketsBefore = FakeWebSocket.instances.length;
 
-    const retryBtn = screen.getByTestId("btn-reconnect");
-    expect(retryBtn).toHaveTextContent("重试");
-    fireEvent.click(retryBtn);
-    expect(reconnectSpy).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId("btn-reconnect"));
+
+    expect(FakeWebSocket.instances).toHaveLength(socketsBefore + 1);
+    expect(useMobileStore.getState().connection).toBe("connecting");
   });
 
-  it("auth_failed 态「重新配对」先清本地凭据再跳转 pair 页", async () => {
-    const navigateSpy = vi.spyOn(router, "navigate");
-    const disconnectSpy = vi.spyOn(useMobileStore.getState(), "disconnect");
-    render(<ConnectionBanner connection="auth_failed" />);
-    const banner = screen.getByTestId("connection-banner");
-    expect(banner).toHaveClass("is-down");
-    expect(banner).toHaveTextContent("配对已失效或设备已被撤销");
+  it("配对失效时「重新配对」清除本机凭据并跳转配对页", async () => {
+    // 已配对的手机连上桌面端，app.bootstrap 以 unauthorized 被拒。
+    saveCredentials("tok-revoked", "我的手机");
+    mobileWsClient.connect();
+    const socket = latestSocket();
+    socket.open();
+    await vi.waitFor(() => socket.lastFrame("app.bootstrap"));
+    socket.respondError(socket.lastFrame("app.bootstrap"), "unauthorized", "revoked_token");
+    await waitFor(() => expect(useMobileStore.getState().connection).toBe("auth_failed"));
 
-    const repairBtn = screen.getByTestId("btn-repair");
-    expect(repairBtn).toHaveTextContent("重新配对");
-    fireEvent.click(repairBtn);
-    // 只 navigate 会被 App 路由守卫按 token 存在性弹回列表页，必须先 disconnect 清凭据
-    expect(disconnectSpy).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith({ name: "pair" }));
-  });
-
-  it("释放失败显示原始错误并停留当前页", async () => {
-    const navigateSpy = vi.spyOn(router, "navigate");
-    vi.spyOn(useMobileStore.getState(), "disconnect").mockRejectedValue(new Error("release failed"));
-    render(<ConnectionBanner connection="auth_failed" />);
+    render(<ConnectionBanner connection="auth_failed" authFailureReason="revoked_token" />);
     fireEvent.click(screen.getByTestId("btn-repair"));
-    expect(await screen.findByRole("alert")).toHaveTextContent("release failed");
-    expect(navigateSpy).not.toHaveBeenCalled();
-  });
 
-  it("disconnected 态展示醒目红色并提供「重试」入口", () => {
-    const reconnectSpy = vi.spyOn(useMobileStore.getState(), "reconnect");
-    render(<ConnectionBanner connection="disconnected" />);
-    const banner = screen.getByTestId("connection-banner");
-    expect(banner).toHaveClass("is-down");
-    expect(banner).toHaveTextContent("已断开与桌面端的连接");
-
-    const retryBtn = screen.getByTestId("btn-reconnect");
-    fireEvent.click(retryBtn);
-    expect(reconnectSpy).toHaveBeenCalledTimes(1);
-  });
-
-  it("auth_failed 时若带细分错误码展示具体原因（expired_token 与 token_revoked）", () => {
-    const { rerender } = render(
-      <ConnectionBanner connection="auth_failed" authFailureCode="token_expired" />,
-    );
-    expect(screen.getByTestId("connection-banner")).toHaveTextContent(
-      "登录令牌已过期（最长30天或7天未使用），请重新配对。",
-    );
-
-    rerender(
-      <ConnectionBanner connection="auth_failed" authFailureCode="expired_token" />,
-    );
-    expect(screen.getByTestId("connection-banner")).toHaveTextContent(
-      "登录令牌已过期（最长30天或7天未使用），请重新配对。",
-    );
-
-    rerender(
-      <ConnectionBanner connection="auth_failed" authFailureCode="auth_failed: expired_token" />,
-    );
-    expect(screen.getByTestId("connection-banner")).toHaveTextContent(
-      "登录令牌已过期（最长30天或7天未使用），请重新配对。",
-    );
-
-    rerender(
-      <ConnectionBanner connection="auth_failed" authFailureCode="token_revoked" />,
-    );
-    expect(screen.getByTestId("connection-banner")).toHaveTextContent(
-      "本设备已被桌面端撤销授权，请重新配对。",
-    );
-  });
-
-  it("unreachable 与 disconnected 态如实提示电脑休眠/关机的可能性（不宣称电脑正在休眠）", () => {
-    const { rerender } = render(<ConnectionBanner connection="unreachable" />);
-    expect(screen.getByTestId("conn-banner-hint")).toHaveTextContent(
-      "电脑休眠、关机或 Sidecar 未运行时也会表现为断连。",
-    );
-
-    rerender(<ConnectionBanner connection="disconnected" />);
-    expect(screen.getByTestId("conn-banner-hint")).toHaveTextContent(
-      "电脑休眠、关机或 Sidecar 未运行时也会表现为断连。",
-    );
+    // 凭据已失效，服务端不会接受释放控制权，直接清凭据后跳转。
+    await waitFor(() => expect(window.location.hash).toBe("#/pair"));
+    expect(getStoredToken()).toBeNull();
+    expect(socket.sentFrames("remote.release_control")).toHaveLength(0);
   });
 });

@@ -1,26 +1,25 @@
-"""MobileAsrSessionManager / MobileTtsSequencer 纯逻辑测试（V0.3.5 §5）。
-
-使用注入的 FakeRecognizer（方法与真实
-``QwenStreamingRecognizer.stream_transcribe`` 同签名），不发网络请求。
-"""
-
 from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import threading
 from collections.abc import AsyncIterable, AsyncIterator
+from typing import Any
 
 import pytest
 
 from pair_harness.core.contracts import AsrEvent
+from pair_harness.desktop_backend.commands import DesktopCommand
+from pair_harness.desktop_backend.event_fanout import EventFanout
 from pair_harness.desktop_backend.mobile_audio import (
-    _MAX_STOPPED_TTS_ENTRIES,
     MobileAsrSessionManager,
     MobileAudioError,
-    MobileTtsInterrupted,
     MobileTtsSequencer,
 )
+from pair_harness.desktop_backend.router import JsonlWriter
+from tests.fixtures.dashscope_ws import DashScopeTask
+from tests.service_helpers import call, expect_service_error, wait_until
 
 
 def b64(data: bytes) -> str:
@@ -28,11 +27,10 @@ def b64(data: bytes) -> str:
 
 
 class FakeRecognizer:
-    """记录型 fake：与真实识别器接口一致（异步生成器）。
+    """识别器端口替身，经 recognizer_factory 注入会话管理器。
 
-    ``partials`` 在消费每个分片后按序产出；流结束后按
-    ``error``/``final_text`` 产出 error 或 final 事件（final 为空时
-    不产出，与真实适配器一致）。
+    ``partials`` 在消费每个分片后按序产出；流结束后按 ``error``/``final_text``
+    产出 error 或 final 事件，final 为空时不产出，与真实适配器一致。
     """
 
     def __init__(
@@ -67,7 +65,7 @@ class FakeRecognizer:
 # ---------------------------------------------------------------------------
 
 
-def test_lifecycle_start_feed_end_returns_final() -> None:
+async def test_lifecycle_start_feed_end_returns_final() -> None:
     events: list[tuple[str, str, str, bool]] = []
     fake = FakeRecognizer(final_text="你好世界")
     mgr = MobileAsrSessionManager(
@@ -78,28 +76,29 @@ def test_lifecycle_start_feed_end_returns_final() -> None:
     pcm1, pcm2 = b"pcm-chunk-1", b"pcm-chunk-2"
     mgr.feed_chunk(session_id, 0, b64(pcm1))
     mgr.feed_chunk(session_id, 1, b64(pcm2))
-    final = mgr.end_session(session_id)
+    conversation_id, final = await mgr.end_session(session_id)
+    assert conversation_id == "conv-1"
     assert final == "你好世界"
-    # fake recognizer 收到的字节与解码后一致（end 阻塞至收尾，无竞态）
+    # end_session 等识别收尾后才返回，识别器已收到解码后的全部分片
     assert fake.received == [pcm1, pcm2]
     assert events == [("conv-1", session_id, "你好世界", True)]
 
 
-def test_empty_final_returned_as_empty_string() -> None:
+async def test_empty_final_returned_as_empty_string() -> None:
     events: list[tuple[str, str, str, bool]] = []
     mgr = MobileAsrSessionManager(
         on_transcript=lambda c, s, t, f: events.append((c, s, t, f))
     )
     sid = mgr.start_session("conv-1", "conn-1", lambda: FakeRecognizer(final_text=""))
     try:
-        assert mgr.end_session(sid) == ""
-        # 模块如实回调；是否报 voice_transcript_empty 由调用方决定
+        assert await mgr.end_session(sid) == ("conv-1", "")
+        # 空转写照样回调，是否报 voice_transcript_empty 由调用方决定
         assert events == [("conv-1", sid, "", True)]
     finally:
         mgr.cancel_session(sid)
 
 
-def test_partial_callbacks_emitted() -> None:
+async def test_partial_callbacks_emitted() -> None:
     events: list[tuple[str, str, str, bool]] = []
     fake = FakeRecognizer(partials=("你", "你好"), final_text="你好")
     mgr = MobileAsrSessionManager(
@@ -109,7 +108,7 @@ def test_partial_callbacks_emitted() -> None:
     try:
         mgr.feed_chunk(sid, 0, b64(b"a"))
         mgr.feed_chunk(sid, 1, b64(b"b"))
-        assert mgr.end_session(sid) == "你好"
+        assert await mgr.end_session(sid) == ("conv-1", "你好")
         assert [(t, f) for _, _, t, f in events if not f] == [
             ("你", False),
             ("你好", False),
@@ -119,7 +118,7 @@ def test_partial_callbacks_emitted() -> None:
         mgr.cancel_session(sid)
 
 
-def test_parallel_conversations_are_independent() -> None:
+async def test_parallel_conversations_are_independent() -> None:
     fake_a = FakeRecognizer(final_text="A 的转写")
     fake_b = FakeRecognizer(final_text="B 的转写")
     mgr = MobileAsrSessionManager(on_transcript=lambda *_: None)
@@ -129,9 +128,9 @@ def test_parallel_conversations_are_independent() -> None:
         mgr.feed_chunk(sid_a, 0, b64(b"a1"))
         mgr.feed_chunk(sid_b, 0, b64(b"b1"))
         mgr.feed_chunk(sid_a, 1, b64(b"a2"))
-        assert mgr.end_session(sid_a) == "A 的转写"
+        assert await mgr.end_session(sid_a) == ("conv-a", "A 的转写")
         assert fake_a.received == [b"a1", b"a2"]
-        assert mgr.end_session(sid_b) == "B 的转写"
+        assert await mgr.end_session(sid_b) == ("conv-b", "B 的转写")
         assert fake_b.received == [b"b1"]
     finally:
         mgr.cancel_session(sid_a)
@@ -143,7 +142,7 @@ def test_parallel_conversations_are_independent() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_seq_gap_raises_with_expected_and_actual() -> None:
+async def test_seq_gap_raises_with_expected_and_actual() -> None:
     mgr = MobileAsrSessionManager(on_transcript=lambda *_: None)
     sid = mgr.start_session("conv-1", "conn-1", FakeRecognizer)
     try:
@@ -154,12 +153,12 @@ def test_seq_gap_raises_with_expected_and_actual() -> None:
         assert "1" in str(ei.value) and "2" in str(ei.value)
         # 跳号不消耗序号：补上期望的 1 后会话仍可正常结束
         mgr.feed_chunk(sid, 1, b64(b"b"))
-        assert mgr.end_session(sid) == "你好世界"
+        assert await mgr.end_session(sid) == ("conv-1", "你好世界")
     finally:
         mgr.cancel_session(sid)
 
 
-def test_invalid_base64_raises() -> None:
+async def test_invalid_base64_raises() -> None:
     mgr = MobileAsrSessionManager(on_transcript=lambda *_: None)
     sid = mgr.start_session("conv-1", "conn-1", FakeRecognizer)
     try:
@@ -177,7 +176,7 @@ def test_unknown_session_raises() -> None:
     assert ei.value.code == "voice_session_not_found"
 
 
-def test_duplicate_start_same_conversation_rejected() -> None:
+async def test_duplicate_start_same_conversation_rejected() -> None:
     mgr = MobileAsrSessionManager(on_transcript=lambda *_: None)
     sid = mgr.start_session("conv-1", "conn-1", FakeRecognizer)
     try:
@@ -193,17 +192,17 @@ def test_duplicate_start_same_conversation_rejected() -> None:
     mgr.cancel_session(sid2)
 
 
-def test_cancel_then_feed_raises_not_found() -> None:
+async def test_cancel_then_feed_raises_not_found() -> None:
     mgr = MobileAsrSessionManager(on_transcript=lambda *_: None)
     sid = mgr.start_session("conv-1", "conn-1", FakeRecognizer)
-    mgr.cancel_session(sid)
+    assert mgr.cancel_session(sid) == "conv-1"
     with pytest.raises(MobileAudioError) as ei:
         mgr.feed_chunk(sid, 0, b64(b"x"))
     assert ei.value.code == "voice_session_not_found"
-    mgr.cancel_session(sid)  # 幂等
+    assert mgr.cancel_session(sid) is None  # 幂等
 
 
-def test_cancel_all_for_connection_is_silent_and_scoped() -> None:
+async def test_cancel_all_for_connection_is_silent_and_scoped() -> None:
     events: list[tuple[str, str, str, bool]] = []
     fake1 = FakeRecognizer(partials=("hello",), final_text="hello")
     fake2 = FakeRecognizer(final_text="world")
@@ -214,30 +213,30 @@ def test_cancel_all_for_connection_is_silent_and_scoped() -> None:
     sid2 = mgr.start_session("conv-b", "conn-2", lambda: fake2)
     try:
         mgr.feed_chunk(sid1, 0, b64(b"x"))
-        mgr.cancel_all_for_connection("conn-1")
+        assert mgr.cancel_all_for_connection("conn-1") == [sid1]
         # 另一连接的会话不受影响
-        assert mgr.end_session(sid2) == "world"
+        assert await mgr.end_session(sid2) == ("conv-b", "world")
         assert fake2.received == []
         # 已取消会话：feed 报 session_not_found，且无 final 事件
         with pytest.raises(MobileAudioError) as ei:
             mgr.feed_chunk(sid1, 1, b64(b"y"))
         assert ei.value.code == "voice_session_not_found"
-        # 被取消的会话静默：不发 final；另一连接的正常会话仍发 final
-        assert not any(is_final for s, _, _, is_final in events if s == sid1)
+        # 被取消的会话静默，不发 final；另一连接的正常会话仍发 final
+        assert not any(session == sid1 and is_final for _, session, _, is_final in events)
         assert ("conv-b", sid2, "world", True) in events
     finally:
         mgr.cancel_session(sid1)
         mgr.cancel_session(sid2)
 
 
-def test_asr_error_surfaces_as_voice_asr_failed() -> None:
+async def test_asr_error_surfaces_as_voice_asr_failed() -> None:
     mgr = MobileAsrSessionManager(on_transcript=lambda *_: None)
     sid = mgr.start_session(
         "conv-1", "conn-1", lambda: FakeRecognizer(error="识别服务失败")
     )
     try:
         with pytest.raises(MobileAudioError) as ei:
-            mgr.end_session(sid)
+            await mgr.end_session(sid)
         assert ei.value.code == "voice_asr_failed"
         assert "识别服务失败" in str(ei.value)
     finally:
@@ -251,10 +250,10 @@ def test_asr_error_surfaces_as_voice_asr_failed() -> None:
 
 def test_sequencer_feed_monotonic_seq_and_roundtrip() -> None:
     seq = MobileTtsSequencer()
-    seq.begin("m1", "conv-1")
+    stream = seq.begin("m1", "conv-1")
     pcm1, pcm2 = b"tts-data-1", b"tts-data-2"
-    chunk1 = seq.feed("m1", pcm1)
-    chunk2 = seq.feed("m1", pcm2)
+    chunk1 = stream.chunk(pcm1)
+    chunk2 = stream.chunk(pcm2)
     assert chunk1 == {
         "conversation_id": "conv-1",
         "message_id": "m1",
@@ -268,9 +267,7 @@ def test_sequencer_feed_monotonic_seq_and_roundtrip() -> None:
     # base64 可解码还原 PCM
     assert base64.b64decode(chunk1["data"]) == pcm1
     assert base64.b64decode(chunk2["data"]) == pcm2
-    end_payload = seq.end("m1")
-    assert end_payload == {"conversation_id": "conv-1", "message_id": "m1"}
-    assert seq.end("m1") == end_payload  # end 幂等
+    assert stream.end_payload() == {"conversation_id": "conv-1", "message_id": "m1"}
 
 
 def test_sequencer_duplicate_begin_raises() -> None:
@@ -281,97 +278,202 @@ def test_sequencer_duplicate_begin_raises() -> None:
     assert ei.value.code == "voice_tts_message_exists"
 
 
-def test_sequencer_feed_after_end_raises() -> None:
+def test_sequencer_stop_marks_handle_and_frees_message_id() -> None:
+    """stop 把生产者持有的句柄置为 stopped；同一 id 之后可以重新登记，旧句柄不受影响。"""
     seq = MobileTtsSequencer()
-    seq.begin("m1", "conv-1")
-    seq.feed("m1", b"x")
-    seq.end("m1")
-    with pytest.raises(MobileAudioError) as ei:
-        seq.feed("m1", b"y")
-    assert ei.value.code == "voice_tts_message_closed"
-
-
-def test_sequencer_stop_then_feed_is_interrupted_and_reuse_rejected() -> None:
-    """V039-S4-018：stop 之后的 feed/end 是「已中断」，不是「消息不存在」。
-
-    抢占时上层先 cancel 再 stop，而在途任务的取消可能被已就绪的等待吞掉，
-    因此它还会走到下一次 feed。此处必须按正常中断收尾，不得报协议错误，
-    否则中继任务会把正常抢占记成 voice.mobile_tts_failed。
-    """
-    seq = MobileTtsSequencer()
-    seq.begin("m1", "conv-1")
-    seq.feed("m1", b"x")
+    stream = seq.begin("m1", "conv-1")
+    stream.chunk(b"x")
     seq.stop("m1")
-    with pytest.raises(MobileTtsInterrupted) as ei:
-        seq.feed("m1", b"y")
-    # 中断信号走取消语义：上层 except asyncio.CancelledError 路径静默收尾
-    assert isinstance(ei.value, asyncio.CancelledError)
-    assert ei.value.message_id == "m1"
-    # 已中断的消息不得再补一个「完成」事件
-    with pytest.raises(MobileTtsInterrupted):
-        seq.end("m1")
-    # 旧生产者可能仍在途：重用同一 id 会把旧分片写进新代，必须如实拒绝
-    with pytest.raises(MobileAudioError) as reuse:
-        seq.begin("m1", "conv-1")
-    assert reuse.value.code == "voice_tts_message_exists"
+    assert stream.stopped is True
+    fresh = seq.begin("m1", "conv-1")
+    assert fresh is not stream and fresh.stopped is False
+    assert fresh.chunk(b"y")["seq"] == 0
     seq.stop("m1")
     seq.stop("m1")  # 幂等
 
 
-def test_sequencer_unknown_message_still_reports_protocol_error() -> None:
-    """中断语义只覆盖 stop 过的条目；未知 message_id 仍暴露真实协议错误。"""
+def test_sequencer_finish_releases_only_its_own_handle() -> None:
     seq = MobileTtsSequencer()
-    seq.begin("stopped", "conv-1")
-    seq.stop("stopped")
-    with pytest.raises(MobileTtsInterrupted):
-        seq.feed("stopped", b"x")
-    for call in (lambda: seq.feed("never-begun", b"x"), lambda: seq.end("never-begun")):
-        with pytest.raises(MobileAudioError) as ei:
-            call()
-        assert ei.value.code == "voice_tts_message_not_found"
+    old = seq.begin("m1", "conv-1")
+    seq.stop("m1")
+    new = seq.begin("m1", "conv-1")
+    seq.finish(old)  # 被中断的旧生产者收尾，不得注销新句柄
+    seq.stop("m1")
+    assert new.stopped is True
+    seq.finish(new)
+    seq.begin("m1", "conv-1")
 
 
-def test_sequencer_stopped_ledger_counts_unique_ids() -> None:
-    """墓碑账按唯一 id 计：刚好达上限不淘汰，超出才淘汰最早的一个。"""
-    seq = MobileTtsSequencer()
-    for index in range(_MAX_STOPPED_TTS_ENTRIES):
-        message_id = f"m{index}"
-        seq.begin(message_id, "conv-1")
-        seq.stop(message_id)
-    with pytest.raises(MobileTtsInterrupted):
-        seq.feed("m0", b"x")  # 达上限仍在窗口内
-    seq.begin("m-extra", "conv-1")
-    seq.stop("m-extra")
-    with pytest.raises(MobileAudioError) as ei:
-        seq.feed("m0", b"x")  # 超限后最早的按未知消息处理
-    assert ei.value.code == "voice_tts_message_not_found"
-    with pytest.raises(MobileTtsInterrupted):
-        seq.feed("m-extra", b"x")
+# ---------------------------------------------------------------------------
+# 手机语音命令：真实识别器经 PAIR_HARNESS_DASHSCOPE_WS_URL 连到本机回放端点
+# ---------------------------------------------------------------------------
+
+FRAME = b"\x01\x00" * 320
 
 
-def test_sequencer_repeated_stop_keeps_other_tombstones() -> None:
-    """复核确证2：重复 stop 幂等、不重复记账，不挤掉仍在窗口内的中断记录。"""
-    seq = MobileTtsSequencer()
-    seq.begin("m-earlier", "conv-1")
-    seq.stop("m-earlier")
-    seq.begin("m-repeat", "conv-1")
-    ledger_before = len(seq._stopped)
-    for _ in range(200):
-        seq.stop("m-repeat")
-    # 墓碑按唯一 id 记账：200 次重复 stop 只增加 1 条账目（否则会挤掉其他墓碑）
-    assert len(seq._stopped) == ledger_before + 1
-    with pytest.raises(MobileTtsInterrupted):
-        seq.feed("m-repeat", b"x")
-    with pytest.raises(MobileTtsInterrupted):
-        seq.feed("m-earlier", b"x")
+def phone(method: str, request_id: str, **params: Any) -> DesktopCommand:
+    return DesktopCommand(
+        request_id=request_id,
+        method=method,
+        params=params,
+        origin="remote",
+        connection_key="conn-phone",
+        remote_device_key="device-phone",
+        remote_device_name="测试手机",
+    )
 
 
-def test_sequencer_unknown_message_errors() -> None:
-    seq = MobileTtsSequencer()
-    with pytest.raises(MobileAudioError) as ei:
-        seq.feed("nope", b"x")
-    assert ei.value.code == "voice_tts_message_not_found"
-    with pytest.raises(MobileAudioError) as ei:
-        seq.end("nope")
-    assert ei.value.code == "voice_tts_message_not_found"
-    seq.stop("nope")  # 未知消息 stop = 幂等 no-op
+@pytest.fixture
+def remote_events(service) -> list[dict[str, Any]]:
+    """接上真实事件扇出，收集只发给远程连接的事件。"""
+    published: list[dict[str, Any]] = []
+    fanout = EventFanout(JsonlWriter(io.StringIO()))
+    fanout.subscribe(published.append)
+    service.attach_event_fanout(fanout)
+    return published
+
+
+@pytest.fixture
+def dashscope_env(dashscope_server, monkeypatch):
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-dashscope-key")
+    monkeypatch.setenv("PAIR_HARNESS_DASHSCOPE_WS_URL", dashscope_server.url)
+    return dashscope_server
+
+
+async def _silent_session(task: DashScopeTask) -> None:
+    await task.expect("run-task")
+    await task.started()
+    await task.expect("finish-task")
+    await task.finished()
+
+
+def _remote_payloads(events: list[dict[str, Any]], name: str) -> list[dict[str, Any]]:
+    return [event["payload"] for event in events if event["event"] == name]
+
+
+async def test_mobile_ptt_start_requires_dashscope_key(service, monkeypatch) -> None:
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    await expect_service_error(
+        lambda: service.handle_command(
+            phone("voice.mobile_ptt_start", "start", conversation_id=service.current_conversation_id)
+        ),
+        "voice_not_configured",
+    )
+
+
+@pytest.mark.parametrize("bad_seq", ["0", 0.5, True, None])
+async def test_mobile_audio_chunk_rejects_non_integer_seq(service, bad_seq) -> None:
+    await expect_service_error(
+        lambda: call(
+            service, "chunk", "voice.mobile_audio_chunk", session_id="sess-x", seq=bad_seq, data="AAE="
+        ),
+        "invalid_params",
+    )
+
+
+async def test_mobile_ptt_round_trip_submits_transcript_as_remote_turn(
+    service, dashscope_env
+) -> None:
+    async def script(task: DashScopeTask) -> None:
+        await task.expect("run-task")
+        await task.started()
+        await task.expect("finish-task")
+        await task.sentence(0, "手机语音文本", sentence_end=True)
+        await task.finished()
+
+    dashscope_env.serve(script)
+    conversation_id = service.current_conversation_id
+    started = await service.handle_command(
+        phone("voice.mobile_ptt_start", "start", conversation_id=conversation_id)
+    )
+    session_id = started["session_id"]
+
+    accepted = await service.handle_command(
+        phone("voice.mobile_audio_chunk", "c0", session_id=session_id, seq=0, data=b64(FRAME))
+    )
+    assert accepted == {"accepted": True}
+    # 会话管理器的跳号错误码原样返回，序号不被消耗
+    await expect_service_error(
+        lambda: service.handle_command(
+            phone("voice.mobile_audio_chunk", "c2", session_id=session_id, seq=2, data=b64(FRAME))
+        ),
+        "voice_audio_seq_gap",
+    )
+    await service.handle_command(
+        phone("voice.mobile_audio_chunk", "c1", session_id=session_id, seq=1, data=b64(FRAME))
+    )
+    result = await service.handle_command(phone("voice.mobile_ptt_stop", "stop", session_id=session_id))
+
+    assert result == {
+        "session_id": session_id,
+        "conversation_id": conversation_id,
+        "transcript": "手机语音文本",
+    }
+    assert dashscope_env.tasks[0].audio == [FRAME, FRAME]
+    # 转写以手机身份进入聊天提交路径
+    await wait_until(
+        lambda: any(
+            payload["turn"]["status"] == "completed"
+            for payload in service.event_log.payloads("turn.status_changed")
+        )
+    )
+    turn = service.event_log.payloads("turn.started")[-1]["turn"]
+    assert (turn["origin"], turn["remote_device_key"], turn["remote_device_name"]) == (
+        "remote",
+        "device-phone",
+        "测试手机",
+    )
+    submitted = service.event_log.payloads("message.created")
+    assert any(
+        payload["message"]["source"] == "user" and payload["message"]["text"] == "手机语音文本"
+        for payload in submitted
+    )
+
+
+async def test_mobile_asr_timeout_cancels_session_and_reports_failure(
+    service, dashscope_env, remote_events
+) -> None:
+    dashscope_env.serve(_silent_session)
+    service._mobile_asr_timeout_s = 0.05
+    conversation_id = service.current_conversation_id
+    started = await service.handle_command(
+        phone("voice.mobile_ptt_start", "start", conversation_id=conversation_id)
+    )
+    session_id = started["session_id"]
+
+    await wait_until(lambda: bool(_remote_payloads(remote_events, "voice.mobile_asr_failed")))
+    failure = _remote_payloads(remote_events, "voice.mobile_asr_failed")
+    assert len(failure) == 1
+    assert (failure[0]["conversation_id"], failure[0]["session_id"], failure[0]["code"]) == (
+        conversation_id,
+        session_id,
+        "voice_session_timeout",
+    )
+    await expect_service_error(
+        lambda: service.handle_command(phone("voice.mobile_ptt_stop", "stop", session_id=session_id)),
+        "voice_session_not_found",
+    )
+    # 被取消的会话随后结束识别连接
+    await wait_until(lambda: bool(dashscope_env.tasks) and dashscope_env.tasks[0].closed)
+
+
+async def test_mobile_disconnect_cancels_session_silently(
+    service, dashscope_env, remote_events
+) -> None:
+    dashscope_env.serve(_silent_session)
+    service._mobile_asr_timeout_s = 0.05
+    started = await service.handle_command(
+        phone("voice.mobile_ptt_start", "start", conversation_id=service.current_conversation_id)
+    )
+
+    service.handle_remote_disconnect("conn-phone")
+
+    await wait_until(lambda: bool(dashscope_env.tasks) and dashscope_env.tasks[0].closed)
+    await asyncio.sleep(0.1)  # 超过超时时长，超时任务已随断连撤销
+    assert _remote_payloads(remote_events, "voice.mobile_asr_failed") == []
+    await expect_service_error(
+        lambda: service.handle_command(
+            phone("voice.mobile_ptt_stop", "stop", session_id=started["session_id"])
+        ),
+        "voice_session_not_found",
+    )

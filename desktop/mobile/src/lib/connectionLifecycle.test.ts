@@ -1,148 +1,249 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type {
+  ConversationOpenResult,
+  ConversationRecord,
+  DesktopSnapshot,
+  PairRecord,
+  PowerStatusPayload,
+} from "@shared/contracts/protocol";
+import { FakeWebSocket, installFakeWebSocket, latestSocket } from "../test/fakeWebSocket";
 import { mobileWsClient, useMobileStore } from "./mobileStore";
 import { getStoredToken, MobileWsClient, saveCredentials } from "./wsClient";
 
-type Frame = {id: string; method: string};
-class Socket {
-  static instances: Socket[] = [];
-  static OPEN = 1;
-  static CONNECTING = 0;
-  readyState = 0;
-  sent: Frame[] = [];
-  onopen: (() => void) | null = null;
-  onclose: (() => void) | null = null;
-  onmessage: ((event: { data: string }) => void) | null = null;
-  constructor() { Socket.instances.push(this); }
-  open() { this.readyState = 1; this.onopen?.(); }
-  close() { this.readyState = 3; }
-  send(raw: string) {
-    const frame = JSON.parse(raw) as Frame;
-    this.sent.push(frame);
-    if (frame.method === "power.get_status") {
-      queueMicrotask(() => this.respond(frame, {supported:false, at_risk:false}));
-    }
-  }
-  respond(frame: Frame, result: unknown = {}, error?: {code: string; message: string}) {
-    this.onmessage?.({ data: JSON.stringify({ kind: "response", id: frame.id, ok: !error, result, error }) });
-  }
-}
-const current = () => Socket.instances[Socket.instances.length - 1];
-const find = (method: string) => current().sent.find(f => f.method === method)!;
-const snapshot = { projects: [{project_id: "p", name: "Project", conversations: [{conversation_id: "c", project_id:"p", title:"Chat"}]}], messages: [], tool_runs: [], queue_items: [], approvals: [], sequence: 1 };
+const CONVERSATION: ConversationRecord = {
+  conversation_id: "c",
+  project_id: "p",
+  pair_id: "pair-default",
+  title: "Chat",
+  last_mode: "chat",
+  archived: false,
+  created_at: "2026-09-01T00:00:00Z",
+  updated_at: "2026-09-01T00:00:00Z",
+};
 
-beforeEach(() => {
-  vi.stubGlobal("WebSocket", Socket);
+const PROJECT = {
+  project_id: "p",
+  name: "Project",
+  root_path: "D:/project",
+  approval_mode: "request_approval",
+  reasoning_effort: "medium",
+  archived: false,
+  created_at: null,
+  last_opened_at: null,
+  path_available: true,
+} as const;
+
+const PAIR: PairRecord = {
+  pair_id: "pair-default",
+  character: { id: "phainon", name: "白厄", voice_id: "" },
+  assistant: { id: "fourth_mirror", name: "第四面镜", voice_id: "" },
+  theme: {
+    character_text: "#fff",
+    character_primary: "#ffd",
+    character_deep: "#aa8",
+    character_active: "#ff0",
+    assistant_primary: "#aaf",
+    assistant_bright: "#ccf",
+    assistant_shadow: "#558",
+  },
+};
+
+const SNAPSHOT = {
+  projects: [{ ...PROJECT, conversations: [CONVERSATION] }],
+  current_conversation_id: "",
+  messages: [],
+  tool_runs: [],
+  queue_items: [],
+  approvals: [],
+  active_task: null,
+  active_tasks: [],
+  remote_control: { state: "free", device_key: null, expires_at: null, grace_expires_at: null, reason: null },
+  sequence: 1,
+  stream_id: "s",
+} as unknown as DesktopSnapshot;
+
+const OPEN_RESULT: ConversationOpenResult = {
+  conversation: CONVERSATION,
+  project: PROJECT,
+  pair: PAIR,
+  messages: [],
+  tool_runs: [],
+  turns: [],
+  queue_items: [],
+  active_task: null,
+  sequence: 1,
+  stream_id: "s",
+};
+
+const POWER_STATUS: PowerStatusPayload = {
+  supported: false,
+  platform: "linux",
+  plan_name: "",
+  ac_sleep_timeout_seconds: null,
+  dc_sleep_timeout_seconds: null,
+  remote_serve_enabled: true,
+  threshold_seconds: 900,
+  at_risk: false,
+  reason: "",
+  checked_at: "2026-09-01T00:00:00",
+  warnings: [],
+};
+
+const CLAIMED = { claimed: true, active_controllers: 1 };
+
+beforeEach(async () => {
+  installFakeWebSocket();
+  // 同步成功后 store 主动拉一次电源状态，与本文件的连接流程无关，自动应答。
+  FakeWebSocket.autoResults.set("power.get_status", POWER_STATUS);
   window.localStorage.clear();
-  useMobileStore.getState().disconnect();
-  Socket.instances = [];
-  window.localStorage.clear();
+  await useMobileStore.getState().disconnect();
   useMobileStore.getState().start();
   mobileWsClient.connect();
-  current().open();
-});
-afterEach(() => {
-  window.localStorage.clear();
-  useMobileStore.getState().disconnect();
-  vi.unstubAllGlobals();
+  latestSocket().open();
 });
 
-it("late close from an old socket cannot discard a new connection or its request", async () => {
+afterEach(() => {
+  vi.unstubAllGlobals();
+  window.localStorage.clear();
+});
+
+it("旧 socket 迟到的关闭回调不影响新连接及其请求", async () => {
   const client = new MobileWsClient();
   client.connect();
-  const old = current(); old.open();
-  client.disconnect(); client.connect();
-  const fresh = current(); fresh.open();
-  const outcome = client.request("ping").then(value => ({value}), error => ({error}));
-  old.onclose?.();
-  fresh.respond(fresh.sent[0], {alive:true});
-  const result = await outcome;
+  const old = latestSocket();
+  old.open();
   client.disconnect();
-  expect(result).toEqual({value:{alive:true}});
+  client.connect();
+  const fresh = latestSocket();
+  fresh.open();
+  const outcome = client.request("ping");
+  old.onclose?.();
+  fresh.respond(fresh.lastFrame("ping"), { server_time: "2026-09-01T00:00:00+00:00" });
+  await expect(outcome).resolves.toEqual({ server_time: "2026-09-01T00:00:00+00:00" });
+  client.disconnect();
 });
 
-it("pairing after unauthorized restores authenticated connection", async () => {
-  const rejected = mobileWsClient.request("app.bootstrap");
-  current().respond(find("app.bootstrap"), {}, {code:"unauthorized", message:"expired"});
-  await expect(rejected).rejects.toThrow("expired");
+it("鉴权失败后配对在新连接上发出 remote.pair，同步完成后恢复连接", async () => {
+  saveCredentials("revoked-token", "Phone");
+  const sync = useMobileStore.getState().retrySync();
+  const failedSocket = latestSocket();
+  failedSocket.respondError(failedSocket.lastFrame("app.bootstrap"), "unauthorized", "revoked_token");
+  await expect(sync).rejects.toThrow("revoked_token");
+  expect(useMobileStore.getState().connection).toBe("auth_failed");
+
   const pairing = useMobileStore.getState().pairDevice("123456", "Phone");
-  await vi.waitFor(() => expect(find("remote.pair")).toBeDefined());
-  current().respond(find("remote.pair"), {token:"new-token"});
-  await vi.waitFor(() => expect(current().sent.filter(f=>f.method==="app.bootstrap")).toHaveLength(2));
-  current().respond(current().sent.filter(f=>f.method==="app.bootstrap")[1], snapshot);
-  await vi.waitFor(() => expect(find("remote.claim_control")).toBeDefined());
-  current().respond(find("remote.claim_control"), {active:true});
+  expect(latestSocket()).not.toBe(failedSocket);
+  latestSocket().open();
+  await vi.waitFor(() => latestSocket().lastFrame("remote.pair"));
+  const pairFrame = latestSocket().lastFrame("remote.pair");
+  expect(pairFrame.params).toEqual({ code: "123456", device_name: "Phone" });
+  expect(pairFrame).not.toHaveProperty("auth");
+  latestSocket().respond(pairFrame, { token: "new-token" });
+  await vi.waitFor(() => latestSocket().lastFrame("app.bootstrap"));
+  latestSocket().respond(latestSocket().lastFrame("app.bootstrap"), SNAPSHOT);
+  await vi.waitFor(() => latestSocket().lastFrame("remote.claim_control"));
+  latestSocket().respond(latestSocket().lastFrame("remote.claim_control"), CLAIMED);
   await pairing;
+
   expect(mobileWsClient.getState()).toBe("connected");
-  expect(useMobileStore.getState().connection).toBe("connected");
+  expect(useMobileStore.getState()).toMatchObject({ connection: "connected", deviceName: "Phone" });
+  expect(getStoredToken()).toBe("new-token");
 });
 
-it("control failure rejects pairing and does not leave bootstrap complete", async () => {
-  const outcome = useMobileStore.getState().pairDevice("123456", "Phone").then(()=>"success", error=>error.message);
-  await vi.waitFor(() => expect(find("remote.pair")).toBeDefined());
-  current().respond(find("remote.pair"), {token:"token"});
-  await vi.waitFor(() => expect(find("app.bootstrap")).toBeDefined());
-  current().respond(find("app.bootstrap"), snapshot);
-  await vi.waitFor(() => expect(find("remote.claim_control")).toBeDefined());
-  current().respond(find("remote.claim_control"), {}, {code:"control_failed", message:"control failed"});
-  expect(await outcome).toBe("control failed");
+it("控制声明失败时配对失败，同步不标记完成", async () => {
+  const outcome = useMobileStore.getState().pairDevice("123456", "Phone");
+  latestSocket().open();
+  await vi.waitFor(() => latestSocket().lastFrame("remote.pair"));
+  latestSocket().respond(latestSocket().lastFrame("remote.pair"), { token: "token" });
+  await vi.waitFor(() => latestSocket().lastFrame("app.bootstrap"));
+  latestSocket().respond(latestSocket().lastFrame("app.bootstrap"), SNAPSHOT);
+  await vi.waitFor(() => latestSocket().lastFrame("remote.claim_control"));
+  latestSocket().respondError(
+    latestSocket().lastFrame("remote.claim_control"),
+    "remote_identity_required",
+    "远程控制需要已鉴权设备身份",
+  );
+
+  await expect(outcome).rejects.toThrow("远程控制需要已鉴权设备身份");
   expect(useMobileStore.getState().bootstrapped).toBe(false);
 });
 
-it("reconnect with active chat claims control before synchronization completes", async () => {
+it("打开着聊天时重连，控制声明成功后才装载该聊天", async () => {
   saveCredentials("token", "Phone");
-  useMobileStore.setState({activeConversationId:"c"});
-  useMobileStore.getState().reconnect(); current().open();
-  current().respond(find("app.bootstrap"), snapshot);
-  await vi.waitFor(() => {
-    const claim = find("remote.claim_control");
-    if (claim) current().respond(claim, {active:true});
-    expect(find("conversation.open")).toBeDefined();
-  });
-  current().respond(find("conversation.open"), {messages:[],tool_runs:[],queue_items:[],pair:null,active_task:null,sequence:1});
-  await vi.waitFor(() => expect(useMobileStore.getState().bootstrapped).toBe(true));
-  expect(find("remote.claim_control")).toBeDefined();
+  useMobileStore.setState({ activeConversationId: "c" });
+  useMobileStore.getState().reconnect();
+  latestSocket().open();
+  latestSocket().respond(latestSocket().lastFrame("app.bootstrap"), SNAPSHOT);
+  await vi.waitFor(() => latestSocket().lastFrame("remote.claim_control"));
+  expect(latestSocket().sentFrames("conversation.open")).toEqual([]);
+  latestSocket().respond(latestSocket().lastFrame("remote.claim_control"), CLAIMED);
+  await vi.waitFor(() => latestSocket().lastFrame("conversation.open"));
+  latestSocket().respond(latestSocket().lastFrame("conversation.open"), OPEN_RESULT);
+  await vi.waitFor(() =>
+    expect(useMobileStore.getState()).toMatchObject({
+      bootstrapped: true,
+      timelineLoading: false,
+      pair: PAIR,
+    }),
+  );
 });
 
-it("reconnect starts a fresh bootstrap while the old control request is pending", async () => {
+it("控制声明在途时再次重连，新连接重新同步并完成", async () => {
   saveCredentials("token", "Phone");
-  useMobileStore.getState().reconnect(); current().open();
-  current().respond(find("app.bootstrap"), snapshot);
-  await vi.waitFor(() => expect(find("remote.claim_control")).toBeDefined());
-  useMobileStore.getState().reconnect(); current().open();
-  expect(find("app.bootstrap")).toBeDefined();
-  current().respond(find("app.bootstrap"), snapshot);
-  await vi.waitFor(() => expect(find("remote.claim_control")).toBeDefined());
-  current().respond(find("remote.claim_control"), {active:true});
+  useMobileStore.getState().reconnect();
+  latestSocket().open();
+  latestSocket().respond(latestSocket().lastFrame("app.bootstrap"), SNAPSHOT);
+  await vi.waitFor(() => latestSocket().lastFrame("remote.claim_control"));
+
+  useMobileStore.getState().reconnect();
+  latestSocket().open();
+  latestSocket().respond(latestSocket().lastFrame("app.bootstrap"), SNAPSHOT);
+  await vi.waitFor(() => latestSocket().lastFrame("remote.claim_control"));
+  latestSocket().respond(latestSocket().lastFrame("remote.claim_control"), CLAIMED);
   await vi.waitFor(() => expect(useMobileStore.getState().bootstrapped).toBe(true));
 });
 
-it("disconnect preserves credentials until release acknowledgement", async () => {
+it("断开连接时收到释放控制的确认后才清除凭据", async () => {
   saveCredentials("token", "Phone");
   const pending = useMobileStore.getState().disconnect();
-  await vi.waitFor(() => expect(find("remote.release_control")).toBeDefined());
+  await vi.waitFor(() => latestSocket().lastFrame("remote.release_control"));
   expect(getStoredToken()).toBe("token");
-  expect(current().readyState).toBe(Socket.OPEN);
-  current().respond(find("remote.release_control"), {released:true, active_controllers:0});
+  expect(latestSocket().readyState).toBe(FakeWebSocket.OPEN);
+
+  latestSocket().respond(latestSocket().lastFrame("remote.release_control"), {
+    released: true,
+    active_controllers: 0,
+  });
   await pending;
   expect(getStoredToken()).toBeNull();
   expect(mobileWsClient.getState()).toBe("disconnected");
 });
 
-it("release failure preserves credentials and surfaces the remote error", async () => {
+it("释放控制失败时保留凭据与连接并抛出服务端错误", async () => {
   saveCredentials("token", "Phone");
-  const outcome = useMobileStore.getState().disconnect().then(()=>"success", error=>error.message);
-  await vi.waitFor(() => expect(find("remote.release_control")).toBeDefined());
-  current().respond(find("remote.release_control"), {}, {code:"internal_error", message:"release failed"});
-  expect(await outcome).toBe("release failed");
+  const outcome = useMobileStore.getState().disconnect();
+  await vi.waitFor(() => latestSocket().lastFrame("remote.release_control"));
+  latestSocket().respondError(
+    latestSocket().lastFrame("remote.release_control"),
+    "internal_error",
+    "release failed",
+  );
+
+  await expect(outcome).rejects.toThrow("release failed");
   expect(getStoredToken()).toBe("token");
-  expect(current().readyState).toBe(Socket.OPEN);
+  expect(latestSocket().readyState).toBe(FakeWebSocket.OPEN);
 });
 
-it("server-confirmed unauthorized permits clearing revoked credentials", async () => {
+it("服务端以 unauthorized 拒绝释放时照常清除已撤销的凭据", async () => {
   saveCredentials("revoked-token", "Phone");
   const pending = useMobileStore.getState().disconnect();
-  await vi.waitFor(() => expect(find("remote.release_control")).toBeDefined());
-  current().respond(find("remote.release_control"), {}, {code:"unauthorized", message:"revoked"});
+  await vi.waitFor(() => latestSocket().lastFrame("remote.release_control"));
+  latestSocket().respondError(
+    latestSocket().lastFrame("remote.release_control"),
+    "unauthorized",
+    "revoked_token",
+  );
+
   await pending;
   expect(getStoredToken()).toBeNull();
 });

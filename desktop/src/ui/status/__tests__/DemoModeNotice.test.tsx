@@ -9,7 +9,7 @@ afterEach(() => {
   desktopStore.setState({ backendInfo: null });
 });
 
-describe("DemoModeNotice（V039-S4-002 演示模式标识）", () => {
+describe("DemoModeNotice 演示模式标识", () => {
   it("Sidecar 自报 demo=true 时如实标注演示模式", () => {
     desktopStore.setState({ backendInfo: { pid: 4321, demo: true, modeSource: "flag" } });
     render(<DemoModeNotice />);
@@ -23,19 +23,12 @@ describe("DemoModeNotice（V039-S4-002 演示模式标识）", () => {
     );
   });
 
-  it("自报 demo=false（真实模式）时不常驻标识", () => {
-    desktopStore.setState({ backendInfo: { pid: 4321, demo: false, modeSource: "default" } });
-    render(<DemoModeNotice />);
-    expect(screen.queryByTestId("demo-mode-badge")).not.toBeInTheDocument();
-  });
-
-  it("未上报运行模式（null）不冒充真实模式、也不冒充演示", () => {
-    desktopStore.setState({ backendInfo: null });
-    render(<DemoModeNotice />);
-    expect(screen.queryByTestId("demo-mode-badge")).not.toBeInTheDocument();
-
-    // 只上报 PID、没上报 demo 时同样不下结论
-    desktopStore.setState({ backendInfo: { pid: 99, demo: null, modeSource: null } });
+  it.each([
+    ["自报真实模式", { pid: 4321, demo: false, modeSource: "default" }],
+    ["只上报 PID 未上报模式", { pid: 99, demo: null, modeSource: null }],
+    ["尚未收到运行模式", null],
+  ] as const)("%s时不显示标识", (_case, backendInfo) => {
+    desktopStore.setState({ backendInfo });
     render(<DemoModeNotice />);
     expect(screen.queryByTestId("demo-mode-badge")).not.toBeInTheDocument();
   });

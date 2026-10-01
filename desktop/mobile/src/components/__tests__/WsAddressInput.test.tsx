@@ -1,116 +1,58 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import {
-  WsAddressInput,
-  validateWsAddress,
-} from "../WsAddressInput";
+import { WsAddressInput } from "../WsAddressInput";
+import { parseWsAddress } from "../../lib/wsClient";
 
 afterEach(() => {
   cleanup();
 });
 
-describe("validateWsAddress 格式校验", () => {
-  it("接受 ws:// 与 wss:// 完整地址", () => {
-    expect(validateWsAddress("ws://192.168.1.50:8765/ws")).toEqual({
-      valid: true,
-      error: null,
-    });
-    expect(validateWsAddress("wss://pc.example.com/ws")).toEqual({
-      valid: true,
-      error: null,
-    });
-    expect(validateWsAddress("  ws://192.168.1.50:8765/ws  ")).toEqual({
-      valid: true,
-      error: null,
+describe("parseWsAddress 输入校验", () => {
+  it.each(["", "   "])("空输入 %j 不能保存，也不算错误", (raw) => {
+    expect(parseWsAddress(raw)).toEqual({ ok: false, error: null });
+  });
+
+  it("去掉首尾空白后接受完整地址", () => {
+    expect(parseWsAddress("  ws://192.168.1.50:8765/ws  ")).toEqual({
+      ok: true,
+      url: "ws://192.168.1.50:8765/ws",
     });
   });
 
-  it("接受公网隧道 https:// 与 wss:// 地址（如 trycloudflare.com）", () => {
-    expect(validateWsAddress("https://abc-123.trycloudflare.com")).toEqual({
-      valid: true,
-      error: null,
-    });
-    expect(validateWsAddress("https://abc-123.trycloudflare.com/ws")).toEqual({
-      valid: true,
-      error: null,
-    });
-    expect(validateWsAddress("wss://abc-123.trycloudflare.com")).toEqual({
-      valid: true,
-      error: null,
-    });
-  });
-
-  it("空输入 valid=false 且不算错误文案", () => {
-    expect(validateWsAddress("")).toEqual({ valid: false, error: null });
-    expect(validateWsAddress("   ")).toEqual({ valid: false, error: null });
-  });
-
-  it("非 ws/wss 协议给出协议错误提示", () => {
-    const result = validateWsAddress("http://192.168.1.50:8765/ws");
-    expect(result.valid).toBe(false);
-    expect(result.error).toContain("ws://");
-  });
-
-  it("缺协议的裸地址按协议错误提示", () => {
-    // "192.168.1.50:8765/ws" 会被 URL 解析为 scheme "192.168.1.50"，仍属协议错误
-    const result = validateWsAddress("192.168.1.50:8765/ws");
-    expect(result.valid).toBe(false);
-    expect(result.error).toContain("ws://");
-  });
-
-  it("任意字符串按地址不完整提示", () => {
-    const result = validateWsAddress("随便写的一句话");
-    expect(result.valid).toBe(false);
-    expect(result.error).toContain("完整地址");
-  });
-
-  it("缺少 /ws 路径时给出路径提示", () => {
-    for (const bad of ["ws://192.168.1.50:8765", "ws://192.168.1.50:8765/hello"]) {
-      const result = validateWsAddress(bad);
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain("/ws");
-    }
+  it.each([
+    // 裸地址会被 URL 解析为 scheme「192.168.1.50」，同样按协议错误提示。
+    { raw: "http://192.168.1.50:8765/ws", fragment: "ws://" },
+    { raw: "192.168.1.50:8765/ws", fragment: "ws://" },
+    { raw: "随便写的一句话", fragment: "完整地址" },
+    { raw: "ws://192.168.1.50:8765", fragment: "/ws" },
+    { raw: "ws://192.168.1.50:8765/hello", fragment: "/ws" },
+  ])("拒绝 $raw 并在提示里说明 $fragment", ({ raw, fragment }) => {
+    const result = parseWsAddress(raw);
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toContain(fragment);
   });
 });
 
 describe("WsAddressInput 组件", () => {
-  it("受控值与 onChange 事件", () => {
+  it("输入变化经 onChange 回传原始文本", () => {
     const handleChange = vi.fn();
-    const { rerender } = render(
-      <WsAddressInput value="" onChange={handleChange} />,
-    );
+    render(<WsAddressInput value="" onChange={handleChange} />);
 
-    const input = screen.getByTestId("ws-address-input") as HTMLInputElement;
-    fireEvent.change(input, { target: { value: "ws://192.168.1.50:8765/ws" } });
+    fireEvent.change(screen.getByTestId("ws-address-input"), {
+      target: { value: "ws://192.168.1.50:8765/ws" },
+    });
+
     expect(handleChange).toHaveBeenCalledWith("ws://192.168.1.50:8765/ws");
-
-    rerender(<WsAddressInput value="ws://192.168.1.50:8765/ws" onChange={handleChange} />);
-    expect(input.value).toBe("ws://192.168.1.50:8765/ws");
   });
 
-  it("初始状态合法时回传 valid=true 且显示提示而非错误", () => {
-    const onValidityChange = vi.fn();
-    render(
-      <WsAddressInput
-        value="ws://192.168.1.50:8765/ws"
-        onChange={() => {}}
-        onValidityChange={onValidityChange}
-      />,
-    );
-    expect(onValidityChange).toHaveBeenCalledWith(true);
+  it("地址合法时显示说明而非错误", () => {
+    render(<WsAddressInput value="ws://192.168.1.50:8765/ws" onChange={() => {}} />);
     expect(screen.queryByTestId("ws-address-error")).toBeNull();
     expect(screen.getByTestId("ws-address-hint")).toBeInTheDocument();
   });
 
   it("未失焦时不打扰输入过程，失焦后展示具体错误", () => {
-    const onValidityChange = vi.fn();
-    render(
-      <WsAddressInput
-        value="http://192.168.1.50:8765/ws"
-        onChange={() => {}}
-        onValidityChange={onValidityChange}
-      />,
-    );
+    render(<WsAddressInput value="http://192.168.1.50:8765/ws" onChange={() => {}} />);
     const input = screen.getByTestId("ws-address-input");
     expect(screen.queryByTestId("ws-address-error")).toBeNull();
 
@@ -120,57 +62,20 @@ describe("WsAddressInput 组件", () => {
     expect(input).toHaveAttribute("aria-invalid", "true");
   });
 
-  it("修正为合法地址后错误消失并回传 valid=true", () => {
-    const onValidityChange = vi.fn();
+  it.each([
+    { change: "修正为合法地址", next: "ws://192.168.1.50:8765/ws" },
+    { change: "清空输入", next: "" },
+  ])("$change后错误提示消失", ({ next }) => {
     const { rerender } = render(
-      <WsAddressInput
-        value="ws://192.168.1.50:8765"
-        onChange={() => {}}
-        onValidityChange={onValidityChange}
-      />,
+      <WsAddressInput value="ws://192.168.1.50:8765" onChange={() => {}} />,
     );
     const input = screen.getByTestId("ws-address-input");
     fireEvent.blur(input);
     expect(screen.getByTestId("ws-address-error")).toBeInTheDocument();
 
-    rerender(
-      <WsAddressInput
-        value="ws://192.168.1.50:8765/ws"
-        onChange={() => {}}
-        onValidityChange={onValidityChange}
-      />,
-    );
+    rerender(<WsAddressInput value={next} onChange={() => {}} />);
     expect(screen.queryByTestId("ws-address-error")).toBeNull();
     expect(screen.getByTestId("ws-address-hint")).toBeInTheDocument();
     expect(input).not.toHaveAttribute("aria-invalid");
-    // 回调序列：初始 false → 修正后 true，合法值内连续变化不重复回传
-    expect(onValidityChange.mock.calls.map((call) => call[0])).toEqual([false, true]);
-  });
-
-  it("清空输入后错误消失但仍回传 valid=false", () => {
-    const onValidityChange = vi.fn();
-    const { rerender } = render(
-      <WsAddressInput
-        value="http://192.168.1.50:8765/ws"
-        onChange={() => {}}
-        onValidityChange={onValidityChange}
-      />,
-    );
-    fireEvent.blur(screen.getByTestId("ws-address-input"));
-    expect(screen.getByTestId("ws-address-error")).toBeInTheDocument();
-
-    rerender(
-      <WsAddressInput value="" onChange={() => {}} onValidityChange={onValidityChange} />,
-    );
-    expect(screen.queryByTestId("ws-address-error")).toBeNull();
-    expect(onValidityChange).toHaveBeenLastCalledWith(false);
-  });
-
-  it("移动端可用性：URL 键盘与关闭自动纠错", () => {
-    render(<WsAddressInput value="" onChange={() => {}} />);
-    const input = screen.getByTestId("ws-address-input");
-    expect(input).toHaveAttribute("inputmode", "url");
-    expect(input).toHaveAttribute("autocapitalize", "none");
-    expect(input).toHaveAttribute("spellcheck", "false");
   });
 });

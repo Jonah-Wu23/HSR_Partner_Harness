@@ -1,114 +1,76 @@
-"""Qwen 流式 ASR/TTS SDK 事件映射测试（B2.3 ASR 部分，B2.4 追加 TTS 部分）。
-
-用 FakeRecognition 替换 dashscope 的 Recognition，直接驱动 SDK 回调
-（on_event / on_complete / on_error），验证适配器产出的 AsrEvent 流
-与生命周期（start → 喂帧 → stop → complete/error → final）。
-"""
-
 from __future__ import annotations
 
 import asyncio
 import logging
-import threading
-import time
-import types
-from collections.abc import Callable
 
-import dashscope
 import pytest
 
-from pair_harness.adapters.audio import qwen_asr
-from pair_harness.adapters.audio.qwen_asr import QwenAsrError, QwenStreamingRecognizer
-from pair_harness.adapters.audio import qwen_tts
+from pair_harness.adapters.audio import qwen_asr, qwen_tts
+from pair_harness.adapters.audio.qwen_asr import QwenStreamingRecognizer
 from pair_harness.adapters.audio.qwen_tts import QwenSpeechSynthesizer, QwenTtsError
 from pair_harness.core.contracts import SpeechRequest
 from pair_harness.voice_models import VOICE_ASR_MODEL, VOICE_TTS_MODEL
+from tests.fixtures.dashscope_ws import DashScopeTask
+from tests.service_helpers import wait_until
+
+FRAME = b"\x00" * 640
 
 
-class FakeResult:
-    """模拟 Recognition 回调的 result 对象。"""
-
-    def __init__(self, text: str = "", sentence_end: bool = False, message: str | None = None):
-        self._sentence = {"text": text}
-        self._sentence_end = sentence_end
-        self.message = message
-
-    def get_sentence(self):
-        return self._sentence
-
-    def is_sentence_end(self, sentence) -> bool:
-        return self._sentence_end
+async def _audio(*chunks: bytes):
+    for chunk in chunks:
+        yield chunk
 
 
-class FakeRecognition:
-    """模拟 dashscope.audio.asr.Recognition：记录调用并在 stop() 时收尾。"""
-
-    instances: list["FakeRecognition"] = []
-    complete_on_stop: bool = True  # 类级默认；测试可提前改写
-
-    def __init__(self, model, format, sample_rate, callback, **kwargs):
-        self.model = model
-        self.format = format
-        self.sample_rate = sample_rate
-        self.callback = callback
-        self.frames: list[bytes] = []
-        self.started = False
-        self.stopped = False
-        self.complete_on_stop = type(self).complete_on_stop
-        FakeRecognition.instances.append(self)
-
-    def start(self) -> None:
-        self.started = True
-
-    def send_audio_frame(self, frame: bytes) -> None:
-        self.frames.append(frame)
-
-    def stop(self) -> None:
-        self.stopped = True
-        if self.complete_on_stop:
-            self.callback.on_complete()
-
-
-@pytest.fixture
-def fake_sdk(monkeypatch: pytest.MonkeyPatch) -> type[FakeRecognition]:
-    FakeRecognition.instances.clear()
-    monkeypatch.setattr(dashscope.audio.asr, "Recognition", FakeRecognition)
-    monkeypatch.setattr(dashscope.audio.asr, "RecognitionCallback", object)
-    return FakeRecognition
-
-
-def _stream(chunks: list[bytes], emitter: Callable[[], None] | None = None):
-    async def gen():
-        for chunk in chunks:
-            if emitter is not None:
-                emitter()
-            yield chunk
-
-    return gen()
-
-
-async def _events(recognizer, chunks, emitter=None):
-    return [e async for e in recognizer.stream_transcribe(_stream(chunks, emitter))]
+async def _transcribe(server, audio) -> list:
+    recognizer = QwenStreamingRecognizer(api_key="asr-test-key", ws_url=server.url)
+    return [event async for event in recognizer.stream_transcribe(audio)]
 
 
 # ---------------------------------------------------------------------------
-# ASR：事件映射
+# ASR
 # ---------------------------------------------------------------------------
 
 
-async def test_partial_events_then_final(fake_sdk) -> None:
-    recognizer = QwenStreamingRecognizer()
-    calls = {"n": 0}
+async def test_recognizer_sends_run_task_and_non_empty_frames(dashscope_server) -> None:
+    async def script(task: DashScopeTask) -> None:
+        await task.expect("run-task")
+        await task.started()
+        await task.expect("finish-task")
+        # 空文本结果不产出事件
+        await task.sentence(0, "")
+        await task.sentence(500, "")
+        await task.finished()
 
-    def emit():
-        fake = FakeRecognition.instances[0]
-        if calls["n"] == 0:
-            fake.callback.on_event(FakeResult(text="你好"))
-        else:
-            fake.callback.on_event(FakeResult(text="你好世界"))
-        calls["n"] += 1
+    dashscope_server.serve(script)
+    events = await _transcribe(
+        dashscope_server, _audio(b"\x00" * 1024, b"", b"\x00" * 512)
+    )
 
-    events = await _events(recognizer, [b"\x00" * 1024] * 2, emit)
+    assert events == []
+    task = dashscope_server.tasks[0]
+    assert task.headers["Authorization"] == "Bearer asr-test-key"
+    assert task.run_task["model"] == VOICE_ASR_MODEL
+    assert task.run_task["parameters"]["sample_rate"] == 16_000
+    assert task.run_task["parameters"]["format"] == "pcm"
+    assert task.audio == [b"\x00" * 1024, b"\x00" * 512]
+
+
+async def test_sentence_updates_yield_partials_then_final(dashscope_server) -> None:
+    async def script(task: DashScopeTask) -> None:
+        await task.expect("run-task")
+        await task.started()
+        await task.next_audio()
+        await task.sentence(0, "你好")
+        await task.next_audio()
+        await task.sentence(0, "你好")
+        await task.sentence(0, "你好世界", sentence_end=True)
+        await task.expect("finish-task")
+        await task.finished()
+
+    dashscope_server.serve(script)
+    events = await _transcribe(dashscope_server, _audio(FRAME, FRAME))
+
+    # 内容相同的结果不重复产出 partial
     assert [(e.type, e.text) for e in events] == [
         ("partial", "你好"),
         ("partial", "你好世界"),
@@ -116,466 +78,208 @@ async def test_partial_events_then_final(fake_sdk) -> None:
     ]
 
 
-async def test_sentence_end_settles_stable(fake_sdk) -> None:
-    recognizer = QwenStreamingRecognizer()
+async def test_partial_arrives_while_audio_is_still_streaming(dashscope_server) -> None:
+    partial_seen = asyncio.Event()
 
-    def emit():
-        fake = FakeRecognition.instances[0]
-        fake.callback.on_event(FakeResult(text="你好。", sentence_end=True))
-        fake.callback.on_event(FakeResult(text="请问？", sentence_end=True))
+    async def script(task: DashScopeTask) -> None:
+        await task.expect("run-task")
+        await task.started()
+        await task.next_audio()
+        await task.sentence(0, "你好")
+        await task.expect("finish-task")
+        await task.finished()
 
-    events = await _events(recognizer, [b"\x00" * 512], emit)
-    assert [(e.type, e.text) for e in events] == [
-        ("partial", "你好。"),
-        ("partial", "你好。请问？"),
-        ("final", "你好。请问？"),
-    ]
+    async def audio():
+        # 像麦克风一样按 20 ms 节奏持续送帧，直到收到 partial 才结束
+        while not partial_seen.is_set():
+            yield FRAME
+            await asyncio.sleep(0.02)
 
+    async def collect() -> list:
+        recognizer = QwenStreamingRecognizer(api_key="asr-test-key", ws_url=dashscope_server.url)
+        events = []
+        async for event in recognizer.stream_transcribe(audio()):
+            events.append(event)
+            partial_seen.set()
+        return events
 
-async def test_empty_text_produces_no_events(fake_sdk) -> None:
-    recognizer = QwenStreamingRecognizer()
-
-    def emit():
-        fake = FakeRecognition.instances[0]
-        fake.callback.on_event(FakeResult(text=""))
-        fake.callback.on_event(FakeResult(text="", sentence_end=True))
-
-    events = await _events(recognizer, [b"\x00" * 512], emit)
-    assert events == []
-
-
-async def test_error_yields_error_and_stops(fake_sdk) -> None:
-    recognizer = QwenStreamingRecognizer()
-
-    def emit():
-        fake = FakeRecognition.instances[0]
-        fake.callback.on_event(FakeResult(text="你好"))
-        fake.callback.on_error(FakeResult(message="服务不可用"))
-
-    events = await _events(recognizer, [b"\x00" * 512], emit)
-    assert [(e.type, e.text, e.error) for e in events] == [
-        ("partial", "你好", None),
-        ("error", "", "服务不可用"),
-    ]
-
-
-async def test_duplicate_partial_not_repeated(fake_sdk) -> None:
-    recognizer = QwenStreamingRecognizer()
-
-    def emit():
-        fake = FakeRecognition.instances[0]
-        fake.callback.on_event(FakeResult(text="你好"))
-        fake.callback.on_event(FakeResult(text="你好"))
-
-    events = await _events(recognizer, [b"\x00" * 512], emit)
+    dashscope_server.serve(script)
+    events = await asyncio.wait_for(collect(), timeout=5)
     assert [(e.type, e.text) for e in events] == [("partial", "你好"), ("final", "你好")]
 
 
-async def test_frames_forwarded_to_sdk(fake_sdk) -> None:
-    recognizer = QwenStreamingRecognizer()
-    chunks = [b"\x00" * 1024, b"", b"\x00" * 512]
-    events = await _events(recognizer, chunks)
-    assert events == []
-    fake = FakeRecognition.instances[0]
-    assert fake.started is True
-    assert fake.stopped is True
-    assert fake.frames == [b"\x00" * 1024, b"\x00" * 512]  # 空块被跳过
+async def test_task_failed_yields_server_error(dashscope_server) -> None:
+    async def script(task: DashScopeTask) -> None:
+        await task.expect("run-task")
+        await task.started()
+        await task.next_audio()
+        await task.sentence(0, "你好")
+        await task.failed("InvalidParameter", "audio format is not supported")
+
+    dashscope_server.serve(script)
+    events = await _transcribe(dashscope_server, _audio(FRAME, FRAME, FRAME))
+    assert [(e.type, e.text, e.error) for e in events] == [
+        ("partial", "你好", None),
+        ("error", "", "audio format is not supported"),
+    ]
 
 
-async def test_stop_timeout_yields_error(fake_sdk, monkeypatch: pytest.MonkeyPatch) -> None:
-    recognizer = QwenStreamingRecognizer()
-    FakeRecognition.complete_on_stop = False  # SDK 不回调 complete
+async def test_rejected_handshake_reports_original_sdk_error(dashscope_server) -> None:
+    """握手被拒后 SDK 拒收后续音频帧，产出的仍是握手失败的原始错误。"""
+    dashscope_server.reject_handshake(401)
+
+    async def audio():
+        await wait_until(lambda: bool(dashscope_server.handshakes))
+        yield FRAME
+
+    events = await _transcribe(dashscope_server, audio())
+    assert [(e.type, e.error) for e in events] == [
+        ("error", "Unauthorized, your api-key is invalid!")
+    ]
+
+
+async def test_missing_completion_reports_timeout(dashscope_server, monkeypatch) -> None:
+    """task-finished 不带 payload 时 SDK 不回调完成，适配器限时后如实报错。"""
     monkeypatch.setattr(qwen_asr, "_TAIL_TIMEOUT_S", 0.1)
-    events = await _events(recognizer, [b"\x00" * 512])
+
+    async def script(task: DashScopeTask) -> None:
+        await task.expect("run-task")
+        await task.started()
+        await task.expect("finish-task")
+        await task.finished(with_payload=False)
+
+    dashscope_server.serve(script)
+    events = await _transcribe(dashscope_server, _audio(FRAME))
     assert [(e.type, e.error) for e in events] == [("error", "识别收尾超时")]
 
 
-async def test_configured_model_and_sample_rate(fake_sdk) -> None:
-    recognizer = QwenStreamingRecognizer(model="qwen-test-model", sample_rate=8000)
-    await _events(recognizer, [b"\x00" * 256])
-    fake = FakeRecognition.instances[0]
-    assert fake.model == VOICE_ASR_MODEL
-    assert fake.sample_rate == 8000
-    assert fake.format == "pcm"
-
-
-async def test_api_key_and_ws_url_applied(fake_sdk, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(dashscope, "api_key", "original-key")
-    monkeypatch.setattr(dashscope, "base_websocket_api_url", "wss://original")
-    recognizer = QwenStreamingRecognizer(api_key="test-key", ws_url="wss://custom")
-    await _events(recognizer, [b"\x00" * 256])
-    assert dashscope.api_key == "test-key"
-    assert dashscope.base_websocket_api_url == "wss://custom"
-
-
-async def test_defaults_do_not_mutate_globals(fake_sdk, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(dashscope, "api_key", "keep-me")
-    monkeypatch.setattr(dashscope, "base_websocket_api_url", "wss://keep")
-    recognizer = QwenStreamingRecognizer()
-    await _events(recognizer, [b"\x00" * 256])
-    assert dashscope.api_key == "keep-me"
-    assert dashscope.base_websocket_api_url == "wss://keep"
-
-
 # ---------------------------------------------------------------------------
-# TTS：事件映射（dashscope.audio.tts_v2）
+# TTS
 # ---------------------------------------------------------------------------
 
 
-class FakeTtsSynthesizer:
-    """模拟 dashscope.audio.tts_v2.SpeechSynthesizer 的 streaming_call 模式。"""
-
-    instances: list["FakeTtsSynthesizer"] = []
-    start_times: list[float] = []  # 每次 streaming_call 的单调时刻
-    auto_complete: bool = True  # streaming_call 时立即回调音频 + complete
-    error_on_call: str | None = None  # 非 None 时 streaming_call 触发 on_error
-    error_after_data: str | None = None  # 非 None 时先回调 1 个 PCM 再 on_error
-    block_complete: bool = False
-    complete_started: threading.Event | None = None
-    complete_release: threading.Event | None = None
-
-    def __init__(self, model, voice, format, callback, **kwargs):
-        self.model = model
-        self.voice = voice
-        self.format = format
-        self.callback = callback
-        self.texts: list[str] = []
-        self.completed = False
-        self.cancelled = False
-        FakeTtsSynthesizer.instances.append(self)
-
-    def streaming_call(self, text: str) -> None:
-        self.texts.append(text)
-        type(self).start_times.append(time.monotonic())
-        if type(self).error_on_call is not None:
-            self.callback.on_error(types.SimpleNamespace(message=type(self).error_on_call))
-            return
-        if type(self).error_after_data is not None:
-            self.callback.on_data(b"\x00" * 640)
-            self.callback.on_error(
-                types.SimpleNamespace(message=type(self).error_after_data)
-            )
-            return
-        if type(self).auto_complete:
-            self.callback.on_data(b"\x00" * 640)
-            self.callback.on_data(b"\x11" * 320)
-            self.callback.on_complete()
-
-    def streaming_complete(self, complete_timeout_millis=600000) -> None:
-        self.completed = True
-        if type(self).block_complete:
-            if type(self).complete_started is not None:
-                type(self).complete_started.set()
-            if type(self).complete_release is not None:
-                type(self).complete_release.wait(timeout=2)
-
-    def streaming_cancel(self) -> None:
-        self.cancelled = True
+def _synthesizer(server) -> QwenSpeechSynthesizer:
+    return QwenSpeechSynthesizer(api_key="tts-test-key", ws_url=server.url)
 
 
-@pytest.fixture
-def fake_tts_sdk(monkeypatch: pytest.MonkeyPatch) -> type[FakeTtsSynthesizer]:
-    import dashscope.audio.tts_v2  # noqa: F401 - 确保模块已加载
-
-    FakeTtsSynthesizer.instances.clear()
-    FakeTtsSynthesizer.start_times.clear()
-    FakeTtsSynthesizer.auto_complete = True
-    FakeTtsSynthesizer.error_on_call = None
-    FakeTtsSynthesizer.error_after_data = None
-    FakeTtsSynthesizer.block_complete = False
-    FakeTtsSynthesizer.complete_started = None
-    FakeTtsSynthesizer.complete_release = None
-    monkeypatch.setattr(dashscope.audio.tts_v2, "SpeechSynthesizer", FakeTtsSynthesizer)
-    monkeypatch.setattr(
-        dashscope.audio.tts_v2,
-        "AudioFormat",
-        types.SimpleNamespace(PCM_24000HZ_MONO_16BIT="pcm_24000"),
-    )
-    monkeypatch.setattr(dashscope.audio.tts_v2, "ResultCallback", object)
-    # 起始节流（V039-S4-012）默认关闭：单测逐条合成，不引入真实等待；
-    # 同时清掉进程级节流状态，避免用例之间互相影响。
-    monkeypatch.setattr(qwen_tts, "_TTS_MIN_START_INTERVAL_S", 0.0)
-    monkeypatch.setattr(qwen_tts, "_TTS_FAILURE_BACKOFF_BASE_S", 0.0)
-    qwen_tts._PACER.reset()
-    return FakeTtsSynthesizer
-
-
-def _tts_request(text: str = "你好") -> SpeechRequest:
+def _speech(text: str = "你好") -> SpeechRequest:
     return SpeechRequest(text=text, voice_id="demo-voice", message_id="m1")
 
 
-async def test_tts_yields_chunks_then_final(fake_tts_sdk) -> None:
-    synthesizer = QwenSpeechSynthesizer()
-    chunks = [c async for c in synthesizer.synthesize(_tts_request())]
-    assert len(chunks) == 3
-    assert chunks[0].pcm == b"\x00" * 640
-    assert chunks[1].pcm == b"\x11" * 320
-    assert chunks[0].sample_rate == 24_000
-    assert chunks[0].channels == 1
-    assert chunks[0].final is False
-    assert chunks[2].final is True
-    assert chunks[2].pcm == b""
+async def _accept_text(task: DashScopeTask) -> None:
+    """run-task → task-started → continue-task；客户端随后立即发 finish-task。"""
+    await task.expect("run-task")
+    await task.started()
+    await task.expect("continue-task")
+    await task.expect("finish-task")
 
 
-async def test_tts_voice_model_format_passed(fake_tts_sdk) -> None:
-    synthesizer = QwenSpeechSynthesizer(model="qwen-tts-test")
-    chunks = [c async for c in synthesizer.synthesize(_tts_request())]
-    assert chunks  # 正常合成完成
-    fake = FakeTtsSynthesizer.instances[0]
-    assert fake.voice == "demo-voice"
-    assert fake.model == VOICE_TTS_MODEL
-    assert fake.format == "pcm_24000"
-    assert fake.texts == ["你好"]
-    assert fake.completed is True
-    assert fake.cancelled is False
+def _holding_script(release_cancel: asyncio.Event | None = None):
+    """下发一块音频后不再收尾，收到取消指令（且 release_cancel 放行）才回 task-finished。"""
+
+    async def script(task: DashScopeTask) -> None:
+        await _accept_text(task)
+        await task.audio_out(FRAME)
+        cancel = await task.expect("finish-task")
+        assert cancel["payload"]["input"]["directive"] == "cancel"
+        if release_cancel is not None:
+            await release_cancel.wait()
+        await task.finished()
+
+    return script
 
 
-async def test_tts_error_raises(fake_tts_sdk) -> None:
-    FakeTtsSynthesizer.error_on_call = "合成失败"
-    synthesizer = QwenSpeechSynthesizer()
-    with pytest.raises(QwenTtsError, match="合成失败"):
-        [c async for c in synthesizer.synthesize(_tts_request())]
+async def test_synthesizer_yields_pcm_then_final(dashscope_server) -> None:
+    async def script(task: DashScopeTask) -> None:
+        await _accept_text(task)
+        await task.audio_out(b"\x00" * 640)
+        await task.audio_out(b"\x11" * 320)
+        await task.finished()
+
+    dashscope_server.serve(script)
+    chunks = [chunk async for chunk in _synthesizer(dashscope_server).synthesize(_speech())]
+
+    assert [(chunk.pcm, chunk.final) for chunk in chunks] == [
+        (b"\x00" * 640, False),
+        (b"\x11" * 320, False),
+        (b"", True),
+    ]
+    assert {(chunk.sample_rate, chunk.channels) for chunk in chunks} == {(24_000, 1)}
+    task = dashscope_server.tasks[0]
+    assert task.headers["Authorization"] == "Bearer tts-test-key"
+    assert task.run_task["model"] == VOICE_TTS_MODEL
+    parameters = task.run_task["parameters"]
+    assert (parameters["voice"], parameters["format"], parameters["sample_rate"]) == (
+        "demo-voice",
+        "pcm",
+        24_000,
+    )
+    assert task.texts == ["你好"]
+    assert task.finish_directives == [None]
 
 
-async def test_tts_empty_text_raises(fake_tts_sdk) -> None:
-    synthesizer = QwenSpeechSynthesizer()
+async def test_task_failed_raises_server_error(dashscope_server) -> None:
+    async def script(task: DashScopeTask) -> None:
+        await _accept_text(task)
+        await task.failed(
+            "Throttling.RateQuota", "Requests rate limit exceeded, please try again later."
+        )
+
+    dashscope_server.serve(script)
+    with pytest.raises(QwenTtsError, match="Throttling.RateQuota"):
+        [chunk async for chunk in _synthesizer(dashscope_server).synthesize(_speech())]
+
+
+async def test_unreadable_text_is_rejected_before_connecting(dashscope_server) -> None:
     with pytest.raises(QwenTtsError, match="文本为空"):
-        [c async for c in synthesizer.synthesize(_tts_request("   "))]
+        [chunk async for chunk in _synthesizer(dashscope_server).synthesize(_speech("   "))]
+    assert dashscope_server.handshakes == []
 
 
-async def test_tts_aclose_cancels_synthesis(fake_tts_sdk) -> None:
-    FakeTtsSynthesizer.auto_complete = False  # 服务端不回包，卡在等待
-    synthesizer = QwenSpeechSynthesizer()
-    agen = synthesizer.synthesize(_tts_request())
-    # 启动迭代（async generator 惰性），让底层线程进入 streaming_call
-    anext_task = asyncio.create_task(agen.__anext__())
-    for _ in range(200):
-        if FakeTtsSynthesizer.instances and FakeTtsSynthesizer.instances[0].texts:
-            break
-        await asyncio.sleep(0.01)
-    assert FakeTtsSynthesizer.instances[0].texts == ["你好"]
-    # 取消迭代：generator 的 finally 会置 closed 并等待底层线程取消
-    anext_task.cancel()
-    try:
-        await anext_task
-    except (asyncio.CancelledError, StopAsyncIteration):
-        pass
-    fake = FakeTtsSynthesizer.instances[0]
-    assert fake.cancelled is True
-    assert fake.completed is False
+async def test_closing_stream_cancels_upstream_synthesis(dashscope_server) -> None:
+    dashscope_server.serve(_holding_script())
+    stream = _synthesizer(dashscope_server).synthesize(_speech())
+
+    assert (await anext(stream)).pcm == FRAME
+    await stream.aclose()
+    await wait_until(lambda: dashscope_server.tasks[0].finish_directives == [None, "cancel"])
 
 
-async def test_tts_aclose_does_not_wait_for_blocked_complete(
-    fake_tts_sdk, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """SDK 卡在 streaming_complete 时，aclose 仍应及时返回。"""
-    started = threading.Event()
-    release = threading.Event()
-    FakeTtsSynthesizer.auto_complete = False
-    FakeTtsSynthesizer.block_complete = True
-    FakeTtsSynthesizer.complete_started = started
-    FakeTtsSynthesizer.complete_release = release
-    monkeypatch.setattr(qwen_tts, "_CLOSE_WAIT_S", 0.05)
-
-    synthesizer = QwenSpeechSynthesizer()
-    agen = synthesizer.synthesize(_tts_request())
-    anext_task = asyncio.create_task(agen.__anext__())
-    for _ in range(200):
-        if started.is_set():
-            break
-        await asyncio.sleep(0.01)
-    assert started.is_set()
-
-    started_at = asyncio.get_running_loop().time()
-    anext_task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await anext_task
-    assert asyncio.get_running_loop().time() - started_at < 0.5
-
-    release.set()
-    await asyncio.sleep(0.05)
-
-
-async def test_tts_api_key_applied(fake_tts_sdk, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(dashscope, "api_key", "original-key")
-    synthesizer = QwenSpeechSynthesizer(api_key="tts-key")
-    [c async for c in synthesizer.synthesize(_tts_request())]
-    assert dashscope.api_key == "tts-key"
-
-
-# ---------------------------------------------------------------------------
-# TTS：起始节流与收尾（V039-S4-012）
-# ---------------------------------------------------------------------------
-
-
-def test_synthesis_pacer_backoff_grows_4_8_16_then_success_resets(monkeypatch) -> None:
-    """连续失败按 4/8/16s 增长（真实常量），未被“部分成功”提前压回 4s。"""
-    monkeypatch.setattr(qwen_tts, "_TTS_MIN_START_INTERVAL_S", 1.0)
-    monkeypatch.setattr(qwen_tts, "_TTS_FAILURE_BACKOFF_BASE_S", 4.0)
-    monkeypatch.setattr(qwen_tts, "_TTS_MAX_START_INTERVAL_S", 30.0)
-    pacer = qwen_tts._SynthesisPacer()
-    assert pacer.interval_s == 1.0
-    assert pacer.wait_s() <= 0.0  # 初始不等待
-    attempt = pacer.mark_started()
-    pacer.note_failure(attempt)
-    assert pacer.interval_s == 4.0
-    pacer.note_failure(attempt)
-    assert pacer.interval_s == 8.0
-    pacer.note_failure(attempt)
-    assert pacer.interval_s == 16.0
-    pacer.note_success(attempt)
-    assert pacer.failure_streak == 0
-    assert pacer.interval_s == 1.0
-
-
-def test_stale_success_does_not_clear_newer_failure(monkeypatch) -> None:
-    """复核确证1：旧尝试的迟到成功不得清掉较新失败的退避（按尝试时序归账）。"""
-    monkeypatch.setattr(qwen_tts, "_TTS_MIN_START_INTERVAL_S", 1.0)
-    monkeypatch.setattr(qwen_tts, "_TTS_FAILURE_BACKOFF_BASE_S", 4.0)
-    monkeypatch.setattr(qwen_tts, "_TTS_MAX_START_INTERVAL_S", 30.0)
-    pacer = qwen_tts._SynthesisPacer()
-    older = pacer.mark_started()
-    newer = pacer.mark_started()
-    pacer.note_failure(newer)
-    assert pacer.interval_s == 4.0
-    pacer.note_success(older)  # 更早尝试的成功：不算数
-    assert pacer.failure_streak == 1
-    assert pacer.interval_s == 4.0
-    pacer.note_success(newer)
-    assert pacer.failure_streak == 0
-    assert pacer.interval_s == 1.0
-
-
-async def test_synthesize_spaces_consecutive_starts(fake_tts_sdk, monkeypatch) -> None:
-    """相邻两次合成起始遵守进程级最小间隔。"""
-    monkeypatch.setattr(qwen_tts, "_TTS_MIN_START_INTERVAL_S", 0.3)
-    qwen_tts._PACER.reset()
-    synthesizer = QwenSpeechSynthesizer()
-    [chunk async for chunk in synthesizer.synthesize(_tts_request())]
-    [chunk async for chunk in synthesizer.synthesize(_tts_request())]
-    starts = FakeTtsSynthesizer.start_times
-    assert len(starts) == 2
-    assert starts[1] - starts[0] >= 0.25
-
-
-async def test_partial_pcm_then_failure_keeps_growing_backoff(
-    fake_tts_sdk, monkeypatch
-) -> None:
-    """复核确证1：出过部分 PCM 仍算失败，连续三轮退避逐轮翻倍。
-
-    真实常量下这三轮对应 4s → 8s → 16s；这里用等比例缩小的时间常量跑真实
-    合成路径，断言逐轮翻倍而不是停在第一档。
-    """
-    monkeypatch.setattr(qwen_tts, "_TTS_MIN_START_INTERVAL_S", 0.0)
-    monkeypatch.setattr(qwen_tts, "_TTS_FAILURE_BACKOFF_BASE_S", 0.06)
-    qwen_tts._PACER.reset()
-    FakeTtsSynthesizer.error_after_data = "Throttling.RateQuota"
-    synthesizer = QwenSpeechSynthesizer()
-    intervals: list[float] = []
-    for _ in range(3):
-        chunks = []
-        with pytest.raises(QwenTtsError, match="Throttling.RateQuota"):
-            async for chunk in synthesizer.synthesize(_tts_request()):
-                chunks.append(chunk)
-        assert chunks and chunks[0].pcm  # 失败之前确实产出了 PCM
-        intervals.append(round(qwen_tts._PACER.interval_s, 4))
-    assert intervals == [0.06, 0.12, 0.24], intervals
-    assert qwen_tts._PACER.failure_streak == 3
-
-
-async def test_complete_success_clears_backoff(fake_tts_sdk, monkeypatch) -> None:
-    """复核确证1：只有完整成功（上游 complete 终态）才清退避。"""
-    monkeypatch.setattr(qwen_tts, "_TTS_MIN_START_INTERVAL_S", 0.0)
-    monkeypatch.setattr(qwen_tts, "_TTS_FAILURE_BACKOFF_BASE_S", 0.2)
-    qwen_tts._PACER.reset()
-    FakeTtsSynthesizer.error_after_data = "Throttling.RateQuota"
-    synthesizer = QwenSpeechSynthesizer()
-    with pytest.raises(QwenTtsError, match="Throttling.RateQuota"):
-        [chunk async for chunk in synthesizer.synthesize(_tts_request())]
-    assert qwen_tts._PACER.interval_s == pytest.approx(0.2)
-
-    FakeTtsSynthesizer.error_after_data = None  # 下一轮走完整成功
-    chunks = [chunk async for chunk in synthesizer.synthesize(_tts_request())]
-    assert chunks[-1].final is True
-    assert qwen_tts._PACER.failure_streak == 0
-    assert qwen_tts._PACER.interval_s == 0.0
-
-
-async def test_failed_synthesis_delays_next_start_then_success_clears_it(
-    fake_tts_sdk, monkeypatch
-) -> None:
-    """一次失败后下一次起始退避；随后成功的合成清掉退避。"""
-    monkeypatch.setattr(qwen_tts, "_TTS_MIN_START_INTERVAL_S", 0.0)
-    monkeypatch.setattr(qwen_tts, "_TTS_FAILURE_BACKOFF_BASE_S", 0.3)
-    qwen_tts._PACER.reset()
-    FakeTtsSynthesizer.error_on_call = "Throttling.RateQuota"
-    synthesizer = QwenSpeechSynthesizer()
-    with pytest.raises(QwenTtsError, match="Throttling.RateQuota"):
-        [chunk async for chunk in synthesizer.synthesize(_tts_request())]
-    assert qwen_tts._PACER.failure_streak == 1
-
-    FakeTtsSynthesizer.error_on_call = None
-    started_at = time.monotonic()
-    [chunk async for chunk in synthesizer.synthesize(_tts_request())]
-    assert FakeTtsSynthesizer.start_times[-1] - started_at >= 0.25
-    assert qwen_tts._PACER.failure_streak == 0
-
-
-async def test_adapter_aclose_stops_inflight_synthesis(
-    fake_tts_sdk, monkeypatch
-) -> None:
-    """适配器自身的 aclose 中止在途合成（应用层收尾路径已按此调用）。"""
-    monkeypatch.setattr(qwen_tts, "_CANCEL_WINDOW_S", 5.0)
-    FakeTtsSynthesizer.auto_complete = False  # 服务端不回包，卡在取消窗口内
-    synthesizer = QwenSpeechSynthesizer()
-    agen = synthesizer.synthesize(_tts_request())
-    anext_task = asyncio.create_task(agen.__anext__())
-    for _ in range(200):
-        if FakeTtsSynthesizer.instances and FakeTtsSynthesizer.instances[0].texts:
-            break
-        await asyncio.sleep(0.01)
-    assert FakeTtsSynthesizer.instances[0].texts == ["你好"]
+async def test_adapter_aclose_cancels_inflight_synthesis(dashscope_server) -> None:
+    """消费方仍在等待下一块时，适配器 aclose 中止上游合成。"""
+    dashscope_server.serve(_holding_script())
+    synthesizer = _synthesizer(dashscope_server)
+    stream = synthesizer.synthesize(_speech())
+    await anext(stream)
+    waiting = asyncio.create_task(anext(stream))
 
     await synthesizer.aclose()
-    fake = FakeTtsSynthesizer.instances[0]
-    assert fake.cancelled is True
-    assert fake.completed is False
+    await wait_until(lambda: dashscope_server.tasks[0].finish_directives == [None, "cancel"])
 
-    anext_task.cancel()
+    waiting.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await anext_task
-    await synthesizer.aclose()  # 幂等：无在途合成时是 no-op
+        await waiting
+    await synthesizer.aclose()  # 没有在途合成时直接返回
 
 
-async def test_normal_completion_does_not_warn_about_thread(
-    fake_tts_sdk, caplog
+async def test_unanswered_cancel_does_not_block_close_and_is_reported(
+    dashscope_server, monkeypatch, caplog
 ) -> None:
-    """正常收尾不再逐次告警（0.5s 内未结束是 SDK 收尾的常规情形）。"""
-    with caplog.at_level(logging.WARNING, logger=qwen_tts.logger.name):
-        synthesizer = QwenSpeechSynthesizer()
-        [chunk async for chunk in synthesizer.synthesize(_tts_request())]
-        await asyncio.sleep(0.05)
-    assert "TTS 合成线程" not in caplog.text
-
-
-async def test_stuck_synthesis_thread_is_reported(
-    fake_tts_sdk, monkeypatch, caplog
-) -> None:
-    """线程确实卡死时仍必须告警：只降噪，不掩盖真实泄漏。"""
-    started = threading.Event()
-    release = threading.Event()
-    FakeTtsSynthesizer.block_complete = True
-    FakeTtsSynthesizer.complete_started = started
-    FakeTtsSynthesizer.complete_release = release
+    """服务端迟迟不回应取消时关闭及时返回，长时间未结束的合成线程记 WARNING。"""
     monkeypatch.setattr(qwen_tts, "_CLOSE_WAIT_S", 0.05)
     monkeypatch.setattr(qwen_tts, "_TTS_THREAD_REAP_WARN_S", 0.05)
+    release = asyncio.Event()
+    dashscope_server.serve(_holding_script(release_cancel=release))
+    stream = _synthesizer(dashscope_server).synthesize(_speech())
+    await anext(stream)
 
     with caplog.at_level(logging.WARNING, logger=qwen_tts.logger.name):
-        synthesizer = QwenSpeechSynthesizer()
-        [chunk async for chunk in synthesizer.synthesize(_tts_request())]
-        for _ in range(100):
-            if "TTS 合成线程" in caplog.text:
-                break
-            await asyncio.sleep(0.02)
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        await stream.aclose()
+        assert loop.time() - started_at < 0.5
+        await wait_until(lambda: "TTS 合成线程" in caplog.text)
+
+    # 放行取消后 SDK 收到 task-finished 并关闭连接，合成线程随之结束。
     release.set()
-    assert "TTS 合成线程" in caplog.text
+    await wait_until(lambda: dashscope_server.tasks[0].closed)

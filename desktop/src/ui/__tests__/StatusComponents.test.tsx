@@ -10,13 +10,13 @@ import type { QueueItemView, ToastItem } from "../status/types";
 afterEach(cleanup);
 
 describe("ConnectionPill", () => {
-  it("三态各自显示人话标签", () => {
-    const { rerender } = render(<ConnectionPill status="connected" onOpenDetails={() => {}} />);
-    expect(screen.getByText("已连接")).toBeInTheDocument();
-    rerender(<ConnectionPill status="connecting" onOpenDetails={() => {}} />);
-    expect(screen.getByText("连接中…")).toBeInTheDocument();
-    rerender(<ConnectionPill status="disconnected" onOpenDetails={() => {}} />);
-    expect(screen.getByText("连接已断开")).toBeInTheDocument();
+  it.each([
+    ["connected", "已连接"],
+    ["connecting", "连接中…"],
+    ["disconnected", "连接已断开"],
+  ] as const)("%s 显示「%s」", (status, label) => {
+    render(<ConnectionPill status={status} onOpenDetails={() => {}} />);
+    expect(screen.getByText(label)).toBeInTheDocument();
   });
 
   it("点击打开技术详情", () => {
@@ -52,13 +52,14 @@ describe("ToastStack", () => {
 });
 
 describe("TechDetailsDrawer", () => {
-  it("关闭时不渲染；打开时展示技术信息与可用动作", () => {
+  it("关闭时不渲染；打开时展示技术信息与重连动作", () => {
     const { rerender } = render(
       <TechDetailsDrawer
         open={false}
         status="disconnected"
         details={{}}
         onClose={() => {}}
+        onReconnect={() => {}}
       />,
     );
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -75,8 +76,6 @@ describe("TechDetailsDrawer", () => {
     expect(screen.getByRole("dialog", { name: "技术详情" })).toBeInTheDocument();
     expect(screen.getByText("websocket:close status: 1011")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "立即重连" })).toBeInTheDocument();
-    // 未提供重启动作时不渲染对应按钮
-    expect(screen.queryByRole("button", { name: "重启本地服务" })).not.toBeInTheDocument();
   });
 });
 
@@ -89,6 +88,8 @@ describe("QueueStrip", () => {
       position: 1,
       waitingFor: "等待当前回复结束",
       intent: "followup",
+      failed: false,
+      error: null,
     },
     {
       queueItemId: "q2",
@@ -97,6 +98,8 @@ describe("QueueStrip", () => {
       position: 2,
       waitingFor: "等待上一个任务结束",
       intent: "followup",
+      failed: false,
+      error: null,
     },
   ];
 
@@ -133,5 +136,25 @@ describe("QueueStrip", () => {
     expect(onWithdraw).toHaveBeenCalledWith("q2");
     fireEvent.click(within(capsules[1]).getByText("立即插入"));
     expect(onPrioritize).toHaveBeenCalledWith("q2");
+  });
+
+  it("派发失败的排队项显示错误原文，只保留撤回", () => {
+    const onWithdraw = vi.fn();
+    render(
+      <QueueStrip
+        items={[{ ...items[0], failed: true, error: "编程助手进程已退出" }]}
+        onEdit={() => {}}
+        onWithdraw={onWithdraw}
+        onPrioritize={() => {}}
+      />,
+    );
+
+    const capsule = screen.getByRole("listitem");
+    expect(capsule).toHaveAttribute("data-queue-status", "failed");
+    expect(within(capsule).getByRole("alert")).toHaveTextContent("派发失败：编程助手进程已退出");
+    expect(within(capsule).queryByRole("button", { name: "编辑" })).not.toBeInTheDocument();
+    expect(within(capsule).queryByRole("button", { name: "立即插入" })).not.toBeInTheDocument();
+    fireEvent.click(within(capsule).getByRole("button", { name: "撤回" }));
+    expect(onWithdraw).toHaveBeenCalledWith("q1");
   });
 });

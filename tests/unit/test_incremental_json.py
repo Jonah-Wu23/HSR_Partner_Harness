@@ -1,19 +1,13 @@
-"""V0.2 M2：增量 JSON 解析器与对话流式事件序列（问题 10）。
-
-- speech.delta 只含干净台词（不再闪烁 JSON 键名/引号）；
-- reasoning 走独立通道（reasoning.started/delta/completed）；
-- speech.completed 携带完整原始输出（raw 供技术详情与审查智能体）；
-- 非 JSON 降级输出整段作为台词增量。
-"""
-
 import json
 
 import pytest
-from httpx import AsyncClient, Request, Response
-from httpx._transports.mock import MockTransport
+from httpx import AsyncClient, MockTransport, Request, Response
 
 from pair_harness.adapters.dialogue.incremental_json import IncrementalJsonSpeechParser
-from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDialogueModel
+from pair_harness.adapters.dialogue.openai_compatible import (
+    DialogueProtocolError,
+    OpenAICompatibleDialogueModel,
+)
 from pair_harness.core.contracts import DialogueRequest, Message, MessageKind, MessageSource
 
 PAIR_ID = "phainon_ancient_machine"
@@ -38,37 +32,21 @@ def json_delta_chunks(payload: dict, split_every: int | None = None) -> list[str
     return [raw[i : i + split_every] for i in range(0, len(raw), split_every)]
 
 
-def stream_transport(chunks: list[str]) -> MockTransport:
-    def handler(_request: Request) -> Response:
-        lines = []
-        for chunk in chunks:
-            data = (
-                '{"choices":[{"delta":{"content":"'
-                + chunk.replace('"', '\\"')
-                + '"}}]}'
-            )
-            lines.append(f"data: {data}\n".encode("utf-8"))
-        lines.append(b"data: [DONE]\n")
-        return Response(200, content=b"".join(lines))
-
-    return MockTransport(handler)
-
-
-def reasoning_stream_transport(content_chunks: list[str]) -> MockTransport:
-    """同时带 reasoning_content（仅首个分片）与 content 的流。"""
+def stream_transport(chunks: list[str], *, reasoning: str = "") -> MockTransport:
+    """Chat Completions SSE 流；reasoning 非空时随首个分片下发 reasoning_content。"""
 
     def handler(_request: Request) -> Response:
         lines = []
-        for index, chunk in enumerate(content_chunks):
-            reasoning = '"reasoning_content":"我在思考",' if index == 0 else ""
-            data = (
-                '{"choices":[{"delta":{'
-                + reasoning
-                + '"content":"' + chunk.replace('"', '\\"') + '"}}]}'
-            )
-            lines.append(f"data: {data}\n".encode("utf-8"))
-        lines.append(b"data: [DONE]\n")
-        return Response(200, content=b"".join(lines))
+        for index, chunk in enumerate(chunks):
+            delta = {"content": chunk}
+            if reasoning and index == 0:
+                delta = {"reasoning_content": reasoning, **delta}
+            data = json.dumps({"choices": [{"delta": delta}]}, ensure_ascii=False)
+            lines.append(f"data: {data}\n\n".encode("utf-8"))
+        lines.append(b"data: [DONE]\n\n")
+        return Response(
+            200, headers={"content-type": "text/event-stream"}, content=b"".join(lines)
+        )
 
     return MockTransport(handler)
 
@@ -87,8 +65,12 @@ def reasoning_stream_transport(content_chunks: list[str]) -> MockTransport:
         ['{"speech": "你好', '，伙伴"}'],
         # 转义字符被截断
         ['{"speech": "他说\\"', '好\\""}'],
+        ['{"speech": "第一行\\', 'n第二行\\u4f', '60"}'],
+        # 其他字段的字符串值里出现 "speech" 字样
+        ['{"note": "\\"speech\\": \\"假的", ', '"speech": "真的"}'],
         # 逐字符推进
         json_delta_chunks({"speech": "你好，伙伴"}, 1),
+        json_delta_chunks({"speech": "引号\"与\\n换行"}, 1),
     ],
 )
 def test_parser_extracts_clean_speech_across_chunk_boundaries(chunks: list[str]) -> None:
@@ -98,33 +80,19 @@ def test_parser_extracts_clean_speech_across_chunk_boundaries(chunks: list[str])
         emitted += parser.feed(chunk)
     raw = "".join(chunks)
     expected = json.loads(raw).get("speech", "")
-    # 无转义时增量预览即最终值；含转义时预览呈原始转义序列，final 覆盖
-    assert parser.full_object is not None
+    # 转义序列解码后上屏，增量预览即最终值
     assert parser.speech == expected
-    assert emitted == expected or "\\" in emitted
+    assert emitted == expected
 
 
-def test_parser_plain_text_output_emits_raw_as_speech() -> None:
-    """非 JSON 输出（角色卡降级/纯台词）：整段增量作为台词。"""
-    parser = IncrementalJsonSpeechParser()
-    deltas = []
-    for chunk in ["这就", "去办。"]:
-        deltas.append(parser.feed(chunk))
-    assert deltas == ["这就", "去办。"]
-    assert parser.speech == "这就去办。"
-    assert parser.full_object is None
-
-
-def test_parser_no_speech_key_extracts_nothing_but_keeps_raw() -> None:
-    """裸裁决 JSON（无 speech 字段）：不上屏增量，完整输出留待 review 复用。"""
+def test_parser_no_speech_key_extracts_nothing() -> None:
+    """裸裁决 JSON（无 speech 字段）：不上屏增量。"""
     parser = IncrementalJsonSpeechParser()
     deltas = []
     for chunk in json_delta_chunks({"allow": True, "reason": "低风险"}, 5):
         deltas.append(parser.feed(chunk))
     assert all(d == "" for d in deltas)
     assert parser.speech == ""
-    assert parser.full_object is not None
-    assert "allow" in parser.raw
 
 
 # ---- 适配器流式事件序列 ----
@@ -164,7 +132,7 @@ async def test_stream_emits_reasoning_lifecycle_events() -> None:
     payload = {"speech": "好，我们继续。"}
     client = AsyncClient(
         base_url="http://test",
-        transport=reasoning_stream_transport(json_delta_chunks(payload, 3)),
+        transport=stream_transport(json_delta_chunks(payload, 3), reasoning="我在思考"),
     )
     model = OpenAICompatibleDialogueModel(
         base_url="http://test", api_key="k", model="m", client=client
@@ -187,25 +155,6 @@ async def test_stream_emits_reasoning_lifecycle_events() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stream_plain_text_falls_back_to_raw_deltas() -> None:
-    """非 JSON 输出：整段作为台词增量，final 台词一致。"""
-    client = AsyncClient(
-        base_url="http://test", transport=stream_transport(["这就", "去办。"])
-    )
-    model = OpenAICompatibleDialogueModel(
-        base_url="http://test", api_key="k", model="m", client=client
-    )
-
-    events = [event async for event in model.stream_reply(make_request())]
-
-    deltas = [e.delta for e in events if e.type == "speech.delta"]
-    assert deltas == ["这就", "去办。"]
-    finals = [e for e in events if e.type == "character.final"]
-    assert finals[0].turn.speech == "这就去办。"
-    await client.aclose()
-
-
-@pytest.mark.asyncio
 async def test_stream_rejects_truncated_json_tail() -> None:
     """JSON 收尾截断时直接失败，不能把增量预览当成完整协议结果。"""
     client = AsyncClient(
@@ -216,6 +165,6 @@ async def test_stream_rejects_truncated_json_tail() -> None:
         base_url="http://test", api_key="k", model="m", client=client
     )
 
-    with pytest.raises(ValueError, match="可用 speech"):
+    with pytest.raises(DialogueProtocolError, match="不是 JSON"):
         _ = [event async for event in model.stream_reply(make_request())]
     await client.aclose()

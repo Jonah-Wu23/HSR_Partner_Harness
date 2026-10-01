@@ -1,204 +1,154 @@
-import { cleanup, fireEvent, render, screen, waitFor, act } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { HarnessActions } from "../../../contracts/actions";
 import type {
   CardGetResult,
-  CharacterCardSource,
-  CharacterCardState,
   CharacterVoiceState,
+  DesktopCommand,
+  DesktopCommandMethod,
 } from "../../../contracts/protocol";
 import type { CharacterCardVoicePageViewModel } from "../../../contracts/view-models";
-import { CharacterVoiceSection } from "../CharacterVoiceSection";
+import { createMockScenario } from "../../../mocks/scenarios";
+import { createActionController } from "../../../services/actions";
+import { DesktopRequestError } from "../../../services/backend";
+import { desktopStore } from "../../../stores/desktopStore";
+import { fakeBackend, unexpectedCommand } from "../../../test/fakeBackend";
+import { CharacterVoiceSection, type CharacterVoiceSectionProps } from "../CharacterVoiceSection";
 
 afterEach(() => {
   cleanup();
-  vi.restoreAllMocks();
+  desktopStore.setState(desktopStore.getInitialState(), true);
 });
 
-function createMockActions(overrides: Partial<HarnessActions> = {}): HarnessActions {
+const KAFKA_ID = "card-saved-002";
+
+/** card.get 里 data.extensions.hsr.voice_profile 的线缆形状：codec 序列化的字段全部是字符串。 */
+interface VoiceProfileWire {
+  state: string;
+  voice_id: string;
+  target_model: string;
+  creation_mode: string;
+  prefix: string;
+  reference_audio_asset: string;
+  reference_audio_url: string;
+  voice_prompt_asset: string;
+  last_error: string;
+  updated_at: string;
+}
+
+function voiceProfile(overrides: Partial<VoiceProfileWire> = {}): VoiceProfileWire {
   return {
-    createProject: vi.fn().mockResolvedValue(true),
-    renameProject: vi.fn().mockResolvedValue(undefined),
-    repairProjectPath: vi.fn().mockResolvedValue(undefined),
-    selectProject: vi.fn().mockResolvedValue(undefined),
-    archiveProject: vi.fn().mockResolvedValue(undefined),
-    createConversation: vi.fn().mockResolvedValue(undefined),
-    selectConversation: vi.fn().mockResolvedValue(undefined),
-    openConversationTab: vi.fn().mockResolvedValue(undefined),
-    closeConversationTab: vi.fn(),
-    openConversationWindow: vi.fn().mockResolvedValue(undefined),
-    renameConversation: vi.fn().mockResolvedValue(undefined),
-    archiveConversation: vi.fn().mockResolvedValue(undefined),
-    switchMode: vi.fn().mockResolvedValue(undefined),
-    switchTheme: vi.fn(),
-    submitMessage: vi.fn().mockResolvedValue({}),
-    editQueueItem: vi.fn().mockResolvedValue(undefined),
-    withdrawQueueItem: vi.fn().mockResolvedValue(undefined),
-    prioritizeQueueItem: vi.fn().mockResolvedValue(undefined),
-    editQueueFromStrip: vi.fn().mockResolvedValue(null),
-    cancelTask: vi.fn().mockResolvedValue(undefined),
-    resolveApproval: vi.fn().mockResolvedValue(undefined),
-    setApprovalMode: vi.fn().mockResolvedValue(undefined),
-    setReasoningEffort: vi.fn().mockResolvedValue(undefined),
-    setVadEnabled: vi.fn().mockResolvedValue(undefined),
-    startPushToTalk: vi.fn().mockResolvedValue(undefined),
-    stopPushToTalk: vi.fn().mockResolvedValue(undefined),
-    stopSpeech: vi.fn().mockResolvedValue(undefined),
-    skipSpeech: vi.fn().mockResolvedValue(undefined),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    listAccounts: vi.fn().mockResolvedValue(undefined),
-    registerAccount: vi.fn().mockResolvedValue(undefined),
-    loginAccount: vi.fn().mockResolvedValue(undefined),
-    logoutAccount: vi.fn().mockResolvedValue(undefined),
-    updateAccountProfile: vi.fn().mockResolvedValue(undefined),
-    changePassword: vi.fn().mockResolvedValue(undefined),
-    completeOnboarding: vi.fn().mockResolvedValue(undefined),
-    getConfig: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn().mockResolvedValue(undefined),
-    testConnection: vi.fn().mockResolvedValue("ok"),
-    dismissToast: vi.fn(),
-    voicePreview: vi.fn().mockResolvedValue(undefined),
-    provisionVoices: vi.fn().mockResolvedValue({}),
-    listCards: vi.fn().mockResolvedValue(undefined),
-    openCharacterLibrary: vi.fn().mockResolvedValue(undefined),
-    openCharacterCreate: vi.fn().mockResolvedValue(undefined),
-    openChat: vi.fn(),
-    createCardDraft: vi.fn().mockResolvedValue("draft-123"),
-    updateCard: vi.fn().mockResolvedValue(undefined),
-    duplicateCard: vi.fn().mockResolvedValue(undefined),
-    archiveCard: vi.fn().mockResolvedValue(undefined),
-    deleteCard: vi.fn().mockResolvedValue(undefined),
-    selectActiveCard: vi.fn().mockResolvedValue(undefined),
-    cardGet: vi.fn().mockResolvedValue(createCardGetResult()),
-    cardPeekImportJson: vi.fn().mockResolvedValue({ preview: {} as never }),
-    cardPeekImport: vi.fn().mockResolvedValue({ preview: {} as never }),
-    cardImportJson: vi.fn().mockResolvedValue({} as never),
-    cardImportPng: vi.fn().mockResolvedValue({} as never),
-    cardExportJson: vi.fn().mockResolvedValue({} as never),
-    cardExportPng: vi.fn().mockResolvedValue({} as never),
-    cardPublish: vi.fn().mockResolvedValue({} as never),
-    cardSetAvatar: vi.fn().mockResolvedValue({} as never),
-    cardRemoveAvatar: vi.fn().mockResolvedValue({} as never),
-    powerGetStatus: vi.fn().mockResolvedValue({
-      supported: false,
-      platform: "windows",
-      plan_name: "",
-      ac_sleep_timeout_seconds: null,
-      dc_sleep_timeout_seconds: null,
-      remote_serve_enabled: false,
-      threshold_seconds: 900,
-      at_risk: false,
-      reason: "",
-      checked_at: "",
-    }),
-    voiceCardBindReference: vi.fn().mockResolvedValue({
-      card_id: "card-saved-002",
-      asset_id: "ref-audio-001",
-      duration_seconds: 5.2,
-      size_bytes: 102400,
-      mime_type: "audio/wav",
-    }),
-    voiceCardCreate: vi.fn().mockResolvedValue({
-      card_id: "card-saved-002",
-      state: "voice_ready" as CharacterVoiceState,
-      voice_id: "mock-voice-123",
-    }),
-    voiceCardUnbind: vi.fn().mockResolvedValue({
-      card_id: "card-saved-002",
-      state: "voice_unconfigured" as CharacterVoiceState,
-    }),
-    voiceCardPreview: vi.fn().mockResolvedValue(undefined),
-    voiceMobilePttStart: vi.fn().mockResolvedValue({ session_id: "mock-session" }),
-    voiceMobileAudioChunk: vi.fn().mockResolvedValue(undefined),
-    voiceMobilePttStop: vi.fn().mockResolvedValue({
-      session_id: "mock-session",
-      transcript: "",
-      conversation_id: "",
-    }),
-    voiceMobileTtsStop: vi.fn().mockResolvedValue(undefined),
-    issuePairingCode: vi.fn().mockResolvedValue(undefined),
-    listRemoteDevices: vi.fn().mockResolvedValue(undefined),
-    revokeRemoteDevice: vi.fn().mockResolvedValue(undefined),
-    tunnelStart: vi.fn().mockResolvedValue(undefined),
-    tunnelStop: vi.fn().mockResolvedValue(undefined),
-    queryTunnelStatus: vi.fn().mockResolvedValue(undefined),
+    state: "voice_unconfigured",
+    voice_id: "",
+    target_model: "qwen-audio-3.0-tts-flash",
+    creation_mode: "",
+    prefix: "",
+    reference_audio_asset: "",
+    reference_audio_url: "",
+    voice_prompt_asset: "",
+    last_error: "",
+    updated_at: "2026-08-18T21:40:00+00:00",
     ...overrides,
   };
 }
 
-function createCardGetResult(overrides: {
-  cardId?: string;
-  name?: string;
-  source?: CharacterCardSource;
-  state?: CharacterCardState;
-  readOnly?: boolean;
-  voiceState?: CharacterVoiceState;
-  voiceId?: string;
-  creationMode?: string;
-  prefix?: string;
-  referenceAudioAsset?: {
-    asset_id: string;
-    duration_seconds: number;
-    size_bytes: number;
-    mime_type: string;
-  } | null;
-  lastError?: string | null;
-} = {}): CardGetResult {
-  const {
-    cardId = "card-saved-002",
-    name = "卡芙卡",
-    source = "user_created",
-    state = "saved",
-    readOnly = false,
-    voiceState = "voice_unconfigured",
-    voiceId = "",
-    creationMode = "",
-    prefix = "",
-    referenceAudioAsset = null,
-    lastError = null,
-  } = overrides;
+function cardGetResult(cardId: string, profile: VoiceProfileWire): CardGetResult {
+  const builtin = cardId.startsWith("builtin:");
   return {
     card_id: cardId,
-    state,
-    source,
+    state: "saved",
+    source: builtin ? "builtin" : "user_created",
     created_at: "2026-08-18T21:40:00+00:00",
     updated_at: "2026-08-18T21:40:00+00:00",
-    read_only: readOnly,
+    read_only: builtin,
     avatar: null,
     card: {
       spec: "chara_card_v3",
       spec_version: "3.0",
-      data: {
-        name,
-        extensions: {
-          hsr: {
-            voice_profile: {
-              voice_id: voiceId,
-              state: voiceState,
-              creation_mode: creationMode,
-              prefix,
-              reference_audio_asset: referenceAudioAsset,
-              last_error: lastError,
-              updated_at: "2026-08-18T21:40:00+00:00",
-            },
-          },
-        },
-      },
+      data: { name: "卡芙卡", extensions: { hsr: { voice_profile: profile } } },
+    },
+    compat_report: {
+      applied: [],
+      preserved: [],
+      not_executed: [],
+      normalized_from_root: [],
+      warnings: [],
+      errors: [],
     },
   };
 }
 
-/** 全量并行下 waitFor 通过到 fireEvent 之间可能落进 busy 窗口（按钮短暂禁用，click 被
-    静默吞掉）：仅在按钮可点时刻点击，命中即停（断言强度不变，仅消除时序竞争）。 */
-async function clickCreateWhenEnabled(testId: string, isDone: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const btn = screen.getByTestId<HTMLButtonElement>(testId);
-    if (!btn.disabled) {
-      fireEvent.click(btn);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    if (isDone()) return;
-  }
+interface VoiceBackendOptions {
+  profile?: VoiceProfileWire;
+  /** 登记的命令回放为错误帧。 */
+  errors?: Partial<Record<DesktopCommandMethod, DesktopRequestError>>;
+  pickFileResult?: string | null;
+  /** card.get 等到它完成才应答，用来观察读取中的界面。 */
+  cardGetGate?: Promise<void>;
+}
+
+/** 按真实后端回放卡音色命令：card.get 带出当前 voice_profile，绑定、创建、解绑改写它。 */
+function voiceBackend(options: VoiceBackendOptions = {}) {
+  let profile = options.profile ?? voiceProfile();
+  const { backend, commands } = fakeBackend(
+    async (command) => {
+      const error = options.errors?.[command.method];
+      if (error) throw error;
+      const cardId = String(command.params.card_id ?? "");
+      switch (command.method) {
+        case "card.get":
+          await options.cardGetGate;
+          return cardGetResult(cardId, profile);
+        case "card.list":
+          return { cards: [] };
+        case "voice.card_bind_reference":
+          profile = { ...profile, reference_audio_asset: "ref-audio-001" };
+          return {
+            card_id: cardId,
+            asset_id: "ref-audio-001",
+            duration_seconds: 5.2,
+            size_bytes: 102400,
+            mime_type: "audio/wav",
+          };
+        case "voice.card_create": {
+          if (command.params.mode === "clone" && !profile.reference_audio_asset) {
+            throw new DesktopRequestError(
+              "voice_reference_missing",
+              "请先绑定参考音频（voice.card_bind_reference）",
+            );
+          }
+          const voiceId = `${String(command.params.prefix)}-voice-001`;
+          profile = {
+            ...profile,
+            state: "voice_ready",
+            voice_id: voiceId,
+            creation_mode: String(command.params.mode),
+            prefix: String(command.params.prefix),
+            last_error: "",
+          };
+          return { card_id: cardId, state: "voice_ready", voice_id: voiceId };
+        }
+        case "voice.card_unbind":
+          profile = { ...profile, state: "voice_unconfigured", voice_id: "", creation_mode: "", last_error: "" };
+          return { card_id: cardId, state: "voice_unconfigured" };
+        case "voice.card_preview":
+          return { voice: createMockScenario("single-project").snapshot.voice };
+        default:
+          return unexpectedCommand(command);
+      }
+    },
+    { pickFileResult: options.pickFileResult },
+  );
+  return {
+    backend,
+    commands,
+    setProfile(next: VoiceProfileWire) {
+      profile = next;
+    },
+  };
+}
+
+function paramsOf(commands: readonly DesktopCommand[], method: string): Record<string, unknown>[] {
+  return commands.filter((command) => command.method === method).map((command) => command.params);
 }
 
 function createVm(
@@ -216,10 +166,6 @@ function createVm(
         voiceState: "voice_unconfigured",
         active: true,
         readOnly: false,
-        hasReferenceAudio: false,
-        referenceAudio: null,
-        voiceId: null,
-        lastError: null,
       },
       {
         cardId: "builtin:phainon",
@@ -230,713 +176,337 @@ function createVm(
         voiceState: "voice_ready",
         active: false,
         readOnly: true,
-        hasReferenceAudio: false,
-        referenceAudio: null,
-        voiceId: "builtin-voice-phainon",
-        lastError: null,
       },
       {
         cardId: "card-imported-004",
         name: "砂金",
         state: "imported",
-        source: "imported_png",
+        source: "tavern_import",
         hasAvatar: true,
         voiceState: "voice_failed",
         active: false,
         readOnly: false,
-        hasReferenceAudio: false,
-        referenceAudio: null,
-        voiceId: null,
-        lastError: "模拟音色创建失败",
       },
     ],
-    selectedCardId: null,
-    selectedCard: null,
     ...overrides,
   };
 }
 
+/** 与设置中心一致：文件对话框走后端 pickFile。 */
+function renderSection(
+  { backend }: ReturnType<typeof voiceBackend>,
+  props: Partial<CharacterVoiceSectionProps> = {},
+) {
+  const { actions } = createActionController(backend);
+  const element = (next: Partial<CharacterVoiceSectionProps>) => (
+    <CharacterVoiceSection
+      characterVoice={createVm()}
+      actions={actions}
+      onPickFile={(options) => backend.pickFile(options)}
+      {...next}
+    />
+  );
+  const view = render(element(props));
+  return { rerender: (next: Partial<CharacterVoiceSectionProps>) => view.rerender(element(next)) };
+}
+
+/** 卡详情到达后创建表单会重置并按角色名填入默认前缀，以此作为详情就绪的界面信号。 */
+async function waitForDetail(): Promise<void> {
+  await waitFor(() => expect(screen.getByTestId("prefix-input")).toHaveValue("card"));
+}
+
+async function click(testId: string): Promise<void> {
+  await act(async () => {
+    fireEvent.click(screen.getByTestId(testId));
+  });
+}
+
+function withSummaryVoiceState(voiceState: CharacterVoiceState): CharacterCardVoicePageViewModel {
+  return createVm({
+    cards: createVm().cards.map((card) => (card.cardId === KAFKA_ID ? { ...card, voiceState } : card)),
+  });
+}
+
 describe("CharacterVoiceSection", () => {
-  it("渲染角色选择器与空提示（未选卡）", () => {
-    const actions = createMockActions();
-    render(<CharacterVoiceSection characterVoice={createVm()} actions={actions} />);
+  it("未选卡时只显示角色选择器，不读取卡详情", () => {
+    const replay = voiceBackend();
+    renderSection(replay);
 
-    expect(screen.getByTestId("character-voice-section")).toBeInTheDocument();
-    expect(screen.getByText("为角色创建音色")).toBeInTheDocument();
-    expect(screen.getByLabelText("选择角色")).toBeInTheDocument();
-    const select = screen.getByLabelText("选择角色") as HTMLSelectElement;
-    expect(Array.from(select.options).some((o) => o.text.includes("卡芙卡"))).toBe(true);
-    expect(Array.from(select.options).some((o) => o.text.includes("白厄"))).toBe(true);
+    const options = Array.from((screen.getByLabelText("选择角色") as HTMLSelectElement).options).map(
+      (option) => option.text,
+    );
+    expect(options).toEqual(["— 请选择 —", "卡芙卡（自定义）", "白厄（内置）", "砂金（导入）"]);
+    expect(screen.queryByTestId("reference-audio-section")).not.toBeInTheDocument();
+    expect(replay.commands).toEqual([]);
   });
 
-  it("选择自定义卡后调用 cardGet 拉取音色详情", async () => {
-    const actions = createMockActions();
-    render(<CharacterVoiceSection characterVoice={createVm()} actions={actions} />);
+  it("选择自定义卡后读取音色详情，未配置时引导选择参考音频", async () => {
+    const replay = voiceBackend();
+    renderSection(replay);
 
-    fireEvent.change(screen.getByLabelText("选择角色"), {
-      target: { value: "card-saved-002" },
-    });
+    fireEvent.change(screen.getByLabelText("选择角色"), { target: { value: KAFKA_ID } });
 
-    await waitFor(() => {
-      expect(actions.cardGet).toHaveBeenCalledWith("card-saved-002");
-    });
-    expect(screen.getByTestId("voice-state-unconfigured")).toBeInTheDocument();
+    expect(await screen.findByTestId("voice-state-unconfigured")).toBeInTheDocument();
     expect(screen.getByTestId("pick-reference-btn")).toBeInTheDocument();
+    expect(paramsOf(replay.commands, "card.get")).toEqual([{ card_id: KAFKA_ID }]);
   });
 
-  it("选择内置只读卡时展示只读说明，不提供创建入口", async () => {
-    const actions = createMockActions();
-    render(<CharacterVoiceSection characterVoice={createVm()} actions={actions} />);
+  it("选择内置卡时显示只读说明，不提供创建入口", async () => {
+    renderSection(voiceBackend());
 
-    fireEvent.change(screen.getByLabelText("选择角色"), {
-      target: { value: "builtin:phainon" },
-    });
+    fireEvent.change(screen.getByLabelText("选择角色"), { target: { value: "builtin:phainon" } });
 
-    await waitFor(() => {
-      expect(screen.getByTestId("builtin-readonly-block")).toBeInTheDocument();
-    });
-    expect(screen.getByText(/内置角色只读/)).toBeInTheDocument();
+    expect(await screen.findByTestId("builtin-readonly-block")).toHaveTextContent("内置角色只读");
     expect(screen.queryByTestId("create-voice-btn")).not.toBeInTheDocument();
   });
 
-  it("参考音频选择成功并展示音频信息", async () => {
-    const onPickFile = vi.fn().mockResolvedValue("C:/refs/kafka_ref.wav");
-    const cardGet = vi
-      .fn()
-      .mockResolvedValueOnce(createCardGetResult())
-      .mockResolvedValue(
-        createCardGetResult({
-          referenceAudioAsset: {
-            asset_id: "ref-audio-001",
-            duration_seconds: 5.2,
-            size_bytes: 102400,
-            mime_type: "audio/wav",
-          },
-        }),
-      );
-    const actions = createMockActions({ cardGet, voiceCardBindReference: vi.fn().mockResolvedValue({
-      card_id: "card-saved-002",
-      asset_id: "ref-audio-001",
-      duration_seconds: 5.2,
-      size_bytes: 102400,
-      mime_type: "audio/wav",
-    }) });
+  it("选择参考音频后经 voice.card_bind_reference 绑定并显示资产 ID", async () => {
+    const replay = voiceBackend({ pickFileResult: "C:/refs/kafka_ref.wav" });
+    renderSection(replay, { voiceCardFocus: KAFKA_ID });
+    await waitForDetail();
 
-    render(
-      <CharacterVoiceSection
-        characterVoice={createVm({ selectedCardId: "card-saved-002" })}
-        actions={actions}
-        onPickFile={onPickFile}
-      />,
-    );
+    await click("pick-reference-btn");
 
-    await waitFor(() => {
-      expect(screen.getByTestId("pick-reference-btn")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByTestId("pick-reference-btn"));
-
-    await waitFor(() => {
-      expect(onPickFile).toHaveBeenCalledWith({
-        title: "选择参考音频",
-        filters: [
-          { name: "音频文件", extensions: ["wav", "mp3", "m4a"] },
-          { name: "全部文件", extensions: ["*"] },
-        ],
-      });
-    });
-    await waitFor(() => {
-      expect(actions.voiceCardBindReference).toHaveBeenCalledWith(
-        "card-saved-002",
-        "C:/refs/kafka_ref.wav",
-      );
-    });
-    await waitFor(() => {
-      expect(screen.getByTestId("reference-audio-section")).toHaveTextContent("audio/wav");
-      expect(screen.getByTestId("reference-audio-section")).toHaveTextContent("00:05");
-    });
+    expect(await screen.findByTestId("replace-reference-btn")).toBeInTheDocument();
+    expect(screen.getByTestId("reference-audio-section")).toHaveTextContent("ref-audio-001");
+    expect(screen.queryByTestId("voice-state-unconfigured")).not.toBeInTheDocument();
+    expect(paramsOf(replay.commands, "voice.card_bind_reference")).toEqual([
+      { card_id: KAFKA_ID, path: "C:/refs/kafka_ref.wav" },
+    ]);
   });
 
-  it("参考音频绑定错误如实展示原始错误", async () => {
-    const onPickFile = vi.fn().mockResolvedValue("C:/refs/bad.txt");
-    const error = new Error("voice_reference_invalid：仅支持 wav/mp3/m4a");
-    (error as Error & { code?: string }).code = "voice_reference_invalid";
-    const actions = createMockActions({
-      voiceCardBindReference: vi.fn().mockRejectedValue(error),
+  it("参考音频被后端拒绝时显示原文", async () => {
+    const replay = voiceBackend({
+      pickFileResult: "C:/refs/bad.txt",
+      errors: {
+        "voice.card_bind_reference": new DesktopRequestError("voice_reference_invalid", "参考音频仅支持 WAV / MP3 / M4A"),
+      },
     });
+    renderSection(replay, { voiceCardFocus: KAFKA_ID });
+    await waitForDetail();
 
-    render(
-      <CharacterVoiceSection
-        characterVoice={createVm({ selectedCardId: "card-saved-002" })}
-        actions={actions}
-        onPickFile={onPickFile}
-      />,
-    );
+    await click("pick-reference-btn");
 
-    await waitFor(() => {
-      expect(screen.getByTestId("pick-reference-btn")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByTestId("pick-reference-btn"));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("operation-error")).toHaveTextContent(
-        "voice_reference_invalid：仅支持 wav/mp3/m4a",
-      );
-    });
+    expect(await screen.findByTestId("operation-error")).toHaveTextContent("参考音频仅支持 WAV / MP3 / M4A");
   });
 
-  it("clone 模式创建音色成功并展示 voice_id", async () => {
-    const actions = createMockActions({
-      cardGet: vi
-        .fn()
-        .mockResolvedValueOnce(createCardGetResult())
-        .mockResolvedValue(
-          createCardGetResult({
-            voiceState: "voice_ready",
-            voiceId: "mock-voice-abc",
-            creationMode: "clone",
-          }),
-        ),
-    });
+  it("clone 模式用已绑定的参考音频创建音色，完成后显示音色 ID", async () => {
+    const replay = voiceBackend({ profile: voiceProfile({ reference_audio_asset: "ref-audio-001" }) });
+    renderSection(replay, { voiceCardFocus: KAFKA_ID });
+    await waitForDetail();
 
-    render(
-      <CharacterVoiceSection
-        characterVoice={createVm({ selectedCardId: "card-saved-002" })}
-        actions={actions}
-      />,
-    );
+    await click("create-voice-btn");
 
-    await waitFor(() => {
-      expect(actions.cardGet).toHaveBeenCalledWith("card-saved-002");
-    });
-    // prefix 由 cardDetail 到达后的 effect 种子化为默认前缀「card」；空前缀合法但
-    // 效果随时序，点击落在种子化之前会提交 {}（全量并行下偶发）。等种子落定再点。
-    await waitFor(() => {
-      expect(screen.getByTestId<HTMLInputElement>("prefix-input")).toHaveValue("card");
-    });
-    await waitFor(() => {
-      expect(screen.getByTestId("create-voice-btn")).toBeEnabled();
-    });
-    await clickCreateWhenEnabled(
-      "create-voice-btn",
-      () => (actions.voiceCardCreate as ReturnType<typeof vi.fn>).mock.calls.length > 0,
-    );
-
-    await waitFor(() => {
-      expect(actions.voiceCardCreate).toHaveBeenCalledWith("card-saved-002", "clone", { prefix: "card" });
-    });
-    await waitFor(() => {
-      expect(screen.getByTestId("voice-state-ready")).toBeInTheDocument();
-      expect(screen.getByText("mock-voice-abc")).toBeInTheDocument();
-    });
+    expect(await screen.findByTestId("voice-state-ready")).toHaveTextContent("card-voice-001");
+    expect(paramsOf(replay.commands, "voice.card_create")).toEqual([
+      { card_id: KAFKA_ID, mode: "clone", prefix: "card" },
+    ]);
   });
 
   it("design 模式缺少声音描述词时禁用创建按钮", async () => {
-    const actions = createMockActions();
-    render(
-      <CharacterVoiceSection
-        characterVoice={createVm({ selectedCardId: "card-saved-002" })}
-        actions={actions}
-      />,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("create-mode-design")).toBeInTheDocument();
-    });
-    // cardDetail 到达后的 effect 会把 createMode 重置为 clone、prefix 种子化为「card」；
-    // 必须等 effect 落定后再切 design 模式，否则这次重置会覆盖切换结果：createMode 回到
-    // clone 且 prefix 合法，按钮变可用，「禁用」断言永不成立，只能等超时失败（CI 慢 runner
-    // 上曾偶发）。与下方「design 模式提交声音描述词与试听文本」同一处理。
-    await waitFor(() => {
-      expect(screen.getByTestId<HTMLInputElement>("prefix-input")).toHaveValue("card");
-    });
+    const replay = voiceBackend();
+    renderSection(replay, { voiceCardFocus: KAFKA_ID });
+    await waitForDetail();
 
     fireEvent.click(screen.getByTestId("create-mode-design"));
 
-    await waitFor(() => {
-      expect(screen.getByTestId("create-voice-btn")).toBeDisabled();
-    });
-    expect(actions.voiceCardCreate).not.toHaveBeenCalled();
+    expect(screen.getByTestId("create-voice-btn")).toBeDisabled();
+    expect(paramsOf(replay.commands, "voice.card_create")).toEqual([]);
   });
 
   it("design 模式提交声音描述词与试听文本", async () => {
-    const actions = createMockActions({
-      cardGet: vi
-        .fn()
-        .mockResolvedValueOnce(createCardGetResult())
-        .mockResolvedValue(
-          createCardGetResult({
-            voiceState: "voice_ready",
-            voiceId: "mock-voice-design",
-            creationMode: "design",
-          }),
-        ),
-    });
-
-    render(
-      <CharacterVoiceSection
-        characterVoice={createVm({ selectedCardId: "card-saved-002" })}
-        actions={actions}
-      />,
-    );
-
-    await waitFor(() => {
-      expect(actions.cardGet).toHaveBeenCalledWith("card-saved-002");
-    });
-    // cardDetail 到达后的 effect 会把 createMode 重置为 clone、prefix 种子化为「card」；
-    // 必须等 effect 落定后再切 design 模式，否则输入框出现后又消失（时序竞争）。
-    await waitFor(() => {
-      expect(screen.getByTestId<HTMLInputElement>("prefix-input")).toHaveValue("card");
-    });
+    const replay = voiceBackend();
+    renderSection(replay, { voiceCardFocus: KAFKA_ID });
+    await waitForDetail();
 
     fireEvent.click(screen.getByTestId("create-mode-design"));
-    // design 表单随模式同步渲染；waitFor 保证渲染落定再填充。
-    await waitFor(() => {
-      expect(screen.getByTestId("voice-prompt-input")).toBeInTheDocument();
-    });
-    fireEvent.change(screen.getByTestId("voice-prompt-input"), {
-      target: { value: "温柔沉稳的女声" },
-    });
-    fireEvent.change(screen.getByTestId("preview-text-input"), {
-      target: { value: "你好，这是设计试听。" },
-    });
+    fireEvent.change(screen.getByTestId("voice-prompt-input"), { target: { value: "温柔沉稳的女声" } });
+    fireEvent.change(screen.getByTestId("preview-text-input"), { target: { value: "你好，这是设计试听。" } });
+    await click("create-voice-btn");
 
-    await waitFor(() => {
-      expect(screen.getByTestId("create-voice-btn")).toBeEnabled();
-    });
-
-    await clickCreateWhenEnabled(
-      "create-voice-btn",
-      () => (actions.voiceCardCreate as ReturnType<typeof vi.fn>).mock.calls.length > 0,
-    );
-
-    await waitFor(() => {
-      expect(actions.voiceCardCreate).toHaveBeenCalledWith("card-saved-002", "design", {
+    expect(await screen.findByTestId("voice-state-ready")).toBeInTheDocument();
+    expect(paramsOf(replay.commands, "voice.card_create")).toEqual([
+      {
+        card_id: KAFKA_ID,
+        mode: "design",
         prefix: "card",
-        voicePrompt: "温柔沉稳的女声",
-        previewText: "你好，这是设计试听。",
-      });
-    });
+        voice_prompt: "温柔沉稳的女声",
+        preview_text: "你好，这是设计试听。",
+      },
+    ]);
   });
 
-  it("创建中状态如实展示", async () => {
-    const actions = createMockActions({
-      cardGet: vi.fn().mockResolvedValue(createCardGetResult({ voiceState: "voice_creating" })),
-      voiceCardCreate: vi.fn(
-        () =>
-          new Promise<{ card_id: string; state: "voice_ready"; voice_id: string }>((resolve) => {
-            setTimeout(() => resolve({ card_id: "card-saved-002", state: "voice_ready", voice_id: "x" }), 100);
-          }),
-      ),
+  it("卡详情为创建中时显示进度，卡库摘要离开创建中后重新读取详情", async () => {
+    const replay = voiceBackend({ profile: voiceProfile({ state: "voice_creating" }) });
+    const { rerender } = renderSection(replay, {
+      characterVoice: withSummaryVoiceState("voice_creating"),
+      voiceCardFocus: KAFKA_ID,
     });
 
-    render(
-      <CharacterVoiceSection
-        characterVoice={createVm({
-          selectedCardId: "card-saved-002",
-          cards: createVm().cards.map((c) =>
-            c.cardId === "card-saved-002" ? { ...c, voiceState: "voice_creating" as CharacterVoiceState } : c,
-          ),
-        })}
-        actions={actions}
-      />,
-    );
+    expect(await screen.findByTestId("voice-state-creating")).toHaveTextContent("正在创建音色…");
 
-    await waitFor(() => {
-      expect(screen.getByTestId("create-voice-btn")).toBeInTheDocument();
-    });
+    // voice.card_provision_changed 把卡库摘要推进到 voice_ready，服务端此时已写入音色 ID。
+    replay.setProfile(voiceProfile({ state: "voice_ready", voice_id: "card-voice-002" }));
+    rerender({ characterVoice: withSummaryVoiceState("voice_ready"), voiceCardFocus: KAFKA_ID });
 
-    fireEvent.click(screen.getByTestId("create-voice-btn"));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("voice-state-creating")).toBeInTheDocument();
-      expect(screen.getByText("正在创建音色…")).toBeInTheDocument();
-    });
+    expect(await screen.findByTestId("voice-state-ready")).toHaveTextContent("card-voice-002");
+    expect(paramsOf(replay.commands, "card.get")).toHaveLength(2);
   });
 
-  it("创建失败状态展示原始错误并允许重试", async () => {
-    const actions = createMockActions({
-      cardGet: vi.fn().mockResolvedValue(
-        createCardGetResult({
-          voiceState: "voice_failed",
-          lastError: "TTS 服务返回 402：音色创建额度已用尽",
-        }),
-      ),
+  it("创建失败时显示失败原因，重试后重新创建", async () => {
+    const replay = voiceBackend({
+      profile: voiceProfile({
+        state: "voice_failed",
+        reference_audio_asset: "ref-audio-001",
+        last_error: "TTS 服务返回 402：音色创建额度已用尽",
+      }),
     });
+    renderSection(replay, { characterVoice: withSummaryVoiceState("voice_failed"), voiceCardFocus: KAFKA_ID });
 
-    render(
-      <CharacterVoiceSection
-        characterVoice={createVm({
-          selectedCardId: "card-saved-002",
-          cards: createVm().cards.map((c) =>
-            c.cardId === "card-saved-002" ? { ...c, voiceState: "voice_failed" as CharacterVoiceState } : c,
-          ),
-        })}
-        actions={actions}
-      />,
-    );
+    expect(await screen.findByTestId("voice-last-error")).toHaveTextContent("TTS 服务返回 402：音色创建额度已用尽");
+    await waitForDetail();
 
-    await waitFor(() => {
-      expect(screen.getByTestId("voice-state-failed")).toBeInTheDocument();
-    });
-    expect(screen.getByTestId("voice-last-error")).toHaveTextContent(
-      "TTS 服务返回 402：音色创建额度已用尽",
-    );
+    await click("retry-create-btn");
 
-    fireEvent.click(screen.getByTestId("retry-create-btn"));
-    await waitFor(() => {
-      expect(actions.voiceCardCreate).toHaveBeenCalled();
-    });
+    expect(await screen.findByTestId("voice-state-ready")).toBeInTheDocument();
+    expect(paramsOf(replay.commands, "voice.card_create")).toEqual([
+      { card_id: KAFKA_ID, mode: "clone", prefix: "card" },
+    ]);
   });
 
-  it("同卡重复提交创建返回 voice_card_provision_in_progress 时如实展示", async () => {
-    const error = new Error("voice_card_provision_in_progress：同卡创建中");
-    (error as Error & { code?: string }).code = "voice_card_provision_in_progress";
-    const actions = createMockActions({
-      voiceCardCreate: vi.fn().mockRejectedValue(error),
+  it.each([
+    {
+      code: "voice_card_provision_in_progress",
+      message: "该角色卡正在创建音色，请等待完成后再试",
+      reference: "ref-audio-001",
+      fail: true,
+    },
+    {
+      code: "voice_not_configured",
+      message: "请先在语音页保存 DashScope API Key 与服务地址，再为角色创建音色",
+      reference: "ref-audio-001",
+      fail: true,
+    },
+    {
+      code: "voice_reference_missing",
+      message: "请先绑定参考音频（voice.card_bind_reference）",
+      reference: "",
+      fail: false,
+    },
+  ])("创建被后端以 $code 拒绝时显示原文", async ({ code, message, reference, fail }) => {
+    const replay = voiceBackend({
+      profile: voiceProfile({ reference_audio_asset: reference }),
+      errors: fail ? { "voice.card_create": new DesktopRequestError(code, message) } : {},
     });
+    renderSection(replay, { voiceCardFocus: KAFKA_ID });
+    await waitForDetail();
 
-    render(
-      <CharacterVoiceSection
-        characterVoice={createVm({ selectedCardId: "card-saved-002" })}
-        actions={actions}
-      />,
-    );
+    await click("create-voice-btn");
 
-    await waitFor(() => {
-      expect(screen.getByTestId("create-voice-btn")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByTestId("create-voice-btn"));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("operation-error")).toHaveTextContent(
-        "voice_card_provision_in_progress：同卡创建中",
-      );
-    });
+    expect(await screen.findByTestId("operation-error")).toHaveTextContent(message);
+    expect(screen.queryByTestId("voice-state-ready")).not.toBeInTheDocument();
   });
 
-  it("就绪音色可试听", async () => {
-    const actions = createMockActions({
-      cardGet: vi.fn().mockResolvedValue(
-        createCardGetResult({
-          voiceState: "voice_ready",
-          voiceId: "mock-voice-123",
-          creationMode: "clone",
-        }),
-      ),
-    });
+  it("就绪音色试听经 voice.card_preview 下发", async () => {
+    const replay = voiceBackend({ profile: voiceProfile({ state: "voice_ready", voice_id: "card-voice-001" }) });
+    renderSection(replay, { characterVoice: withSummaryVoiceState("voice_ready"), voiceCardFocus: KAFKA_ID });
+    await waitForDetail();
 
-    render(
-      <CharacterVoiceSection
-        characterVoice={createVm({
-          selectedCardId: "card-saved-002",
-          cards: createVm().cards.map((c) =>
-            c.cardId === "card-saved-002"
-              ? { ...c, voiceState: "voice_ready" as CharacterVoiceState, voiceId: "mock-voice-123" }
-              : c,
-          ),
-        })}
-        actions={actions}
-      />,
-    );
+    await click("preview-voice-btn");
 
-    await waitFor(() => {
-      expect(screen.getByTestId("voice-state-ready")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByTestId("preview-voice-btn"));
-
-    await waitFor(() => {
-      expect(actions.voiceCardPreview).toHaveBeenCalledWith("card-saved-002", undefined);
-    });
+    await waitFor(() => expect(screen.getByTestId("preview-voice-btn")).toHaveTextContent("试听"));
+    expect(paramsOf(replay.commands, "voice.card_preview")).toEqual([{ card_id: KAFKA_ID }]);
+    expect(screen.queryByTestId("operation-error")).not.toBeInTheDocument();
   });
 
-  it("试听失败时如实展示 voice_card_not_ready 原始错误", async () => {
-    const error = new Error("voice_card_not_ready：卡音色未就绪");
-    (error as Error & { code?: string }).code = "voice_card_not_ready";
-    const actions = createMockActions({
-      cardGet: vi.fn().mockResolvedValue(
-        createCardGetResult({
-          voiceState: "voice_ready",
-          voiceId: "mock-voice-123",
-          creationMode: "clone",
-        }),
-      ),
-      voiceCardPreview: vi.fn().mockRejectedValue(error),
+  it("试听被后端拒绝时显示原文", async () => {
+    const replay = voiceBackend({
+      profile: voiceProfile({ state: "voice_ready", voice_id: "card-voice-001" }),
+      errors: { "voice.card_preview": new DesktopRequestError("voice_card_not_ready", "该角色卡尚未创建可用音色") },
     });
+    renderSection(replay, { characterVoice: withSummaryVoiceState("voice_ready"), voiceCardFocus: KAFKA_ID });
+    await waitForDetail();
 
-    render(
-      <CharacterVoiceSection
-        characterVoice={createVm({
-          selectedCardId: "card-saved-002",
-          cards: createVm().cards.map((c) =>
-            c.cardId === "card-saved-002"
-              ? { ...c, voiceState: "voice_ready" as CharacterVoiceState, voiceId: "mock-voice-123" }
-              : c,
-          ),
-        })}
-        actions={actions}
-      />,
-    );
+    await click("preview-voice-btn");
 
-    await waitFor(() => {
-      expect(screen.getByTestId("preview-voice-btn")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByTestId("preview-voice-btn"));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("operation-error")).toHaveTextContent(
-        "voice_card_not_ready：卡音色未就绪",
-      );
-    });
+    expect(await screen.findByTestId("operation-error")).toHaveTextContent("该角色卡尚未创建可用音色");
   });
 
-  it("解除绑定流程二次确认并调用 voiceCardUnbind", async () => {
-    const actions = createMockActions({
-      cardGet: vi
-        .fn()
-        .mockResolvedValueOnce(
-          createCardGetResult({
-            voiceState: "voice_ready",
-            voiceId: "mock-voice-123",
-          }),
-        )
-        .mockResolvedValue(createCardGetResult()),
+  it("解除绑定需二次确认，确认后经 voice.card_unbind 回到未配置", async () => {
+    const replay = voiceBackend({
+      profile: voiceProfile({ state: "voice_ready", voice_id: "card-voice-001", reference_audio_asset: "ref-audio-001" }),
     });
-
-    render(
-      <CharacterVoiceSection
-        characterVoice={createVm({
-          selectedCardId: "card-saved-002",
-          cards: createVm().cards.map((c) =>
-            c.cardId === "card-saved-002"
-              ? { ...c, voiceState: "voice_ready" as CharacterVoiceState, voiceId: "mock-voice-123" }
-              : c,
-          ),
-        })}
-        actions={actions}
-      />,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("unbind-voice-btn")).toBeInTheDocument();
-    });
+    renderSection(replay, { characterVoice: withSummaryVoiceState("voice_ready"), voiceCardFocus: KAFKA_ID });
+    await waitForDetail();
 
     fireEvent.click(screen.getByTestId("unbind-voice-btn"));
+    fireEvent.click(screen.getByTestId("confirm-cancel"));
+    expect(screen.queryByTestId("voice-confirm-modal")).not.toBeInTheDocument();
+    expect(paramsOf(replay.commands, "voice.card_unbind")).toEqual([]);
 
-    await waitFor(() => {
-      expect(screen.getByTestId("voice-confirm-modal")).toBeInTheDocument();
-    });
+    fireEvent.click(screen.getByTestId("unbind-voice-btn"));
+    expect(screen.getByTestId("voice-confirm-modal")).toHaveTextContent("解除音色绑定？");
+    await click("confirm-ok");
 
-    fireEvent.click(screen.getByTestId("confirm-ok"));
-
-    await waitFor(() => {
-      expect(actions.voiceCardUnbind).toHaveBeenCalledWith("card-saved-002");
-    });
+    await waitFor(() => expect(screen.queryByTestId("voice-state-ready")).not.toBeInTheDocument());
+    expect(screen.queryByTestId("voice-confirm-modal")).not.toBeInTheDocument();
+    expect(screen.getByTestId("reference-audio-section")).toHaveTextContent("ref-audio-001");
+    expect(paramsOf(replay.commands, "voice.card_unbind")).toEqual([{ card_id: KAFKA_ID }]);
   });
 
-  it("账号未配置时展示阻塞说明并提供跳转入口", () => {
-    const onScroll = vi.fn();
-    const actions = createMockActions();
+  it("账号未配置时显示阻塞说明并提供跳转入口", () => {
+    const replay = voiceBackend();
+    const onScrollToAccountConfig = vi.fn();
+    renderSection(replay, { characterVoice: createVm({ voiceConfigured: false }), onScrollToAccountConfig });
 
-    render(
-      <CharacterVoiceSection
-        characterVoice={createVm({ voiceConfigured: false })}
-        actions={actions}
-        onScrollToAccountConfig={onScroll}
-      />,
-    );
-
-    expect(screen.getByTestId("account-config-block")).toBeInTheDocument();
-    expect(screen.getByText(/语音服务账号未配置/)).toBeInTheDocument();
+    expect(screen.getByTestId("account-config-block")).toHaveTextContent("语音服务账号未配置");
 
     fireEvent.click(screen.getByTestId("go-to-account-config"));
-    expect(onScroll).toHaveBeenCalled();
+
+    expect(onScrollToAccountConfig).toHaveBeenCalledTimes(1);
+    expect(replay.commands).toEqual([]);
   });
 
-  it("未接入 actions 时展示环境不可用阻塞说明", () => {
-    render(<CharacterVoiceSection characterVoice={createVm({ selectedCardId: "card-saved-002" })} />);
+  it("card.get 返回枚举外的音色状态时报错", async () => {
+    renderSection(voiceBackend({ profile: voiceProfile({ state: "voice_bogus" }) }), { voiceCardFocus: KAFKA_ID });
 
-    expect(screen.getByTestId("environment-unavailable-block")).toBeInTheDocument();
-    expect(screen.getByText(/角色音色服务未接入/)).toBeInTheDocument();
-    expect(screen.queryByTestId("pick-reference-btn")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("create-voice-btn")).not.toBeInTheDocument();
+    expect(await screen.findByTestId("detail-error")).toHaveTextContent("角色卡音色状态未知：voice_bogus");
   });
 
-  it("已接入 actions 但缺少文件选择器时展示提示", async () => {
-    const actions = createMockActions();
-    render(
-      <CharacterVoiceSection
-        characterVoice={createVm({ selectedCardId: "card-saved-002" })}
-        actions={actions}
-      />,
-    );
+  it("voiceCardFocus 变化时同步选中并读取详情", async () => {
+    const replay = voiceBackend();
+    const { rerender } = renderSection(replay);
+    expect(replay.commands).toEqual([]);
 
-    await waitFor(() => {
-      expect(screen.getByTestId("pick-reference-btn")).toBeDisabled();
-    });
-    expect(screen.getByText(/文件选择器尚未接入/)).toBeInTheDocument();
+    rerender({ voiceCardFocus: KAFKA_ID });
+
+    expect(await screen.findByTestId("voice-state-unconfigured")).toBeInTheDocument();
+    expect((screen.getByLabelText("选择角色") as HTMLSelectElement).value).toBe(KAFKA_ID);
+    expect(paramsOf(replay.commands, "card.get")).toEqual([{ card_id: KAFKA_ID }]);
   });
 
-  it("voiceCardFocus 变化时同步选中并拉取详情", async () => {
-    const actions = createMockActions();
-    const { rerender } = render(
-      <CharacterVoiceSection characterVoice={createVm()} actions={actions} />,
-    );
-
-    expect(actions.cardGet).not.toHaveBeenCalled();
-
-    rerender(
-      <CharacterVoiceSection
-        characterVoice={createVm()}
-        voiceCardFocus="card-saved-002"
-        actions={actions}
-      />,
-    );
-
-    await waitFor(() => {
-      expect(actions.cardGet).toHaveBeenCalledWith("card-saved-002");
-    });
-  });
-
-  it("音色前缀校验阻止非法输入", async () => {
-    const actions = createMockActions();
-    render(
-      <CharacterVoiceSection
-        characterVoice={createVm({ selectedCardId: "card-saved-002" })}
-        actions={actions}
-      />,
-    );
-
-    // 详情提交后重置效应还会异步补写默认前缀；等它落地再输入，否则这次补写会覆盖
-    // 用户刚输入的非法值（断言强度不变，仅消除时序竞争）。
-    await waitFor(() => {
-      expect(screen.getByTestId("prefix-input")).not.toHaveValue("");
-    });
+  it("音色前缀不合法时提示并禁用创建", async () => {
+    renderSection(voiceBackend(), { voiceCardFocus: KAFKA_ID });
+    await waitForDetail();
 
     fireEvent.change(screen.getByTestId("prefix-input"), { target: { value: "ABC!" } });
 
-    expect(screen.getByText(/前缀只能是/)).toBeInTheDocument();
+    expect(screen.getByText("前缀只能是 1–10 位小写字母或数字")).toBeInTheDocument();
     expect(screen.getByTestId("create-voice-btn")).toBeDisabled();
   });
 
-  it("clone 模式未绑定参考音频时后端返回 voice_reference_missing 并如实展示", async () => {
-    const error = new Error("voice_reference_missing：clone 模式需要参考音频");
-    (error as Error & { code?: string }).code = "voice_reference_missing";
-    const actions = createMockActions({
-      voiceCardCreate: vi.fn().mockRejectedValue(error),
+  it("读取音色详情期间显示载入提示", async () => {
+    let release: () => void = () => {};
+    const cardGetGate = new Promise<void>((resolve) => {
+      release = resolve;
     });
-
-    render(
-      <CharacterVoiceSection
-        characterVoice={createVm({ selectedCardId: "card-saved-002" })}
-        actions={actions}
-      />,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("create-voice-btn")).toBeEnabled();
-    });
-    fireEvent.click(screen.getByTestId("create-voice-btn"));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("operation-error")).toHaveTextContent(
-        "voice_reference_missing：clone 模式需要参考音频",
-      );
-    });
-  });
-
-  it("后端返回 voice_not_configured 时如实展示原始错误", async () => {
-    const error = new Error("voice_not_configured：账号未配置语音 Key");
-    (error as Error & { code?: string }).code = "voice_not_configured";
-    const actions = createMockActions({ voiceCardCreate: vi.fn().mockRejectedValue(error) });
-
-    render(
-      <CharacterVoiceSection
-        characterVoice={createVm({ selectedCardId: "card-saved-002", voiceConfigured: true })}
-        actions={actions}
-      />,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("create-voice-btn")).toBeEnabled();
-    });
-    fireEvent.click(screen.getByTestId("create-voice-btn"));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("operation-error")).toHaveTextContent(
-        "voice_not_configured：账号未配置语音 Key",
-      );
-    });
-  });
-
-  it("cardGet 仅返回字符串 reference_audio_asset 时展示资产 ID", async () => {
-    const actions = createMockActions({
-      cardGet: vi.fn().mockResolvedValue({
-        card_id: "card-saved-002",
-        state: "saved",
-        source: "user_created",
-        created_at: "2026-08-18T21:40:00+00:00",
-        updated_at: "2026-08-18T21:40:00+00:00",
-        read_only: false,
-        avatar: null,
-        card: {
-          spec: "chara_card_v3",
-          spec_version: "3.0",
-          data: {
-            name: "卡芙卡",
-            extensions: {
-              hsr: {
-                voice_profile: {
-                  voice_id: "",
-                  state: "voice_unconfigured",
-                  creation_mode: "",
-                  prefix: "",
-                  reference_audio_asset: "ref-audio-card-saved-002",
-                  last_error: null,
-                  updated_at: "2026-08-18T21:40:00+00:00",
-                },
-              },
-            },
-          },
-        },
-      }),
-    });
-
-    render(
-      <CharacterVoiceSection
-        characterVoice={createVm({ selectedCardId: "card-saved-002" })}
-        actions={actions}
-      />,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("reference-audio-section")).toHaveTextContent(
-        "ref-audio-card-saved-002",
-      );
-    });
-  });
-
-  it("音色详情载入中展示加载提示", async () => {
-    const actions = createMockActions({
-      cardGet: vi.fn(
-        () => new Promise<CardGetResult>((resolve) => setTimeout(() => resolve(createCardGetResult()), 200)),
-      ),
-    });
-
-    render(
-      <CharacterVoiceSection
-        characterVoice={createVm({ selectedCardId: "card-saved-002" })}
-        actions={actions}
-      />,
-    );
+    renderSection(voiceBackend({ cardGetGate }), { voiceCardFocus: KAFKA_ID });
 
     expect(screen.getByTestId("detail-loading")).toBeInTheDocument();
-    await waitFor(() => {
-      expect(screen.queryByTestId("detail-loading")).not.toBeInTheDocument();
-    });
+
+    release();
+
+    expect(await screen.findByTestId("voice-state-unconfigured")).toBeInTheDocument();
+    expect(screen.queryByTestId("detail-loading")).not.toBeInTheDocument();
   });
 });

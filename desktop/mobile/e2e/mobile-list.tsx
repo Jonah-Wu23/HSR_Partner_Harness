@@ -22,6 +22,7 @@ function makeMessage(index: number, text?: string): Message {
     tts_eligible: false,
     created_at: new Date(0).toISOString(),
     streaming: index === 40,
+    timeline_order: index,
   };
 }
 
@@ -36,16 +37,19 @@ function makeTool(index: number): ToolRun {
     title: `模拟脚本 ${index}`,
     summary: "模拟工具说明",
     details: `模拟命令输出 ${index}\n${"手机端长输出行。 ".repeat(30)}`,
+    timeline_order: index * 13,
   };
 }
 
-function makeItems(count: number): TimelineItem[] {
+type HarnessItem = Extract<TimelineItem, { kind: "message" | "tool_run" }>;
+
+function makeItems(count: number): HarnessItem[] {
   return Array.from({ length: count }, (_, index) => index % 13 === 0
-    ? { kind: "tool_run" as const, id: `tool:${index / 13}`, toolRun: makeTool(index / 13), order: index }
-    : { kind: "message" as const, id: `message:${index}`, message: makeMessage(index), order: index });
+    ? { kind: "tool_run" as const, id: `tool:${index / 13}`, toolRun: makeTool(index / 13) }
+    : { kind: "message" as const, id: `message:${index}`, message: makeMessage(index) });
 }
 
-function renderItem(item: TimelineItem, state: ConversationItemState) {
+function renderItem(item: HarnessItem, state: ConversationItemState) {
   if (item.kind === "tool_run") {
     const key = `tool:${item.toolRun.tool_call_id}`;
     return (
@@ -56,7 +60,7 @@ function renderItem(item: TimelineItem, state: ConversationItemState) {
       />
     );
   }
-  return <MessageBubble message={item.message} pairNames={{ character: "模拟角色" }} itemState={state} />;
+  return <MessageBubble message={item.message} characterName="模拟角色" itemState={state} />;
 }
 
 function Harness() {

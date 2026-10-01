@@ -12,33 +12,15 @@ from pair_harness.core.contracts import (
     TaskRequestDraft,
 )
 from pair_harness.core.orchestrator import ConversationOrchestrator
-from tests.fakes import FixedDialogueModel, RecordingCodingEngine
+from tests.fakes import (
+    FixedDialogueModel,
+    RecordingCodingEngine,
+    direct_input,
+    make_context,
+    unexpected_approval,
+)
 
-
-@pytest.mark.asyncio
-async def test_tool_failure_overrides_assistant_success_text() -> None:
-    dialogue = FixedDialogueModel(
-        CharacterTurn(
-            speech="交给古代机械。",
-            delegation=TaskRequestDraft(instructions="执行演示"),
-        ),
-        CharacterTurn(speech="这次没有成功，我会陪你看清问题。"),
-    )
-    engine = RecordingCodingEngine(fail_tool=True)
-    orchestrator = ConversationOrchestrator(
-        pair_id="phainon_ancient_machine",
-        project=ProjectRef(project_id="p", name="p", root_path="C:\\work"),
-        dialogue_model=dialogue,
-        coding_engine=engine,
-        approval_mode=ApprovalMode.FULL_AUTO,
-    )
-
-    outcome = await orchestrator.handle_character_input(conversation_id="c", text="请执行")
-
-    assert outcome.receipt is not None
-    assert outcome.receipt.status == "failed"
-    assert outcome.receipt.errors == ("模拟工具失败",)
-    assert outcome.messages[-1].text.startswith("这次没有成功")
+PROJECT = ProjectRef(project_id="p", name="p", root_path="C:\\work")
 
 
 class RecoveringCodingEngine(RecordingCodingEngine):
@@ -55,29 +37,40 @@ class RecoveringCodingEngine(RecordingCodingEngine):
 
 
 @pytest.mark.asyncio
-async def test_intermediate_tool_failure_does_not_override_successful_turn() -> None:
-    dialogue = FixedDialogueModel(
-        CharacterTurn(
-            speech="交给古代机械。",
-            delegation=TaskRequestDraft(instructions="执行演示"),
-        ),
-        CharacterTurn(speech="最终结果已经完成。"),
-    )
-    engine = RecoveringCodingEngine(fail_tool=True)
+@pytest.mark.parametrize(
+    ("engine_type", "status"),
+    [(RecordingCodingEngine, "failed"), (RecoveringCodingEngine, "completed")],
+    ids=["turn-failed", "turn-completed"],
+)
+async def test_turn_terminal_event_decides_receipt_and_keeps_tool_error(
+    engine_type: type[RecordingCodingEngine], status: str
+) -> None:
+    """回执状态由 turn 终态决定，工具步骤的失败原因保留在 errors。"""
     orchestrator = ConversationOrchestrator(
-        pair_id="phainon_ancient_machine",
-        project=ProjectRef(project_id="p", name="p", root_path="C:\\work"),
-        dialogue_model=dialogue,
-        coding_engine=engine,
-        approval_mode=ApprovalMode.FULL_AUTO,
+        dialogue_model=FixedDialogueModel(
+            CharacterTurn(
+                speech="交给古代机械。",
+                delegation=TaskRequestDraft(instructions="执行演示"),
+            ),
+            CharacterTurn(speech="收到结果。"),
+        ),
+        coding_engine=engine_type(fail_tool=True),
+        approval_callback=unexpected_approval,
     )
 
-    outcome = await orchestrator.handle_character_input(conversation_id="c", text="请执行")
+    outcome = await orchestrator.handle_character_input(
+        conversation_id="c",
+        text="请执行",
+        context=make_context(
+            PROJECT, conversation_id="c", approval_mode=ApprovalMode.FULL_AUTO
+        ),
+    )
 
     assert outcome.receipt is not None
-    assert outcome.receipt.status == "completed"
+    assert outcome.receipt.status == status
     assert outcome.receipt.errors == ("模拟工具失败",)
-    assert outcome.messages[-1].text == "最终结果已经完成。"
+    # 角色结果轮拿到同一状态
+    assert outcome.messages[-1].payload["execution_status"] == status
 
 
 @pytest.mark.asyncio
@@ -85,14 +78,19 @@ async def test_direct_input_becomes_same_formal_task() -> None:
     dialogue = FixedDialogueModel(CharacterTurn(speech="完成了。"))
     engine = RecordingCodingEngine()
     orchestrator = ConversationOrchestrator(
-        pair_id="phainon_ancient_machine",
-        project=ProjectRef(project_id="p", name="p", root_path="C:\\work"),
         dialogue_model=dialogue,
         coding_engine=engine,
-        approval_mode=ApprovalMode.FULL_AUTO,
+        approval_callback=unexpected_approval,
     )
 
-    outcome = await orchestrator.handle_direct_input(conversation_id="c", text="运行测试")
+    outcome = await direct_input(
+        orchestrator,
+        conversation_id="c",
+        text="运行测试",
+        context=make_context(
+            PROJECT, conversation_id="c", approval_mode=ApprovalMode.FULL_AUTO
+        ),
+    )
 
     assert outcome.task == engine.requests[0]
     assert outcome.task.origin_message_id == outcome.messages[0].message_id

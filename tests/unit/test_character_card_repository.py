@@ -1,23 +1,22 @@
-"""角色卡持久化仓库（CharacterCardRepository）测试（V0.3.3 强逻辑 AI 轨道，成员 A）。"""
-
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 
-from pair_harness.character_cards import (
+from pair_harness.character_cards.codec import load_card_json
+from pair_harness.character_cards.models import (
     AvatarAsset,
     CharacterCard,
     HsrExtension,
     VoiceProfile,
-    load_card_json,
 )
 from pair_harness.character_cards.repository import (
     CardRecord,
     CharacterCardRepository,
 )
 from pair_harness.storage.sqlite_store import SCHEMA_VERSION, SQLiteStore
+from tests.fixtures.legacy_database import create_legacy_database
 
 
 @pytest.fixture()
@@ -33,19 +32,9 @@ def _make_card(name: str = "测试角色") -> CharacterCard:
     return card
 
 
-def _set_state(repository: CharacterCardRepository, card_id: str, state: str) -> None:
-    """测试辅助：直接把生命周期状态写库，绕过 draft 拦截。"""
-    repository.connection.execute(
-        "UPDATE character_cards SET state = ? WHERE card_id = ?", (state, card_id)
-    )
-    repository.connection.commit()
-
-
-# ---------------------------------------------------------------- 全路径
-
-
 def test_full_lifecycle_create_update_duplicate_archive_select(repo) -> None:
     repository, _ = repo
+    assert repository.get_active_card_id() is None
 
     # 创建草稿
     draft = repository.create_draft(name="塔提亚")
@@ -73,11 +62,11 @@ def test_full_lifecycle_create_update_duplicate_archive_select(repo) -> None:
     with pytest.raises(ValueError):
         repository.archive_card(draft.card_id)
 
-    # 置为 saved 后归档（state 保持原值）
-    _set_state(repository, duplicate.card_id, "saved")
+    # 发布为 saved 后归档（state 保持原值）
+    assert repository.publish_card(duplicate.card_id).state == "saved"
     archived = repository.archive_card(duplicate.card_id)
     assert archived.state == "saved"
-    assert archived.card_id in repository._archived_ids()
+    assert repository.is_archived(archived.card_id)
 
     # 选择使用 + 读取
     repository.select_active(draft.card_id)
@@ -123,31 +112,22 @@ def test_delete_requires_confirm(repo) -> None:
     with pytest.raises(ValueError, match="删除需要确认"):
         repository.delete_card(draft.card_id)
 
-    # 置为 saved 并归档，确认删除后行与归档引用一起消失
-    _set_state(repository, draft.card_id, "saved")
+    # 发布并归档，确认删除后行与归档引用一起消失
+    repository.publish_card(draft.card_id)
     repository.archive_card(draft.card_id)
-    assert draft.card_id in repository._archived_ids()
+    assert repository.is_archived(draft.card_id)
     repository.delete_card(draft.card_id, confirm=True)
-    assert draft.card_id not in repository._archived_ids()
+    assert not repository.is_archived(draft.card_id)
     with pytest.raises(KeyError):
         repository.get_card(draft.card_id)
 
 
-def test_get_card_missing_raises_keyerror(repo) -> None:
+def test_missing_card_raises_keyerror(repo) -> None:
     repository, _ = repo
     with pytest.raises(KeyError):
         repository.get_card("no-such-card")
-
-
-def test_update_card_missing_raises_keyerror(repo) -> None:
-    repository, _ = repo
     with pytest.raises(KeyError):
         repository.update_card("no-such-card", _make_card())
-
-
-def test_active_default_is_none(repo) -> None:
-    repository, _ = repo
-    assert repository.get_active_card_id() is None
 
 
 # ---------------------------------------------------------------- 未知扩展往返
@@ -196,25 +176,23 @@ def test_legacy_db_upgrade_rebuilds_card_tables_and_preserves_data(
 ) -> None:
     database = tmp_path / "legacy.db"
 
-    # 建库并写入既有数据（projects / conversations / app_state）
-    with SQLiteStore(database) as store:
-        project = store.create_project(name="旧项目", root_path=str(tmp_path))
-        conversation = store.create_conversation(
-            project_id=project.project_id, pair_id="pair_a", title="旧聊天"
-        )
-        store.set_app_state("login", "u1")
-        assert (
-            store.connection.execute("PRAGMA user_version").fetchone()[0]
-            == SCHEMA_VERSION
-        )
-        # 回退到 v8 并 DROP 新表，模拟 v8 旧库
-        store.connection.execute("PRAGMA user_version = 8")
-        store.connection.executescript(
-            "DROP TABLE IF EXISTS character_cards;"
-            "DROP TABLE IF EXISTS character_assets;"
-        )
-        store.connection.commit()
-        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == 8
+    # 建 v8 旧库并写入既有数据（projects / conversations / app_state）
+    now = "2026-01-01T00:00:00+00:00"
+    connection = create_legacy_database(database, 8)
+    connection.execute(
+        "INSERT INTO projects(project_id, account_id, name, root_path, created_at, "
+        "last_opened_at) VALUES ('p-old', 'default-local', '旧项目', ?, ?, ?)",
+        (str(tmp_path), now, now),
+    )
+    connection.execute(
+        "INSERT INTO conversations(conversation_id, account_id, project_id, pair_id, "
+        "title, created_at, updated_at) VALUES "
+        "('c-old', 'default-local', 'p-old', 'pair_a', '旧聊天', ?, ?)",
+        (now, now),
+    )
+    connection.execute("INSERT INTO app_state(key, value) VALUES ('login', 'u1')")
+    connection.commit()
+    connection.close()
 
     # 重开：应迁移到 SCHEMA_VERSION 并重建表
     with SQLiteStore(database) as migrated:
@@ -228,29 +206,14 @@ def test_legacy_db_upgrade_rebuilds_card_tables_and_preserves_data(
         loaded = repository.get_card(draft.card_id)
         assert loaded.card.name == "升级后的草稿"
         # 既有数据完整
-        p = migrated.get_project(project.project_id)
+        p = migrated.get_project("p-old")
         assert p.name == "旧项目"
-        c = migrated.get_conversation(conversation.conversation_id)
-        assert c.project_id == project.project_id
+        c = migrated.get_conversation("c-old")
+        assert c.project_id == "p-old"
         assert migrated.get_app_state("login") == "u1"
 
 
-# ---------------------------------------------------------------- 新库直建
-
-
-def test_fresh_db_has_card_tables(repo) -> None:
-    repository, store = repo
-    tables = {
-        row[0]
-        for row in store.connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        ).fetchall()
-    }
-    assert "character_cards" in tables
-    assert "character_assets" in tables
-
-
-# ---------------------------------------------------------------- 导入（V0.3.5 §2.2）
+# ---------------------------------------------------------------- 导入
 
 
 def test_import_card_default(repo) -> None:
@@ -291,3 +254,22 @@ def test_import_card_as_duplicate(repo) -> None:
     first = repository.import_card(card)
     assert first.card_id != record.card_id
     assert first.card.name == "白厄"
+
+
+def test_import_card_drops_local_asset_refs(repo) -> None:
+    repository, _ = repo
+    card = _make_card(name="旧导出")
+    card.hsr = HsrExtension(
+        avatar_asset=AvatarAsset(asset_id="other-device", source="user_upload"),
+        voice_profile=VoiceProfile(
+            voice_id="v-1", reference_audio_asset="a-1", voice_prompt_asset="p-1"
+        ),
+    )
+
+    hsr = repository.import_card(card).card.hsr
+    assert hsr.avatar_asset.asset_id == ""
+    assert hsr.avatar_asset.source == "user_upload"
+    assert hsr.voice_profile.reference_audio_asset == ""
+    assert hsr.voice_profile.voice_prompt_asset == ""
+    assert hsr.voice_profile.voice_id == "v-1"
+    assert card.hsr.avatar_asset.asset_id == "other-device"

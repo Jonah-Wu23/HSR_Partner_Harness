@@ -1,12 +1,5 @@
-"""O3.1：ApprovalManager.adjudicate —— 引擎侧挂起请求的裁决。
-
-与 gate() 的差异：approval_id 来自引擎（requestApproval 请求 id），
-裁决结果由调用方经 resolve_approval 转发，adjudicate 只合成 resolved 事件。
-"""
-
 import pytest
 
-from pair_harness.adapters.reviewer import ScriptedReviewer
 from pair_harness.core.approval import ApprovalManager
 from pair_harness.core.contracts import (
     ApprovalDecision,
@@ -17,6 +10,15 @@ from pair_harness.core.contracts import (
     ReviewerVerdict,
 )
 from pair_harness.core.risk_rules import default_risk_rules
+from tests.fakes import ScriptedReviewer, unexpected_decision
+
+
+def _shell(command: str) -> PendingOperation:
+    return PendingOperation(tool_kind="shell", command=command)
+
+
+def _file_write(path: str) -> PendingOperation:
+    return PendingOperation(tool_kind="file_write", paths=[path])
 
 
 def requested_event(command: str = "pytest", approval_id: str = "100") -> EngineEvent:
@@ -46,11 +48,10 @@ async def test_full_auto_returns_allow_without_events() -> None:
         rules=default_risk_rules(),
     )
     outcome = await manager.adjudicate(
-        PendingOperation(tool_kind="shell", command="pytest"),
+        _shell("pytest"),
         requested_event=requested_event(),
-        conversation_id="c",
-        task_id="t",
-        engine_turn_id="turn-1",
+        context=[],
+        request_decision=unexpected_decision,
     )
     assert outcome.decision == ApprovalDecision.ALLOW
     assert outcome.events == ()
@@ -64,16 +65,14 @@ async def test_request_approval_asks_decision_and_synthesizes_resolved() -> None
     )
     calls = []
 
-    async def decide(op, approval_id: str, reason: str, conversation_id: str = "", task_id: str = "") -> ApprovalDecision:
+    async def decide(op, approval_id: str, reason: str) -> ApprovalDecision:
         calls.append((op, approval_id, reason))
         return ApprovalDecision.ALLOW
 
     outcome = await manager.adjudicate(
-        PendingOperation(tool_kind="shell", command="pytest"),
+        _shell("pytest"),
         requested_event=requested_event(),
-        conversation_id="c",
-        task_id="t",
-        engine_turn_id="turn-1",
+        context=[],
         request_decision=decide,
     )
 
@@ -81,7 +80,7 @@ async def test_request_approval_asks_decision_and_synthesizes_resolved() -> None
     assert len(calls) == 1
     op, approval_id, reason = calls[0]
     assert op.command == "pytest"
-    # approval_id 贯通自引擎请求，而非本地新生成
+    # approval_id 取自引擎的审批请求
     assert approval_id == "100"
     assert reason == "需要用户审批"
     resolved = [e for e in outcome.events if e.type == "approval.resolved"]
@@ -94,108 +93,111 @@ async def test_request_approval_asks_decision_and_synthesizes_resolved() -> None
 
 
 @pytest.mark.asyncio
-async def test_request_approval_without_callback_denies() -> None:
+@pytest.mark.parametrize(
+    ("operations", "asked"),
+    [
+        # shell 签名取前两个词元；命中高风险规则的命令不写缓存
+        (
+            [
+                _shell("git status"),
+                _shell("git status"),
+                _shell("git push --force origin main"),
+                _shell("git push --force origin main"),
+            ],
+            [0, 2, 3],
+        ),
+        # file 类签名包含父目录
+        (
+            [
+                _file_write("proj/src/a.py"),
+                _file_write("proj/src/b.py"),
+                _file_write("proj/other/c.py"),
+            ],
+            [0, 2],
+        ),
+        # 敏感路径不写缓存
+        ([_file_write("C:/proj/.env"), _file_write("C:/proj/.env")], [0, 1]),
+    ],
+    ids=["shell", "file-parent-dir", "sensitive-path"],
+)
+async def test_allow_for_conversation_caches_by_operation_signature(
+    operations: list[PendingOperation], asked: list[int]
+) -> None:
     manager = ApprovalManager(
         mode=ApprovalMode.REQUEST_APPROVAL,
         rules=default_risk_rules(),
     )
-    outcome = await manager.adjudicate(
-        PendingOperation(tool_kind="shell", command="pytest"),
-        requested_event=requested_event(),
-        conversation_id="c",
-        task_id="t",
-        engine_turn_id="turn-1",
-    )
-    assert outcome.decision == ApprovalDecision.DENY
-    resolved = [e for e in outcome.events if e.type == "approval.resolved"]
-    assert resolved[0].payload["reason"] == "未配置审批回调"
+    asked_ids: list[str] = []
 
-
-@pytest.mark.asyncio
-async def test_allow_for_conversation_writes_cache_then_hits() -> None:
-    """“本对话内允许”在原生路径同样写会话缓存，同签名后续请求直接放行。"""
-    manager = ApprovalManager(
-        mode=ApprovalMode.REQUEST_APPROVAL,
-        rules=default_risk_rules(),
-    )
-    calls = []
-
-    async def allow_once(op, approval_id: str, reason: str, conversation_id: str = "", task_id: str = "") -> ApprovalDecision:
-        calls.append(approval_id)
+    async def allow_for_conversation(op, approval_id: str, reason: str) -> ApprovalDecision:
+        asked_ids.append(approval_id)
         return ApprovalDecision.ALLOW_FOR_CONVERSATION
 
-    first = await manager.adjudicate(
-        PendingOperation(tool_kind="shell", command="git status"),
-        requested_event=requested_event(command="git status", approval_id="1"),
-        conversation_id="c",
-        task_id="t",
-        engine_turn_id="turn-1",
-        request_decision=allow_once,
-    )
-    assert first.decision == ApprovalDecision.ALLOW_FOR_CONVERSATION
-
-    second = await manager.adjudicate(
-        PendingOperation(tool_kind="shell", command="git status"),
-        requested_event=requested_event(command="git status", approval_id="2"),
-        conversation_id="c",
-        task_id="t",
-        engine_turn_id="turn-1",
-        request_decision=allow_once,
-    )
-    assert second.decision == ApprovalDecision.ALLOW_FOR_CONVERSATION
-    # 缓存命中：回调只被调用一次
-    assert calls == ["1"]
+    for index, op in enumerate(operations):
+        outcome = await manager.adjudicate(
+            op,
+            requested_event=requested_event(approval_id=str(index)),
+            context=[],
+            request_decision=allow_for_conversation,
+        )
+        assert outcome.decision == ApprovalDecision.ALLOW_FOR_CONVERSATION
+        # 命中缓存时直接放行，不产生 approval.resolved
+        assert len(outcome.events) == (1 if index in asked else 0)
+    assert asked_ids == [str(index) for index in asked]
 
 
 @pytest.mark.asyncio
-async def test_high_risk_never_cached_via_adjudicate() -> None:
-    """O1.5 收紧规则在原生路径同样生效：高风险操作不写会话缓存。"""
-    manager = ApprovalManager(
-        mode=ApprovalMode.REQUEST_APPROVAL,
-        rules=default_risk_rules(),
-    )
-
-    async def allow(op, approval_id: str, reason: str, conversation_id: str = "", task_id: str = "") -> ApprovalDecision:
-        return ApprovalDecision.ALLOW_FOR_CONVERSATION
-
-    first = await manager.adjudicate(
-        PendingOperation(tool_kind="shell", command="git push --force origin main"),
-        requested_event=requested_event(command="git push --force origin main", approval_id="1"),
-        conversation_id="c",
-        task_id="t",
-        engine_turn_id="turn-1",
-        request_decision=allow,
-    )
-    assert first.decision == ApprovalDecision.ALLOW_FOR_CONVERSATION
-
-    # 同签名再次请求仍需裁决（未写缓存）
-    second = await manager.adjudicate(
-        PendingOperation(tool_kind="shell", command="git push --force origin main"),
-        requested_event=requested_event(command="git push --force origin main", approval_id="2"),
-        conversation_id="c",
-        task_id="t",
-        engine_turn_id="turn-1",
-        request_decision=allow,
-    )
-    assert second.decision == ApprovalDecision.ALLOW_FOR_CONVERSATION
-    assert len(second.events) == 1  # 仍合成 resolved，说明没有直接命中
-
-
-@pytest.mark.asyncio
-async def test_review_low_risk_allows_without_reviewer() -> None:
+@pytest.mark.parametrize(
+    "op",
+    [_shell("pytest"), _file_write("proj/src/a.py")],
+    ids=["shell", "file-write"],
+)
+async def test_review_low_risk_allows_without_reviewer(op: PendingOperation) -> None:
     manager = ApprovalManager(
         mode=ApprovalMode.REVIEW,
         rules=default_risk_rules(),
     )
     outcome = await manager.adjudicate(
-        PendingOperation(tool_kind="shell", command="pytest"),
+        op,
         requested_event=requested_event(),
-        conversation_id="c",
-        task_id="t",
-        engine_turn_id="turn-1",
+        context=[],
+        request_decision=unexpected_decision,
     )
     assert outcome.decision == ApprovalDecision.ALLOW
     assert outcome.events == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("verdict", "decision", "resolution_reason"),
+    [
+        (
+            ReviewerVerdict(allow=False, reason="无法确认", suggestion="补充路径"),
+            ApprovalDecision.DENY,
+            "无法确认",
+        ),
+        (ReviewerVerdict(allow=True), ApprovalDecision.ALLOW, "审查通过"),
+    ],
+)
+async def test_review_operation_without_command_or_paths_goes_to_reviewer(
+    verdict: ReviewerVerdict, decision: ApprovalDecision, resolution_reason: str
+) -> None:
+    # 不带命令与路径的操作无法判断风险，交审查智能体裁决
+    reviewer = ScriptedReviewer([verdict])
+    manager = ApprovalManager(
+        mode=ApprovalMode.REVIEW,
+        rules=default_risk_rules(),
+        reviewer=reviewer,
+    )
+    outcome = await manager.adjudicate(
+        PendingOperation(tool_kind="file_write", summary="工具操作"),
+        requested_event=requested_event(),
+        context=[],
+        request_decision=unexpected_decision,
+    )
+    assert len(reviewer.requests) == 1
+    assert outcome.decision == decision
+    assert outcome.events[0].payload["resolution_reason"] == resolution_reason
 
 
 @pytest.mark.asyncio
@@ -209,11 +211,10 @@ async def test_review_high_risk_calls_reviewer_and_synthesizes_resolved() -> Non
         reviewer=reviewer,
     )
     outcome = await manager.adjudicate(
-        PendingOperation(tool_kind="shell", command="rm -rf build"),
+        _shell("rm -rf build"),
         requested_event=requested_event(command="rm -rf build", approval_id="7"),
-        conversation_id="c",
-        task_id="t",
-        engine_turn_id="turn-1",
+        context=[],
+        request_decision=unexpected_decision,
     )
     assert outcome.decision == ApprovalDecision.DENY
     assert len(reviewer.requests) == 1
@@ -223,7 +224,7 @@ async def test_review_high_risk_calls_reviewer_and_synthesizes_resolved() -> Non
     assert payload["approval_id"] == "7"
     assert payload["decision"] == "deny"
     assert payload["actor"] == "reviewer"
-    assert payload["reason"] == "危险"
+    assert payload["resolution_reason"] == "危险"
     assert payload["suggestion"] == "用 shutil 替代"
 
 
@@ -234,12 +235,11 @@ async def test_review_high_risk_without_reviewer_denies() -> None:
         rules=default_risk_rules(),
     )
     outcome = await manager.adjudicate(
-        PendingOperation(tool_kind="shell", command="rm -rf build"),
+        _shell("rm -rf build"),
         requested_event=requested_event(command="rm -rf build"),
-        conversation_id="c",
-        task_id="t",
-        engine_turn_id="turn-1",
+        context=[],
+        request_decision=unexpected_decision,
     )
     assert outcome.decision == ApprovalDecision.DENY
     resolved = [e for e in outcome.events if e.type == "approval.resolved"]
-    assert resolved[0].payload["reason"] == "未配置审查智能体"
+    assert resolved[0].payload["resolution_reason"] == "未配置审查智能体"

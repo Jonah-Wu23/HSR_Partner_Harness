@@ -36,6 +36,7 @@ function makeMessage(index: number, text?: string): Message {
     tts_eligible: false,
     created_at: new Date(0).toISOString(),
     streaming: index === 38,
+    timeline_order: index,
   };
 }
 
@@ -50,6 +51,8 @@ function makeTool(index: number): ToolRun {
     title: `模拟命令 ${index}`,
     summary: "模拟状态说明",
     details: `模拟工具输出 ${index}\n${"编译与测试输出行。 ".repeat(index % 4 === 0 ? 25 : 3)}`,
+    // 工作台里第 index 个工具卡排在条目 index * 2。
+    timeline_order: index * 2,
   };
 }
 

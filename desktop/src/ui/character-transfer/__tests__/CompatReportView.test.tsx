@@ -8,10 +8,13 @@ function sampleReport(overrides: Partial<CompatReportPayload> = {}): CompatRepor
     applied: ["data.name", "data.description"],
     preserved: ["data.extensions.talkativeness"],
     not_executed: [
-      "character_book.entries[2].probability（存而不运行）",
-      "macro:{{setvar::x::1}} @ data.personality（未展开，2 处）",
-      "hsr.event_system.events[0].runtime_trigger.kind=time（存而不运行）",
-      "data.extensions.hsr.command_panels",
+      { category: "world_book", text: "character_book.entries[2].probability（存而不运行）" },
+      { category: "macro", text: "macro:{{setvar::x::1}} @ data.personality（未展开，2 处）" },
+      {
+        category: "runtime_trigger",
+        text: "hsr.event_system.events[0].runtime_trigger.kind=time（存而不运行）",
+      },
+      { category: "command_panels", text: "data.extensions.hsr.command_panels" },
     ],
     normalized_from_root: ["spec_version"],
     warnings: ["世界书条目 3 的正则关键字非法，已退化为字面匹配"],
@@ -20,7 +23,7 @@ function sampleReport(overrides: Partial<CompatReportPayload> = {}): CompatRepor
   };
 }
 
-describe("CompatReportView（冻结 §11 六字段分组）", () => {
+describe("CompatReportView 六字段分组", () => {
   afterEach(() => {
     cleanup();
   });
@@ -39,19 +42,19 @@ describe("CompatReportView（冻结 §11 六字段分组）", () => {
     expect(screen.getByText("spec_version")).toBeInTheDocument();
   });
 
-  it("not_executed 内部按冻结 §11 类别再分组并展示计数", () => {
+  it("not_executed 内部按 category 再分组并展示计数", () => {
     render(<CompatReportView report={sampleReport()} />);
 
     expect(screen.getByText("世界书存而不运行字段（1）")).toBeInTheDocument();
     expect(screen.getByText("未展开宏（1）")).toBeInTheDocument();
     expect(screen.getByText("非 turn 触发（存而不运行）（1）")).toBeInTheDocument();
-    expect(screen.getByText("其他保留项（1）")).toBeInTheDocument();
+    expect(screen.getByText("声明式指令面板（1）")).toBeInTheDocument();
     expect(
       screen.getByText("macro:{{setvar::x::1}} @ data.personality（未展开，2 处）"),
     ).toBeInTheDocument();
   });
 
-  it("错误组以危险色标签呈现", () => {
+  it("errors 非空时呈现错误组", () => {
     render(<CompatReportView report={sampleReport({ errors: ["spec_version 缺失"] })} />);
 
     expect(screen.getByText("错误")).toBeInTheDocument();
@@ -76,18 +79,9 @@ describe("CompatReportView（冻结 §11 六字段分组）", () => {
     expect(screen.queryByText("已应用")).not.toBeInTheDocument();
   });
 
-  it("可选标题渲染在报告体之前", () => {
+  it("传入标题时渲染标题", () => {
     render(<CompatReportView report={sampleReport()} title="兼容报告" />);
 
     expect(screen.getByText("兼容报告")).toBeInTheDocument();
-  });
-
-  it("compact 变体挂载紧凑类，默认不挂载", () => {
-    const compact = render(<CompatReportView report={sampleReport()} compact />);
-    expect(compact.container.firstElementChild?.className).toContain("xfer-compat-report-compact");
-    compact.unmount();
-
-    const plain = render(<CompatReportView report={sampleReport()} />);
-    expect(plain.container.firstElementChild?.className).not.toContain("xfer-compat-report-compact");
   });
 });

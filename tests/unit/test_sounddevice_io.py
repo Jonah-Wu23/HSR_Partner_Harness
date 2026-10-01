@@ -1,22 +1,18 @@
-"""AudioPlayer 长生命周期输出流测试（V0.2 M2-4）。
-
-以假 sounddevice 模块驱动播放器，不触真实音频设备：验证输出流
-惰性创建/异常重建、块间与空闲间隙不断流、有界缓冲钳制超速生产者、
-stop 立即清缓冲并丢弃积压、close 后写入为无操作。
-"""
-
 from __future__ import annotations
 
+import importlib
 import sys
 import time
 import types
-from collections.abc import Iterator
 from unittest import mock
 
 import numpy as np
 import pytest
 
-# 导入 sounddevice_io 前注入假 sounddevice：无音频设备环境下不触 PortAudio
+import pair_harness.adapters.audio as audio_package
+
+# CI 与开发机上没有可用的声卡和麦克风，PortAudio 的输入输出流是硬件边界。导入
+# sounddevice_io 时临时换上替身 sounddevice 模块，播放器与采集逻辑照常运行。
 fake_sd = types.ModuleType("sounddevice")
 
 
@@ -41,18 +37,34 @@ class FakeOutputStream:
     def stop(self) -> None:
         pass
 
+    def abort(self) -> None:
+        pass
+
     def close(self) -> None:
         self.closed = True
 
 
-fake_sd.OutputStream = FakeOutputStream
+class FakeCallbackAbort(Exception):
+    """对应 sounddevice.CallbackAbort。"""
 
+
+fake_sd.OutputStream = FakeOutputStream
+fake_sd.CallbackAbort = FakeCallbackAbort
+
+# 导入后还原 sys.modules 与包属性，绑定替身的模块只留在本文件。
+_previous_module = getattr(audio_package, "sounddevice_io", None)
 with mock.patch.dict(sys.modules, {"sounddevice": fake_sd}):
-    from pair_harness.adapters.audio.sounddevice_io import (
-        AudioPlayer,
-        _input_device_candidates,
-        _resample_input,
-    )
+    sys.modules.pop("pair_harness.adapters.audio.sounddevice_io", None)
+    sounddevice_io = importlib.import_module("pair_harness.adapters.audio.sounddevice_io")
+if _previous_module is None:
+    del audio_package.sounddevice_io
+else:
+    audio_package.sounddevice_io = _previous_module
+
+AudioPlayer = sounddevice_io.AudioPlayer
+MicrophoneCapture = sounddevice_io.MicrophoneCapture
+_input_device_candidates = sounddevice_io._input_device_candidates
+_resample_input = sounddevice_io._resample_input
 
 
 def _chunk(ms: int = 20) -> bytes:
@@ -61,11 +73,9 @@ def _chunk(ms: int = 20) -> bytes:
 
 
 @pytest.fixture(autouse=True)
-def _fresh_streams() -> Iterator[None]:
-    """每个用例独立统计创建的流实例，并还原可能被替换的慢写流。"""
+def _fresh_streams() -> None:
+    """每个用例独立统计创建的流实例；用例对替身模块的替换经 monkeypatch 还原。"""
     FakeOutputStream.instances.clear()
-    fake_sd.OutputStream = FakeOutputStream
-    yield
 
 
 def _wait_stream(index: int = 0, timeout: float = 2.0) -> FakeOutputStream:
@@ -127,7 +137,7 @@ def test_stream_created_lazily_on_first_chunk() -> None:
 # ---------------------------------------------------------------- 有界缓冲
 
 
-def test_bounded_buffer_throttles_fast_producer() -> None:
+def test_bounded_buffer_throttles_fast_producer(monkeypatch) -> None:
     """缓冲上限钳制生产节奏：慢消费下批量入队被阻塞，且不丢块。"""
 
     class SlowStream(FakeOutputStream):
@@ -135,7 +145,7 @@ def test_bounded_buffer_throttles_fast_producer() -> None:
             time.sleep(0.05)  # 慢消费：每次写流 50 ms
             super().write(samples)
 
-    fake_sd.OutputStream = SlowStream
+    monkeypatch.setattr(fake_sd, "OutputStream", SlowStream)
     player = AudioPlayer(sample_rate=16_000, channels=1, buffer_chunks=2)
     player.start()
     try:
@@ -143,20 +153,19 @@ def test_bounded_buffer_throttles_fast_producer() -> None:
         for _ in range(10):
             player.play_blocking(_chunk())
         elapsed = time.monotonic() - started
-        # 缓冲上限 2 块：10 块不可能瞬间全部入队（生产被消费节奏钳制）
+        # 缓冲上限 2 块，10 块不可能瞬间全部入队
         assert elapsed >= 0.15
         stream = _wait_stream()
         _wait_writes(stream, 10)
     finally:
         player.close()
-        fake_sd.OutputStream = FakeOutputStream
 
 
 # ---------------------------------------------------------------- stop / close
 
 
-def test_stop_clears_buffer_immediately_and_rebuilds_stream() -> None:
-    """stop 立即清空缓冲并关闭流（丢弃积压）；下次播放惰性重建新流。"""
+def test_stop_discards_backlog_immediately_and_rebuilds_stream(monkeypatch) -> None:
+    """stop 立即丢弃积压并关闭流；下次播放惰性重建新流。"""
 
     class SlowStream(FakeOutputStream):
         def __init__(self, **kwargs) -> None:
@@ -176,31 +185,100 @@ def test_stop_clears_buffer_immediately_and_rebuilds_stream() -> None:
             self.closed_while_writing |= self.writing
             super().close()
 
-    fake_sd.OutputStream = SlowStream
+    monkeypatch.setattr(fake_sd, "OutputStream", SlowStream)
     player = AudioPlayer(sample_rate=16_000, channels=1, buffer_chunks=2)
     player.start()
     try:
+        # 缓冲上限 2 块：最后一块入队返回时，至少它还留在缓冲里没写出
         for _ in range(6):
             player.play_blocking(_chunk())
-        time.sleep(0.03)  # 慢消费下缓冲必有积压
-        assert len(player._buffer) > 0
+        first = _wait_stream()
 
         started = time.monotonic()
         player.stop()
         assert time.monotonic() - started < 0.2  # 立即返回，不等慢消费
-        assert len(player._buffer) == 0  # 缓冲被清空
-        assert _wait_stream().closed  # 流被关闭（丢弃积压）
-        assert not _wait_stream().closed_while_writing  # close 不得与 write 并发
+        assert first.closed
+        assert not first.closed_while_writing  # close 不与 write 并发
+        written = len(first.writes)
+        assert written < 6  # 积压的块被丢弃
+        time.sleep(0.1)
+        assert len(first.writes) == written
 
         # 停止后仍可播放：惰性重建新流
         player.play_blocking(_chunk())
         rebuilt = _wait_stream(1)
         _wait_writes(rebuilt, 1)
-        assert len(FakeOutputStream.instances) == 2  # 新流已重建
-        assert len(rebuilt.writes) == 1
+        assert len(FakeOutputStream.instances) == 2
     finally:
         player.close()
-        fake_sd.OutputStream = FakeOutputStream
+
+
+def test_output_failure_raised_to_producer_then_stream_rebuilt(monkeypatch) -> None:
+    """写流失败如实抛给生产者；错误上报后下一次播放重建输出流。"""
+
+    class BrokenStream(FakeOutputStream):
+        def write(self, samples) -> None:
+            raise OSError("device unplugged")
+
+    monkeypatch.setattr(fake_sd, "OutputStream", BrokenStream)
+    player = AudioPlayer(sample_rate=16_000, channels=1)
+    player.start()
+    try:
+        player.play_blocking(_chunk())
+        with pytest.raises(RuntimeError, match="device unplugged"):
+            player.wait_until_idle()
+        assert _wait_stream().closed
+
+        monkeypatch.setattr(fake_sd, "OutputStream", FakeOutputStream)
+        player.play_blocking(_chunk())
+        rebuilt = _wait_stream(1)
+        _wait_writes(rebuilt, 1)
+    finally:
+        player.close()
+
+
+async def test_capture_callback_error_reaches_chunks_consumer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """输入回调出错时中止输入流，chunks() 的消费者收到该异常并结束。"""
+    streams: list[object] = []
+
+    class FakeRawInputStream:
+        def __init__(self, **kwargs) -> None:
+            self.callback = kwargs["callback"]
+            streams.append(self)
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    device = {
+        "name": "Mic",
+        "max_input_channels": 1,
+        "hostapi": 1,
+        "default_samplerate": 16_000.0,
+    }
+    monkeypatch.setattr(fake_sd, "RawInputStream", FakeRawInputStream, raising=False)
+    monkeypatch.setattr(fake_sd, "default", types.SimpleNamespace(device=(0, 0)), raising=False)
+    monkeypatch.setattr(
+        fake_sd,
+        "query_devices",
+        lambda index=None: [device] if index is None else device,
+        raising=False,
+    )
+
+    async with MicrophoneCapture() as capture:
+        # 半个 int16 采样无法解码，重采样在回调里抛错
+        with pytest.raises(FakeCallbackAbort):
+            streams[0].callback(b"\x00", 1, None, None)
+        with pytest.raises(ValueError, match="buffer size must be a multiple of element size"):
+            async for _ in capture.chunks():
+                pass
 
 
 def test_play_blocking_after_close_is_noop() -> None:
@@ -227,42 +305,36 @@ def test_empty_pcm_blocks_are_ignored() -> None:
         player.close()
 
 
-def test_input_device_candidates_prefers_wdm_ks_microphone() -> None:
-    """F7/兼容：输入设备候选——默认设备居首、WDM-KS 麦克风优先。
-
-    覆盖 ``_input_device_candidates``（Windows 输入侧核心路径，
-    MME 拒绝 16kHz 时回退、WDM-KS 麦克风优先）。
-    """
+def test_input_device_candidates_put_default_first_then_wdm_ks_microphones(monkeypatch) -> None:
+    """Windows MME 默认输入拒绝 16 kHz 时依次回退到 WDM-KS 麦克风与其余输入设备。"""
     devices = [
         {"name": "扬声器 (Realtek)", "max_input_channels": 0, "hostapi": 3},
         {"name": "麦克风 (Realtek)", "max_input_channels": 2, "hostapi": 3},
         {"name": "默认设备", "max_input_channels": 2, "hostapi": 0},
         {"name": "外部 Mic", "max_input_channels": 1, "hostapi": 1},
     ]
-    fake_sd.default = types.SimpleNamespace(device=(2, 2))  # 默认输入设备 index 2
-    fake_sd.query_devices = lambda: devices
+    monkeypatch.setattr(fake_sd, "default", types.SimpleNamespace(device=(2, 2)), raising=False)
+    monkeypatch.setattr(fake_sd, "query_devices", lambda: devices, raising=False)
 
-    result = _input_device_candidates()
-
-    # 扬声器（max_input_channels=0）被跳过；默认设备在前；
-    # 随后是 WDM-KS 麦克风（hostapi=3 + 名称含"麦克风"），再是其余
-    assert result == (2, 1, 3)
+    # 没有输入通道的扬声器被跳过
+    assert _input_device_candidates() == (2, 1, 3)
 
 
-def test_input_device_candidates_defaults_to_none_when_no_default() -> None:
-    """默认输入不可用时回退 None（只列候选），不抛错。"""
-    fake_sd.default = types.SimpleNamespace(device=(None, None))
-    fake_sd.query_devices = lambda: [
-        {"name": "Mic", "max_input_channels": 1, "hostapi": 1},
-    ]
+def test_input_device_candidates_without_default_input(monkeypatch) -> None:
+    monkeypatch.setattr(
+        fake_sd, "default", types.SimpleNamespace(device=(None, None)), raising=False
+    )
+    monkeypatch.setattr(
+        fake_sd,
+        "query_devices",
+        lambda: [{"name": "Mic", "max_input_channels": 1, "hostapi": 1}],
+        raising=False,
+    )
 
-    result = _input_device_candidates()
-
-    assert result == (0,)
+    assert _input_device_candidates() == (0,)
 
 
 def test_resample_input_downmixes_stereo_and_resamples() -> None:
-    """F7/兼容：int16 帧降混 + 重采样（``_resample_input`` 核心路径）。"""
     # 16 kHz 立体声 → 8 kHz 单声道
     raw = np.zeros(1600, dtype=np.int16)
     raw[::2] = 1000  # 左声道 1000、右声道 0 → 降混后每帧 500

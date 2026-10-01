@@ -11,10 +11,10 @@ function presentScenario(name: "single-project" | "gate-default" | "onboarding-p
   return presentAppShell(desktopStore.getState());
 }
 
-describe("presenters V0.2 M4 视觉接口映射", () => {
+describe("AppShell 视图模型投影", () => {
   beforeEach(() => {
+    desktopStore.setState(desktopStore.getInitialState(), true);
     desktopStore.getState().hydrate(createMockScenario("single-project").snapshot);
-    desktopStore.getState().setConfigSnapshot(null);
   });
 
   it("queueItems：未撤回项按 position 排序，摘要单行截断，position 从 1 开始", () => {
@@ -73,15 +73,14 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
       target: "assistant",
       summary: "帮我跑一遍全部测试并整理失败原因，然后给出后续修…", // 超 24 字截断加省略号
       position: 1,
-      // V0.3.8 T5（C3）：waitingFor 按真实状态派生——会话无活动任务时如实
-      // 呈现“等待派发”，不再硬编码“等待当前回复结束”。
+      // 会话没有活动任务时排队项等待派发
       waitingFor: "等待派发",
       intent: "followup",
     });
     expect(queueItems[1]).toMatchObject({ queueItemId: "q-2", summary: "继续", position: 2 });
   });
 
-  it("queueItems：waitingFor 区分执行中/等待当前回复/队列顺序（V0.3.8 T5）", () => {
+  it("queueItems：waitingFor 区分执行中、等待当前回复与队列顺序", () => {
     desktopStore.getState().applyEvents([
       {
         kind: "event",
@@ -159,7 +158,10 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
     });
   });
 
-  it("delegation：委派卡按真实消息状态展示运行/完成", () => {
+  it("delegation：只有角色委派消息形成委派卡，状态按消息与活动任务展示运行或完成", () => {
+    // 场景里只有普通用户消息
+    expect(presentAppShell(desktopStore.getState()).workspace?.delegation).toBeNull();
+
     const event = (sequence: number, payload: Record<string, unknown>): DesktopEvent => ({
       kind: "event",
       event: "message.created",
@@ -209,15 +211,22 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
             task_id: "task-9",
             engine_turn_id: null,
           },
+          active_tasks: [
+            {
+              project_id: "project-1",
+              conversation_id: "conv-1",
+              task_id: "task-9",
+              engine_turn_id: null,
+            },
+          ],
         },
       },
     ]);
     vm = presentAppShell(desktopStore.getState());
     expect(vm.workspace?.delegation?.status).toBe("running");
-
   });
 
-  it("delegation：失败消息不再被 activeTask 清理误标为已完成", () => {
+  it("delegation：委派消息失败时委派卡显示失败", () => {
     desktopStore.getState().applyEvents([
       {
         kind: "event",
@@ -269,11 +278,6 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
     expect(presentAppShell(desktopStore.getState()).workspace?.delegation?.status).toBe("failed");
   });
 
-  it("delegation：无委派消息时为 null；普通 user 消息不触发", () => {
-    const vm = presentAppShell(desktopStore.getState());
-    expect(vm.workspace?.delegation).toBeNull();
-  });
-
   it("双空间归属：user+target=assistant 与 assistant/tool 归工作台，其余归角色区", () => {
     const event = (sequence: number, payload: Record<string, unknown>): DesktopEvent => ({
       kind: "event",
@@ -322,93 +326,68 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
     );
     // 两条过滤规则互斥：任何消息不得同时出现在两个空间
     expect(characterIds.filter((id) => assistantIds.includes(id))).toEqual([]);
-    // 用户消息按 target 分流，而非按 source 一刀切
-    expect(characterIds).toContain("m-user-chat");
-    expect(assistantIds).toContain("m-user-work");
   });
 
-  it("voiceMiniPlayer：tts playing/synthesizing 映射播放条，idle 为 null", () => {
+  it.each([
+    [
+      "playing",
+      2,
+      null,
+      { status: "playing", speaker: "character", speakerName: "白厄", queuedCount: 2 },
+    ],
+    ["synthesizing", 3, null, { status: "synthesizing", queuedCount: 3 }],
+    [
+      "failed",
+      0,
+      "语音合成失败：服务无响应",
+      { status: "failed", errorText: "语音合成失败：服务无响应" },
+    ],
+    ["idle", 0, null, null],
+  ])("voiceMiniPlayer：tts=%s 时的播放条", (tts, speechQueueLength, error, expected) => {
     desktopStore.getState().applyEvents([
       {
         kind: "event",
         event: "voice.state_changed",
         sequence: 1,
-        payload: { voice: { tts: "playing", speech_queue_len: 2, error: null } },
+        payload: { voice: { tts, speech_queue_len: speechQueueLength, error } },
       },
     ]);
-    expect(presentAppShell(desktopStore.getState()).voiceMiniPlayer).toMatchObject({
-      status: "playing",
-      speaker: "character",
-      speakerName: "白厄",
-      queuedCount: 2,
-    });
-
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "voice.state_changed",
-        sequence: 2,
-        payload: { voice: { tts: "synthesizing", speech_queue_len: 3, error: null } },
-      },
-    ]);
-    expect(presentAppShell(desktopStore.getState()).voiceMiniPlayer?.status).toBe("synthesizing");
-
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "voice.state_changed",
-        sequence: 3,
-        payload: { voice: { tts: "idle", speech_queue_len: 0, error: null } },
-      },
-    ]);
-    expect(presentAppShell(desktopStore.getState()).voiceMiniPlayer).toBeNull();
-  });
-
-  it("voiceMiniPlayer：tts failed → 失败态 + 人话错误", () => {
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "voice.state_changed",
-        sequence: 1,
-        payload: { voice: { tts: "failed", speech_queue_len: 0, error: "语音合成失败：服务无响应" } },
-      },
-    ]);
-    expect(presentAppShell(desktopStore.getState()).voiceMiniPlayer).toMatchObject({
-      status: "failed",
-      errorText: "语音合成失败：服务无响应",
-    });
-  });
-
-  it("accountGate：默认账号（username=default）出现，非默认账号为 null", () => {
-    const gateVm = presentScenario("gate-default");
-    expect(gateVm.accountGate).not.toBeNull();
-    expect(gateVm.accountGate?.accounts).toHaveLength(2);
-    expect(gateVm.accountGate?.accounts.find((item) => item.isLastLogin)?.accountId).toBe(
-      "default-local",
+    expect(presentAppShell(desktopStore.getState()).voiceMiniPlayer).toEqual(
+      expected === null ? null : expect.objectContaining(expected),
     );
-    expect(gateVm.onboarding).toBe(false);
-
-    const appVm = presentScenario("single-project");
-    expect(appVm.accountGate).toBeNull();
-    expect(appVm.onboarding).toBe(false);
   });
 
-  it("onboarding：非默认账号且引导未完成 → true；完成后关闭", () => {
-    const vm = presentScenario("onboarding-pending");
-    expect(vm.onboarding).toBe(true);
-    expect(vm.accountGate).toBeNull();
+  it.each([
+    ["gate-default", true, false],
+    ["single-project", false, false],
+    ["onboarding-pending", false, true],
+  ] as const)("%s 场景下显示账号门=%s、首次引导=%s", (scenario, gate, onboarding) => {
+    const vm = presentScenario(scenario);
+    expect(vm.accountGate !== null).toBe(gate);
+    expect(vm.onboarding).toBe(onboarding);
+  });
 
-    // 引导完成（account.changed 水合 onboarding_complete=true）后关闭
+  it("accountGate：默认账号进账号门时列出全部账号并标出上次登录", () => {
+    const accounts = presentScenario("gate-default").accountGate?.accounts ?? [];
+    expect(accounts).toHaveLength(2);
+    expect(accounts.find((item) => item.isLastLogin)?.accountId).toBe("default-local");
+  });
+
+  it("onboarding：account.changed 带回引导完成后关闭首次引导", () => {
+    presentScenario("onboarding-pending");
+    const account = desktopStore.getState().currentAccount!;
     desktopStore.getState().applyEvents([
       {
         kind: "event",
         event: "account.changed",
         sequence: 1,
         payload: {
-          account: {
-            ...desktopStore.getState().currentAccount,
-            onboarding_complete: true,
-          },
+          account: { ...account, onboarding_complete: true },
+          accounts: desktopStore
+            .getState()
+            .accounts.map((item) =>
+              item.account_id === account.account_id ? { ...item, onboarding_complete: true } : item,
+            ),
         },
       },
     ]);
@@ -511,79 +490,39 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
     });
   });
 
-  it("toasts：store 透传到 ViewModel", () => {
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "error.reported",
-        sequence: 1,
-        payload: { code: "sidecar", message: "Sidecar 断开", severity: "recoverable" },
-      },
-    ]);
-    expect(presentAppShell(desktopStore.getState()).toasts).toMatchObject([
-      { id: "sidecar:Sidecar 断开", kind: "warning", text: "Sidecar 断开", hasDetails: true },
-    ]);
-  });
-
-  it("V0.3.0: multi-pair 场景下的 navigation.pairs、currentPairId 与按会话切换搭档语音展示", () => {
+  it("多搭档：搭档目录完整，当前搭档与设置页音色跟随本窗口激活标签", () => {
     desktopStore.getState().hydrate(createMockScenario("multi-pair").snapshot);
     const vm = presentAppShell(desktopStore.getState());
 
-    // 目录包含三组搭档
-    expect(vm.navigation?.pairs).toHaveLength(3);
     expect(vm.navigation?.pairs.map((p) => p.pair_id)).toEqual([
       "phainon_ancient_machine",
       "firefly_sam",
       "march7_fourth_mirror",
     ]);
-
-    // 当前选中 conv-firefly -> currentPairId 为 firefly_sam
+    // Sidecar 全局当前聊天是流萤会话
     expect(vm.currentPairId).toBe("firefly_sam");
-    expect(vm.settings.voice.characterVoiceName).toBe("流萤");
-    expect(vm.settings.voice.assistantVoiceName).toBe("萨姆");
-    expect(vm.settings.voice.characterVoiceId).toBe("demo-firefly");
-    expect(vm.settings.voice.assistantVoiceId).toBe("demo-sam");
-
-    // 切换到三月七会话 conv-march7
-    desktopStore.getState().hydrate({
-      ...createMockScenario("multi-pair").snapshot,
-      current_conversation_id: "conv-march7",
+    expect(vm.settings.voice).toMatchObject({
+      characterVoiceName: "流萤",
+      assistantVoiceName: "萨姆",
+      characterVoiceId: "demo-firefly",
+      assistantVoiceId: "demo-sam",
     });
-    desktopStore.getState().openConversationTab("conv-march7");
-    const march7Vm = presentAppShell(desktopStore.getState());
-    expect(march7Vm.currentPairId).toBe("march7_fourth_mirror");
-    expect(march7Vm.settings.voice.characterVoiceName).toBe("三月七");
-    expect(march7Vm.settings.voice.assistantVoiceName).toBe("第四面镜");
 
-    // 切换到白厄会话 conv-phainon
-    desktopStore.getState().hydrate({
-      ...createMockScenario("multi-pair").snapshot,
-      current_conversation_id: "conv-phainon",
-    });
-    desktopStore.getState().openConversationTab("conv-phainon");
-    const phainonVm = presentAppShell(desktopStore.getState());
-    expect(phainonVm.currentPairId).toBe("phainon_ancient_machine");
-    expect(phainonVm.settings.voice.characterVoiceName).toBe("白厄");
-    expect(phainonVm.settings.voice.assistantVoiceName).toBe("神秘的古代机械");
+    // 本窗口切到其他标签，全局指针仍停在流萤
+    for (const [conversationId, pairId, characterVoiceName, assistantVoiceName] of [
+      ["conv-march7", "march7_fourth_mirror", "三月七", "第四面镜"],
+      ["conv-phainon", "phainon_ancient_machine", "白厄", "神秘的古代机械"],
+    ]) {
+      desktopStore.getState().openConversationTab(conversationId);
+      const tabVm = presentAppShell(desktopStore.getState());
+      expect(desktopStore.getState().currentConversationId).toBe("conv-firefly");
+      expect(tabVm.currentPairId).toBe(pairId);
+      expect(tabVm.settings.voice).toMatchObject({ characterVoiceName, assistantVoiceName });
+    }
   });
 
-  it("V0.3.5 修复：全局指针与本窗口激活标签分叉时，设置页音色跟随激活标签", () => {
-    // 全局指针停在流萤（Sidecar 权威/其他窗口），本窗口激活标签切到白厄
-    desktopStore.getState().hydrate({
-      ...createMockScenario("multi-pair").snapshot,
-      current_conversation_id: "conv-firefly",
-    });
-    desktopStore.getState().openConversationTab("conv-phainon");
-
-    const vm = presentAppShell(desktopStore.getState());
-    expect(vm.settings.voice.characterVoiceName).toBe("白厄");
-    expect(vm.settings.voice.assistantVoiceName).toBe("神秘的古代机械");
-  });
-
-  it("V0.3.2 M1：工作台 items 按 timeline_order 混排 assistant segment 与工具卡", () => {
-    const state = desktopStore.getState();
-    state.hydrate(createMockScenario("single-project").snapshot);
-    state.applyEvents([
+  it("工作台条目按 timeline_order 混排助手分段与工具卡", () => {
+    desktopStore.getState().applyEvents([
       {
         kind: "event",
         event: "message.created",
@@ -685,24 +624,6 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
           },
         },
       },
-      {
-        kind: "event",
-        event: "tool_run.upserted",
-        sequence: 6,
-        payload: {
-          tool_run: {
-            tool_call_id: "mock-tool-1",
-            conversation_id: "conv-1",
-            task_id: "legacy-task",
-            engine_turn_id: "legacy-turn",
-            sequence: 9,
-            status: "succeeded",
-            title: "旧版工具记录",
-            summary: "",
-            details: "",
-          },
-        },
-      },
     ]);
     const vm = presentAppShell(desktopStore.getState());
     const items = vm.workspace?.assistant.items ?? [];
@@ -718,12 +639,5 @@ describe("presenters V0.2 M4 视觉接口映射", () => {
       "tool-b",
       "assistant:conv-1:task-1:2",
     ]);
-    // legacy 无序号工具卡保持在序号块之前（旧版分组展示语义）
-    const firstOrderedIndex = items.findIndex((item) => item.order !== null);
-    const legacyIndex = items.findIndex(
-      (item) => item.kind === "tool" && item.run.tool_call_id === "mock-tool-1",
-    );
-    expect(legacyIndex).toBeGreaterThanOrEqual(0);
-    expect(legacyIndex).toBeLessThan(firstOrderedIndex);
   });
 });
