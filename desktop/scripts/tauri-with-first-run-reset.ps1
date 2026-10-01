@@ -12,8 +12,8 @@ $ErrorActionPreference = "Stop"
 # code page (CP936 on this machine). A multibyte character whose trailing byte
 # is consumed together with the following LF swallows the line break and merges
 # the next line into the comment, so an assignment can vanish with no syntax
-# error (V039-S4-010 / V039-R1-001). Keep every comment and message ASCII, and
-# do not rely on a BOM to make non-ASCII text safe here.
+# error. Keep every comment and message ASCII, and do not rely on a BOM to make
+# non-ASCII text safe here.
 
 $desktopRoot = Split-Path -Parent $PSScriptRoot
 $localAppData = $env:LOCALAPPDATA
@@ -76,8 +76,8 @@ function Reset-FirstRunState {
     }
 
     # The sidecar stderr log and its rolled copies (sidecar.stderr.log / .1 ... .N).
-    # Keeping them across batches leaks the previous batch traceback into the next
-    # batch evidence (V039-S4-010), so a first-run reset must clear them too.
+    # A first-run reset clears them too, so a new build starts without the
+    # previous build's tracebacks.
     $logRoot = Get-FullPath (Join-Path (Get-FullPath $appData) "com.jonahwu.hsr-partner-harness")
     if ((Get-FullPath (Split-Path -Parent $logRoot)) -ne (Get-FullPath $appData)) {
         throw "Refusing to clear logs from an unvalidated path: $logRoot"
