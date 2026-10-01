@@ -22,3 +22,12 @@ tauri-plugin-dialog = "2"
 # 通知行为，供 Android 壳 spike 与真机验收使用）。
 tauri-plugin-notification = "2"
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+
+# Sidecar 放进 KILL_ON_JOB_CLOSE 作业对象，结束时连同它拉起的子进程一起结束。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }

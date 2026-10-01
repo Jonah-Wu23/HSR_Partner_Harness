@@ -1470,6 +1470,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-notification",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

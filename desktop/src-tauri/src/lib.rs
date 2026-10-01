@@ -17,6 +17,73 @@ use tauri::{Emitter, Manager, State};
 
 type PendingMap = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<Value>>>>;
 
+/// Windows 作业对象：句柄关闭时结束作业内全部进程。Sidecar 拉起的
+/// cloudflared、reasonix 自动进入同一作业，Sidecar 被强杀或崩溃后不会遗留。
+#[cfg(windows)]
+mod sidecar_job {
+    use std::os::windows::io::AsRawHandle;
+    use std::process::Child;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    pub struct KillOnCloseJob(HANDLE);
+
+    // 句柄只由持有它的 SidecarProcess 移动和关闭。
+    unsafe impl Send for KillOnCloseJob {}
+
+    impl KillOnCloseJob {
+        /// 新建 KILL_ON_JOB_CLOSE 作业并把 `child` 放进去。
+        pub fn assign(child: &Child) -> std::io::Result<Self> {
+            // SAFETY: 传入的指针均指向有效的局部值或为空，句柄由 Self 独占并在 Drop 关闭。
+            unsafe {
+                let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if handle.is_null() {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let job = Self(handle);
+                let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                if SetInformationJobObject(
+                    job.0,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+                        as *const core::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                ) == 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if AssignProcessToJobObject(job.0, child.as_raw_handle() as HANDLE) == 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(job)
+            }
+        }
+    }
+
+    impl Drop for KillOnCloseJob {
+        fn drop(&mut self) {
+            // SAFETY: 句柄由 CreateJobObjectW 返回且只在这里关闭一次。
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+/// Sidecar 子进程。Windows 下连同作业对象一起持有：整体丢弃时作业句柄关闭，
+/// Sidecar 及其仍在运行的子进程随之结束。
+struct SidecarProcess {
+    child: Child,
+    #[cfg(windows)]
+    _job: sidecar_job::KillOnCloseJob,
+}
+
 /// V0.3.2 M5：独立聊天窗口的元数据（label → 归属会话），用于改名同步标题。
 #[derive(Debug, Clone)]
 struct ChatWindowMeta {
@@ -80,7 +147,7 @@ struct BackendState {
     /// 用于发事件与重新 spawn（退避循环在后台线程运行）。
     app: tauri::AppHandle,
     debug_console: bool,
-    child: Mutex<Option<Child>>,
+    child: Mutex<Option<SidecarProcess>>,
     stdin: Mutex<Option<ChildStdin>>,
     pending: PendingMap,
     /// 当前连接代次；每次拉起 Sidecar 都会换成新的 stream_id。
@@ -647,7 +714,7 @@ fn launch_sidecar(
     app: &tauri::AppHandle,
     debug_console: bool,
     stream_id: u64,
-) -> Result<(Child, ChildStdin, ChildStdout), String> {
+) -> Result<(SidecarProcess, ChildStdin, ChildStdout), String> {
     let packaged = packaged_sidecar(app);
     let bundled_reasonix = packaged_reasonix(app);
     let runtime_root = std::env::var_os("PAIR_HARNESS_ROOT")
@@ -726,6 +793,15 @@ fn launch_sidecar(
     let mut child = command
         .spawn()
         .map_err(|error| format!("启动 Python Sidecar 失败：{error}"))?;
+    #[cfg(windows)]
+    let job = match sidecar_job::KillOnCloseJob::assign(&child) {
+        Ok(job) => job,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("为 Python Sidecar 建立作业对象失败：{error}"));
+        }
+    };
     if let Some(stderr) = child.stderr.take() {
         let header = sidecar_log_session_header(
             stream_id,
@@ -743,7 +819,12 @@ fn launch_sidecar(
         .stdout
         .take()
         .ok_or_else(|| "Sidecar stdout 不可用".to_string())?;
-    Ok((child, stdin, stdout))
+    let process = SidecarProcess {
+        child,
+        #[cfg(windows)]
+        _job: job,
+    };
+    Ok((process, stdin, stdout))
 }
 
 impl BackendState {
@@ -802,10 +883,10 @@ impl BackendState {
     /// 重新拉起 Sidecar：成功后新旧 stdin/child 已交换，失败返回原因。
     fn respawn(&self) -> Result<ChildStdout, String> {
         let stream_id = next_stream_id();
-        let (child, stdin, stdout) = launch_sidecar(&self.app, self.debug_console, stream_id)?;
+        let (process, stdin, stdout) = launch_sidecar(&self.app, self.debug_console, stream_id)?;
         *self.current_stream_id.lock().unwrap() = stream_id;
         *self.stdin.lock().unwrap() = Some(stdin);
-        *self.child.lock().unwrap() = Some(child);
+        *self.child.lock().unwrap() = Some(process);
         Ok(stdout)
     }
 
@@ -857,12 +938,12 @@ impl BackendState {
 
 fn spawn_backend(app: &tauri::AppHandle, debug_console: bool) -> Result<Arc<BackendState>, String> {
     let stream_id = next_stream_id();
-    let (child, stdin, stdout) = launch_sidecar(app, debug_console, stream_id)?;
+    let (process, stdin, stdout) = launch_sidecar(app, debug_console, stream_id)?;
     let (connection, _) = tokio::sync::watch::channel(true);
     let state = Arc::new(BackendState {
         app: app.clone(),
         debug_console,
-        child: Mutex::new(Some(child)),
+        child: Mutex::new(Some(process)),
         stdin: Mutex::new(Some(stdin)),
         pending: Arc::new(Mutex::new(HashMap::new())),
         current_stream_id: Mutex::new(stream_id),
@@ -948,12 +1029,13 @@ fn start_reader(state: &Arc<BackendState>, stdout: ChildStdout, stream_id: u64) 
             return;
         }
         fail_pending(&state.pending, "Python Sidecar 已断开");
+        // 取出的 SidecarProcess 在本语句结束时丢弃，作业对象随之结束遗留子进程。
         let exit_status = state
             .child
             .lock()
             .unwrap()
             .take()
-            .and_then(|mut child| child.wait().ok());
+            .and_then(|mut process| process.child.wait().ok());
         match classify_exit(state.shutdown.load(Ordering::SeqCst), exit_status) {
             ExitClass::Shutdown => {} // 主动关闭：不发事件也不重连
             ExitClass::CleanExit => {
@@ -1111,19 +1193,21 @@ async fn sidecar_reconnect(state: State<'_, Arc<BackendState>>) -> Result<Value,
     if state.shutdown.load(Ordering::SeqCst) {
         return Err("应用正在退出，无法重连".to_string());
     }
-    // M2.3：手动重连先把当前连接状态置为 false，再启动新代次。
+    // 手动重连先把当前连接状态置为 false，再启动新代次，
     // 不能读取旧 watch 值提前返回成功。
     let _ = state.connection.send(false);
     // 让旧 reader 立刻失效，防止其迟到的 EOF 覆盖新连接状态。
     *state.current_stream_id.lock().unwrap() = u64::MAX;
     // 手动重连重置退避：即使此前连续崩溃，也立即尝试一次
     *state.crash_streak.lock().unwrap() = 0;
-    // 强制终止现有进程（若有）；其 EOF 或恢复循环负责立即重启
-    if let Some(mut child) = state.child.lock().unwrap().take() {
-        let _ = child.kill();
-        let _ = child.wait();
+    // 强制终止现有进程（若有），由恢复循环立即重启。
+    if let Some(mut process) = state.child.lock().unwrap().take() {
+        let _ = process.child.kill();
+        let _ = process.child.wait();
     }
     let _ = state.stdin.lock().unwrap().take();
+    // 旧 reader 已失效，EOF 时不会再清理挂起请求，这里立即释放等待方。
+    fail_pending(&state.pending, "Python Sidecar 已断开，正在重连");
     state.ensure_reconnect_loop();
 
     // 订阅在发送 false 之后进行；此时若已经变为 true，只能是新代次发布
@@ -1205,15 +1289,16 @@ fn stop_backend(state: &BackendState) {
         }
     }
     let deadline = Instant::now() + Duration::from_secs(5);
-    if let Some(mut child) = state.child.lock().unwrap().take() {
-        // M2.4：先给 Python 有限时间优雅退出，超时再强制结束。
+    if let Some(mut process) = state.child.lock().unwrap().take() {
+        // 先给 Python 有限时间优雅退出，超时再强制结束；process 丢弃时
+        // 作业对象结束仍在运行的子进程。
         loop {
-            if let Ok(Some(_status)) = child.try_wait() {
+            if let Ok(Some(_status)) = process.child.try_wait() {
                 break;
             }
             if Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
+                let _ = process.child.kill();
+                let _ = process.child.wait();
                 break;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -1354,6 +1439,38 @@ mod tests {
             "hsr-partner-harness.exe".to_string(),
             "--console".to_string(),
         ]));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn closing_the_job_kills_processes_inside_it() {
+        use super::sidecar_job::KillOnCloseJob;
+        use std::process::{Command, Stdio};
+        use std::time::Instant;
+
+        let mut child = Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let job = KillOnCloseJob::assign(&child).unwrap();
+        assert!(child.try_wait().unwrap().is_none());
+
+        drop(job);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let exited = loop {
+            if child.try_wait().unwrap().is_some() {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        if !exited {
+            let _ = child.kill();
+        }
+        assert!(exited, "关闭作业句柄后作业内进程应被结束");
     }
 
     #[tokio::test]
