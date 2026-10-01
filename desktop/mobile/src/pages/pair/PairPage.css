@@ -66,7 +66,7 @@
   border-radius: 14px;
 }
 
-/* V0.3.7 壳内桌面端地址卡：与扫码卡同节奏，保存按钮全宽大触控。 */
+/* 壳内桌面端地址卡：与扫码卡同节奏，保存按钮全宽。 */
 .ws-address-card {
   display: flex;
   flex-direction: column;

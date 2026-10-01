@@ -7,7 +7,7 @@
   width: 100%;
 }
 
-/* V0.3.7 电源状态条：与页面卡片同宽同圆角，警示配色由组件自身控制。 */
+/* 电源状态条：与页面卡片同宽同圆角，警示配色由组件自身控制。 */
 .chat-list-power .power-banner {
   border-radius: 12px;
 }
@@ -199,12 +199,12 @@
   border: 1px solid var(--border);
 }
 
-/* V0.3.9 V01：会话行徽章位于标题/时间下方，占据独立一行，不挤压标题省略号。 */
+/* 会话行徽章在标题与时间下方独占一行，不挤压标题省略号。 */
 .conversation-badges {
   margin-top: 2px;
 }
 
-/* V0.3.9 V08：窄屏（≤360px）收敛。会话行、按钮与徽章保持可操作（≥44px 触控目标）。 */
+/* 窄屏（≤360px）收紧间距，会话行、按钮与徽章保持 ≥44px 触控目标。 */
 @media (max-width: 360px) {
   .chat-list-container {
     gap: 10px;

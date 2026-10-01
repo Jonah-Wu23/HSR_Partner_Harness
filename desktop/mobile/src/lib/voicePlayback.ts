@@ -1,46 +1,39 @@
 /**
- * V0.3.5 手机端语音播放引擎；V0.3.8 播放路径改造（真机验收 C2）。
+ * 手机端朗读播放引擎。
  *
- * - 全应用共享一个默认采样率（设备输出采样率）AudioContext，减少逐条
- *   创建和关闭的开销。服务端 24kHz s16le PCM 在 JS 侧线性重采样到
- *   context.sampleRate 后播放；具体设备的稳定性由真机验收确认。
- * - 播放启动前检查 context.state：suspended 则 await resume()；自动收到
- *   的音频不保证处于用户手势链路。resume 被拒绝或仍未 running
- *   时经 onFailed 如实上报，不伪造播放中状态。
- * - 整体结束由服务端 voice.mobile_tts_end 事件驱动（markEnded），废弃
- *   onended 时间线启发式——网络间隔再长都不会中途误判结束；end 迟迟
- *   不到时按保护性超时如实上报播放异常。
+ * - 全应用共享一个设备输出采样率的 AudioContext。服务端下发 24kHz s16le PCM，
+ *   每个分片建成 24kHz 的 AudioBuffer，由 AudioBufferSourceNode 重采样到设备采样率。
+ * - 排程前检查 context.state：suspended 则 await resume()，自动收到的音频不一定处在
+ *   用户手势链路里；resume 被拒或仍未 running 时经 onFailed 上报。
+ * - 整体结束由服务端 voice.mobile_tts_end 驱动（markEnded），分片间隔再长也不会提前收尾；
+ *   结束信号迟迟不到时按保护性超时上报失败。
  */
 
 import { useEffect, useRef } from "react";
-import { TTS_MAX_BUFFERED_PCM_BYTES, useMobileStore } from "./mobileStore";
-
-const TTS_SAMPLE_RATE = 24000;
+import { TTS_MAX_BUFFERED_PCM_BYTES, TTS_SAMPLE_RATE, useMobileStore } from "./mobileStore";
 
 /** 排程提前量：时间线上最多提前约 1s 排入音频，限制 AudioBuffer 驻留。 */
 export const SCHEDULE_LEAD_SECONDS = 1;
 
-/** V0.3.8：结束信号保护性上限，远超正常回复时长；超时如实报异常。 */
+/** 结束信号的保护性上限，远超正常回复时长。 */
 export const END_SIGNAL_TIMEOUT_MS = 5 * 60 * 1000;
 
 let sharedAudioContext: AudioContext | null = null;
 
-/** 测试专用：复位共享 AudioContext 单例，隔离用例间的模块级状态。 */
+/** 复位共享 AudioContext 单例，供测试隔离用例间的模块级状态。 */
 export function resetSharedAudioContextForTests(): void {
   sharedAudioContext = null;
 }
 
 function getSharedAudioContext(): AudioContext {
-  if (!sharedAudioContext) {
-    // 默认采样率（即设备输出采样率），不强设 sampleRate（见文件头说明）。
-    sharedAudioContext = new AudioContext();
-  }
+  // 使用设备输出采样率，PCM 的重采样交给 AudioBufferSourceNode。
+  sharedAudioContext ??= new AudioContext();
   return sharedAudioContext;
 }
 
 /**
- * 确保共享 context 处于 running：suspended 则 await resume()。resume 被
- * 拒绝或之后仍未 running 都原样抛出，由调用方如实上报。
+ * 确保共享 context 处于 running：suspended 则 await resume()。resume 被拒绝
+ * 或之后仍未 running 时抛出，由调用方经 onFailed 上报。
  */
 async function ensureRunningAudioContext(): Promise<AudioContext> {
   const ctx = getSharedAudioContext();
@@ -55,14 +48,9 @@ async function ensureRunningAudioContext(): Promise<AudioContext> {
   return ctx;
 }
 
+/** base64 编码的 s16le PCM 解码为采样数组。 */
 function base64ToInt16Array(base64: string): Int16Array {
-  let binary = "";
-  if (typeof atob === "function") {
-    binary = atob(base64);
-  } else {
-    // 兜底：Node 测试环境
-    binary = Buffer.from(base64, "base64").toString("binary");
-  }
+  const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {
     bytes[i] = binary.charCodeAt(i);
@@ -70,41 +58,12 @@ function base64ToInt16Array(base64: string): Int16Array {
   return new Int16Array(bytes.buffer);
 }
 
-/**
- * 线性插值重采样（V0.3.8）：服务端 24kHz PCM → context.sampleRate。
- * 输出长度按比例 floor 缩放，采样点在源波形上线性内插，保持波形。
- */
-export function resampleLinear(
-  input: Float32Array,
-  sourceRate: number,
-  targetRate: number,
-): Float32Array {
-  if (sourceRate === targetRate || input.length === 0) return input;
-  const ratio = sourceRate / targetRate;
-  // 长度用整数运算：input.length * targetRate 对音频分片远小于 2^53，
-  // 避免「数学上整除但浮点除法落在整数下方」的差一样本误差。
-  const outLength = Math.floor((input.length * targetRate) / sourceRate);
-  const output = new Float32Array(outLength);
-  for (let i = 0; i < outLength; i++) {
-    const pos = i * ratio;
-    const idx = Math.floor(pos);
-    const frac = pos - idx;
-    const left = input[idx];
-    const right = idx + 1 < input.length ? input[idx + 1] : left;
-    output[i] = left + (right - left) * frac;
-  }
-  return output;
-}
-
 export interface VoicePlaybackEngineOptions {
-  /** end 信号后最后一个分片真实播完，整体收尾时回调。 */
+  /** 结束信号到达后最后一个分片播完时回调。 */
   onFinished(): void;
-  /**
-   * 播放异常（resume 失败/结束信号超时/解码失败/PCM 超限），如实上报给 store。
-   * V0.3.9 §6：errorCode 携带真实失败码（pcm_overflow 等），无则为 null。
-   */
+  /** 播放失败（resume 失败、结束信号超时、解码失败、PCM 超限）；errorCode 如 pcm_overflow，没有时为 null。 */
   onFailed(error: Error, errorCode: string | null): void;
-  /** 测试可缩小；生产与 store 共用同一 PCM 缓冲上限。 */
+  /** 待播 PCM 字节上限，默认与 store 的缓冲上限相同。 */
   maxQueuedPcmBytes?: number;
 }
 
@@ -157,20 +116,14 @@ export function createVoicePlaybackEngine(options: VoicePlaybackEngineOptions): 
   }
 
   function stopActiveSources(): void {
-    for (const source of activeSources) {
-      try {
-        source.stop();
-      } catch {
-        // 已结束音源与失败清理并发时会抛 InvalidStateError。
-      }
-    }
+    // 集合里的音源都已 start()，对已播完的音源调用 stop() 不会抛错。
+    for (const source of activeSources) source.stop();
     activeSources.clear();
   }
 
   function checkFinish(): void {
+    // 只由结束信号驱动收尾：信号未到时队列暂空也继续等待，由保护性超时上报失败。
     if (finished || !ended) return;
-    // 只由 end 信号驱动收尾；end 未到时哪怕队列暂空也不收尾（网络间隔
-    // 再长都不误判），由保护性超时兜底如实报异常。
     if (queue.length > 0 || activeSources.size > 0) return;
     finished = true;
     clearEndTimer();
@@ -178,20 +131,19 @@ export function createVoicePlaybackEngine(options: VoicePlaybackEngineOptions): 
   }
 
   function scheduleChunk(ctx: AudioContext, chunk: QueuedChunk): void {
-    const pcm = new Float32Array(chunk.samples.length);
+    if (chunk.samples.length === 0) return;
+    // 24kHz 的 AudioBuffer 播放时由 AudioBufferSourceNode 重采样到 context 采样率。
+    const buffer = ctx.createBuffer(1, chunk.samples.length, TTS_SAMPLE_RATE);
+    const channel = buffer.getChannelData(0);
     for (let i = 0; i < chunk.samples.length; i++) {
-      pcm[i] = chunk.samples[i] / 32768;
+      channel[i] = chunk.samples[i] / 32768;
     }
-    const samples = resampleLinear(pcm, TTS_SAMPLE_RATE, ctx.sampleRate);
-    if (samples.length === 0) return;
-    const buffer = ctx.createBuffer(1, samples.length, ctx.sampleRate);
-    buffer.getChannelData(0).set(samples);
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
     const when = Math.max(nextStartTime, ctx.currentTime);
     source.start(when);
-    nextStartTime = when + samples.length / ctx.sampleRate;
+    nextStartTime = when + buffer.duration;
     activeSources.add(source);
     source.onended = () => {
       activeSources.delete(source);
@@ -235,8 +187,7 @@ export function createVoicePlaybackEngine(options: VoicePlaybackEngineOptions): 
         return;
       }
       if (queuedPcmBytes + samples.byteLength > maxQueuedPcmBytes) {
-        // V0.3.9 §6：整条播放真实失败（error_code=pcm_overflow），
-        // 清空队列与在途音源，不丢旧片段后继续播放。
+        // 整条播放失败并清空队列与在途音源。
         fail(
           new Error(
             "播放待播队列超过内存上限：" +
@@ -278,22 +229,17 @@ export function createVoicePlaybackEngine(options: VoicePlaybackEngineOptions): 
       clearEndTimer();
       queue.length = 0;
       queuedPcmBytes = 0;
-      // 共享 context 不关闭（全应用单例）；只停本会话已排程的 source。
+      // 共享 context 不关闭，只停本次播放已排程的音源。
       stopActiveSources();
     },
   };
 }
 
-/**
- * 订阅 store 中的 TTS 状态并驱动本地播放。
- */
-export function useVoicePlayback(_conversationId: string): {
+/** 订阅 store 中的朗读状态并驱动本地播放。 */
+export function useVoicePlayback(): {
   playingMessageId: string | null;
-  playbackMessageId: string;
-  playbackState: string;
+  playbackMessageId: string | null;
   playbackError: string | null;
-  /** V0.3.9 §6：真实失败码（pcm_overflow 等）；非失败状态为 null。 */
-  playbackErrorCode: string | null;
 } {
   const playback = useMobileStore((state) => state.voice.playback);
   const ttsChunks = useMobileStore((state) => state.voice.ttsChunks);
@@ -333,8 +279,7 @@ export function useVoicePlayback(_conversationId: string): {
     const chunks = ttsChunks[messageId] || [];
     if (!engineRef.current) {
       if (playback.state === "playing" && chunks.length === 0) {
-        // V0.3.8：end 先于任何分片（空音频）且引擎从未建立时直接复位，
-        // 避免卡在 playing；引擎已建立时由 markEnded 等真实播完再收尾。
+        // 结束信号先于任何分片（空音频）且引擎从未建立：直接复位，避免停在 playing。
         finishVoicePlayback(messageId);
         return;
       }
@@ -364,8 +309,7 @@ export function useVoicePlayback(_conversationId: string): {
       maxSeq = Math.max(maxSeq, chunk.seq);
     }
     if (maxSeq >= 0) {
-      // 分片已解码交给引擎（排程队列/音频图内），store 不再留底，
-      // 长回复不再全量驻留内存。
+      // 分片已交给引擎排程，store 不再保留，长回复不会整段驻留内存。
       releaseTtsChunksUpTo(messageId, maxSeq);
     }
     if (playback.state === "playing") {
@@ -373,8 +317,8 @@ export function useVoicePlayback(_conversationId: string): {
     }
   }, [playback, ttsChunks, finishVoicePlayback, releaseTtsChunksUpTo, failVoicePlayback]);
 
-  // 组件卸载时清理：必须且仅在组件真正 unmount 时触发，绝不能以 playback.messageId
-  // 为依赖，否则每次 messageId 变化都会先用旧 ID 触发 cleanup 导致停止风暴死循环。
+  // 只在组件卸载时清理。依赖里不能有 playback.messageId，否则每次换消息都会先用旧 id
+  // 触发清理，形成停止请求风暴。
   useEffect(() => {
     return () => {
       engineRef.current?.stop();
@@ -382,19 +326,19 @@ export function useVoicePlayback(_conversationId: string): {
       currentMessageIdRef.current = null;
       const current = latestPlaybackRef.current;
       if (current.messageId && (current.state === "playing" || current.state === "buffering")) {
-        stopVoicePlayback(current.messageId).catch(() => {
-          // 卸载时忽略错误，避免未捕获异常
+        const messageId = current.messageId;
+        // 停止失败已写入 store 的 playback 状态，这里补一条日志。
+        stopVoicePlayback(messageId).catch((error: unknown) => {
+          console.error("离开聊天页时停止朗读失败", messageId, error);
         });
       }
     };
   }, [stopVoicePlayback]);
 
   return {
-    // 失败不是播放中：朗读中标记必须退出，错误经 playbackError 呈现。
+    // 失败不算播放中：朗读中标记退出，错误经 playbackError 展示。
     playingMessageId: playback.state === "failed" ? null : playback.messageId,
-    playbackMessageId: playback.messageId ?? "",
-    playbackState: playback.state,
+    playbackMessageId: playback.messageId,
     playbackError: playback.state === "failed" ? playback.error : null,
-    playbackErrorCode: playback.state === "failed" ? (playback.errorCode ?? null) : null,
   };
 }

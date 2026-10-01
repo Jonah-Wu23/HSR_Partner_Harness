@@ -15,17 +15,16 @@ export interface ChatComposerProps {
   disabled?: boolean;
   /** 前置禁用原因（如对话模式下助手不可用），展示在输入区上方。 */
   disabledHint?: string | null;
-  /** V0.3.9 V08：输入框聚焦回调（页级把最新消息贴到底部，配合软键盘）。 */
+  /** 输入框聚焦回调（页面可借此把最新消息贴到底部，配合软键盘）。 */
   onInputFocus?: () => void;
 }
 
-/** V0.3.9 V08：输入框自增高上限（超过后内部滚动）。 */
+/** 输入框自增高上限，超过后内部滚动。 */
 export const COMPOSER_MAX_TEXTAREA_HEIGHT_PX = 160;
 
 /**
- * V0.3.9 V08：输入框高度计算（纯函数，便于离线测试）。
- * - 内容高度为 0（未布局，如 jsdom）时返回 null，调用方跳过设置，避免把高度写成 0；
- * - 未超过上限时返回内容高度，超过后封顶并由 CSS overflow-y 承担内部滚动。
+ * 输入框高度：内容高度为 0（尚未布局）时返回 null，调用方跳过设置；
+ * 未超过上限时返回内容高度，超过后封顶，由 CSS overflow-y 内部滚动。
  */
 export function computeTextareaHeight(
   scrollHeight: number,
@@ -54,10 +53,10 @@ const TARGET_META: Record<
 };
 
 /**
- * V0.3.4 手机端聊天输入区（替代 V0.3.3 仅委派的 DelegationComposer）：
- * - target=character：普通角色消息（任何模式可用，V0.3.4 缺陷 3）
- * - target=assistant：委派任务（仅协作模式可用，由调用方前置禁用并说明）
- * 触控目标 ≥44px；提交失败如实呈现真实错误，不合成成功。
+ * 手机端聊天输入区：
+ * - target=character：普通角色消息，任何模式可用；
+ * - target=assistant：委派任务，只在协作模式可用，由调用方禁用并说明原因。
+ * 提交失败时展示错误原文并保留输入。
  */
 export function ChatComposer({
   target,
@@ -72,8 +71,7 @@ export function ChatComposer({
   const [error, setError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // V0.3.9 V08：长文本自增高——先复位 auto 再按内容高度设置，超过上限交给
-  // CSS 内部滚动。清空输入时复位，避免残留高度。
+  // 长文本自增高：先复位 auto 再按内容高度设置，超过上限交给 CSS 内部滚动；清空输入时复位。
   useEffect(() => {
     const node = textareaRef.current;
     if (!node) return;
@@ -101,9 +99,7 @@ export function ChatComposer({
       await onSubmit(trimmed);
       setText("");
     } catch (err) {
-      // Let It Fail: 如实展示真实错误信息
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSubmitting(false);
     }

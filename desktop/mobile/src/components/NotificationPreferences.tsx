@@ -8,19 +8,10 @@ import { syncNativeKeepaliveConfig } from "../lib/wsClient";
 import "./NotificationPreferences.css";
 
 /**
- * V0.3.7 通知偏好设置（V8 前置组件）。
- *
- * 三类通知对应冻结 §2.3 的事件源（壳内本地判定，不新增 Sidecar 协议）：
- * - 任务完成 = message.finalized / turn.status_changed；
- * - 委派结果 = message.finalized（委派 target）；
- * - 审批请求 = approval.requested。
- *
- * 能力探测先行（冻结 §9.1/§9.2）：
- * - PWA：如实说明「本地通知仅在 Android 壳内可用」，不渲染任何开关；
- * - 壳内插件不可用：如实说明，同样不渲染开关；
- * - 壳内插件可用：可编辑偏好。偏好先以 localStorage 持久化（键 phm.notificationPreferences.v1），
- *   接线阶段由壳层把「启用 + 提醒方式」映射为 Android 通知渠道，并经 onPreferencesChange
- *   通知壳内通知规则引擎，本组件不再扩展其他协议。
+ * 通知偏好设置。三类通知（任务完成、委派结果、审批请求）由壳内通知引擎按事件判定。
+ * 先探测通知能力：PWA 与插件不可用的壳只说明原因，不渲染开关；插件可用时可编辑偏好。
+ * 偏好存于 localStorage（键 phm.notificationPreferences.v1），并同步给 Android 原生常驻连接；
+ * 通知引擎发送前读取它，按「启用 + 提醒方式」选择通知渠道。
  */
 
 export type NotificationImportance = "high" | "default" | "silent";
@@ -83,18 +74,10 @@ const IMPORTANCE_OPTIONS: ReadonlyArray<{
 
 const STORAGE_KEY = "phm.notificationPreferences.v1";
 /**
- * 申请权限的 await 超时上限：插件上游「已授权空分支」缺陷下 invoke 永不
- * resolve（真机实证），超时后以重查系统真实状态为最终判据，不伪造结果。
+ * 申请权限的等待上限。tauri-plugin-notification 2.4.0 在 Android 13+ 已授权时
+ * requestPermissions 不返回，超时后以重新查询的系统授权状态为准。
  */
 const REQUEST_PERMISSION_TIMEOUT_MS = 8000;
-
-function readStorage(): Storage | null {
-  try {
-    return typeof window === "undefined" ? null : window.localStorage;
-  } catch {
-    return null;
-  }
-}
 
 function normalizeItem(value: unknown): NotificationPreferenceItem | null {
   if (!value || typeof value !== "object") return null;
@@ -111,7 +94,7 @@ function normalizeItem(value: unknown): NotificationPreferenceItem | null {
 }
 
 export function loadNotificationPreferences(): NotificationPreferencesState {
-  const raw = readStorage()?.getItem(STORAGE_KEY) ?? null;
+  const raw = window.localStorage.getItem(STORAGE_KEY);
   if (raw === null) {
     return { ...DEFAULT_NOTIFICATION_PREFERENCES };
   }
@@ -141,9 +124,7 @@ export function loadNotificationPreferences(): NotificationPreferencesState {
 export function saveNotificationPreferences(
   preferences: NotificationPreferencesState,
 ): void {
-  const store = readStorage();
-  if (!store) return;
-  store.setItem(STORAGE_KEY, JSON.stringify(preferences));
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
   syncNativeKeepaliveConfig();
 }
 
@@ -153,9 +134,9 @@ type ProbePhase =
   | { stage: "ready"; permissionGranted: boolean };
 
 export interface NotificationPreferencesProps {
-  /** 接线阶段可注入初始偏好（如由壳层配置下发）；缺省从 localStorage 读取。 */
+  /** 初始偏好；缺省从 localStorage 读取。 */
   initialPreferences?: NotificationPreferencesState;
-  /** 偏好实际变更时回调（接线阶段接入壳内通知规则引擎）。 */
+  /** 偏好变更时回调。 */
   onPreferencesChange?: (preferences: NotificationPreferencesState) => void;
 }
 
@@ -181,14 +162,12 @@ export function NotificationPreferences({
         setPhase({ stage: "unavailable", reason: capability.reason });
       }
     });
-    // probeNotificationCapability 约定不抛错；一旦违反约定，按不可用处理并保留原始错误。
     return () => {
       cancelled = true;
     };
   }, []);
 
-  // 回前台即重探系统权限：用户可能按指引去系统设置手动开启通知后返回，
-  // 若只依赖挂载时探测，UI 会与系统真实授权状态永久脱节。
+  // 用户可能按指引去系统设置开启通知后返回，回前台即重新探测授权状态。
   useEffect(() => {
     const onVisibilityChange = () => {
       if (document.visibilityState !== "visible") return;
@@ -229,10 +208,8 @@ export function NotificationPreferences({
     let requestFailed = false;
     let granted: boolean | null = null;
     try {
-      // 上游缺陷兜底：tauri-plugin-notification 2.4.0 Android 13+ 的
-      // requestPermissions 在「已授权」路径存在空分支不 resolve（真机 02:02
-      // 实证：允许后再次点击按钮永久卡在申请中）。await 竞速超时，超时不伪造
-      // 结果——最终判据是申请完成后的真实重查（checkPermissions 无弹窗幂等）。
+      // 已授权时插件的 requestPermissions 不返回（见 REQUEST_PERMISSION_TIMEOUT_MS），
+      // 与超时竞速；结果以 finally 里重新查询的授权状态为准（checkPermissions 不弹窗）。
       granted = await Promise.race([
         requestNotificationPermission(),
         new Promise<null>((resolve) => {
@@ -247,8 +224,7 @@ export function NotificationPreferences({
       setRequestError(error instanceof Error ? error.message : String(error));
     } finally {
       setRequesting(false);
-      // 申请动作结束（成功/拒绝/超时/异常）统一以系统真实状态刷新 UI；
-      // 超时悬死时 granted=null——重查若已授权则如实显示已获得。
+      // 成功、拒绝、超时或异常之后都按系统授权状态刷新界面；超时时 granted 为 null。
       const capability = await probeNotificationCapability();
       if (capability.kind !== "ready") return;
       setPhase({ stage: "ready", permissionGranted: capability.permission_granted });
@@ -291,10 +267,9 @@ export function NotificationPreferences({
         </div>
       ) : null}
 
-      {/* V0.3.9 V08：平台能力矩阵。只写本版真实具备的能力，不宣称未实现的后台推送
-          与通知点击归属；通知点击的精确跳转列为真机待验。 */}
+      {/* 各平台的通知能力 */}
       <div className="notif-platform" data-testid="notif-platform-limits">
-        <h3 className="notif-note-title">各平台真实能力</h3>
+        <h3 className="notif-note-title">各平台通知能力</h3>
         <ul className="notif-platform-list">
           <li>
             <span className="notif-platform-env">Android 壳</span>
@@ -306,16 +281,14 @@ export function NotificationPreferences({
           <li>
             <span className="notif-platform-env">Android 浏览器 / iOS Safari / iOS PWA</span>
             <span className="hint">
-              没有系统通知能力：本版未接入 Web Push，也没有 Service Worker 推送通道，
-              关闭页面或切到后台后收不到提醒；页面打开时仍能实时看到消息与审批。
+              没有系统通知：未接入 Web Push，关闭页面或切到后台后收不到提醒；
+              页面打开时仍能实时看到消息与审批。
             </span>
           </li>
           <li>
             <span className="notif-platform-env">通知点击</span>
             <span className="hint">
-              本版没有真实的通知点击回调，点击通知不会精确跳到对应会话。当前实现是应用回到
-              前台时切到最近提醒过的会话（近似行为，仅在停留在列表页时生效）。精确跳转
-              列入真机待验。
+              点击通知只会打开应用。应用回到前台时如果停在聊天列表，会打开最近一条提醒所属的聊天。
             </span>
           </li>
         </ul>
@@ -426,7 +399,7 @@ export function NotificationPreferences({
           <p className="hint">
             关闭方式：常驻通知由 Android 系统管理，不能在应用内直接关闭。
             可在通知栏长按该条目，或前往 系统设置 → 应用 → 通知 中关闭；
-            关闭后应用退到后台或锁屏时连接可能中断，断连状态会在应用内如实显示，不会伪装在线。
+            关闭后应用退到后台或锁屏时连接可能中断，回到应用时顶部横幅会显示断连状态。
           </p>
         </div>
       ) : null}

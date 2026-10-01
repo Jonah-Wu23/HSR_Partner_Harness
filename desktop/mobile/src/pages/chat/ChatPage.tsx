@@ -5,7 +5,6 @@ import type {
   ConversationMode,
   Message,
 } from "@shared/contracts/protocol";
-import { ContextStatusStrip } from "../../components/ContextStatusStrip";
 import { ChatStatusHint } from "../../components/ChatStatusHint";
 import { ApprovalCard } from "../../components/cards/ApprovalCard";
 import { BackIcon, MicIcon, StopIcon } from "../../components/cards/icons";
@@ -21,7 +20,6 @@ import { ChatComposer, type ChatComposerTarget } from "./ChatComposer";
 import { MessageBubble } from "./MessageBubble";
 import { QueueItemRow } from "./QueueItemRow";
 import { useChatTimeline, type TimelineItem } from "./useChatTimeline";
-import { useContextStatus } from "./useContextStatus";
 import { usePlaybackErrorCode, usePlaybackInterruption } from "./usePlaybackStatus";
 import "./chat.css";
 
@@ -29,8 +27,8 @@ export interface ChatPageProps {
   conversationId: string;
 }
 
-/** 委派卡状态映射：与桌面 presenters.presentDelegation 同语义
-（活动任务匹配或 processing → running，failed/cancelled 同名，其余 completed）。 */
+/** 委派卡状态，与桌面 presenters.presentDelegation 同语义：
+活动任务匹配或 processing 为 running，failed / cancelled 同名，其余为 completed。 */
 function delegationStatusOf(
   message: Message,
   activeTask: ActiveTask | null,
@@ -44,8 +42,7 @@ function delegationStatusOf(
   return "completed";
 }
 
-/** V0.3.4 缺陷 2：origin=character_delegation 的 user 消息不是用户气泡，
-渲染为「来自 <角色名> 的委派」卡片（与桌面 presenters 判定一致）。 */
+/** origin=character_delegation 的 user 消息渲染为「来自 <角色名> 的委派」卡片，与桌面 presenters 判定一致。 */
 function isDelegationMessage(message: Message): boolean {
   return (
     message.source === "user" &&
@@ -55,15 +52,9 @@ function isDelegationMessage(message: Message): boolean {
 }
 
 /**
- * V0.3.5 手机端聊天页：
- * - 消息时间线与结构化工具卡片混合流（虚拟滚动优化）
- * - 消息来源清晰可区分，思考段默认折叠可展开
- * - 「发给角色」普通消息与「交给助手」委派输入明确区分（V0.3.4）
- * - 会话模式切换控件：委派仅协作模式可用，前置禁用并说明（V0.3.4）
- * - 审批卡可操作：批准/拒绝 + 双端仲裁收敛（V0.3.5）
- * - 手机语音输入：按住说话 / 自动检测 + 转写/TTS 状态反馈（V0.3.5）
- * - 全程仅角色自然语言回复可朗读；助手/工具/思考/系统消息静音
- * - 零 emoji，触控目标 ≥44px
+ * 手机端聊天页：消息与工具卡混合时间线、发给角色与交给助手两种输入、
+ * 会话模式与审批模式切换、审批卡、按住说话与自动检测语音输入。
+ * 只有角色自然语言回复可朗读，助手、工具、思考与系统消息保持静音。
  */
 export function ChatPage({ conversationId }: ChatPageProps) {
   const conversation = useMobileStore(
@@ -91,16 +82,9 @@ export function ChatPage({ conversationId }: ChatPageProps) {
   );
   const syncError = useMobileStore((state) => state.syncError);
   const retrySync = useMobileStore((state) => state.retrySync);
-  const controlLostAt = useMobileStore(
-    (state) => (state as unknown as { controlLostAt?: string | null }).controlLostAt ?? null,
-  );
 
-  const approvals = (allApprovals ?? []).filter(
-    (a) => a.conversation_id === conversationId,
-  );
-  const resolvedApprovals = (allResolved ?? []).filter(
-    (a) => a.conversation_id === conversationId,
-  );
+  const approvals = allApprovals.filter((a) => a.conversation_id === conversationId);
+  const resolvedApprovals = allResolved.filter((a) => a.conversation_id === conversationId);
 
   const [target, setTarget] = useState<ChatComposerTarget>("character");
   const [modeSwitching, setModeSwitching] = useState(false);
@@ -108,23 +92,16 @@ export function ChatPage({ conversationId }: ChatPageProps) {
   const [approvalModeSwitching, setApprovalModeSwitching] = useState(false);
   const [approvalModeError, setApprovalModeError] = useState<string | null>(null);
   const [resolvingApprovalIds, setResolvingApprovalIds] = useState<Set<string>>(new Set());
-  // V0.3.9 V07：审批 resolve 的真实错误与幂等终态必须在页内可见（此前 177-191 行
-  // 静默吞掉非 approval_already_resolved 的错误，违反 Let It Fail）。
+  // 审批提交的错误与已被另一端裁决的通知，按 approval_id 在页内展示。
   const [approvalErrors, setApprovalErrors] = useState<Record<string, string>>({});
   const [approvalNotices, setApprovalNotices] = useState<Record<string, string>>({});
-  // V0.3.9 V02：summary.regenerate 的提交与真实错误。
-  const [regenerating, setRegenerating] = useState(false);
-  const [regenerateError, setRegenerateError] = useState<string | null>(null);
-  // V0.3.9 V08：软键盘占位高度（visualViewport 驱动；null=键盘未占位或引擎不支持）。
+  // 软键盘占位高度（visualViewport 驱动）；键盘未占位或引擎不支持时为 null。
   const [keyboardViewportHeight, setKeyboardViewportHeight] = useState<number | null>(null);
-  // V0.3.9 P1：面板开合是独立于采集模式的本地状态。此前面板可见性由
-  // voice.mode !== "off" 推导，导致「打开面板」必然隐式开始 auto 采集，
-  // 采集报错（mode 复位 off）又会连带关掉面板、吞掉错误提示。
+  // 语音面板开合与采集模式相互独立：打开面板不开始采集，采集失败也不关面板。
   const [voicePanelOpen, setVoicePanelOpen] = useState(false);
 
   const voice = useVoiceCapture(conversationId);
-  const { playingMessageId, playbackMessageId, playbackError } = useVoicePlayback(conversationId);
-  const contextStatus = useContextStatus(conversationId);
+  const { playingMessageId, playbackMessageId, playbackError } = useVoicePlayback();
   const playbackErrorCode = usePlaybackErrorCode();
   const playbackInterruption = usePlaybackInterruption(conversationId);
 
@@ -139,12 +116,10 @@ export function ChatPage({ conversationId }: ChatPageProps) {
     loadConversation();
   }, [loadConversation]);
 
-  // V0.3.9 V08：软键盘处理。visualViewport 是软键盘唯一可靠信号（dvh 只跟随
-  // 浏览器工具栏收起/展开，不跟随键盘）；不支持 visualViewport 的引擎回退到
-  // chat.css 的 100dvh / 100vh 两档。仅当键盘真实占位（布局视口与可视视口差值
-  // 超过 120px）时才把容器压到可视高度，避免浏览器工具栏变化引起的抖动。
+  // 软键盘：visualViewport 是唯一可靠信号（dvh 只跟随浏览器工具栏，不跟随键盘）；
+  // 不支持 visualViewport 的引擎由 chat.css 的 100dvh / 100vh 控制高度。
+  // 布局视口与可视视口相差超过 120px 才视为键盘占位，避免工具栏伸缩引起抖动。
   useEffect(() => {
-    if (typeof window === "undefined") return;
     const viewport = window.visualViewport;
     if (!viewport) return;
     const sync = () => {
@@ -160,7 +135,7 @@ export function ChatPage({ conversationId }: ChatPageProps) {
     };
   }, []);
 
-  const { items } = useChatTimeline(conversationId);
+  const items = useChatTimeline(conversationId);
 
   const mode: ConversationMode = conversation?.last_mode === "collaboration" ? "collaboration" : "chat";
   const modeText = mode === "collaboration" ? "协作模式" : "对话模式";
@@ -173,7 +148,7 @@ export function ChatPage({ conversationId }: ChatPageProps) {
     try {
       await setConversationMode(conversationId, next);
     } catch (err) {
-      // Let It Fail：切换失败如实展示真实错误；last_mode 以服务端事件为准不回滚猜测
+      // last_mode 以服务端事件为准，这里只展示失败原因。
       setModeError(err instanceof Error ? err.message : String(err));
     } finally {
       setModeSwitching(false);
@@ -219,9 +194,7 @@ export function ChatPage({ conversationId }: ChatPageProps) {
     try {
       await resolveApproval(approvalId, decision);
     } catch (err) {
-      // Let It Fail：契约 §6 规定命令错误除幂等终态外均须显示或抛出。
-      // approval_already_resolved 是服务端真实终态，展示服务端原文而非报错；
-      // 其余错误（含 error_code）在页内如实展示，不再静默。
+      // approval_already_resolved 表示另一端已裁决，展示服务端原文作为通知；其余错误连同 code 展示。
       const code = err instanceof RemoteCommandError ? err.code : "";
       const message = err instanceof Error ? err.message : String(err);
       if (code === "approval_already_resolved") {
@@ -241,22 +214,6 @@ export function ChatPage({ conversationId }: ChatPageProps) {
     }
   };
 
-  // V0.3.9 V02：恢复按钮只在 store 提供真实 summary.regenerate 动作时可用；
-  // 真实错误原文照实展示，不合成成功。
-  const handleRegenerate = async (summaryId: string) => {
-    const regenerate = contextStatus.regenerateSummary;
-    if (!regenerate) return;
-    setRegenerating(true);
-    setRegenerateError(null);
-    try {
-      await regenerate(summaryId);
-    } catch (err) {
-      setRegenerateError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRegenerating(false);
-    }
-  };
-
   const characterName = pair?.character?.name || "角色";
   const pairNames = { character: pair?.character?.name, assistant: pair?.assistant?.name };
 
@@ -271,7 +228,7 @@ export function ChatPage({ conversationId }: ChatPageProps) {
       );
     }
     if (item.kind === "queue_item") {
-      // 命令返回 promise，失败由行内如实展示。
+      // 命令失败由排队行内展示。
       return (
         <QueueItemRow
           queueItem={item.queueItem}
@@ -302,16 +259,17 @@ export function ChatPage({ conversationId }: ChatPageProps) {
           message.message_id === playbackMessageId ? playbackError : null
         }
         onStopPlayback={() => {
-          if (playingMessageId) {
-            void stopVoicePlayback(playingMessageId);
-          }
+          if (!playingMessageId) return;
+          // 停止失败已写入 playback.error，由页级播放错误条展示。
+          stopVoicePlayback(playingMessageId).catch((err: unknown) => {
+            console.error("停止朗读失败", playingMessageId, err);
+          });
         }}
       />
     );
   };
 
-  // V0.3.9 V08：键盘占位时把聊天容器压到 visualViewport 高度；无占位时为
-  // undefined，由 chat.css 的 100dvh / 100vh 回退控制。
+  // 键盘占位时把聊天容器压到 visualViewport 高度，其余时候由 chat.css 控制。
   const viewportStyle = keyboardViewportHeight
     ? { height: `${keyboardViewportHeight}px`, maxHeight: `${keyboardViewportHeight}px` }
     : undefined;
@@ -377,29 +335,12 @@ export function ChatPage({ conversationId }: ChatPageProps) {
         </div>
       ) : null}
 
-      {/* V0.3.9 V06：聊天页页内连接 / 重新同步 / 失去控制权轻提示。
-          与顶部全局 ConnectionBanner 分工：showConnection=false 避免连接态重复，
-          重点提供重同步与失去控制权事实提示；无事实时返回 null。 */}
+      {/* 连接状态由顶部 ConnectionBanner 展示，这里只提示正在重新同步。 */}
       <ChatStatusHint
-        connection={connection}
         resyncing={!bootstrapped && connection === "connected" && !syncError && !openError}
-        leaseLostAt={controlLostAt}
-        showConnection={false}
       />
 
-      {/* V0.3.9 V02：压缩 / 记忆非消息状态条。无真实数据时组件自身返回 null，
-          不显示「压缩完成」「记忆 0 条」这类伪造状态。 */}
-      <ContextStatusStrip
-        summary={contextStatus.summary}
-        memories={contextStatus.memories}
-        onRegenerate={contextStatus.regenerateSummary ? handleRegenerate : null}
-        regenerating={regenerating}
-        regenerateError={regenerateError}
-      />
-
-      {/* V0.3.9 V07：页级播放错误条。气泡内提示受 tts_ready 与虚拟化渲染窗口
-          限制（消息已移出窗口就看不到错误），pcm_overflow 等真实错误码与原始
-          错误必须页级可见。 */}
+      {/* 页级播放错误条：消息移出虚拟列表窗口后气泡内的提示不可见，错误码与原文在这里展示。 */}
       {playbackError ? (
         <div className="mobile-playback-error" role="alert" data-testid="playback-error-bar">
           <span className="mobile-playback-error-label">朗读失败</span>
@@ -433,9 +374,7 @@ export function ChatPage({ conversationId }: ChatPageProps) {
         </div>
       ) : null}
 
-      {/* 项目审批模式切换（project.update_settings），三档与桌面一致：
-          请求批准（request_approval）/帮我审核（review）/完全允许运行（full_auto）。
-          切换失败在本区如实展示。 */}
+      {/* 项目审批模式切换（project.update_settings），三档与桌面一致；切换失败在本区展示。 */}
       {(() => {
         const project = projects.find(
           (item) => item.project_id === conversation?.project_id,
@@ -484,7 +423,6 @@ export function ChatPage({ conversationId }: ChatPageProps) {
       Object.keys(approvalErrors).length > 0 ||
       Object.keys(approvalNotices).length > 0 ? (
         <section className="mobile-chat-approvals" aria-label="审批操作">
-          {/* V0.3.9 V07：审批 resolve 的真实错误（含 error_code）页内可见。 */}
           {Object.entries(approvalErrors).map(([approvalId, message]) => (
             <p
               key={`approval-error-${approvalId}`}
@@ -495,7 +433,6 @@ export function ChatPage({ conversationId }: ChatPageProps) {
               审批提交失败：{message}
             </p>
           ))}
-          {/* 幂等终态（approval_already_resolved）：展示服务端真实终态原文，不报错也不吞。 */}
           {Object.entries(approvalNotices).map(([approvalId, message]) => (
             <p
               key={`approval-notice-${approvalId}`}
@@ -524,15 +461,15 @@ export function ChatPage({ conversationId }: ChatPageProps) {
               key={resolved.approval_id}
               approval={{
                 approval_id: resolved.approval_id,
-                operation: resolved.operation ?? null,
-                reason: resolved.reason ?? "",
+                operation: resolved.operation,
+                reason: resolved.request_reason,
               }}
               conversationTitle={conversation?.title}
               status="resolved"
               decision={resolved.decision}
               resolvedBy={resolved.resolved_by}
               actor={resolved.actor}
-              resolvedReason={resolved.resolved_reason}
+              resolutionReason={resolved.resolution_reason}
               errorCode={resolved.error_code}
               resolvedAt={resolved.resolved_at}
             />
@@ -623,7 +560,7 @@ export function ChatPage({ conversationId }: ChatPageProps) {
           </p>
         ) : null}
 
-        {/* V0.3.5 语音输入区 */}
+        {/* 语音输入区 */}
         <div className="mobile-voice-bar" data-testid="voice-bar">
           {!voice.usable ? (
             <div className="mobile-voice-disabled" role="note" data-testid="voice-disabled-reason">
@@ -636,10 +573,6 @@ export function ChatPage({ conversationId }: ChatPageProps) {
             </div>
           ) : voicePanelOpen ? (
             <div className="mobile-voice-panel">
-              {/* V0.3.9 P1：面板内是两个互斥操作，不再有「按住说话 / 自动检测」模式
-                  切换分段控件——那个控件绑的是 onClick 且隐式开始采集，与下方同文案的
-                  大按钮抢同一个短语，用户按到的往往是不能抬起的那一个。 */}
-
               {/* 按住说话：pointerdown 起采，抬起 / 取消即停止并发最终转写 */}
               <button
                 type="button"

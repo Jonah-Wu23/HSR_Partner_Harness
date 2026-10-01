@@ -1,4 +1,4 @@
-/* V0.3.7 通知偏好设置：触控目标 ≥44px，行间留白适配单手浏览。 */
+/* 通知偏好设置：触控目标 ≥44px，行间留白适配单手浏览。 */
 
 .notif-prefs {
   display: flex;
@@ -154,7 +154,7 @@
   margin: 0;
 }
 
-/* V0.3.9 V08：平台真实能力矩阵。只陈述本版实际能力，不含未实现的推送/点击归属。 */
+/* 各平台通知能力说明。 */
 .notif-platform {
   display: flex;
   flex-direction: column;

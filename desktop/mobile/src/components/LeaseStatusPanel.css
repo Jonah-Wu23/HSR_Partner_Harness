@@ -1,4 +1,4 @@
-/* V0.3.9 V06：租约面板。状态色沿用 -status-<state> 约定。 */
+/* 租约面板。状态色沿用 -status-<state> 约定。 */
 
 .lease-panel {
   display: flex;
@@ -60,15 +60,6 @@
   text-align: right;
   word-break: break-all;
   font-variant-numeric: tabular-nums;
-}
-
-.lease-lost {
-  margin: 0;
-  font-size: 13px;
-  padding: 6px 10px;
-  border-radius: 8px;
-  background: oklch(0.24 0.04 85);
-  color: var(--warn);
 }
 
 /* 窄屏（≤360px）：键值对改为上下排列，长 device_key 不挤压标题。 */

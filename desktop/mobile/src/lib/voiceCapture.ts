@@ -30,11 +30,7 @@ export function int16ArrayToBase64(samples: Int16Array): string {
   for (let i = 0; i < len; i += chunkSize) {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
   }
-  if (typeof btoa === "function") {
-    return btoa(binary);
-  }
-  // 兜底：测试环境可能无 btoa
-  return Buffer.from(binary, "binary").toString("base64");
+  return btoa(binary);
 }
 
 const CAPTURE_PROCESSOR_CODE = `
@@ -225,11 +221,9 @@ export function createVoiceCaptureEngine(options: VoiceCaptureEngineOptions): Vo
       if (active) return;
       mediaStream = stream;
       try {
-        if (typeof AudioContext === "undefined") {
-          throw new Error("当前环境不支持 AudioContext");
-        }
         // 上下文直接跑在 16kHz：重采样与抗混叠滤波交给浏览器。
         audioContext = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
+        // AudioWorklet 只在安全上下文提供。
         if (!audioContext.audioWorklet) {
           throw new Error("当前浏览器不支持 AudioWorklet");
         }

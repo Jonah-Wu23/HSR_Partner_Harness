@@ -1,16 +1,12 @@
 import { useState } from "react";
-import type { RemoteControlState } from "@shared/contracts/protocol";
 import type { MobileConnectionState } from "../../lib/wsClient";
 import { useMobileStore } from "../../lib/mobileStore";
 import { LeaseStatusPanel } from "../../components/LeaseStatusPanel";
 import "./ConnectionDetails.css";
 
 /**
- * 会话列表页的「连接详情」抽屉（显式按钮打开，可关闭）。
- *
- * 内容：连接状态与远程控制租约（LeaseStatusPanel）。设备列表与撤销属于桌面端
- * 控制面方法，手机连接无权调用，只在桌面端「设置 → 远程设备」管理。
- * 每个字段无数据时如实显示「尚未取得 / 未知」，不用 0 或默认值顶替。
+ * 会话列表页的「连接详情」抽屉：连接状态与远程控制租约。
+ * 设备列表与撤销只在桌面端「设置 → 远程设备」管理。
  */
 
 const CONNECTION_LABELS: Record<MobileConnectionState, string> = {
@@ -22,18 +18,10 @@ const CONNECTION_LABELS: Record<MobileConnectionState, string> = {
   auth_failed: "配对已失效或设备已被撤销",
 };
 
-interface ConnectionStoreExtensions {
-  remoteControl?: RemoteControlState | null;
-  selfDeviceKey?: string | null;
-  controlLostAt?: string | null;
-}
-
 export function ConnectionDetails() {
   const [open, setOpen] = useState(false);
   const connection = useMobileStore((state) => state.connection);
-  const extensions = useMobileStore(
-    (state) => state as unknown as ConnectionStoreExtensions,
-  );
+  const remoteControl = useMobileStore((state) => state.remoteControl);
 
   return (
     <section className="card connection-details" data-testid="connection-details">
@@ -53,11 +41,7 @@ export function ConnectionDetails() {
           <p className="hint" data-testid="connection-state-line">
             连接状态：{CONNECTION_LABELS[connection]}
           </p>
-          <LeaseStatusPanel
-            lease={extensions.remoteControl ?? null}
-            selfDeviceKey={extensions.selfDeviceKey ?? null}
-            controlLostAt={extensions.controlLostAt ?? null}
-          />
+          <LeaseStatusPanel lease={remoteControl} />
         </div>
       ) : null}
     </section>

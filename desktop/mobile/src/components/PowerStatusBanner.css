@@ -1,4 +1,4 @@
-/* V0.3.7 电源状态条：警示态沿用 ConnectionBanner 的 warn 色语言，弱化态贴 surface。 */
+/* 电源状态条：警示态沿用 ConnectionBanner 的 warn 色，弱化态贴 surface。 */
 
 .power-banner {
   display: flex;
@@ -71,7 +71,7 @@
   opacity: 0.8;
 }
 
-/* V0.3.9 V08：窄屏（≤360px）下详情改为上下排列，「知道了」按钮全宽可点。 */
+/* 窄屏（≤360px）下详情改为上下排列，「知道了」按钮全宽可点。 */
 @media (max-width: 360px) {
   .power-banner {
     padding: 10px 12px;

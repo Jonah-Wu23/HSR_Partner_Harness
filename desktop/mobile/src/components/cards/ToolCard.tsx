@@ -30,9 +30,8 @@ export interface ToolCardProps {
 }
 
 /**
- * V0.3.3 手机端结构化工具事件卡片：
- * 状态色条 + 状态指示 + 可展开折叠的命令与执行结果明细。
- * 手机端保持静音、不提供 TTS 入口。
+ * 手机端工具事件卡片：状态色条、状态指示与可折叠的命令和执行结果明细。
+ * 工具记录保持静音，没有朗读入口。
  */
 export function ToolCard({ run, defaultExpanded = false, expanded: controlledExpanded, onExpandedChange }: ToolCardProps) {
   const [localExpanded, setLocalExpanded] = useState(defaultExpanded);

@@ -15,7 +15,7 @@
   min-width: 180px;
 }
 
-/* V0.3.9 V06：断连可能原因说明（不宣称真实电源状态）。 */
+/* 断连可能原因说明。 */
 .conn-banner-hint {
   flex: 1 1 100%;
   font-size: 12px;
@@ -47,7 +47,7 @@
   opacity: 0.8;
 }
 
-/* V0.3.9 V08：窄屏（≤360px）下文案与按钮各占一行，按钮保持可点高度。 */
+/* 窄屏（≤360px）下文案与按钮各占一行，按钮保持可点高度。 */
 @media (max-width: 360px) {
   .conn-banner {
     padding: 8px 10px;

@@ -2,20 +2,11 @@ import type { PowerStatusPayload } from "@shared/contracts/protocol";
 import "./PowerStatusBanner.css";
 
 /**
- * V0.3.7 手机端电源状态条（V11 接线）。
- *
- * 数据契约：docs/plans/V0.3.7-契约冻结.md §1.5 `power.get_status` result / §2.1
- * `power.status_changed` payload（两者完全同形）。类型取自共享 contracts 的
- * PowerStatusPayload（冻结 §10），由 mobileStore 从事件流原样存入。
- *
- * 呈现规则（全部来自 payload 事实，不本地推导、不伪造状态）：
- * - status 为空（尚未取得数据）→ 不渲染；
- * - supported=false（非 Windows 平台）→ 不渲染（契约如实返回 unsupported，无风险可提示）；
- * - at_risk=true → 醒目警示「电脑可能休眠」，reason 原文展示，附 AC/DC 睡眠超时秒数
- *   （0 秒 = 「从不」，冻结 §8）与不代改设置的指引；
- * - at_risk=false 且 remote_serve_enabled=false → 弱化展示 reason 原文，说明当前为何
- *   不会有休眠提醒；
- * - at_risk=false 且 remote_serve_enabled=true → 不渲染（正常态，提示收敛，对齐 V10 语义）。
+ * 手机端电源状态条，数据来自 power.get_status 与 power.status_changed（两者同形）。
+ * - 尚未取得状态，或 supported=false（非 Windows）时不渲染；
+ * - at_risk=true：警示「电脑可能休眠」，展示 reason 原文与 AC/DC 睡眠超时（0 秒为「从不」）；
+ * - at_risk=false 且未开启远程服务：弱化展示 reason 原文；
+ * - at_risk=false 且已开启远程服务：不渲染。
  */
 
 export type { PowerStatusPayload };
@@ -28,7 +19,7 @@ export interface PowerStatusBannerProps {
 
 function formatSleepSeconds(seconds: number | null): string {
   if (seconds === null) return "未知";
-  // 冻结 §8：0 表示「从不」。
+  // 0 表示从不睡眠。
   if (seconds === 0) return "从不";
   return `${seconds} 秒`;
 }
@@ -71,7 +62,6 @@ export function PowerStatusBanner({ status, onDismiss }: PowerStatusBannerProps)
         </dl>
         <p className="power-banner-hint" data-testid="power-status-hint">
           如需手机持续接收通知，请在电脑的 Windows「设置 → 系统 → 电源」中延长睡眠时间。
-          本应用只做提示，不会修改电脑的电源设置。
         </p>
         {onDismiss ? (
           <button

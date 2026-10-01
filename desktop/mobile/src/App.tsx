@@ -16,14 +16,13 @@ export function App() {
   // 守卫重渲染；直接 render 期读 localStorage 不会在配对成功后刷新。
   const deviceName = useMobileStore((state) => state.deviceName);
   const hasToken = deviceName !== null && getStoredToken() !== null;
-  // V0.3.9 V06 / V0.4.0 D5：鉴权失败细分错误码（过期/撤销等）。
-  const authFailureCode = useMobileStore((state) => state.authFailureCode);
+  const authFailureReason = useMobileStore((state) => state.authFailureReason);
 
   useEffect(() => {
     start();
   }, [start]);
 
-  // L13 本地通知引擎：Android 壳内启动（内部幂等，非壳环境直接空操作）。
+  // 本地通知引擎只在 Android 壳内激活（内部幂等）。
   useEffect(() => startNotificationEngine(), []);
 
   // 路由守卫：未配对一律落到配对页；已配对访问配对页则回列表。
@@ -35,7 +34,7 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <ConnectionBanner connection={connection} authFailureCode={authFailureCode} />
+      <ConnectionBanner connection={connection} authFailureReason={authFailureReason} />
       {route.name === "pair" ? (
         <PairPage />
       ) : route.name === "chat" ? (

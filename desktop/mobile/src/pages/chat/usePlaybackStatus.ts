@@ -15,7 +15,7 @@ export function usePlaybackInterruption(
   });
 }
 
-/** 当前播放失败的真实错误码（如 pcm_overflow）；未失败时为 null。 */
+/** 当前播放失败的错误码（如 pcm_overflow）；未失败时为 null。 */
 export function usePlaybackErrorCode(): string | null {
-  return useMobileStore((state) => state.voice.playback.errorCode ?? null);
+  return useMobileStore((state) => state.voice.playback.errorCode);
 }
