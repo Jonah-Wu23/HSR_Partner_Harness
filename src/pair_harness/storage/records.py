@@ -1,16 +1,5 @@
-"""V0.3.9 存储层记录类型（contract-v1 第 1/2/4/5 节）。
-
-本模块只定义持久化记录的结构与结构性校验，不含任何语义判断：
-
-- 身份字段来自服务端解析，客户端不得自行拼接（第 1 节）；
-- 长期记忆作用域为 account_id + project_id + pair_id + character_ref +
-  assistant_identity，任一分量缺失即拒绝写入（结构性拒绝，不是关键词筛选）；
-- 指标缺失字段保持 None（序列化为 SQL NULL），真实零值使用 0；
-  存储层不做 None -> 0 的兜底转换（第 5 节）。
-
-协议载荷（TurnMetric 等）由接线方从这些记录映射，本模块不依赖
-desktop_backend。
-"""
+# 存储层记录类型：只定义持久化结构与结构性校验。指标缺失字段保持 None
+# （SQL NULL），真实零值使用 0。
 
 from __future__ import annotations
 
@@ -37,8 +26,6 @@ class _Record(BaseModel):
 
 
 class SummaryStatus(str, Enum):
-    """摘要状态（契约第 2 节：idle|running|completed|failed）。"""
-
     IDLE = "idle"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -46,18 +33,8 @@ class SummaryStatus(str, Enum):
 
 
 class MemoryStatus(str, Enum):
-    """长期记忆状态（契约第 2 节：active|deleted）。"""
-
     ACTIVE = "active"
     DELETED = "deleted"
-
-
-class ProjectionKind(str, Enum):
-    """投影条目类型（契约第 2 节：只引用 message_id/summary_id/tool_call_id）。"""
-
-    MESSAGE = "message"
-    SUMMARY = "summary"
-    TOOL_RUN = "tool_run"
 
 
 class TurnKind(str, Enum):
@@ -89,10 +66,10 @@ def _require_text(value: str, field: str) -> str:
 
 
 class ConversationSummary(_Record):
-    """聊天级摘要（契约第 2 节）。
+    """聊天级摘要。
 
     covers_* 描述连续、已最终落库的消息区间；content 是模型产出的结构化
-    摘要原文，代码不改写、不摘要、不截断。失败保留原始错误。
+    摘要原文。失败保留原始错误。
     """
 
     summary_id: str = Field(default_factory=_new_id)
@@ -123,57 +100,8 @@ class ConversationSummary(_Record):
         return value
 
 
-class ProjectionEntry(_Record):
-    """持久化投影条目：只存引用与顺序，不复制原文（契约第 2 节）。
-
-    - position：投影内顺序，0 起，按会话唯一；
-    - covered_by_summary_id：已被摘要覆盖时指向摘要，None 表示仍保留原文；
-    - 三个 *_id 中只有与 kind 对应的那个非空。
-    """
-
-    conversation_id: str
-    entry_id: str = Field(default_factory=_new_id)
-    position: int = Field(ge=0)
-    kind: str
-    message_id: str | None = None
-    summary_id: str | None = None
-    tool_call_id: str | None = None
-    covered_by_summary_id: str | None = None
-    created_at: datetime = Field(default_factory=_utc_now)
-
-    @field_validator("conversation_id")
-    @classmethod
-    def _validate_conversation(cls, value: str) -> str:
-        return _require_text(value, "conversation_id")
-
-    @field_validator("kind")
-    @classmethod
-    def _validate_kind(cls, value: str) -> str:
-        allowed = {item.value for item in ProjectionKind}
-        if value not in allowed:
-            raise ValueError(f"未知投影条目类型：{value}；允许 {sorted(allowed)}")
-        return value
-
-    @field_validator("position")
-    @classmethod
-    def _validate_position(cls, value: int) -> int:
-        if value < 0:
-            raise ValueError("position 必须 >= 0")
-        return value
-
-    def reference_id(self) -> str | None:
-        """返回该条目引用的记录 id（按其 kind）。"""
-        if self.kind == ProjectionKind.MESSAGE.value:
-            return self.message_id
-        if self.kind == ProjectionKind.SUMMARY.value:
-            return self.summary_id
-        if self.kind == ProjectionKind.TOOL_RUN.value:
-            return self.tool_call_id
-        return None
-
-
 class MemoryScope(_Record):
-    """长期记忆作用域（契约第 1 节）。
+    """长期记忆作用域。
 
     五个分量必须全部非空：项目为空的日常聊天不读写长期记忆；
     assistant_identity 是当前权威搭档配置的 pair.assistant.id，
@@ -204,7 +132,7 @@ class MemoryScope(_Record):
 
 
 class PairMemory(_Record):
-    """配对级长期记忆（契约第 1/2 节）。
+    """配对级长期记忆。
 
     content 由模型负责；存储层只校验结构与作用域。status 为 active|deleted，
     删除是真实持久化状态，不做物理删除。
@@ -248,10 +176,10 @@ class PairMemory(_Record):
 
 
 class TurnMetric(_Record):
-    """回合/任务指标行（契约第 5 节）。
+    """回合或任务指标行。
 
-    未观测或供应商不提供的字段保持 None，键始终存在；真实零值使用 0。
-    禁止用字符数估算 token——需要真实 usage 才能写值。
+    未观测或供应商不提供的字段保持 None，真实零值使用 0；token 只记录
+    供应商上报的真实 usage。
     """
 
     metric_id: str = Field(default_factory=_new_id)
@@ -312,7 +240,7 @@ class TurnMetric(_Record):
 
 
 class TurnMetricQuery(_Record):
-    """metrics.query 的存储层过滤条件（契约第 5 节）。
+    """metrics.query 的存储层过滤条件。
 
     limit 默认 50、上限 200；cursor 是不透明游标，由
     SQLiteStore.query_turn_metrics 返回并原样回传。
