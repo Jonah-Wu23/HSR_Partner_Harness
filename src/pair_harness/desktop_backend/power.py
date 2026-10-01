@@ -1,43 +1,25 @@
-"""电源状态读取模块（V0.3.7 `power.get_status` / `power.status_changed` 数据源）。
-
-只做只读探测：调用 `powercfg` 读取当前活动电源方案与 AC/DC 睡眠超时，
-据此做确定性 `at_risk` 判定（见 docs/plans/V0.3.7-契约冻结.md §1.5 / §8）。
-本模块永不修改电源设置（不调用 `powercfg /change` 等写操作）。
-
-失败路径遵循 Let It Fail：真实失败统一抛 `PowerStatusError`，只携带原始
-stderr / 输出摘要 / 异常原文，不猜数值、不降级伪造。
-"""
+# 电源状态只读探测：经 powrprof 读取活动电源方案名称与 AC/DC 睡眠超时，永不修改电源设置。
+# power.get_status 的结果与 power.status_changed 的载荷同形。
 
 from __future__ import annotations
 
 import ctypes
-import locale
-import re
-import subprocess
 import sys
+import uuid
+from ctypes import wintypes
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable
 
-# 冻结阈值：AC/DC 睡眠超时低于 900 秒视为「有风险」（契约 §8）。
+# AC/DC 睡眠超时低于该秒数（0 表示从不睡眠）且远程服务开启时判为有风险。
 SLEEP_RISK_THRESHOLD_SECONDS = 900
 
-# 36 位电源方案 GUID（契约 §8：`([0-9a-fA-F-]{36})`）。
-_SCHEME_GUID_RE = re.compile(r"([0-9a-fA-F-]{36})")
-# 括号内方案名称，全角「（）」与半角「()」都算。
-_SCHEME_NAME_RE = re.compile(r"[（(]\s*([^（()）]*?)\s*[）)]")
-# 契约冻结的 16 位十六进制索引正则（部分系统的 powercfg 输出以 16 位补零展示）。
-_INDEX_16_RE = re.compile(r"0x([0-9a-fA-F]{16})")
-# 本机真实 powercfg（中文 Windows）输出以 8 位十六进制展示（如 0x00000708），
-# 16 位正则匹配不到；用 1-16 位宽松形态按出现次序收集，见 `_parse_ac_dc`。
-_INDEX_ANY_RE = re.compile(r"0x([0-9a-fA-F]{1,16})")
+# 睡眠子组 SUB_SLEEP 下的「在此时间后睡眠」设置 STANDBYIDLE。
+_SUB_SLEEP = uuid.UUID("238c9fa8-0aad-41ed-83f4-97be242c8f20")
+_STANDBY_IDLE = uuid.UUID("29f6c1db-86da-48c5-9fdb-f2b67b1f44da")
 
 
 class PowerStatusError(RuntimeError):
-    """powercfg 读取或解析失败（命令层转 `power_status_unavailable`）。
-
-    只携带原始 stderr / 输出摘要 / 异常原文，不猜数值、不降级伪造。
-    """
+    """powrprof 读取失败；消息携带调用名、Win32 错误码与系统错误文本。"""
 
 
 @dataclass(frozen=True)
@@ -51,120 +33,85 @@ class PowerStatus:
     threshold_seconds: int
     at_risk: bool
     reason: str
-    checked_at: str          # ISO8601 本地时间
-    warnings: list[str] = field(default_factory=list)   # 非致命提示（如计划名缺失）
+    checked_at: str  # ISO8601 本地时间
+    warnings: list[str] = field(default_factory=list)
 
 
-def _console_output_encoding() -> str | None:
-    """控制台输出代码页对应的 Python 编码名；非 Windows 或不可得时返回 None。
+class _GUID(ctypes.Structure):
+    _fields_ = [
+        ("Data1", wintypes.DWORD),
+        ("Data2", wintypes.WORD),
+        ("Data3", wintypes.WORD),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
 
-    实测（2026-09-06，中文 Windows）：powercfg 输出重定向到管道时按调用方控制台的
-    输出代码页编码——`chcp 936` 下为 GBK，`chcp 65001` 下为 UTF-8，并非恒为 GBK。
-    解码 powercfg 字节输出时以它为首选，与子进程真实编码一致，不做猜测。
-    """
-    if sys.platform != "win32":
-        return None
+
+def _guid(value: uuid.UUID) -> _GUID:
+    return _GUID.from_buffer_copy(value.bytes_le)
+
+
+def _check(call: str, code: int) -> None:
+    if code != 0:
+        raise PowerStatusError(
+            f"{call} 失败（错误码 {code}）：{ctypes.FormatError(code)}"
+        )
+
+
+def _read_sleep_settings() -> tuple[str, int, int]:
+    """返回活动电源方案的名称与 AC/DC 睡眠超时（秒）。"""
+    powrprof = ctypes.windll.powrprof
+    scheme = ctypes.POINTER(_GUID)()
+    _check(
+        "PowerGetActiveScheme",
+        powrprof.PowerGetActiveScheme(None, ctypes.byref(scheme)),
+    )
     try:
-        cp = ctypes.windll.kernel32.GetConsoleOutputCP()
-    except (OSError, AttributeError):
-        return None
-    if not cp or cp <= 0:
-        return None
-    return "utf-8" if cp == 65001 else f"cp{cp}"
-
-
-def _decode_bytes(data: bytes) -> str:
-    """按真实编码解码 powercfg 字节输出。
-
-    powercfg 输出编码跟随调用方控制台的输出代码页（见 `_console_output_encoding`）：
-    中文 Windows 默认 cp936/GBK，`chcp 65001` 的终端下为 UTF-8，并非恒为 GBK。
-    `PYTHONUTF8=1` 只改 Python 自己的首选编码（`subprocess` text 模式会按 UTF-8 解
-    GBK 静默得到空输出），不影响 powercfg 的输出编码。因此这里捕获字节并按
-    「控制台代码页 → 首选编码 → gbk → utf-8」顺序解码，取到的都是真实输出，
-    不做任何猜测；全部失败则如实抛错。
-    """
-    if not data:
-        return ""
-    preferred = locale.getpreferredencoding(False)
-    candidates: list[str] = []
-    for enc in (_console_output_encoding(), preferred, "gbk", "utf-8"):
-        if enc and enc not in candidates:
-            candidates.append(enc)
-    for enc in candidates:
-        try:
-            return data.decode(enc).replace("\r\n", "\n")
-        except (UnicodeDecodeError, LookupError):
-            continue
-    raise PowerStatusError(
-        f"powercfg 输出无法解码（尝试 {candidates} 均失败）：{data[:120]!r}"
-    )
-
-
-def _summarize(text: str, limit: int = 200) -> str:
-    collapsed = " ".join(text.split())
-    return collapsed[:limit] + ("…" if len(collapsed) > limit else "")
-
-
-def _run_real(args: list[str]) -> subprocess.CompletedProcess:
-    """真实调用 powercfg（只读）。timeout 10s；超时/OSError 由调用方统一转 PowerStatusError。"""
-    completed = subprocess.run(args, timeout=10, capture_output=True)
-    return subprocess.CompletedProcess(
-        args=args,
-        returncode=completed.returncode,
-        stdout=_decode_bytes(completed.stdout) if completed.stdout is not None else "",
-        stderr=_decode_bytes(completed.stderr) if completed.stderr is not None else "",
-    )
-
-
-def _capture(
-    runner: Callable[[list[str]], subprocess.CompletedProcess] | None,
-    args: list[str],
-    what: str,
-) -> str:
-    completed = runner(args) if runner is not None else _run_real(args)
-    if completed.returncode != 0:
-        detail = (getattr(completed, "stderr", None) or "").strip()
-        if not detail:
-            detail = f"stdout：{_summarize(getattr(completed, 'stdout', None) or '')}"
-        raise PowerStatusError(f"{what} 退出码 {completed.returncode}：{detail}")
-    stdout = getattr(completed, "stdout", None)
-    if not isinstance(stdout, str):
-        raise PowerStatusError(f"{what} 输出不是文本，无法解析")
-    return stdout
-
-
-def _parse_plan_name(scheme_out: str, warnings: list[str]) -> str:
-    if not _SCHEME_GUID_RE.search(scheme_out):
-        raise PowerStatusError(
-            f"powercfg /getactivescheme 输出中未找到活动电源方案 GUID；"
-            f"输出摘要：{_summarize(scheme_out)}"
+        size = wintypes.DWORD(0)
+        _check(
+            "PowerReadFriendlyName",
+            powrprof.PowerReadFriendlyName(
+                None, scheme, None, None, None, ctypes.byref(size)
+            ),
         )
-    name_match = _SCHEME_NAME_RE.search(scheme_out)
-    if name_match and name_match.group(1).strip():
-        return name_match.group(1).strip()
-    warnings.append("powercfg /getactivescheme 输出未包含可解析的方案名称")
-    return ""
-
-
-def _parse_ac_dc(query_out: str, what: str) -> tuple[int, int]:
-    strict = _INDEX_16_RE.findall(query_out)
-    if len(strict) >= 2:
-        # 契约 §8：按出现次序，第 1 个 = AC、第 2 个 = DC。
-        return int(strict[0], 16), int(strict[1], 16)
-    tokens = _INDEX_ANY_RE.findall(query_out)
-    if len(tokens) < 2:
-        raise PowerStatusError(
-            f"{what} 输出中未找到 AC/DC 睡眠超时索引（需两个 0x 十六进制值）；"
-            f"输出摘要：{_summarize(query_out)}"
+        name = ctypes.create_string_buffer(size.value)
+        _check(
+            "PowerReadFriendlyName",
+            powrprof.PowerReadFriendlyName(
+                None, scheme, None, None, name, ctypes.byref(size)
+            ),
         )
-    # 真实输出为 8 位十六进制，且 min/max/增量在前、AC/DC 索引在后，
-    # 取最后两个即 AC 与 DC（标签本地化不影响：只按出现次序与行内十六进制值，契约 §8）。
-    return int(tokens[-2], 16), int(tokens[-1], 16)
+        sub_sleep = _guid(_SUB_SLEEP)
+        standby_idle = _guid(_STANDBY_IDLE)
+        ac = wintypes.DWORD()
+        dc = wintypes.DWORD()
+        _check(
+            "PowerReadACValueIndex",
+            powrprof.PowerReadACValueIndex(
+                None,
+                scheme,
+                ctypes.byref(sub_sleep),
+                ctypes.byref(standby_idle),
+                ctypes.byref(ac),
+            ),
+        )
+        _check(
+            "PowerReadDCValueIndex",
+            powrprof.PowerReadDCValueIndex(
+                None,
+                scheme,
+                ctypes.byref(sub_sleep),
+                ctypes.byref(standby_idle),
+                ctypes.byref(dc),
+            ),
+        )
+    finally:
+        # PowerGetActiveScheme 用 LocalAlloc 分配 GUID，由调用方释放。
+        ctypes.windll.kernel32.LocalFree(scheme)
+    return ctypes.wstring_at(name), ac.value, dc.value
 
 
 def _build_reason(*, ac: int, dc: int, remote_serve_enabled: bool) -> str:
-    # at_risk 判定本身要求 remote_serve_enabled=True；服务未开启时无论数值一律
-    # 报「远程服务未开启」（优先级高于逐条命中项，见测试 at_risk 矩阵）。
+    # 远程服务未开启时不会有风险，理由一律报「远程服务未开启」。
     if not remote_serve_enabled:
         return "远程服务未开启"
     threshold = SLEEP_RISK_THRESHOLD_SECONDS
@@ -177,22 +124,9 @@ def _build_reason(*, ac: int, dc: int, remote_serve_enabled: bool) -> str:
     return "AC/DC 睡眠超时均不低于阈值"
 
 
-def read_power_status(
-    *,
-    remote_serve_enabled: bool,
-    runner: Callable[[list[str]], subprocess.CompletedProcess] | None = None,
-    now: datetime | None = None,
-) -> PowerStatus:
-    """读取电源状态（只读，永不修改电源设置）。
-
-    - 非 Windows（`sys.platform != "win32"`）：返回 unsupported 形状（§1.5），
-      不调用 powercfg、不抛错。
-    - Windows：真实调用 powercfg 两步（getactivescheme / query SUB_SLEEP STANDBYIDLE），
-      失败统一抛 `PowerStatusError`（命令层转 `power_status_unavailable`）。
-    - `runner` 仅用于测试与将来监视线程复用；`None` = 真实调用。
-    """
-    warnings: list[str] = []
-    checked_at = (now or datetime.now()).astimezone().isoformat(timespec="seconds")
+def read_power_status(*, remote_serve_enabled: bool) -> PowerStatus:
+    """读取电源状态。非 Windows 返回 supported=False 的形状；读取失败抛 PowerStatusError。"""
+    checked_at = datetime.now().astimezone().isoformat(timespec="seconds")
     threshold = SLEEP_RISK_THRESHOLD_SECONDS
 
     if sys.platform != "win32":
@@ -207,25 +141,9 @@ def read_power_status(
             at_risk=False,
             reason="当前平台不支持电源状态检测",
             checked_at=checked_at,
-            warnings=warnings,
         )
 
-    try:
-        scheme_out = _capture(
-            runner, ["powercfg", "/getactivescheme"], "powercfg /getactivescheme"
-        )
-        plan_name = _parse_plan_name(scheme_out, warnings)
-        query_args = ["powercfg", "/query", "SCHEME_CURRENT", "SUB_SLEEP", "STANDBYIDLE"]
-        query_out = _capture(runner, query_args, "powercfg /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE")
-        ac, dc = _parse_ac_dc(query_out, "powercfg /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE")
-    except PowerStatusError:
-        raise
-    except subprocess.TimeoutExpired as exc:
-        raise PowerStatusError(f"powercfg 调用超时（>10s）：{exc}") from exc
-    except OSError as exc:
-        # OSError 含 FileNotFoundError（powercfg 不存在）。
-        raise PowerStatusError(f"调用 powercfg 失败：{exc}") from exc
-
+    plan_name, ac, dc = _read_sleep_settings()
     at_risk = remote_serve_enabled and any(t != 0 and t < threshold for t in (ac, dc))
     return PowerStatus(
         supported=True,
@@ -238,5 +156,4 @@ def read_power_status(
         at_risk=at_risk,
         reason=_build_reason(ac=ac, dc=dc, remote_serve_enabled=remote_serve_enabled),
         checked_at=checked_at,
-        warnings=warnings,
     )

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import logging
 import sys
 import threading
@@ -27,7 +25,8 @@ class JsonlWriter:
 
     整个 Sidecar 只允许创建一个实例，事件发射器与 Router 共用同一把锁。
     BrokenPipeError 视为传输已经关闭：原子标记 closed、通知主循环执行
-    关闭流程，并把真实错误写入 stderr。
+    关闭流程，并把真实错误写入 stderr。``on_broken_pipe`` 在 run_stdin
+    接上 Router 之前为 None。
     """
 
     def __init__(
@@ -61,12 +60,8 @@ class JsonlWriter:
                     file=sys.stderr,
                     flush=True,
                 )
-                callback = self.on_broken_pipe
-                if callback is not None:
-                    try:
-                        callback()
-                    except Exception:  # noqa: BLE001 - 关闭通知失败不能掩盖原始 BrokenPipe
-                        logger.exception("stdout BrokenPipeError 关闭通知回调失败")
+                if self.on_broken_pipe is not None:
+                    self.on_broken_pipe()
 
 
 class SidecarRouter:
@@ -84,16 +79,14 @@ class SidecarRouter:
         *,
         origin: str = "desktop",
         connection_key: str | None = None,
+        device_key: str | None = None,
         device_name: str | None = None,
     ) -> None:
         """提交一条请求，不等待它完成，以便后续请求可以继续进入。
 
-        ``reply_sink``（V0.3.3 WS 服务器模式）把 response 额外写回发起
-        该请求的远程连接；stdout 仍始终收到同一份 response（唯一权威）。
-        stdin 路径不传 reply_sink，行为与之前完全一致。
-        ``origin``（V0.3.5）标记命令来源（desktop/remote），由传输层注入
-        并写进 DesktopCommand，前端参数不可伪造。``device_name``（V0.3.9
-        §5）是同一鉴权决定里的设备名，随命令注入供指标如实呈现。
+        ``reply_sink`` 把 response 额外写回发起该请求的远程连接；stdout 始终
+        收到同一份 response。来源、连接 key、设备身份与设备名由传输层注入
+        DesktopCommand，请求参数里的同名字段不参与。
         """
         task = asyncio.create_task(
             self.handle_line(
@@ -101,11 +94,13 @@ class SidecarRouter:
                 reply_sink,
                 origin=origin,
                 connection_key=connection_key,
+                device_key=device_key,
                 device_name=device_name,
             )
         )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
     async def wait_stopped(self) -> None:
         await self._stop_event.wait()
 
@@ -125,14 +120,14 @@ class SidecarRouter:
         *,
         origin: str = "desktop",
         connection_key: str | None = None,
+        device_key: str | None = None,
         device_name: str | None = None,
     ) -> None:
         def respond(message: dict[str, Any]) -> None:
-            """response 写 stdout（权威）；远程发起方同时收到同一份。
+            """response 写 stdout；远程发起方同时收到同一份。
 
-            V039-S4-001：结果不可序列化时必须回执真实失败原因，不能把请求
-            静默丢弃让调用方等到 backend_timeout。回执本身只含字符串，不会
-            再次触发编码失败；原始异常照常进日志。
+            结果不可序列化时回执真实的编码失败，不让调用方等到 backend_timeout；
+            回执只含字符串，不会再次编码失败。
             """
             try:
                 self.writer.write(message)
@@ -140,48 +135,24 @@ class SidecarRouter:
                 logger.error(
                     "response 不可序列化，改为回执真实失败：%s", exc, exc_info=True
                 )
-                message = response_error(
-                    message.get("id"),
-                    getattr(exc, "code", "encode_error"),
-                    str(exc),
-                )
+                message = response_error(message.get("id"), exc.code, str(exc))
                 self.writer.write(message)
             if reply_sink is not None:
                 reply_sink(message)
 
         try:
             command = parse_request(line)
-        except Exception as exc:  # 协议错误必须留在 stdout 的结构化消息中
-            code = getattr(exc, "code", "invalid_json")
-            request_id: str | None = None
-            try:
-                payload = json.loads(line)
-                candidate = payload.get("id") if isinstance(payload, dict) else None
-                if isinstance(candidate, str) and candidate:
-                    request_id = candidate
-            except (TypeError, ValueError):
-                pass
-            respond(protocol_error(code, str(exc), request_id=request_id))
+        except ProtocolError as exc:
+            respond(protocol_error(exc.code, str(exc), request_id=exc.request_id))
             return
 
-        if origin != "desktop" or connection_key is not None or device_name is not None:
-            # V0.3.5：传输层注入来源与连接 key；payload 里的同名字段一律忽略。
-            # V0.3.9 §5：同一鉴权决定里的设备名一并注入（空串视为未提供）。
-            command = replace(
-                command,
-                origin=origin,
-                connection_key=connection_key,
-                remote_device_name=device_name or None,
-            )
-        if origin == "remote":
-            payload = json.loads(line)
-            auth = payload.get("auth")
-            token = auth.get("token") if isinstance(auth, dict) else None
-            if isinstance(token, str) and token:
-                command = replace(
-                    command,
-                    remote_device_key=hashlib.sha256(token.encode("utf-8")).hexdigest(),
-                )
+        command = replace(
+            command,
+            origin=origin,
+            connection_key=connection_key,
+            remote_device_key=device_key,
+            remote_device_name=device_name or None,
+        )
 
         try:
             result = await self.service.handle_command(command)
@@ -213,19 +184,14 @@ async def run_stdin(
     *,
     writer: JsonlWriter,
     stdin: TextIO,
-    router: SidecarRouter | None = None,
+    router: SidecarRouter,
 ) -> None:
     """运行 Sidecar 主循环。
 
     Windows 控制台 stdin 不是 asyncio 原生异步流，使用线程读取单行，
-    不阻塞事件循环中的模型、审批和语音任务。stdout 写入器由 __main__
-    创建并传入，避免出现第二把写入锁。
-
-    V0.3.3：``--serve`` 模式传入已创建的 ``router``（WS 服务器共享同一
-    Router 与 service）；stdin 路径不传则在此创建，行为与之前一致。
+    不阻塞事件循环中的模型、审批和语音任务。stdout 写入器与 Router 由
+    __main__ 创建并传入，WS 服务器共用同一个 Router。
     """
-    if router is None:
-        router = SidecarRouter(service, writer)
     writer.on_broken_pipe = router.request_stop
     lines: asyncio.Queue[str] = asyncio.Queue()
     loop = asyncio.get_running_loop()
@@ -236,6 +202,7 @@ async def run_stdin(
             try:
                 loop.call_soon_threadsafe(lines.put_nowait, line)
             except RuntimeError:
+                # 主循环已关闭，daemon 线程随进程退出。
                 return
             if not line:
                 return
@@ -261,8 +228,8 @@ async def run_stdin(
             router.dispatch(line)
             line_task = asyncio.create_task(lines.get())
     finally:
-        # M2.2：stdout 断开时先执行 Sidecar 关闭流程（取消业务任务、结清
-        # 审批、关闭运行时），不能无限等待仍在运行的后台任务。
+        # stdout 断开时先执行 Sidecar 关闭流程（取消业务任务、结清审批、
+        # 关闭运行时），不能无限等待仍在运行的后台任务。
         if writer.closed and not service._shutdown:
             await service.shutdown()
         if not stop_task.done():

@@ -8,13 +8,12 @@ DESKTOP_COMMANDS = frozenset(
     {
         "app.bootstrap",
         "app.shutdown",
-        "app.reconnect",
         "project.create",
         "project.select",
         "project.update_settings",
         "project.archive",
         "conversation.create",
-        # V0.3.8 T1（契约 §14.3）：WS 心跳——仅探测传输活性，不承载业务语义。
+        # WS 心跳：探测传输活性，并为已鉴权的控制租约持有者续租。
         "ping",
         "conversation.select",
         "conversation.open",
@@ -46,12 +45,6 @@ DESKTOP_COMMANDS = frozenset(
         "config.get",
         "config.set",
         "config.test_connection",
-        # B-03：codex.* 仅保留为历史兼容入口——oauth_start / api_login 一律以
-        # codex_login_removed 拒绝，oauth_status / logout 只读/清理本地遗留数据。
-        "codex.oauth_start",
-        "codex.oauth_status",
-        "codex.logout",
-        "codex.api_login",
         "card.list",
         "card.get",
         "card.create_draft",
@@ -61,10 +54,7 @@ DESKTOP_COMMANDS = frozenset(
         "card.unarchive",
         "card.delete",
         "card.select_active",
-        # V0.3.7：card.peek_import 为规范名；card.peek_import_json 保留为
-        # deprecated 别名（同一 handler、同一行为，既有前端不破坏）。
         "card.peek_import",
-        "card.peek_import_json",
         "card.import_json",
         "card.export_json",
         "card.import_png",
@@ -87,13 +77,10 @@ DESKTOP_COMMANDS = frozenset(
         "remote.revoke",
         "remote.claim_control",
         "remote.release_control",
-        # V0.3.9 契约 §6/§7：只读控制租约状态（TTL/宽限/持有设备）。
         "remote.control_status",
-        # V0.4.0（D1/D6）：Cloudflare Quick Tunnel 控制面命令
         "remote.tunnel_start",
         "remote.tunnel_stop",
         "remote.tunnel_status",
-        # V0.3.9 契约 §5/§7：摘要、记忆、指标与装配诊断的显式命令。
         "summary.regenerate",
         "summary.get",
         "memory.create",
@@ -115,21 +102,37 @@ class CommandValidationError(ValueError):
 
 
 @dataclass(frozen=True)
+class CommandContext:
+    """传输层注入的调用方身份，handler 只从这里读取，不信任 params 里的同名字段。"""
+
+    origin: str = "desktop"
+    connection_key: str | None = None
+    device_key: str | None = None
+    device_name: str | None = None
+
+
+@dataclass(frozen=True)
 class DesktopCommand:
     request_id: str
     method: str
     params: Mapping[str, Any]
-    # V0.3.5：命令来源由传输层注入（stdin=desktop、WS=remote），不信任
-    # 前端参数；审批仲裁用 resolved_by 如实区分双端应答。默认 desktop。
+    # 以下字段由传输层注入（stdin 为 desktop，WS 为 remote），不取自请求参数。
     origin: str = "desktop"
-    # V0.3.5：WS 连接唯一 key（服务端注入，stdin 路径为 None）。手机语音
-    # 会话绑定它；连接断开时按 key 自动取消未完成转写（契约 §5.3）。
+    # WS 连接唯一 key；手机语音会话与控制租约绑定它，stdin 路径为 None。
     connection_key: str | None = None
-    # 传输层从已鉴权 token 派生的稳定标识，重连不变，不接受 params 注入。
+    # 已鉴权令牌的 SHA-256 摘要，作为设备身份，重连不变。
     remote_device_key: str | None = None
-    # V0.3.9 §5：鉴权决定里的设备名（ws_server 注入），仅用于指标如实
-    # 呈现来源设备；同样不接受 params 注入。
+    # 鉴权时登记的设备名，用于回合指标呈现来源设备。
     remote_device_name: str | None = None
+
+    @property
+    def context(self) -> CommandContext:
+        return CommandContext(
+            origin=self.origin,
+            connection_key=self.connection_key,
+            device_key=self.remote_device_key,
+            device_name=self.remote_device_name,
+        )
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> "DesktopCommand":

@@ -9,32 +9,38 @@ import signal
 import socket
 import sys
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
-if __package__:
-    from .application_service import ServiceError, build_configured_service
-    from .event_fanout import EventFanout
-    from .router import JsonlWriter, SidecarRouter, run_stdin
-    from .ws_server import WSServerMode
-else:
-    # PyInstaller 以脚本入口运行时没有 package 上下文，改用绝对导入。
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from pair_harness.desktop_backend.application_service import (
-        ServiceError,
-        build_configured_service,
-    )
-    from pair_harness.desktop_backend.event_fanout import EventFanout
-    from pair_harness.desktop_backend.router import (
-        JsonlWriter,
-        SidecarRouter,
-        run_stdin,
-    )
-    from pair_harness.desktop_backend.ws_server import WSServerMode
+from dotenv import load_dotenv
+
+from pair_harness.desktop_backend.application_service import (
+    DesktopApplicationService,
+    ServiceError,
+    build_configured_service,
+)
+from pair_harness.desktop_backend.event_fanout import EventFanout
+from pair_harness.desktop_backend.router import JsonlWriter, SidecarRouter, run_stdin
+from pair_harness.desktop_backend.ws_server import RemoteServe, WSServerMode
+
+logger = logging.getLogger(__name__)
+
+# 环境变量开关的取值；其余取值按启动配置错误处理。
+_FLAG_VALUES = {
+    "1": True,
+    "true": True,
+    "yes": True,
+    "on": True,
+    "0": False,
+    "false": False,
+    "no": False,
+    "off": False,
+}
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Pair Harness Python desktop sidecar")
-    # 显式声明的模式互斥且优先；两者都没声明时默认真实接线（V039-S4-002）。
-    # 实际采用的模式与来源随 backend.ready 的 demo / mode_source 如实上报。
+    # 模式与局域网直连由 Sidecar 判定：命令行优先，其次是环境变量（含 .env）。
+    # 实际采用的模式与来源随 backend.ready 的 demo / mode_source 上报。
     parser.add_argument("--demo", action="store_true", help="使用不联网测试适配器")
     parser.add_argument("--real", action="store_true", help="使用真实模型（账号级配置优先于环境变量）")
     parser.add_argument("--pair", default="phainon_ancient_machine")
@@ -44,22 +50,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--serve",
         type=int,
         metavar="PORT",
-        help="同端口开启 WS 服务器模式（手机远程 P0），与 stdin 循环并行",
+        help="在该端口开启手机远程 WS 服务器，与 stdin 循环并行",
     )
     parser.add_argument(
         "--lan",
-        action="store_true",
-        help="允许局域网设备直连（绑定 0.0.0.0），默认仅绑定 127.0.0.1",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="允许局域网设备直连（绑定 0.0.0.0）；未声明时读 PAIR_HARNESS_LAN，默认只绑定 127.0.0.1",
     )
     return parser
 
 
 def _detect_lan_ip() -> str | None:
-    """尽力探测本机在局域网中的源地址（UDP connect 不发包）。
-
-    返回 None 表示探测失败（如实暴露，不伪造可达地址）：调用方不得上报
-    一个只能本机访问的回环地址当作成功。
-    """
+    """探测本机在局域网中的源地址（UDP connect 不发包）；探测不到返回 None。"""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         sock.settimeout(0)
@@ -71,20 +74,34 @@ def _detect_lan_ip() -> str | None:
         sock.close()
 
 
+def _env_file() -> Path:
+    """PAIR_HARNESS_ENV_FILE（桌面端总会设置），未设置时取源码仓库根目录的 .env。"""
+    configured = os.getenv("PAIR_HARNESS_ENV_FILE")
+    if configured:
+        return Path(configured)
+    return Path(__file__).resolve().parents[3] / ".env"
+
+
+def _env_flag(name: str) -> bool | None:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    value = _FLAG_VALUES.get(raw.lower())
+    if value is None:
+        raise ServiceError(
+            f"{name} 取值无效：{raw}（可用 1/0、true/false、yes/no、on/off）",
+            code="invalid_start_flag",
+        )
+    return value
+
 
 def _resolve_startup_mode(args: argparse.Namespace) -> tuple[bool, str]:
     """决定启动接线，返回 ``(demo, 来源)``。
 
-    V039-S4-002：接线只由显式声明决定，不按账号是否配置过供应商做启发式
-    判断（界面配置是否完整由运行期如实报错，不由启动模式兜底）：
-
-    - ``--real``：真实接线，来源 ``explicit_real``；
-    - ``--demo``：脚本化演示适配器，来源 ``explicit_demo``；
-    - 两者都没声明：默认真实接线，来源 ``default_real``——没有 Key 也能
-      启动并进入首次引导，配置缺失由请求如实失败。
-
-    同时声明两个模式是调用方的矛盾输入：如实报启动错误，不挑一个执行。
-    来源随 ``backend.ready`` 如实上报，界面据此标注演示模式。
+    命令行 ``--real`` / ``--demo`` 优先，其次是 PAIR_HARNESS_REAL /
+    PAIR_HARNESS_DEMO 环境变量（含 .env）；都没声明时默认真实接线，来源
+    ``default_real``，没有 Key 也能启动并进入首次引导。同一来源里两条
+    声明指向不同模式时报 ``conflicting_start_mode``。
     """
     if args.real and args.demo:
         raise ServiceError(
@@ -94,7 +111,25 @@ def _resolve_startup_mode(args: argparse.Namespace) -> tuple[bool, str]:
         return True, "explicit_demo"
     if args.real:
         return False, "explicit_real"
+    real = _env_flag("PAIR_HARNESS_REAL")
+    demo = _env_flag("PAIR_HARNESS_DEMO")
+    declared = {flag for flag in (None if real is None else not real, demo) if flag is not None}
+    if len(declared) > 1:
+        raise ServiceError(
+            "PAIR_HARNESS_REAL 与 PAIR_HARNESS_DEMO 指向不同模式",
+            code="conflicting_start_mode",
+        )
+    if declared:
+        demo_mode = declared.pop()
+        return demo_mode, "explicit_demo" if demo_mode else "explicit_real"
     return False, "default_real"
+
+
+def _resolve_lan(args: argparse.Namespace) -> bool:
+    """局域网直连：命令行 --lan / --no-lan 优先，其次 PAIR_HARNESS_LAN，默认关闭。"""
+    if args.lan is not None:
+        return args.lan
+    return bool(_env_flag("PAIR_HARNESS_LAN"))
 
 
 def _install_sigint_stop(router: SidecarRouter) -> Callable[[], None]:
@@ -127,16 +162,72 @@ def _install_sigint_stop(router: SidecarRouter) -> Callable[[], None]:
     return remove_loop_handler
 
 
+async def _start_remote_serve(
+    service: DesktopApplicationService,
+    router: SidecarRouter,
+    fanout: EventFanout,
+    *,
+    port: int,
+    lan: bool,
+) -> WSServerMode | None:
+    """启动手机远程 WS 服务器并登记接入信息。
+
+    端口被占等环境失败时上报非致命的 serve_start_failed 并返回 None，
+    桌面 stdin 路径照常运行。
+    """
+    pwa_env = os.getenv("PAIR_HARNESS_PWA_DIR", "").strip()
+    static_root = Path(pwa_env) if pwa_env else None
+    if static_root is not None and not static_root.is_dir():
+        # 静态目录配置错误时 / 返回 404，并在日志里写明原因。
+        logger.warning(
+            "PAIR_HARNESS_PWA_DIR 指向的目录不存在，PWA 静态伺服禁用: %s",
+            static_root,
+        )
+        static_root = None
+    # 手机语音事件经 fanout 的 remote-only 通道下发。
+    service.attach_event_fanout(fanout)
+    ws_server = WSServerMode(
+        dispatch=router.dispatch,
+        authenticator=service.pairing_service,
+        fanout=fanout,
+        static_root=static_root,
+        port=port,
+        host="0.0.0.0" if lan else "127.0.0.1",
+        on_disconnect=service.handle_remote_disconnect,
+    )
+    try:
+        await ws_server.start()
+    except OSError as exc:
+        logger.error("WS 服务器启动失败，远程功能不可用 port=%s: %s", port, exc)
+        service.emitter.emit(
+            "error.reported",
+            {
+                "code": "serve_start_failed",
+                "message": f"远程服务启动失败（端口 {port}）：{exc}",
+                "severity": "error",
+                "fatal": False,
+                "source": "sidecar",
+            },
+        )
+        return None
+    serve = RemoteServe(
+        port=port, lan=lan, host=_detect_lan_ip() if lan else "127.0.0.1"
+    )
+    logger.info(
+        "WS 服务器模式已启动 port=%s host=%s lan=%s", port, serve.host, lan
+    )
+    # 撤销设备时立即断开该设备仍在线的连接。
+    service.pairing_service.add_revoke_listener(ws_server.close_connections_for_device)
+    service.attach_remote_serve(serve)
+    return ws_server
+
+
 async def _run(args: argparse.Namespace) -> int:
-    for stream in (sys.stdin, sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            reconfigure(encoding="utf-8", errors="replace")
     stream_id = os.getenv("PAIR_HARNESS_STREAM_ID", "local")
     writer = JsonlWriter(sys.stdout)
     service = None
 
-    # V0.3.3 --serve：事件先写 stdout（唯一权威），再扇出到已鉴权远程连接。
+    # --serve 时事件先写 stdout，再扇出到已鉴权的远程连接。
     fanout = EventFanout(writer) if args.serve else None
 
     def sink(message: dict) -> None:
@@ -163,12 +254,11 @@ async def _run(args: argparse.Namespace) -> int:
         )
 
     try:
-        # V039-S4-002：接线只由显式声明决定，未声明即真实接线——没有 Key
-        # 也能启动并进入首次引导，配置缺失由请求如实失败，不退回演示数据。
+        # .env 不覆盖已存在的进程环境变量；模式与局域网开关可以写在其中。
+        load_dotenv(_env_file(), encoding="utf-8-sig")
         demo, mode_source = _resolve_startup_mode(args)
-        logging.getLogger(__name__).info(
-            "启动接线 demo=%s 来源=%s", demo, mode_source
-        )
+        lan = _resolve_lan(args)
+        logger.info("启动接线 demo=%s 来源=%s lan=%s", demo, mode_source, lan)
         service = build_configured_service(
             database=(args.data_dir / "pair_harness.db") if args.data_dir else None,
             project_root=args.project,
@@ -183,140 +273,49 @@ async def _run(args: argparse.Namespace) -> int:
         return 2
     except Exception as exc:  # noqa: BLE001 - 启动失败仍输出可识别事件
         # 未预期异常按崩溃退出，Rust 按退避重连。
-        logging.getLogger(__name__).exception("sidecar startup failed")
+        logger.exception("sidecar startup failed")
         report_startup_error("startup_error", str(exc))
         return 1
 
-    # V039-S4-004：远程服务地址的权威来源，供服务层按需读取（配对码响应等），
-    # 桌面端不必只依赖启动时的一次性 serve.started 事件。
-    # None = --serve 未启动；
-    # {"host": "<lan ip>", "port": N} = 可用接入地址；
-    # {"host": None, "port": N, "reason": "no_lan_address"} = 服务已监听但
-    # 探测不到局域网地址（与事件载荷同形，服务层可直接上报给界面）。
-    service.remote_serve_address: dict[str, Any] | None = None
     service.emitter.emit(
         "backend.ready",
         {"pid": os.getpid(), "demo": demo, "mode_source": mode_source},
     )
     await service.start_voice()
+    # WS 服务器与 stdin 循环共用同一个 Router。
+    router = SidecarRouter(service, writer)
     ws_server: WSServerMode | None = None
-    router: SidecarRouter | None = None
     restore_sigint: Callable[[], None] = lambda: None
     try:
-        if args.serve and fanout is not None:
-            # WS 服务器模式与 stdin 循环共享同一 service 与 Router；
-            # 鉴权由 service.pairing_service 承担（配对码/token/撤销）。
-            router = SidecarRouter(service, writer)
-            pwa_env = os.getenv("PAIR_HARNESS_PWA_DIR", "").strip()
-            static_root = Path(pwa_env) if pwa_env else None
-            if static_root is not None and not static_root.is_dir():
-                # 静态目录配置错误按无静态资源处理（/ 返回 404），如实暴露。
-                logging.getLogger(__name__).warning(
-                    "PAIR_HARNESS_PWA_DIR 指向的目录不存在，PWA 静态伺服禁用: %s",
-                    static_root,
-                )
-                static_root = None
-            # V0.3.5：手机语音事件经 fanout 的 remote-only 通道下发。
-            service.attach_event_fanout(fanout)
-            is_lan = bool(getattr(args, "lan", False))
-            bind_host = "0.0.0.0" if is_lan else "127.0.0.1"
-            mode = "lan" if is_lan else "loopback"
-            ws_server = WSServerMode(
-                dispatch=router.dispatch,
-                authenticator=service.pairing_service,
-                fanout=fanout,
-                static_root=static_root,
-                port=args.serve,
-                host=bind_host,
-                # V0.3.5 契约 §5.3：连接断开自动取消其未完成语音会话。
-                on_disconnect=service.handle_remote_disconnect,
+        if fanout is not None:
+            ws_server = await _start_remote_serve(
+                service, router, fanout, port=args.serve, lan=lan
             )
-            try:
-                await ws_server.start()
-            except OSError as exc:
-                # 端口被占等环境失败：远程能力如实标记不可用，桌面 stdin 路径继续。
-                ws_server = None
-                router = None
-                logging.getLogger(__name__).error(
-                    "WS 服务器启动失败，远程功能不可用 port=%s: %s", args.serve, exc
-                )
-                service.emitter.emit(
-                    "error.reported",
-                    {
-                        "code": "serve_start_failed",
-                        "message": f"远程服务启动失败（端口 {args.serve}）：{exc}",
-                        "severity": "error",
-                        "fatal": False,
-                        "source": "sidecar",
-                    },
-                )
-            else:
-                if is_lan:
-                    lan_host = _detect_lan_ip()
-                    address: dict[str, Any] = {
-                        "host": lan_host,
-                        "port": args.serve,
-                        "mode": "lan",
-                        "tls": False,
-                    }
-                    if lan_host is None:
-                        address["reason"] = "no_lan_address"
-                else:
-                    lan_host = "127.0.0.1"
-                    address = {
-                        "host": "127.0.0.1",
-                        "port": args.serve,
-                        "mode": "loopback",
-                        "tls": False,
-                    }
-                logging.getLogger(__name__).info(
-                    "WS 服务器模式已启动 port=%s host=%s mode=%s",
-                    args.serve,
-                    lan_host,
-                    mode,
-                )
-                service.remote_serve_address = address
-                # 隧道端口只在监听成功后登记：若端口被其他本地服务占用，
-                # 启动失败路径不得留下端口，否则 remote.tunnel_start 会把
-                # 占用该端口的无关服务交给 cloudflared 暴露到公网。
-                service.remote_serve_port = args.serve
-                service.emitter.emit("serve.started", dict(address))
-                # 撤销 token 时立即断开仍持有该 token 的已建立连接（V0.3.4 缺陷 7）。
-                service.pairing_service.add_revoke_listener(
-                    ws_server.close_connections_for_token
-                )
-                # 仅 --serve 成功开启时置远程服务位（power.get_status 的
-                # remote_serve_enabled 数据源）并启动电源监视；监视任务由
-                # service.shutdown 取消。
-                service.remote_serve_enabled = True
-                service.start_power_monitor()
-        if router is None:
-            router = SidecarRouter(service, writer)
         restore_sigint = _install_sigint_stop(router)
         await run_stdin(service, writer=writer, stdin=sys.stdin, router=router)
     finally:
         restore_sigint()
         if ws_server is not None:
             await ws_server.stop()
-        if service is not None and not service._shutdown:
+        if not service._shutdown:
             await service.shutdown()
     return 0
 
 
 def _configure_logging() -> None:
-    # 日志级别可经 PAIR_HARNESS_LOG_LEVEL 调高（INFO/DEBUG）：serve 验收
-    # 需要观察 mobile-tts 等下发链路时不必改代码。默认 WARNING 保持安静。
+    # 默认 WARNING；排查 mobile-tts 等下发链路时可用 PAIR_HARNESS_LOG_LEVEL 调到 INFO/DEBUG。
     logging.basicConfig(
         stream=sys.stderr,
         level=getattr(logging, os.getenv("PAIR_HARNESS_LOG_LEVEL", "WARNING").upper(), logging.WARNING),
     )
-    # R1-004：隧道管理过程日志（下载、哈希校验、子进程启动、主机名解析）
-    # 固定 INFO 级别进 sidecar.stderr.log，故障排查有过程线索。
+    # 隧道的下载、哈希校验、子进程与主机名日志固定写入 sidecar.stderr.log。
     logging.getLogger("pair_harness.desktop_backend.tunnel").setLevel(logging.INFO)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")
     faulthandler.enable(file=sys.stderr, all_threads=True)
     _configure_logging()
     return asyncio.run(_run(args))

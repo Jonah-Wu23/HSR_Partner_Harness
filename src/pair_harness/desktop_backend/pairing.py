@@ -1,21 +1,21 @@
-"""配对码与 token 鉴权纯逻辑模块。
-
-实现 RemoteAuthenticator Protocol，处理配对码生成/验证、token 签发/鉴权/撤销，
-以及设备管理与审计日志。纯逻辑，不碰网络、SQLite 与其他文件。
-"""
+# 手机远程的配对码与设备令牌鉴权：令牌只以 SHA-256 哈希保存与查找，不碰网络和存储。
 
 from __future__ import annotations
 
 import datetime
+import hashlib
 import hmac
+import logging
 import secrets
 import time as _time
-from collections import deque
+from dataclasses import dataclass
 from typing import Callable, TypedDict
 
-from .ws_server import AuthDecision, RemoteAuthenticator, UNAUTHENTICATED_METHODS
+from .ws_server import AuthDecision, UNAUTHENTICATED_METHODS
 
-# 控制面方法列表（D6：仅允许桌面回环 / origin=desktop 访问）
+logger = logging.getLogger(__name__)
+
+# 只允许桌面 stdin 调用的控制面方法；WS 鉴权门对远程连接一律拒绝。
 CONTROL_PLANE_METHODS: frozenset[str] = frozenset(
     {
         "remote.issue_code",
@@ -35,8 +35,6 @@ TOKEN_IDLE_TTL_SECONDS: float = 7 * 86400.0       # 空闲有效期 7 天
 TOKEN_REFRESH_PERSIST_INTERVAL = 300.0
 # 单个配对码允许的错误尝试次数；用尽即作废，需在桌面端重新生成。
 MAX_PAIRING_FAILURES: int = 5
-# 内存审计条目上限，超出后丢弃最早的条目。
-AUDIT_MAX_ENTRIES: int = 200
 
 
 class PairingError(RuntimeError):
@@ -53,8 +51,20 @@ class PairingError(RuntimeError):
         self.code = code
 
 
+def token_key(token: str) -> str:
+    """设备令牌的存储键与设备身份：令牌原文的 SHA-256 十六进制摘要。"""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _expires_at(issued_at: float, last_used_at: float) -> float:
+    return min(
+        issued_at + TOKEN_ABSOLUTE_TTL_SECONDS,
+        last_used_at + TOKEN_IDLE_TTL_SECONDS,
+    )
+
+
 class DeviceInfo(TypedDict):
-    """已签发 token 的设备元数据（不含 token 明文）。"""
+    """已签发令牌的设备元数据。"""
     device_name: str
     issued_at: str
     last_used_at: str
@@ -76,52 +86,19 @@ class _CodeEntry:
         self.failures = failures
 
 
+@dataclass(slots=True)
 class _TokenEntry:
-    """内部 token 条目。"""
-
-    __slots__ = (
-        "token",
-        "device_name",
-        "issued_at",
-        "last_used_at",
-        "expires_at",
-        "revoked",
-    )
-
-    def __init__(
-        self,
-        token: str,
-        device_name: str,
-        issued_at: float,
-        last_used_at: float | None = None,
-        expires_at: float | None = None,
-    ) -> None:
-        self.token = token
-        self.device_name = device_name
-        self.issued_at = issued_at
-        self.last_used_at = issued_at if last_used_at is None else last_used_at
-        if expires_at is None:
-            self.expires_at = min(
-                self.issued_at + TOKEN_ABSOLUTE_TTL_SECONDS,
-                self.last_used_at + TOKEN_IDLE_TTL_SECONDS,
-            )
-        else:
-            self.expires_at = expires_at
-        self.revoked = False
+    device_name: str
+    issued_at: float
+    last_used_at: float
+    expires_at: float
+    revoked: bool = False
 
 
 class PairingService:
-    """配对与鉴权服务。
+    """配对与鉴权服务，作为 WSServerMode 的鉴权门。
 
-    实现 RemoteAuthenticator Protocol，供 WSServerMode 鉴权门调用。
-    纯逻辑：不碰网络、SQLite 与其他文件。
-
-    Parameters
-    ----------
-    ttl_seconds : int
-        配对码有效期（秒），默认 300。
-    clock : Callable[[], float] | None
-        可注入时钟，默认 ``time.time``。测试用假时钟推进时间。
+    ``clock`` 默认 ``time.time``，测试注入假时钟推进时间。
     """
 
     def __init__(
@@ -134,49 +111,18 @@ class PairingService:
         self._clock = clock or _time.time
         # 同一时刻只有一枚有效配对码
         self._code: _CodeEntry | None = None
-        # token 存储（按 token 原文索引）
+        # 按 token_key(令牌) 索引
         self._tokens: dict[str, _TokenEntry] = {}
-        # 已撤销 token 集合（恒定时间比较用原文，但禁止已撤销 token 再次验证）
-        self._revoked_hashes: set[str] = set()
-        # 审计只留内存，有上限，不落库
-        self._audit: deque[dict] = deque(maxlen=AUDIT_MAX_ENTRIES)
-        # 配对状态持久化钩子，由应用服务注入 _persist_pairing_state。配对码、
-        # 令牌与撤销状态变化时当刻触发；令牌空闲刷新按
-        # TOKEN_REFRESH_PERSIST_INTERVAL 节流触发。纯逻辑场景保持 None。
+        # 配对状态持久化钩子，由应用服务注入。配对码、令牌与撤销状态变化时
+        # 当刻触发；令牌空闲刷新按 TOKEN_REFRESH_PERSIST_INTERVAL 节流触发。
         self.state_persist_hook: Callable[[], None] | None = None
         self._refresh_persisted_at: float = 0.0
-        # 撤销监听器：revoke 成功后以 (token, device_name) 回调，
-        # 供 WS 服务器立即断开仍持有该 token 的已建立连接（V0.3.4 缺陷 7）。
+        # 撤销监听器以 (令牌键, 设备名) 回调，WS 服务器据此断开该设备的已建立连接。
         self._revoke_listeners: list[Callable[[str, str], None]] = []
-
-    # ── 审计 ────────────────────────────────────────────────
-
-    def _audit_log(self, event: str, detail: str) -> None:
-        """记录一条内存审计条目。"""
-        now = datetime.datetime.fromtimestamp(
-            self._clock(), tz=datetime.timezone.utc
-        ).isoformat()
-        self._audit.append({
-            "at": now,
-            "event": event,
-            "detail": detail,
-        })
 
     def _persist(self) -> None:
         if self.state_persist_hook is not None:
             self.state_persist_hook()
-
-    def record_audit(self, event: str, detail: str) -> None:
-        """供应用服务或外部模块写入审计日志。"""
-        self._audit_log(event, detail)
-
-    def audit_entries(self) -> list[dict]:
-        """返回所有审计条目。
-
-        条目格式：{"at": iso时间, "event": "connect|auth_failed|command|...", "detail": ...}
-        不含消息正文与密钥。
-        """
-        return list(self._audit)
 
     # ── 配对码 ──────────────────────────────────────────────
 
@@ -189,7 +135,7 @@ class PairingService:
         # secrets.randbelow 保证均匀分布，禁止 random
         code = f"{secrets.randbelow(1_000_000):06d}"
         self._code = _CodeEntry(code, issued_at=now, ttl_seconds=self._ttl_seconds)
-        self._audit_log("pairing_code_issued", f"ttl_seconds={self._ttl_seconds}")
+        logger.info("已生成配对码 ttl_seconds=%s", self._ttl_seconds)
         self._persist()
         return code
 
@@ -220,7 +166,7 @@ class PairingService:
             entry.failures += 1
             if entry.failures >= MAX_PAIRING_FAILURES:
                 self._code = None
-                self._audit_log("pairing_code_exhausted", f"failures={entry.failures}")
+                logger.warning("配对码错误 %d 次，已作废", entry.failures)
                 self._persist()
                 raise PairingError(
                     "配对码错误次数过多，已作废，请在桌面端重新生成",
@@ -233,91 +179,63 @@ class PairingService:
         if not device_name:
             device_name = "unknown"
         token = secrets.token_urlsafe(32)
-        self._tokens[token] = _TokenEntry(
-            token=token,
+        self._tokens[token_key(token)] = _TokenEntry(
             device_name=device_name,
             issued_at=now,
+            last_used_at=now,
+            expires_at=_expires_at(now, now),
         )
-        self._audit_log("connect", f"device={device_name}")
+        logger.info("设备已配对 device=%r", device_name)
         self._persist()
         return token
 
-    # ── token 鉴权（RemoteAuthenticator Protocol） ──────────
+    # ── 令牌鉴权 ────────────────────────────────────────────
 
-    def authorize(
-        self, token: str | None, method: str, *, origin: str = "remote"
-    ) -> AuthDecision:
-        """鉴权单条请求。
+    def authorize(self, token: str | None, method: str) -> AuthDecision:
+        """鉴权一条远程请求。
 
-        token 有效且未撤销且未过期 → allowed=True；
-        控制面方法仅限桌面回环（origin="desktop"），远程调用拒绝 forbidden_scope 并记审计；
-        method 在 ``UNAUTHENTICATED_METHODS`` 白名单内 → 无 token 也放行；
-        其余拒绝路径记审计条目。
+        控制面方法一律拒绝为 forbidden_scope；``UNAUTHENTICATED_METHODS``
+        无令牌也放行；其余方法要求令牌存在、未撤销、未过期。
         """
         now = self._clock()
 
-        # D6: 控制面方法仅限桌面回环
         if method in CONTROL_PLANE_METHODS:
-            if origin != "desktop":
-                self._audit_log("scope_denied", f"method={method} origin={origin}")
-                return AuthDecision(allowed=False, reason="forbidden_scope")
-            return AuthDecision(allowed=True, reason="", device_name="desktop")
+            return AuthDecision(allowed=False, reason="forbidden_scope")
 
-        # 白名单方法：无 token 也放行
+        key = token_key(token) if token is not None else None
+        entry = self._tokens.get(key) if key is not None else None
+
         if method in UNAUTHENTICATED_METHODS:
-            # 如果提供了 token 且有效，仍正常鉴权并记录
-            if token is not None and self._lookup_token(token) is not None:
-                entry = self._tokens[token]
-                if not entry.revoked and now <= entry.expires_at:
-                    self._touch_token_entry(entry, now)
-                    return AuthDecision(
-                        allowed=True,
-                        reason="",
-                        device_name=entry.device_name,
-                    )
-            return AuthDecision(allowed=True, reason="", device_name="")
+            if entry is not None and not entry.revoked and now <= entry.expires_at:
+                self._touch_token_entry(entry, now)
+                return AuthDecision(
+                    allowed=True, device_name=entry.device_name, device_key=key
+                )
+            return AuthDecision(allowed=True)
 
-        # 无 token
-        if token is None:
-            self._audit_log("auth_failed", f"method={method}: missing_token")
-            return AuthDecision(allowed=False, reason="missing_token")
-
-        # 查找 token
-        entry = self._lookup_token(token)
-        if entry is None:
-            self._audit_log("auth_failed", f"method={method}: invalid_token")
-            return AuthDecision(allowed=False, reason="invalid_token")
-
-        # 已撤销
-        if entry.revoked:
-            self._audit_log("auth_failed", f"method={method}: revoked_token")
-            return AuthDecision(allowed=False, reason="revoked_token")
-
-        # 过期（D5）
-        if now > entry.expires_at:
-            self._audit_log("auth_failed", f"method={method}: expired_token")
-            return AuthDecision(allowed=False, reason="expired_token")
-
-        # 有效：刷新空闲计时与过期时间
-        self._touch_token_entry(entry, now)
-        return AuthDecision(
-            allowed=True,
-            reason="",
-            device_name=entry.device_name,
-        )
+        if key is None:
+            reason = "missing_token"
+        elif entry is None:
+            reason = "invalid_token"
+        elif entry.revoked:
+            reason = "revoked_token"
+        elif now > entry.expires_at:
+            reason = "expired_token"
+        else:
+            self._touch_token_entry(entry, now)
+            return AuthDecision(
+                allowed=True, device_name=entry.device_name, device_key=key
+            )
+        return AuthDecision(allowed=False, reason=reason)
 
     def _touch_token_entry(self, entry: _TokenEntry, now: float) -> None:
-        """刷新空闲计时与过期时间，并按节流周期写回状态。
+        """刷新空闲计时与过期时间，并按节流周期落盘。
 
-        空闲延期不落盘时，Sidecar 崩溃会让设备在内存里已延期、库里仍按
-        旧期限到期，重启即误拒仍活跃的设备；逐帧整表落盘代价又过高，
-        取 TOKEN_REFRESH_PERSIST_INTERVAL 节流，崩溃丢失窗口有限。
+        空闲延期需要落盘：只留在内存时，Sidecar 崩溃重启后会按旧期限误拒
+        仍活跃的设备。逐帧落盘代价过高，因此按 TOKEN_REFRESH_PERSIST_INTERVAL 节流。
         """
         entry.last_used_at = now
-        entry.expires_at = min(
-            entry.issued_at + TOKEN_ABSOLUTE_TTL_SECONDS,
-            now + TOKEN_IDLE_TTL_SECONDS,
-        )
+        entry.expires_at = _expires_at(entry.issued_at, now)
         if (
             self.state_persist_hook is not None
             and now - self._refresh_persisted_at >= TOKEN_REFRESH_PERSIST_INTERVAL
@@ -325,46 +243,36 @@ class PairingService:
             self._refresh_persisted_at = now
             self.state_persist_hook()
 
-    def _lookup_token(self, token: str) -> _TokenEntry | None:
-        """恒定时间查找 token（hmac.compare_digest 比较）。"""
-        for stored_token, entry in self._tokens.items():
-            if hmac.compare_digest(stored_token, token):
-                return entry
-        return None
+    # ── 撤销 ────────────────────────────────────────────────
 
-    # ── token 撤销 ──────────────────────────────────────────
+    def revoke_device(self, device_name: str) -> list[str]:
+        """撤销该设备名下全部未撤销的令牌，返回被撤销令牌的键。
 
-    def revoke(self, token: str) -> bool:
-        """撤销指定 token。
-
-        撤销后 ``authorize`` 立即拒绝，并通知所有撤销监听器（如 WS 服务器
-        断开该 token 的已建立连接）。
-        返回是否撤销成功（未知 token 返回 False）。
+        撤销后 ``authorize`` 立即拒绝，并逐个通知撤销监听器。
         """
-        entry = self._lookup_token(token)
-        if entry is None:
-            return False
-        if entry.revoked:
-            return False
-        entry.revoked = True
-        self._revoked_hashes.add(token)
-        self._audit_log("command", f"revoke device={entry.device_name}")
+        revoked = [
+            key
+            for key, entry in self._tokens.items()
+            if entry.device_name == device_name and not entry.revoked
+        ]
+        if not revoked:
+            return revoked
+        for key in revoked:
+            self._tokens[key].revoked = True
+        logger.info("已撤销设备 device=%r tokens=%d", device_name, len(revoked))
         self._persist()
-        for listener in list(self._revoke_listeners):
-            listener(token, entry.device_name)
-        return True
+        for key in revoked:
+            for listener in list(self._revoke_listeners):
+                listener(key, device_name)
+        return revoked
 
     def add_revoke_listener(self, listener: Callable[[str, str], None]) -> None:
-        """注册撤销监听器；revoke 成功后以 (token, device_name) 回调。"""
         self._revoke_listeners.append(listener)
 
     # ── 设备列表 ────────────────────────────────────────────
 
     def list_devices(self) -> list[DeviceInfo]:
-        """返回所有已签发 token 的设备元数据。
-
-        不含 token 明文。
-        """
+        """返回所有已签发令牌的设备元数据，按签发时间排序。"""
         devices: list[DeviceInfo] = []
         for entry in self._tokens.values():
             devices.append(DeviceInfo(
@@ -380,7 +288,6 @@ class PairingService:
                 ).isoformat(),
                 revoked=entry.revoked,
             ))
-        # 按签发时间排序
         devices.sort(key=lambda d: d["issued_at"])
         return devices
 
@@ -389,15 +296,13 @@ class PairingService:
     def export_state(self) -> dict:
         """导出可 JSON 序列化的状态快照（版本 3）。
 
-        包含 token、设备元数据、撤销集合，以及当前配对码和它的累计错误次数。
-        审计只留内存，不进快照。不含任何 API Key。
-
-        往返后 ``authorize`` 与 ``claim`` 行为一致。
+        包含令牌哈希、设备元数据，以及当前配对码和它的累计错误次数；
+        不含令牌原文。往返后 ``authorize`` 与 ``claim`` 行为一致。
         """
         tokens = []
-        for entry in self._tokens.values():
+        for key, entry in self._tokens.items():
             tokens.append({
-                "token": entry.token,
+                "token_sha256": key,
                 "device_name": entry.device_name,
                 "issued_at": entry.issued_at,
                 "last_used_at": entry.last_used_at,
@@ -417,39 +322,28 @@ class PairingService:
             "ttl_seconds": self._ttl_seconds,
             "tokens": tokens,
             "code": code,
-            "revoked_hashes": list(self._revoked_hashes),
         }
 
     def load_state(self, state: dict) -> None:
-        """从状态快照恢复。
+        """从版本 3 或版本 2（v0.4.x 发布格式）快照恢复。
 
-        兼容版本 1 快照：对缺 expires_at 的旧条目按 issued_at + 30 天
-        与 last_used_at + 7 天补算。恢复后 ``authorize`` 行为与导出前一致。
+        版本 2 保存令牌原文，载入时转成哈希；它的配对码不恢复，需要在桌面端重新生成。
         """
-        self._ttl_seconds = state.get("ttl_seconds", self._ttl_seconds)
-        self._tokens.clear()
-        for t in state.get("tokens", []):
-            issued_at = t["issued_at"]
-            last_used_at = t.get("last_used_at", issued_at)
-            if "expires_at" in t:
-                expires_at = t["expires_at"]
-            else:
-                expires_at = min(
-                    issued_at + TOKEN_ABSOLUTE_TTL_SECONDS,
-                    last_used_at + TOKEN_IDLE_TTL_SECONDS,
-                )
-            token = t.get("token") or t.get("token_hash", "")
-            entry = _TokenEntry(
-                token=token,
-                device_name=t.get("device_name", ""),
-                issued_at=issued_at,
-                last_used_at=last_used_at,
-                expires_at=expires_at,
+        version = state["version"]
+        if version not in (2, 3):
+            raise ValueError(f"不支持的配对状态版本：{version}")
+        self._ttl_seconds = state["ttl_seconds"]
+        self._tokens = {
+            (t["token_sha256"] if version == 3 else token_key(t["token"])): _TokenEntry(
+                device_name=t["device_name"],
+                issued_at=t["issued_at"],
+                last_used_at=t["last_used_at"],
+                expires_at=t["expires_at"],
+                revoked=t["revoked"],
             )
-            entry.revoked = t.get("revoked", False)
-            self._tokens[entry.token] = entry
-        # 版本 3 之前的快照没有 code 字段，载入后没有有效配对码，需重新生成。
-        code = state.get("code")
+            for t in state["tokens"]
+        }
+        code = state["code"] if version == 3 else None
         self._code = (
             None
             if code is None
@@ -460,4 +354,3 @@ class PairingService:
                 failures=code["failures"],
             )
         )
-        self._revoked_hashes = set(state.get("revoked_hashes", []))

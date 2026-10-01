@@ -180,10 +180,11 @@ npm run build:sidecar
 npm run tauri:dev
 ```
 
-发布构建会将 Windows 原生 DeepSeek-Reasonix 打包入安装程序。构建环境可全局安装该运行时，也可通过 `PAIR_HARNESS_REASONIX_NATIVE_ROOT` 指定路径。
+发布构建会将 Windows 原生 DeepSeek-Reasonix 打包入安装程序。Reasonix 来源二选一：用 `PAIR_HARNESS_REASONIX_NATIVE_ROOT` 指向包含 `reasonix.exe` 的目录，或把 DeepSeek-Reasonix 源码检出到仓库根的 `DeepSeek-Reasonix/` 并安装 Go，由构建脚本编译。两者都没有时构建报错。
 
 ```powershell
 npm install -g reasonix
+$env:PAIR_HARNESS_REASONIX_NATIVE_ROOT = "$env:APPDATA\npm\node_modules\reasonix\node_modules\@reasonix\cli-win32-x64\bin"
 Set-Location desktop
 npm run tauri:build
 ```

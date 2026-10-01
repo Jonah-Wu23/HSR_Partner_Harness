@@ -166,11 +166,14 @@ npm run build:sidecar
 npm run tauri:dev
 ```
 
-Release builds copy the native Windows DeepSeek-Reasonix runtime into the installer. The build
-machine needs `reasonix` installed, or the `PAIR_HARNESS_REASONIX_NATIVE_ROOT` variable set:
+Release builds copy the native Windows DeepSeek-Reasonix runtime into the installer. Point
+`PAIR_HARNESS_REASONIX_NATIVE_ROOT` at a directory that contains `reasonix.exe`, or check out
+DeepSeek-Reasonix into `DeepSeek-Reasonix/` at the repository root and install Go so the build
+script compiles it. The build fails when neither source is available.
 
 ```powershell
 npm install -g reasonix
+$env:PAIR_HARNESS_REASONIX_NATIVE_ROOT = "$env:APPDATA\npm\node_modules\reasonix\node_modules\@reasonix\cli-win32-x64\bin"
 Set-Location desktop
 npm run tauri:build
 ```

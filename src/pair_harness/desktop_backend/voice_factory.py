@@ -5,14 +5,14 @@ from dataclasses import dataclass
 from typing import Callable, Mapping, Literal
 
 from pair_harness.config.pairs import PairConfig, repository_root
-from pair_harness.core.orchestrator import ConversationOrchestrator
+from pair_harness.core.audio import SpeechQueue
 from pair_harness.core.voice_runtime import VoiceRuntime
 from pair_harness.settings import Settings
 
 
 @dataclass(frozen=True)
 class EffectiveVoiceProfile:
-    """V0.3.2 M6（计划 5.16 节）：当前账号的有效 TTS 音色解析结果。
+    """当前账号的有效 TTS 音色解析结果。
 
     - ``account``：账号已保存自己的 voice.api_key，逐说话方使用
       ``voice.profile.<speaker>.voice_id``；未生成的说话方为 ``None``
@@ -90,25 +90,24 @@ def effective_pair_config(
 def build_real_voice_runtime(
     *,
     settings: Settings,
-    orchestrator: ConversationOrchestrator,
     pair_config: PairConfig,
     conversation_id: str,
     on_vad_state: Callable[[str], None],
     on_asr_partial: Callable[[str], None],
     on_error: Callable[[str], None],
+    on_text_input: Callable[[str, str], Awaitable[None]],
     on_tts_state: Callable[[str], None] = lambda _s: None,
     on_interrupted: Callable[[str, str | None, str], None] = (
         lambda _conversation_id, _message_id, _reason: None
     ),
-    on_text_input: Callable[[str, str], Awaitable[None]] | None = None,
     voices: EffectiveVoiceProfile | None = None,
     account_config: Mapping[str, str] | None = None,
 ) -> VoiceRuntime:
     """创建供桌面 Sidecar 使用的 VoiceRuntime。
 
-    V0.3.2 M6：只要保存了 Key（账号级或开发机 .env）即可构建——ASR
-    不依赖任何音色；TTS 音色按 :func:`resolve_effective_voice_profile`
-    的优先级解析，未生成的说话方保持不可用。
+    只要保存了 Key（账号级或开发机 .env）即可构建，ASR 不依赖任何音色；
+    TTS 音色按 :func:`resolve_effective_voice_profile` 的优先级解析，
+    未生成的说话方保持不可用。
     """
     if not settings.dashscope_api_key or (
         account_config is not None
@@ -123,27 +122,18 @@ def build_real_voice_runtime(
         )
     runtime_pair_config = effective_pair_config(pair_config, voices)
 
+    # 音频适配器在模块级导入 dashscope、onnxruntime、numpy 与 sounddevice，
+    # 属于可选的 voice 依赖组，只在真正构建语音运行时才导入。
     from pair_harness.adapters.audio.qwen_asr import QwenStreamingRecognizer
     from pair_harness.adapters.audio.qwen_tts import QwenSpeechSynthesizer
-    from pair_harness.adapters.audio.silero_vad import (
-        SileroVoiceActivityDetector,
-        VadUnavailableError,
-    )
+    from pair_harness.adapters.audio.silero_vad import SileroVoiceActivityDetector
     from pair_harness.adapters.audio.sounddevice_io import AudioPlayer, MicrophoneCapture
-    from pair_harness.core.audio import SpeechQueue
 
     model_path = repository_root() / "assets" / "models" / "silero_vad_v5.onnx"
-    try:
-        vad = SileroVoiceActivityDetector(model_path)
-    except VadUnavailableError as exc:
-        vad = None
-        on_vad_state("unavailable")
-        on_error(f"VAD 模型未启用：{exc}")
-    else:
-        on_vad_state("ready")
+    vad = SileroVoiceActivityDetector(model_path)
+    on_vad_state("ready")
 
     return VoiceRuntime(
-        orchestrator=orchestrator,
         recognizer=QwenStreamingRecognizer(
             api_key=settings.dashscope_api_key,
             ws_url=settings.resolved_ws_url,
