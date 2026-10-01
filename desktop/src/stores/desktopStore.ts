@@ -133,6 +133,8 @@ export interface DesktopState {
   activeConversationId: string | null;
   /** 本窗口当前标签所属项目，不随 Sidecar 全局导航指针变化。 */
   activeProjectId: string | null;
+  /** 已用缓存切过去、正在等待 conversation.open 权威结果的聊天。 */
+  syncingConversationIds: Record<string, true>;
 
   /** 按聊天存放的摘要记录，由 summary.* 事件驱动。 */
   summariesByConversation: Record<string, ConversationSummary[]>;
@@ -213,6 +215,7 @@ export interface DesktopState {
   openConversationTab(conversationId: string): void;
   /** 只移除本窗口标签，不触发后端关闭或取消；关闭活动标签后选右侧相邻、无右侧选左侧。 */
   closeConversationTab(conversationId: string): void;
+  setConversationSyncing(conversationId: string, syncing: boolean): void;
   setStatus(status: DesktopStatus, error?: string | null): void;
   setTheme(theme: "dark" | "light"): void;
   setComposerTarget(target: "character" | "assistant"): void;
@@ -255,6 +258,7 @@ export type DesktopRenderState = Pick<
   | "openConversationIds"
   | "activeConversationId"
   | "activeProjectId"
+  | "syncingConversationIds"
   | "mainView"
   | "characterLibrary"
   | "characterCreate"
@@ -327,6 +331,7 @@ function createInitialState(): DesktopData {
     openConversationIds: [],
     activeConversationId: null,
     activeProjectId: null,
+    syncingConversationIds: {},
     mainView: "chat",
     characterLibrary: { cards: [], loading: false, error: null, loaded: false },
     characterCreate: { cardId: null, card: null, readOnly: false, loading: false, error: null },
@@ -457,19 +462,101 @@ function mergeIndexedConversationCache<T>(
   return { byId, idsByConversation };
 }
 
+/** 一批事件内的写时复制：索引表和 id 列表在本批第一次写入时复制一份，
+    之后的事件原地写入这份尚未发布的副本，整批只复制一次。 */
+interface BatchDraft {
+  owned: WeakSet<object>;
+}
+
+function createBatchDraft(): BatchDraft {
+  return { owned: new WeakSet() };
+}
+
+function ownRecord<V>(draft: BatchDraft, record: Record<string, V>): Record<string, V> {
+  if (draft.owned.has(record)) return record;
+  const copy = { ...record };
+  draft.owned.add(copy);
+  return copy;
+}
+
+function ownList<V>(draft: BatchDraft, list: V[]): V[] {
+  if (draft.owned.has(list)) return list;
+  const copy = [...list];
+  draft.owned.add(copy);
+  return copy;
+}
+
+/** byId 的每个键都在其会话的 id 列表里，所以 byId 已有的记录只替换对象，新记录才追加 id。 */
 function upsertIndexed<T>(
+  draft: BatchDraft,
   byId: Record<string, T>,
   idsByConversation: Record<string, string[]>,
   conversationId: string,
   id: string,
   item: T,
 ): { byId: Record<string, T>; idsByConversation: Record<string, string[]> } {
-  const ids = idsByConversation[conversationId] ?? [];
+  const isNew = byId[id] === undefined;
+  const nextById = ownRecord(draft, byId);
+  nextById[id] = item;
+  if (!isNew) return { byId: nextById, idsByConversation };
+  const nextIdsByConversation = ownRecord(draft, idsByConversation);
+  const ids = ownList(draft, nextIdsByConversation[conversationId] ?? []);
+  ids.push(id);
+  nextIdsByConversation[conversationId] = ids;
+  return { byId: nextById, idsByConversation: nextIdsByConversation };
+}
+
+/** 装载结果与缓存记录逐字段比较，嵌套对象按 JSON 文本比较；相同则沿用缓存对象。 */
+function sameRecord(current: object, next: object): boolean {
+  const currentFields = current as Record<string, unknown>;
+  const nextFields = next as Record<string, unknown>;
+  const keys = Object.keys(nextFields);
+  if (keys.length !== Object.keys(currentFields).length) return false;
+  return keys.every((key) => {
+    const left = currentFields[key];
+    const right = nextFields[key];
+    if (Object.is(left, right)) return true;
+    return (
+      typeof left === "object" &&
+      left !== null &&
+      typeof right === "object" &&
+      right !== null &&
+      JSON.stringify(left) === JSON.stringify(right)
+    );
+  });
+}
+
+function sameList<V>(left: readonly V[], right: readonly V[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+/** 按会话整体替换一组记录：内容未变的记录沿用缓存对象，本会话不在结果里的旧记录移出索引；
+    什么都没变时返回原来的两张表。 */
+function replaceConversationRecords<T extends object>(
+  byId: Record<string, T>,
+  idsByConversation: Record<string, string[]>,
+  conversationId: string,
+  records: readonly T[],
+  keyOf: (record: T) => string,
+): { byId: Record<string, T>; idsByConversation: Record<string, string[]> } {
+  let nextById = byId;
+  const writable = () => (nextById === byId ? (nextById = { ...byId }) : nextById);
+  const ids = records.map(keyOf);
+  records.forEach((record, index) => {
+    const cached = byId[ids[index]];
+    if (cached === undefined || !sameRecord(cached, record)) writable()[ids[index]] = record;
+  });
+  const previousIds = idsByConversation[conversationId] ?? [];
+  const kept = new Set(ids);
+  for (const id of previousIds) {
+    if (!kept.has(id)) delete writable()[id];
+  }
   return {
-    byId: { ...byId, [id]: item },
-    idsByConversation: ids.includes(id)
-      ? idsByConversation
-      : { ...idsByConversation, [conversationId]: [...ids, id] },
+    byId: nextById,
+    idsByConversation:
+      idsByConversation[conversationId] !== undefined && sameList(previousIds, ids)
+        ? idsByConversation
+        : { ...idsByConversation, [conversationId]: ids },
   };
 }
 
@@ -780,12 +867,12 @@ function applyConnectionStatus(state: DesktopState, event: DesktopStreamEvent): 
   return state;
 }
 
-function replayBufferedEvents(state: DesktopState): DesktopState {
+function replayBufferedEvents(state: DesktopState, draft: BatchDraft): DesktopState {
   const buffered = state.eventBuffer;
   if (buffered.length === 0) return state;
   let current: DesktopState = { ...state, eventBuffer: [] };
   for (const event of buffered) {
-    current = applyEvent(current, event);
+    current = applyEvent(current, event, draft);
   }
   return current;
 }
@@ -795,7 +882,7 @@ function isSequencedEvent(event: DesktopStreamEvent): event is DesktopEvent {
   return event.event !== "connection.status" && event.event !== "error.reported";
 }
 
-function applyEvent(state: DesktopState, event: DesktopStreamEvent): DesktopState {
+function applyEvent(state: DesktopState, event: DesktopStreamEvent, draft: BatchDraft): DesktopState {
   // 连接事件与错误通道在序号过滤前处理：Rust 合成的这两类事件不带序号，
   // 错误在 bootstrap 期间也必须立即显示，否则没有快照时致命启动错误永远不会上屏。
   if (!isSequencedEvent(event)) {
@@ -811,7 +898,7 @@ function applyEvent(state: DesktopState, event: DesktopStreamEvent): DesktopStat
     const hydrated = hydrateSnapshotState(state, event.payload as unknown as DesktopSnapshot);
     if (hydrated === state) return state;
     // 水合会清空 eventBuffer；保留待核对事件，水合后按快照序号重放。
-    return replayBufferedEvents({ ...hydrated, eventBuffer: state.eventBuffer });
+    return replayBufferedEvents({ ...hydrated, eventBuffer: state.eventBuffer }, draft);
   }
   // 新代次 bootstrap 或序号缺口期间暂存业务事件，等快照水合后核对重放。
   if (state.needsBootstrap || state.status === "booting") {
@@ -840,7 +927,7 @@ function applyEvent(state: DesktopState, event: DesktopStreamEvent): DesktopStat
     };
   }
 
-  return applyBusinessEvent(state, event);
+  return applyBusinessEvent(state, event, draft);
 }
 
 /** conversation.open 按会话整体替换的数据（消息、工具、队列）只受这些事件影响。 */
@@ -921,7 +1008,7 @@ function remotePairingWithTunnelEvent(
   return { ...remotePairing, tunnel };
 }
 
-function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopState {
+function applyBusinessEvent(state: DesktopState, event: DesktopEvent, draft: BatchDraft): DesktopState {
   const next: DesktopState = { ...state, lastSequence: event.sequence };
   switch (event.event) {
     case "backend.ready":
@@ -935,6 +1022,7 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
     case "message.created": {
       const message = event.payload.message as Message;
       const indexed = upsertIndexed(
+        draft,
         next.messagesById,
         next.messageIdsByConversation,
         message.conversation_id,
@@ -967,6 +1055,7 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
         };
       }
       const indexed = upsertIndexed(
+        draft,
         next.messagesById,
         next.messageIdsByConversation,
         message.conversation_id!,
@@ -978,32 +1067,40 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
       break;
     }
     case "message.delta": {
+      // 同一批里连续到达的分片写进同一份消息表副本，整批只复制一次。
       const payload = event.payload as unknown as MessageDeltaPayload;
       const message = applyMessageDelta(next.messagesById[payload.message_id], payload, {
         pairId:
           next.conversationsById[payload.conversation_id]?.pair_id ?? next.pair?.pair_id ?? "",
         createdAt: new Date().toISOString(),
       });
-      next.messagesById = { ...next.messagesById, [message.message_id]: message };
-      const ids = next.messageIdsByConversation[payload.conversation_id] ?? [];
-      if (!ids.includes(payload.message_id)) {
-        next.messageIdsByConversation = {
-          ...next.messageIdsByConversation,
-          [payload.conversation_id]: [...ids, payload.message_id],
-        };
-      }
+      const indexed = upsertIndexed(
+        draft,
+        next.messagesById,
+        next.messageIdsByConversation,
+        payload.conversation_id,
+        payload.message_id,
+        message,
+      );
+      next.messagesById = indexed.byId;
+      next.messageIdsByConversation = indexed.idsByConversation;
       break;
     }
     case "message.finalized": {
       const messageId = String(event.payload.message_id ?? "");
       const current = next.messagesById[messageId];
-      if (current) next.messagesById = { ...next.messagesById, [messageId]: { ...current, streaming: false } };
+      if (current) {
+        const messagesById = ownRecord(draft, next.messagesById);
+        messagesById[messageId] = { ...current, streaming: false };
+        next.messagesById = messagesById;
+      }
       break;
     }
     case "tool_run.upserted": {
       const toolRun = event.payload.tool_run as ToolRun;
       const key = toolRunKey(toolRun);
       const indexed = upsertIndexed(
+        draft,
         next.toolRunsById,
         next.toolIdsByConversation,
         toolRun.conversation_id,
@@ -1336,14 +1433,14 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
   return next;
 }
 
-export const desktopStore = createStore<DesktopState>((set, get) => ({
+export const desktopStore = createStore<DesktopState>((set) => ({
   ...createInitialState(),
   hydrate(snapshot) {
     set((state) => {
       const hydrated = hydrateSnapshotState(state, snapshot);
       if (hydrated === state) return state;
       // 直接水合（app.bootstrap 响应）也要重放水合前暂存的同代次事件。
-      return replayBufferedEvents({ ...hydrated, eventBuffer: state.eventBuffer });
+      return replayBufferedEvents({ ...hydrated, eventBuffer: state.eventBuffer }, createBatchDraft());
     });
   },
   hydrateConversationView(result, bufferedEvents = []) {
@@ -1361,26 +1458,29 @@ export const desktopStore = createStore<DesktopState>((set, get) => ({
         : [...knownConversations, conversation];
       const projectsById = { ...state.projectsById, [projectId]: { ...result.project, conversations } };
       // 消息、工具与队列按会话整体替换为本次装载结果，其他会话的缓存不受影响。
-      const messagesById = { ...state.messagesById };
-      for (const item of result.messages) {
-        messagesById[item.message_id] = item;
-      }
-      const messageIdsByConversation = {
-        ...state.messageIdsByConversation,
-        [conversationId]: result.messages.map((item) => item.message_id),
-      };
-      const toolRunsById = { ...state.toolRunsById };
-      const toolKeys: string[] = [];
-      for (const run of result.tool_runs) {
-        const key = toolRunKey(run);
-        toolRunsById[key] = run;
-        toolKeys.push(key);
-      }
-      const toolIdsByConversation = { ...state.toolIdsByConversation, [conversationId]: toolKeys };
-      const queueItemsByConversation = {
-        ...state.queueItemsByConversation,
-        [conversationId]: result.queue_items,
-      };
+      // 内容未变的记录沿用缓存对象，已渲染的行不因切换聊天重渲染。
+      const messages = replaceConversationRecords(
+        state.messagesById,
+        state.messageIdsByConversation,
+        conversationId,
+        result.messages,
+        (item) => item.message_id,
+      );
+      const tools = replaceConversationRecords(
+        state.toolRunsById,
+        state.toolIdsByConversation,
+        conversationId,
+        result.tool_runs,
+        toolRunKey,
+      );
+      const cachedQueue = state.queueItemsByConversation[conversationId];
+      const queueUnchanged =
+        cachedQueue !== undefined &&
+        cachedQueue.length === result.queue_items.length &&
+        cachedQueue.every((item, index) => sameRecord(item, result.queue_items[index]));
+      const queueItemsByConversation = queueUnchanged
+        ? state.queueItemsByConversation
+        : { ...state.queueItemsByConversation, [conversationId]: result.queue_items };
       // 结果只带本会话的活动任务，其余聊天的运行中任务不受影响。
       const activeTasksByConversation = { ...state.activeTasksByConversation };
       if (result.active_task) {
@@ -1395,16 +1495,17 @@ export const desktopStore = createStore<DesktopState>((set, get) => ({
         ...state,
         conversationsById,
         projectsById,
-        messagesById,
-        messageIdsByConversation,
-        toolRunsById,
-        toolIdsByConversation,
+        messagesById: messages.byId,
+        messageIdsByConversation: messages.idsByConversation,
+        toolRunsById: tools.byId,
+        toolIdsByConversation: tools.idsByConversation,
         queueItemsByConversation,
         activeTasksByConversation,
         openConversationIds,
         activeConversationId: conversationId,
         activeProjectId: projectId,
-        pair: result.pair,
+        // 搭档未变时沿用原对象，依赖搭档的消息行不必重渲染。
+        pair: state.pair !== null && sameRecord(state.pair, result.pair) ? state.pair : result.pair,
         pairs: state.pairs.some((item) => item.pair_id === result.pair.pair_id)
           ? state.pairs
           : [...state.pairs, result.pair],
@@ -1438,9 +1539,10 @@ export const desktopStore = createStore<DesktopState>((set, get) => ({
           return true;
         })
         .sort((left, right) => left.sequence - right.sequence);
+      const draft = createBatchDraft();
       return wipedEvents.reduce(
         (current, event) => ({
-          ...applyBusinessEvent(current, event),
+          ...applyBusinessEvent(current, event, draft),
           lastSequence: state.lastSequence,
         }),
         hydrated,
@@ -1480,8 +1582,18 @@ export const desktopStore = createStore<DesktopState>((set, get) => ({
       return { ...next, ...refreshWindowTask(next) };
     });
   },
+  setConversationSyncing(conversationId, syncing) {
+    set((state) => {
+      if (Boolean(state.syncingConversationIds[conversationId]) === syncing) return state;
+      const { [conversationId]: _done, ...rest } = state.syncingConversationIds;
+      return { syncingConversationIds: syncing ? { ...rest, [conversationId]: true } : rest };
+    });
+  },
   applyEvents(events) {
-    set((state) => events.reduce(applyEvent, state));
+    set((state) => {
+      const draft = createBatchDraft();
+      return events.reduce((current, event) => applyEvent(current, event, draft), state);
+    });
   },
   setStatus(status, error = null) {
     set({ status, error });
@@ -1734,6 +1846,7 @@ export const selectDesktopRenderState = (state: DesktopState): DesktopRenderStat
   openConversationIds: state.openConversationIds,
   activeConversationId: state.activeConversationId,
   activeProjectId: state.activeProjectId,
+  syncingConversationIds: state.syncingConversationIds,
   mainView: state.mainView,
   characterLibrary: state.characterLibrary,
   characterCreate: state.characterCreate,

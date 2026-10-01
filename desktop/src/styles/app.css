@@ -495,11 +495,15 @@
   border-right: 1px solid var(--separator);
   min-height: 0;
   overflow: hidden;
-  transition: width var(--dur-drawer) var(--ease-out);
 }
+/* 收起时内容先滑出淡出，动画结束时宽度一次归零；展开时宽度立即到位、内容滑入。
+   动画只改 transform 与 opacity，工作区不逐帧重排。 */
 .chat-column.is-collapsed {
   width: 0;
   border-right-color: transparent;
+  transition:
+    width 0s linear var(--dur-drawer),
+    border-color 0s linear var(--dur-drawer);
 }
 
 .chat-column-inner {
@@ -508,6 +512,14 @@
   width: 224px;
   height: 100%;
   min-height: 0;
+  transition:
+    transform var(--dur-drawer) var(--ease-out),
+    opacity var(--dur-drawer) var(--ease-out);
+}
+.chat-column.is-collapsed .chat-column-inner {
+  transform: translateX(-24px);
+  opacity: 0;
+  pointer-events: none;
 }
 
 .chat-header {
@@ -864,7 +876,8 @@
 .pane-character { flex: 1; }
 .pane-workbench {
   flex: none;
-  width: 45%;
+  /* Workspace 在 .workspace-split 上写入该变量，拖动分隔条时只改变量。 */
+  width: var(--workbench-width);
   min-width: 320px;
   border-left: 1px solid var(--separator);
   background: var(--bg-window);
@@ -950,6 +963,8 @@
   flex: none;
   width: 100%;
   padding-bottom: var(--space-3);
+  /* 行内重排不波及其他行；不含尺寸约束，行高仍由内容决定，测量不受影响。 */
+  contain: layout style;
 }
 .conversation-list-spacer { flex: none; }
 .conversation-list-jump-overlay {
@@ -1340,6 +1355,8 @@
   font-size: var(--text-t2-size);
   line-height: var(--text-t2-line);
   color: var(--text-primary);
+  /* 高度随内容伸缩，超过上限后内部滚动；不支持 field-sizing 时由 Composer 在布局阶段写入高度。 */
+  field-sizing: content;
   max-height: 160px;
 }
 .composer-input::placeholder { color: var(--text-muted); }
@@ -1585,20 +1602,33 @@
 
 /* ---- 工作台开合、能力签、委派卡 ---- */
 
+/* 开合动画只改 transform 与 opacity：打开时宽度一次到位、内容淡入；
+   关闭时内容先淡出，动画结束时宽度一次收起。两栏只重排一次。 */
 .pane-workbench {
-  transition: width var(--dur-drawer) var(--ease-out);
   overflow: hidden;
 }
 .pane-workbench.is-closed {
-  width: 0 !important;
+  width: 0;
   min-width: 0;
   border-left-color: transparent;
   visibility: hidden;
+  transition:
+    width 0s linear var(--dur-drawer),
+    min-width 0s linear var(--dur-drawer),
+    border-color 0s linear var(--dur-drawer),
+    visibility 0s linear var(--dur-drawer);
 }
-/* 内层保持最小宽度，开合动画期间内容只做裁剪不重排 */
+/* 内层保持最小宽度，开合期间内容只做裁剪不重排 */
 .pane-workbench-inner {
   min-width: 320px;
   height: 100%;
+  transition:
+    transform var(--dur-drawer) var(--ease-out),
+    opacity var(--dur-drawer) var(--ease-out);
+}
+.pane-workbench.is-closed .pane-workbench-inner {
+  transform: translateX(24px);
+  opacity: 0;
 }
 
 .split-handle.is-hidden {
@@ -1887,6 +1917,13 @@
 
 .chat-tab-dot.is-approval { background: var(--warning); }
 .chat-tab-dot.is-queued { background: var(--text-muted); }
+
+.chat-tab-sync {
+  flex: none;
+  font-size: var(--text-c1-size);
+  font-weight: 400;
+  color: var(--text-muted);
+}
 
 .chat-tab-close {
   flex: none;

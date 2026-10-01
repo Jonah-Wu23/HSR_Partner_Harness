@@ -214,7 +214,19 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async openConversationTab(conversationId) {
       // 每次聚焦都重新读取该会话的权威快照，同时让共享的
       // 物理语音运行时切到该聊天；conversation.open 不改 Sidecar 全局导航。
-      await conversationOpen(conversationId);
+      // 已有缓存的聊天先切换标签并标记同步中，权威结果到达后逐条对账。
+      const store = desktopStore.getState();
+      if (store.messageIdsByConversation[conversationId] === undefined) {
+        await conversationOpen(conversationId);
+        return;
+      }
+      store.openConversationTab(conversationId);
+      store.setConversationSyncing(conversationId, true);
+      try {
+        await conversationOpen(conversationId);
+      } finally {
+        desktopStore.getState().setConversationSyncing(conversationId, false);
+      }
     },
     closeConversationTab(conversationId) {
       // 只移除本窗口标签；标签已有完整缓存，切到相邻标签不需要 conversation.select，

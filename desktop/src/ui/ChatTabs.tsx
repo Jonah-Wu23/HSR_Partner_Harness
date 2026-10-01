@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { CloseIcon } from "../assets/icons/icons";
 import type { ChatTabsViewModel } from "../contracts/view-models";
 
@@ -17,7 +18,7 @@ function tabStatus(tab: ChatTabsViewModel): { className: string; label: string }
 }
 
 /** 聊天标签栏：本窗口打开的聊天，标题来自会话记录，状态点反映该聊天自己的状态。 */
-export function ChatTabs({ tabs, onSelect, onClose, onOpenWindow }: ChatTabsProps) {
+export const ChatTabs = memo(function ChatTabs({ tabs, onSelect, onClose, onOpenWindow }: ChatTabsProps) {
   if (tabs.length === 0) return null;
   return (
     <div className="chat-tabs-wrap">
@@ -45,6 +46,7 @@ export function ChatTabs({ tabs, onSelect, onClose, onOpenWindow }: ChatTabsProp
                   />
                 ) : null}
                 <span className="chat-tab-title">{tab.title}</span>
+                {tab.isSyncing ? <span className="chat-tab-sync">同步中</span> : null}
               </button>
               <button
                 type="button"
@@ -70,4 +72,4 @@ export function ChatTabs({ tabs, onSelect, onClose, onOpenWindow }: ChatTabsProp
       </div>
     </div>
   );
-}
+});

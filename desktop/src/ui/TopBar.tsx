@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { HarnessActions } from "../contracts/actions";
 import type { PairRecord } from "../contracts/protocol";
 import type { ConnectionViewStatus } from "./status/types";
@@ -20,7 +21,7 @@ interface TopBarProps {
 }
 
 /** 状态条：连接药丸、品牌与搭档、聊天/协作切换；取消按钮只在忙碌时出现。 */
-export function TopBar({
+export const TopBar = memo(function TopBar({
   mode,
   pair,
   assistantBusy,
@@ -126,4 +127,4 @@ export function TopBar({
       </button>
     </header>
   );
-}
+});

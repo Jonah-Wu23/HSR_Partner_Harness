@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import type { HarnessActions } from "../../contracts/actions";
 import type { ApprovalViewModel } from "../../contracts/view-models";
 
@@ -9,7 +9,11 @@ interface ApprovalBarProps {
 }
 
 /** 审批条：请求批准三选一；帮我审核展示审查结论；完全允许不渲染。 */
-export function ApprovalBar({ approval, actions, currentConversationId }: ApprovalBarProps) {
+export const ApprovalBar = memo(function ApprovalBar({
+  approval,
+  actions,
+  currentConversationId,
+}: ApprovalBarProps) {
   // 渲染完全来自 store 的 pending 与 resolving 状态；errors 只保存请求失败的提示。
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -170,4 +174,4 @@ export function ApprovalBar({ approval, actions, currentConversationId }: Approv
       ) : null}
     </div>
   );
-}
+});

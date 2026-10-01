@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 
 import type { HarnessActions } from "../../contracts/actions";
 import { useDesktopStore } from "../../stores/desktopStore";
@@ -18,7 +18,11 @@ interface DiagnosticsDrawerHostProps {
  * metrics 为 null 表示尚未读取，[] 是服务端返回的零条；查询失败把错误原文交给抽屉。
  * 装配结果在 actions 层已按协议校验，结构不符时同样以错误原文呈现。
  */
-export function DiagnosticsDrawerHost({ open, onClose, actions }: DiagnosticsDrawerHostProps) {
+export const DiagnosticsDrawerHost = memo(function DiagnosticsDrawerHost({
+  open,
+  onClose,
+  actions,
+}: DiagnosticsDrawerHostProps) {
   const metrics = useDesktopStore((state) => state.turnMetrics);
   const metricsLoading = useDesktopStore((state) => state.metricsLoading);
   const metricsError = useDesktopStore((state) => state.metricsError);
@@ -83,4 +87,4 @@ export function DiagnosticsDrawerHost({ open, onClose, actions }: DiagnosticsDra
       onRequestHiddenContent={onRequestHiddenContent}
     />
   );
-}
+});

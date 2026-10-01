@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useCallback, useMemo } from "react";
 import type { Message, MessageSource, PairRecord, QueueItem } from "../../contracts/protocol";
 import type { ConversationTimelineViewModel } from "../../contracts/view-models";
 import { ConversationList, type ConversationItemState } from "../conversation/ConversationList";
@@ -40,7 +40,7 @@ export function MessageBubble({
 }: {
   message: Message;
   pair: PairRecord;
-  itemState?: ConversationItemState;
+  itemState: ConversationItemState;
 }) {
   const label = sourceLabel(message, pair);
   const reasoning =
@@ -80,8 +80,8 @@ export function MessageBubble({
           <ReasoningRibbon
             text={reasoning ?? ""}
             streaming={reasoningStreaming}
-            expanded={itemState?.isExpanded(`reasoning:${message.message_id}`, reasoningStreaming)}
-            onExpandedChange={(expanded) => itemState?.setExpanded(`reasoning:${message.message_id}`, expanded)}
+            expanded={itemState.isExpanded(`reasoning:${message.message_id}`, reasoningStreaming)}
+            onExpandedChange={(expanded) => itemState.setExpanded(`reasoning:${message.message_id}`, expanded)}
           />
         ) : null}
         {label ? (
@@ -111,9 +111,8 @@ export function MessageBubble({
   );
 }
 
-type MessageListItem =
-  | { kind: "message"; id: string; message: Message }
-  | { kind: "queue"; id: string; text: string; status: QueueItem["status"]; error: string | null };
+/** 消息流条目直接使用 store 里的消息与队列项对象，流式更新时只有变化的那条换新引用。 */
+type MessageListItem = Message | QueueItem;
 
 const QUEUE_BADGE: Record<QueueItem["status"], string> = {
   queued: "排队中",
@@ -122,28 +121,62 @@ const QUEUE_BADGE: Record<QueueItem["status"], string> = {
   withdrawn: "已撤回",
 };
 
-const messageItemKey = (item: MessageListItem) => item.id;
+const messageItemKey = (item: MessageListItem) =>
+  "message_id" in item ? `message:${item.message_id}` : `queue:${item.queue_item_id}`;
+
+function QueuedBubble({ item }: { item: QueueItem }) {
+  return (
+    <div className="msg-row msg-row-user" data-queued="true" data-queue-status={item.status}>
+      <div className="msg-bubble msg-user queue-in-stream-bubble">
+        <span className="queue-in-stream-badge">{QUEUE_BADGE[item.status]}</span>
+        {item.text}
+        {item.status === "failed" && item.error ? (
+          <div className="msg-status-banner msg-status-failed" role="alert">
+            <span className="msg-status-detail">{item.error}</span>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** 「回到最新」按钮，角色区与工作台共用，模块级函数保持稳定引用。 */
+export function renderJumpToLatest(jump: () => void) {
+  return (
+    <button type="button" className="scroll-latest-btn" onClick={jump}>
+      回到最新
+    </button>
+  );
+}
 
 /** 消息流：气泡分色、思考折叠、流式光标与动态高度虚拟窗口。 */
-export function MessageList({ timeline, pair, emptyText }: MessageListProps) {
-  const items = useMemo<MessageListItem[]>(() => [
-    ...timeline.messages.map((message) => ({
-      kind: "message" as const,
-      id: `message:${message.message_id}`,
-      message,
-    })),
-    ...timeline.queueItems.map((item) => ({
-      kind: "queue" as const,
-      id: `queue:${item.queue_item_id}`,
-      text: item.text,
-      status: item.status,
-      error: item.error,
-    })),
-  ], [timeline.messages, timeline.queueItems]);
+export const MessageList = memo(function MessageList({ timeline, pair, emptyText }: MessageListProps) {
+  const items = useMemo<MessageListItem[]>(
+    () => [...timeline.messages, ...timeline.queueItems],
+    [timeline.messages, timeline.queueItems],
+  );
+  const renderItem = useCallback(
+    (item: MessageListItem, itemState: ConversationItemState) =>
+      "message_id" in item ? (
+        <MessageBubble message={item} pair={pair} itemState={itemState} />
+      ) : (
+        <QueuedBubble item={item} />
+      ),
+    [pair],
+  );
+  const emptyContent = useMemo(
+    () => (
+      <div className="msg-row msg-row-system">
+        <div className="msg-bubble msg-system">{emptyText}</div>
+      </div>
+    ),
+    [emptyText],
+  );
 
   return (
     <ConversationList
       conversationId={timeline.conversationId}
+      listId="messages"
       items={items}
       getItemKey={messageItemKey}
       estimateSize={76}
@@ -151,31 +184,9 @@ export function MessageList({ timeline, pair, emptyText }: MessageListProps) {
       scrollClassName="message-scroll"
       contentClassName="message-column"
       rowClassName="message-virtual-row"
-      emptyContent={(
-        <div className="msg-row msg-row-system">
-          <div className="msg-bubble msg-system">{emptyText}</div>
-        </div>
-      )}
-      renderItem={(item, itemState) => item.kind === "message" ? (
-        <MessageBubble message={item.message} pair={pair} itemState={itemState} />
-      ) : (
-        <div className="msg-row msg-row-user" data-queued="true" data-queue-status={item.status}>
-          <div className="msg-bubble msg-user queue-in-stream-bubble">
-            <span className="queue-in-stream-badge">{QUEUE_BADGE[item.status]}</span>
-            {item.text}
-            {item.status === "failed" && item.error ? (
-              <div className="msg-status-banner msg-status-failed" role="alert">
-                <span className="msg-status-detail">{item.error}</span>
-              </div>
-            ) : null}
-          </div>
-        </div>
-      )}
-      renderJumpButton={(jump) => (
-        <button type="button" className="scroll-latest-btn" onClick={jump}>
-          回到最新
-        </button>
-      )}
+      emptyContent={emptyContent}
+      renderItem={renderItem}
+      renderJumpButton={renderJumpToLatest}
     />
   );
-}
+});

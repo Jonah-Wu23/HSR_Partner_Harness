@@ -527,17 +527,26 @@
   margin-top: 8px;
 }
 
-/* 骨架屏 */
+/* 骨架屏：高光条用 transform 平移，动画只在合成层进行，不触发重绘。 */
 .char-skeleton {
-  background: linear-gradient(90deg, var(--fill-hover, rgba(255, 255, 255, 0.04)) 25%, var(--fill-active, rgba(255, 255, 255, 0.09)) 50%, var(--fill-hover, rgba(255, 255, 255, 0.04)) 75%);
-  background-size: 200% 100%;
-  animation: char-shimmer 1.6s linear infinite;
+  position: relative;
+  overflow: hidden;
+  background: var(--fill-hover, rgba(255, 255, 255, 0.04));
   border-radius: var(--radius-xxs, 4px);
   color: transparent;
 }
 
+.char-skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--fill-active, rgba(255, 255, 255, 0.09)), transparent);
+  transform: translateX(-100%);
+  animation: char-shimmer 1.6s linear infinite;
+}
+
 @keyframes char-shimmer {
-  to { background-position: -200% 0; }
+  to { transform: translateX(100%); }
 }
 
 .char-skeleton-card {

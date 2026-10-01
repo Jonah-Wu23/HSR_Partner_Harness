@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { StopIcon } from "../../assets/icons/icons";
 
 export type DelegationStatus = "running" | "completed" | "failed" | "cancelled";
@@ -24,7 +25,7 @@ const STATUS_LABEL: Record<DelegationStatus, string> = {
 };
 
 /** 委派卡：角色区与工作台之间的视觉桥梁，标明任务从谁手里到了谁手里。 */
-export function DelegationCard({ delegation, onCancel }: DelegationCardProps) {
+export const DelegationCard = memo(function DelegationCard({ delegation, onCancel }: DelegationCardProps) {
   return (
     <article
       className={`delegation-card delegation-card-${delegation.status}`}
@@ -50,4 +51,4 @@ export function DelegationCard({ delegation, onCancel }: DelegationCardProps) {
       ) : null}
     </article>
   );
-}
+});

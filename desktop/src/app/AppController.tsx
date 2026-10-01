@@ -1,10 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import type { HarnessActions } from "../contracts/actions";
 import type { DesktopBackend } from "../services/backend";
 import { createEventBatcher } from "../services/eventBatcher";
-import { presentAppShell } from "../presenters/presenters";
+import { createAppShellPresenter } from "../presenters/presenters";
 import {
   desktopStore,
   selectDesktopRenderState,
@@ -31,6 +31,8 @@ export function AppController({
 }: AppControllerProps) {
   const recoveringRef = useRef(false);
   const storeState = useDesktopStore(useShallow(selectDesktopRenderState));
+  // 投影按区域缓存：未变化的区域沿用上次的视图模型对象，对应的 memo 组件跳过渲染。
+  const [present] = useState(createAppShellPresenter);
 
   useEffect(() => {
     const batcher = createEventBatcher((events) => {
@@ -61,7 +63,5 @@ export function AppController({
     };
   }, [actions, backend, loadBootstrap, conversationOpen, initialConversationId]);
 
-  const viewModel = presentAppShell(storeState);
-
-  return <AppShell vm={viewModel} actions={actions} backend={backend} />;
+  return <AppShell vm={present(storeState)} actions={actions} backend={backend} />;
 }

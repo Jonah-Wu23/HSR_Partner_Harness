@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { QueueItemView } from "./types";
 
 interface QueueStripProps {
@@ -13,7 +14,13 @@ interface QueueStripProps {
 }
 
 /** 排队条：输入区上方的横向胶囊条，忙碌时发送的消息在这里可见可操作。 */
-export function QueueStrip({ items, names, onEdit, onWithdraw, onPrioritize }: QueueStripProps) {
+export const QueueStrip = memo(function QueueStrip({
+  items,
+  names,
+  onEdit,
+  onWithdraw,
+  onPrioritize,
+}: QueueStripProps) {
   if (items.length === 0) return null;
   const targetLabel = {
     character: `给${names?.character ?? "角色"}`,
@@ -65,4 +72,4 @@ export function QueueStrip({ items, names, onEdit, onWithdraw, onPrioritize }: Q
       </ol>
     </section>
   );
-}
+});

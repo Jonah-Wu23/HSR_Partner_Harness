@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import type { HarnessActions } from "../contracts/actions";
 import type { AppShellViewModel } from "../contracts/view-models";
@@ -36,7 +36,7 @@ interface AppShellProps {
   actions: HarnessActions;
   /** 文件选择与保存对话框（pickFile/saveFile），供角色库导入导出、创作页头像、
       语音页参考音频使用。 */
-  backend?: DesktopBackend;
+  backend: DesktopBackend;
 }
 
 function StatePage({ title, detail }: { title: string; detail?: string | null }) {
@@ -77,13 +77,14 @@ function toConnectionStatus(status: AppShellViewModel["status"]): ConnectionView
  * 只有启动期（尚无 navigation 数据）失败才整屏显示错误。
  */
 export function AppShell({ vm, actions, backend }: AppShellProps) {
-  const activeConv = vm.navigation?.projects
-    .flatMap((p) => p.conversations)
-    .find((c) => c.conversation_id === vm.navigation?.currentConversationId);
-  const pair =
-    vm.navigation?.pairs.find((p) => p.pair_id === activeConv?.pair_id) ??
-    vm.navigation?.currentPair ??
-    null;
+  const navigation = vm.navigation;
+  const pair = useMemo(() => {
+    if (!navigation) return null;
+    const activeConv = navigation.projects
+      .flatMap((p) => p.conversations)
+      .find((c) => c.conversation_id === navigation.currentConversationId);
+    return navigation.pairs.find((p) => p.pair_id === activeConv?.pair_id) ?? navigation.currentPair;
+  }, [navigation]);
   const [techDetailsOpen, setTechDetailsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsPage, setSettingsPage] = useState<SettingsPage>("account");
@@ -104,14 +105,59 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
   const connectionStatus = toConnectionStatus(vm.status);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
 
-  const openSettings = () => {
+  // 传给 memo 区域的回调保持稳定引用，流式事件批次不会让这些区域重渲染。
+  const openSettings = useCallback(() => {
     setSettingsOpen(true);
     // 每次打开设置都清掉上一轮的测试、试听结果与角色库直达的预选卡。
     setModelTest({ state: "idle" });
     setVoicePreview({ state: "idle" });
     setVoiceCardFocus(null);
     void actions.getConfig().finally(() => setSettingsRevision((revision) => revision + 1));
-  };
+  }, [actions]);
+  const openTechDetails = useCallback(() => setTechDetailsOpen(true), []);
+  const openDiagnostics = useCallback(() => setDiagnosticsOpen(true), []);
+  const closeDiagnostics = useCallback(() => setDiagnosticsOpen(false), []);
+  const selectTab = useCallback(
+    (conversationId: string) => void actions.openConversationTab(conversationId),
+    [actions],
+  );
+  const closeTab = useCallback(
+    (conversationId: string) => actions.closeConversationTab(conversationId),
+    [actions],
+  );
+  const openTabWindow = useCallback(
+    (conversationId: string) => void actions.openConversationWindow(conversationId),
+    [actions],
+  );
+  const submitQuickTask = useCallback(
+    (text: string) => void actions.submitMessage(text, "assistant"),
+    [actions],
+  );
+  const closeWorkbench = useCallback(() => actions.switchMode("chat"), [actions]);
+  const cancelDelegation = useCallback(() => void actions.cancelTask(), [actions]);
+  const editQueueItem = useCallback(
+    async (queueItemId: string) => {
+      const text = await actions.editQueueFromStrip(queueItemId);
+      if (text) setDraftSeed({ text, nonce: Date.now() });
+    },
+    [actions],
+  );
+  const withdrawQueueItem = useCallback(
+    (queueItemId: string) => void actions.withdrawQueueItem(queueItemId),
+    [actions],
+  );
+  const prioritizeQueueItem = useCallback(
+    (queueItemId: string) => void actions.prioritizeQueueItem(queueItemId),
+    [actions],
+  );
+  const dismissToast = useCallback((id: string) => actions.dismissToast(id), [actions]);
+  const queueNames = useMemo(
+    () => ({
+      character: pair?.character.name ?? "角色",
+      assistant: pair?.assistant.name ?? "助手",
+    }),
+    [pair],
+  );
 
   // 从角色库或创作页直达语音页「角色音色」区并预选卡片。
   const openSettingsToVoiceCard = (cardId: string | null) => {
@@ -134,13 +180,13 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
 
   // 回到运行中的聊天：打开第一个有活动任务的聊天，再切回聊天视图。
   const handleReturnToRunningChat = () => {
-    const running = vm.navigation?.projects
+    const running = navigation?.projects
       .flatMap((project) =>
         project.conversations.map((conversation) => ({ project, conversation })),
       )
       .find((item) => item.conversation.isRunning);
     if (running) {
-      if (running.project.project_id !== vm.navigation?.currentProjectId) {
+      if (running.project.project_id !== navigation?.currentProjectId) {
         void actions.selectProject(running.project.project_id);
       }
       void actions.openConversationTab(running.conversation.conversation_id);
@@ -187,11 +233,11 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
         onFinish={() => actions.completeOnboarding()}
       />
     );
-  } else if (!vm.navigation) {
+  } else if (!navigation) {
     body = <StatePage title="暂无打开的项目" detail="等待项目数据" />;
   } else {
     const workspace = vm.workspace;
-    const totalRunningTasks = vm.navigation.projects.reduce(
+    const totalRunningTasks = navigation.projects.reduce(
       (sum, project) => sum + project.activeTaskCount,
       0,
     );
@@ -203,20 +249,20 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
           pair={pair}
           assistantBusy={workspace?.assistant.busy ?? false}
           connectionStatus={connectionStatus}
-          onOpenTechDetails={() => setTechDetailsOpen(true)}
-          onOpenDiagnostics={() => setDiagnosticsOpen(true)}
+          onOpenTechDetails={openTechDetails}
+          onOpenDiagnostics={openDiagnostics}
           onOpenSettings={openSettings}
           actions={actions}
         />
         <div className="app-body">
-          <Navigation navigation={vm.navigation} theme={vm.theme} actions={actions} />
+          <Navigation navigation={navigation} theme={vm.theme} actions={actions} />
           <main className="workspace">
             {/* 本窗口聊天标签栏：切换标签聚焦本窗口视图，关闭标签只移除视图。 */}
             <ChatTabs
               tabs={vm.chatTabs}
-              onSelect={(conversationId) => void actions.openConversationTab(conversationId)}
-              onClose={(conversationId) => actions.closeConversationTab(conversationId)}
-              onOpenWindow={(conversationId) => void actions.openConversationWindow(conversationId)}
+              onSelect={selectTab}
+              onClose={closeTab}
+              onOpenWindow={openTabWindow}
             />
             {vm.status === "disconnected" || vm.status === "error" ? (
               <div className="connection-banner" role="alert">
@@ -235,14 +281,14 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
             {vm.mainView === "characters" ? (
               <CharacterLibraryPage vm={vm.characterLibrary} actions={actions} onConfigureCardVoice={openSettingsToVoiceCard} backend={backend} onReturnToChat={handleReturnToRunningChat} />
             ) : vm.mainView === "characterCreate" ? (
-              <CharacterCreatePage vm={vm.characterCreate} actions={actions} onPickFile={backend ? (options) => backend.pickFile(options) : undefined} onReturnToChat={handleReturnToRunningChat} />
+              <CharacterCreatePage vm={vm.characterCreate} actions={actions} onPickFile={(options) => backend.pickFile(options)} onReturnToChat={handleReturnToRunningChat} />
             ) : workspace ? (
               <Workspace
                 workspace={workspace}
-                pair={pair ?? vm.navigation.currentPair}
-                onQuickTask={(text) => void actions.submitMessage(text, "assistant")}
-                onCloseWorkbench={() => actions.switchMode("chat")}
-                onCancelDelegation={() => void actions.cancelTask()}
+                pair={pair ?? navigation.currentPair}
+                onQuickTask={submitQuickTask}
+                onCloseWorkbench={closeWorkbench}
+                onCancelDelegation={cancelDelegation}
               />
             ) : (
               <div className="workspace-split">
@@ -276,21 +322,15 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
                 <ApprovalBar
                   approval={vm.approval}
                   actions={actions}
-                  currentConversationId={vm.navigation.currentConversationId}
+                  currentConversationId={navigation.currentConversationId}
                 />
                 {/* 排队条：忙碌时发送的消息在此可见可操作，空队列不渲染。 */}
                 <QueueStrip
                   items={vm.queueItems}
-                  names={{
-                    character: pair?.character.name ?? "角色",
-                    assistant: pair?.assistant.name ?? "助手",
-                  }}
-                  onEdit={async (queueItemId) => {
-                    const text = await actions.editQueueFromStrip(queueItemId);
-                    if (text) setDraftSeed({ text, nonce: Date.now() });
-                  }}
-                  onWithdraw={(queueItemId) => void actions.withdrawQueueItem(queueItemId)}
-                  onPrioritize={(queueItemId) => void actions.prioritizeQueueItem(queueItemId)}
+                  names={queueNames}
+                  onEdit={editQueueItem}
+                  onWithdraw={withdrawQueueItem}
+                  onPrioritize={prioritizeQueueItem}
                 />
                 <Composer
                   composer={vm.composer}
@@ -314,7 +354,7 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
         {/* 诊断抽屉（指标与提示词装配），由 TopBar 入口打开。 */}
         <DiagnosticsDrawerHost
           open={diagnosticsOpen}
-          onClose={() => setDiagnosticsOpen(false)}
+          onClose={closeDiagnostics}
           actions={actions}
         />
       </>
@@ -330,11 +370,7 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
     >
       {body}
       {/* Toast 队列（右上角），空队列不渲染。 */}
-      <ToastStack
-        toasts={vm.toasts}
-        onDismiss={(id) => actions.dismissToast(id)}
-        onOpenDetails={() => setTechDetailsOpen(true)}
-      />
+      <ToastStack toasts={vm.toasts} onDismiss={dismissToast} onOpenDetails={openTechDetails} />
       {/* 电源提示（右下角）：挂载时查询 power.get_status，之后由 power.status_changed 更新；
           无风险、已关闭或平台不支持时不渲染。 */}
       <PowerPrompt actions={actions} />
@@ -355,16 +391,13 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
         characterVoice={vm.settings.characterVoice}
         voiceCardFocus={voiceCardFocus}
         actions={actions}
-        onPickFile={backend ? (options) => backend.pickFile(options) : undefined}
+        onPickFile={(options) => backend.pickFile(options)}
         modelTest={modelTest}
         voicePreview={voicePreview}
         remote={vm.remotePairing}
         onIssuePairingCode={() => void actions.issuePairingCode()}
         onListRemoteDevices={() => void actions.listRemoteDevices()}
         onRevokeRemoteDevice={(deviceName) => void actions.revokeRemoteDevice(deviceName)}
-        onTunnelStart={() => void actions.tunnelStart()}
-        onTunnelStop={() => void actions.tunnelStop()}
-        onQueryTunnelStatus={() => void actions.queryTunnelStatus()}
         onSaveProfile={(displayName) => actions.updateAccountProfile(displayName)}
         onChangePassword={(oldPassword, newPassword) =>
           actions.changePassword(oldPassword, newPassword)

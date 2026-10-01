@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { HarnessActions } from "../../contracts/actions";
 import type {
@@ -143,15 +143,20 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
 
   const shouldVirtualize = flatRows.length > 40;
   const chatScrollRef = useRef<HTMLDivElement>(null);
+  // getItemKey 只随行列表变化，虚拟器据此复用已测量的行高。
+  const getRowKey = useCallback(
+    (index: number) => {
+      const row = flatRows[index];
+      return row.kind === "header" ? `h-${row.id}` : row.conversation.conversation_id;
+    },
+    [flatRows],
+  );
   const virtualizer = useVirtualizer({
     count: flatRows.length,
     getScrollElement: () => chatScrollRef.current,
-    estimateSize: (index) => (flatRows[index]?.kind === "header" ? 28 : 64),
+    estimateSize: (index) => (flatRows[index].kind === "header" ? 28 : 64),
     overscan: 6,
-    getItemKey: (index) => {
-      const row = flatRows[index];
-      return row?.kind === "header" ? `h-${row.id}` : row?.conversation.conversation_id ?? index;
-    },
+    getItemKey: getRowKey,
   });
 
   const pathBroken = currentProject !== null && !currentProject.path_available;
@@ -465,7 +470,6 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
           >
             {virtualizer.getVirtualItems().map((vItem) => {
               const row = flatRows[vItem.index];
-              if (!row) return null;
               return (
                 <div
                   key={vItem.key}

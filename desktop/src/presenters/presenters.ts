@@ -1,12 +1,26 @@
 import type {
   AppShellViewModel,
+  ApprovalViewModel,
+  AssistantWorkbenchViewModel,
   CharacterCardVoicePageViewModel,
   ChatTabsViewModel,
+  ComposerViewModel,
+  ConversationTimelineViewModel,
   ConversationViewModel,
+  NavigationViewModel,
   ProjectViewModel,
+  VoiceViewModel,
   WorkbenchItem,
+  WorkspaceViewModel,
 } from "../contracts/view-models";
-import type { Message, QueueItem, ToolRun, VoiceState } from "../contracts/protocol";
+import type {
+  ActiveTask,
+  Message,
+  PairRecord,
+  QueueItem,
+  ToolRun,
+  VoiceState,
+} from "../contracts/protocol";
 import {
   selectComposerTarget,
   selectWindowMode,
@@ -23,15 +37,92 @@ import type {
   VoiceSpeakerStatus,
 } from "../ui/settings/types";
 
-/** 指定会话的消息，按 timeline_order 排序。 */
-function messagesFor(state: DesktopRenderState, conversationId: string): Message[] {
-  return (state.messageIdsByConversation[conversationId] ?? [])
-    .map((id) => state.messagesById[id])
-    .sort((left, right) => left.timeline_order - right.timeline_order);
+/* 视图模型按输入引用缓存：输入没变的部分沿用上次的对象，React.memo 的区域据此跳过渲染。 */
+
+function sameItems<T>(left: readonly T[], right: readonly T[]): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
-function toolsFor(state: DesktopRenderState, conversationId: string): ToolRun[] {
-  return (state.toolIdsByConversation[conversationId] ?? []).map((id) => state.toolRunsById[id]);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** 新结果与上次结果逐字段（数组逐项）同一引用时沿用上次结果。 */
+function keepIfShallowEqual<T>(previous: T, next: T): T {
+  if (Array.isArray(previous) && Array.isArray(next)) {
+    return sameItems(previous, next) ? previous : next;
+  }
+  if (!isRecord(previous) || !isRecord(next)) return next;
+  const keys = Object.keys(next);
+  return keys.length === Object.keys(previous).length &&
+    keys.every((key) => Object.is(previous[key], next[key]))
+    ? previous
+    : next;
+}
+
+/** 参数逐个与上次同一引用时沿用上次结果。 */
+function memoLast<A extends unknown[], R>(compute: (...args: A) => R): (...args: A) => R {
+  let lastArgs: A | null = null;
+  let lastResult = undefined as R;
+  return (...args) => {
+    if (lastArgs !== null && args.every((arg, index) => Object.is(arg, lastArgs![index]))) {
+      return lastResult;
+    }
+    lastArgs = args;
+    lastResult = keepIfShallowEqual(lastResult, compute(...args));
+    return lastResult;
+  };
+}
+
+/** 只读取 state 中 keys 字段的投影：这些字段都与上次同一引用时沿用上次结果。 */
+function memoByFields<K extends keyof DesktopRenderState, R>(
+  keys: readonly K[],
+  compute: (input: Pick<DesktopRenderState, K>) => R,
+): (state: DesktopRenderState) => R {
+  let lastInput: Pick<DesktopRenderState, K> | null = null;
+  let lastResult = undefined as R;
+  return (state) => {
+    if (lastInput !== null && keys.every((key) => Object.is(state[key], lastInput![key]))) {
+      return lastResult;
+    }
+    lastInput = state;
+    lastResult = keepIfShallowEqual(lastResult, compute(state));
+    return lastResult;
+  };
+}
+
+/**
+ * 按 orderOf 升序排列。输入与上次逐项相同时沿用上次结果；
+ * 长度不变且变化的条目序号不变时（流式更新正文）沿用上次的排列，免去重新排序。
+ */
+function createSortedList<T>(orderOf: (entry: T) => number): (entries: readonly T[]) => T[] {
+  let lastEntries: readonly T[] = [];
+  let lastPermutation: number[] = [];
+  let lastSorted: T[] = [];
+  return (entries) => {
+    if (entries.length === lastEntries.length) {
+      let changed = false;
+      let reordered = false;
+      for (let index = 0; index < entries.length && !reordered; index += 1) {
+        if (entries[index] === lastEntries[index]) continue;
+        changed = true;
+        reordered = orderOf(entries[index]) !== orderOf(lastEntries[index]);
+      }
+      if (!changed) return lastSorted;
+      if (!reordered) {
+        lastEntries = entries;
+        lastSorted = lastPermutation.map((index) => entries[index]);
+        return lastSorted;
+      }
+    }
+    const permutation = entries
+      .map((_, index) => index)
+      .sort((left, right) => orderOf(entries[left]) - orderOf(entries[right]));
+    lastEntries = entries;
+    lastPermutation = permutation;
+    lastSorted = permutation.map((index) => entries[index]);
+    return lastSorted;
+  };
 }
 
 /** 队列项摘要：压缩空白后的单行文本，超 24 字截断加省略号。 */
@@ -40,18 +131,25 @@ function truncateSingleLine(text: string, max = 24): string {
   return compact.length <= max ? compact : `${compact.slice(0, max)}…`;
 }
 
-/** 指定会话未撤回的排队项（完整文本，按 position 升序），显示在消息流尾部；
+/** 未撤回的排队项（完整文本，按 position 升序），显示在消息流尾部；
     队列条用 presentQueueItems 的截断摘要。 */
-function queuedItemsFor(state: DesktopRenderState, conversationId: string): QueueItem[] {
-  return (state.queueItemsByConversation[conversationId] ?? [])
+function queuedItems(items: readonly QueueItem[]): QueueItem[] {
+  return items
     .filter((item) => item.status !== "withdrawn")
     .sort((a, b) => a.position - b.position);
 }
 
-/** 排队条视图：指定会话未撤回的队列项按 position 升序。waitingFor 按真实状态派生；
+/** 排队条视图：本窗口聊天未撤回的队列项按 position 升序。waitingFor 按真实状态派生；
     派发失败的项不再等待，只显示失败原因，也不计入后面各项的等待数。 */
-function presentQueueItems(state: DesktopRenderState, conversationId: string): QueueItemView[] {
-  const ordered = queuedItemsFor(state, conversationId);
+function presentQueueItems(
+  state: Pick<
+    DesktopRenderState,
+    "queueItemsByConversation" | "activeTasksByConversation" | "activeConversationId"
+  >,
+): QueueItemView[] {
+  const conversationId = state.activeConversationId;
+  if (!conversationId) return [];
+  const ordered = queuedItems(state.queueItemsByConversation[conversationId] ?? []);
   const hasActiveTurn = Boolean(state.activeTasksByConversation[conversationId]);
   let pendingAhead = 0;
   return ordered.map((item) => {
@@ -82,16 +180,14 @@ function presentQueueItems(state: DesktopRenderState, conversationId: string): Q
 /** 委派卡：指定会话中角色发起的委派（origin=character_delegation 且 delegation_id 非空），
     取最新一条 user 消息，状态来自消息状态。 */
 function presentDelegation(
-  state: DesktopRenderState,
-  conversationId: string,
+  pair: PairRecord | null,
+  messages: readonly Message[],
+  activeTask: ActiveTask | null,
 ): DelegationCardView | null {
-  if (!state.pair) return null;
-  const ids = state.messageIdsByConversation[conversationId] ?? [];
+  if (!pair) return null;
   let delegationMessage: Message | undefined;
-  for (const id of ids) {
-    const message = state.messagesById[id];
+  for (const message of messages) {
     if (
-      message &&
       message.source === "user" &&
       message.origin === "character_delegation" &&
       message.delegation_id
@@ -102,7 +198,7 @@ function presentDelegation(
   if (!delegationMessage) return null;
   const executionStatus = delegationMessage.status;
   const status =
-    state.activeTask?.task_id === delegationMessage.delegation_id ||
+    activeTask?.task_id === delegationMessage.delegation_id ||
     executionStatus === "processing"
       ? "running"
       : executionStatus === "failed"
@@ -112,7 +208,7 @@ function presentDelegation(
           : "completed";
   return {
     delegationId: delegationMessage.delegation_id ?? "",
-    fromName: state.pair.character.name,
+    fromName: pair.character.name,
     summary: delegationMessage.text,
     status,
   };
@@ -120,7 +216,9 @@ function presentDelegation(
 
 /** 语音迷你播放条：tts 播放、合成或失败时显示。后端 tts 状态不带说话方，显示为角色；
     摘要没有数据时为空串。 */
-function presentVoiceMiniPlayer(state: DesktopRenderState): VoiceMiniPlayerView | null {
+function presentVoiceMiniPlayer(
+  state: Pick<DesktopRenderState, "pair" | "voice">,
+): VoiceMiniPlayerView | null {
   const pair = state.pair;
   if (!pair || state.voice.tts === "idle") return null;
   if (state.voice.tts === "failed") {
@@ -143,7 +241,9 @@ function presentVoiceMiniPlayer(state: DesktopRenderState): VoiceMiniPlayerView 
 }
 
 /** 账号门：默认账号（未设密码）进账号门；非默认账号且引导未完成时进首次引导。 */
-function presentAccountGate(state: DesktopRenderState): AppShellViewModel["accountGate"] {
+function presentAccountGate(
+  state: Pick<DesktopRenderState, "currentAccount" | "accounts" | "status">,
+): AppShellViewModel["accountGate"] {
   if (state.currentAccount?.username !== "default") return null;
   const accounts: AccountListItem[] = state.accounts.map((account) => ({
     accountId: account.account_id,
@@ -199,7 +299,22 @@ function presentVoiceConfigured(config: Record<string, unknown> | null): boolean
 }
 
 /** 设置中心各页视图：由 configSnapshot 映射，尚未拉取配置时给空值。 */
-function presentSettings(state: DesktopRenderState): AppShellViewModel["settings"] {
+const SETTINGS_FIELDS = [
+  "configSnapshot",
+  "conversationsById",
+  "activeConversationId",
+  "currentConversationId",
+  "pair",
+  "pairs",
+  "currentAccountId",
+  "currentAccount",
+  "voice",
+  "characterLibrary",
+] as const;
+
+function presentSettings(
+  state: Pick<DesktopRenderState, (typeof SETTINGS_FIELDS)[number]>,
+): AppShellViewModel["settings"] {
   const config = state.configSnapshot as ConfigShape | null;
   const dialogue = config?.dialogue ?? {};
   const voiceConfig = config?.voice ?? {};
@@ -314,71 +429,153 @@ function presentSettings(state: DesktopRenderState): AppShellViewModel["settings
   };
 }
 
-/** 工作台时间线：助手 segment 与工具卡按 timeline_order 混排。 */
-function presentWorkbenchItems(
-  messages: Message[],
-  tools: ToolRun[],
-): WorkbenchItem[] {
-  const messageItems: WorkbenchItem[] = messages
-    .filter((message) => message.source !== "tool")
-    .map((message) => ({ kind: "message" as const, order: message.timeline_order, message }));
-  const toolItems: WorkbenchItem[] = tools.map((run) => ({
-    kind: "tool" as const,
-    order: run.timeline_order,
-    run,
-  }));
-  return [...messageItems, ...toolItems].sort((a, b) => a.order - b.order);
+/** 工作台条目按消息或工具记录对象缓存，同一条记录始终对应同一个条目对象。 */
+const workbenchItems = new WeakMap<Message | ToolRun, WorkbenchItem>();
+
+function workbenchItem(source: Message | ToolRun, create: () => WorkbenchItem): WorkbenchItem {
+  let item = workbenchItems.get(source);
+  if (item === undefined) {
+    item = create();
+    workbenchItems.set(source, item);
+  }
+  return item;
 }
 
-/** 聊天标签视图：标题取自会话记录，状态点只反映该聊天自己的运行、排队与待审批。 */
-function presentChatTabs(state: DesktopRenderState): ChatTabsViewModel[] {
-  return state.openConversationIds.map((conversationId) => {
-    const conversation = state.conversationsById[conversationId];
-    return {
+/** 消息空间归属：user+target=assistant 与 assistant、tool 归工作台；
+    user+target=character、character、system 归角色区。 */
+function inCharacterSpace(message: Message): boolean {
+  return (
+    (message.source === "user" && message.target !== "assistant") ||
+    message.source === "character" ||
+    message.source === "system"
+  );
+}
+
+function inAssistantSpace(message: Message): boolean {
+  return (
+    (message.source === "user" && message.target === "assistant") ||
+    message.source === "assistant" ||
+    message.source === "tool"
+  );
+}
+
+const NO_IDS: string[] = [];
+
+/** 工作区两栏：流式分片只换掉变化的消息对象，另一栏与未变化的消息沿用上次的对象。 */
+function createWorkspacePresenter(): (state: DesktopRenderState) => WorkspaceViewModel | null {
+  const sortMessages = createSortedList<Message>((message) => message.timeline_order);
+  const conversationMessages = memoLast(
+    (ids: readonly string[], messagesById: Record<string, Message>) =>
+      sortMessages(ids.map((id) => messagesById[id])),
+  );
+  const characterMessages = memoLast((messages: Message[]) => messages.filter(inCharacterSpace));
+  const assistantMessages = memoLast((messages: Message[]) => messages.filter(inAssistantSpace));
+  const conversationTools = memoLast(
+    (ids: readonly string[], toolRunsById: Record<string, ToolRun>) =>
+      ids.map((id) => toolRunsById[id]),
+  );
+  const timelineQueue = memoLast((items: readonly QueueItem[] | undefined) =>
+    items ? queuedItems(items) : [],
+  );
+  const sortWorkbench = createSortedList<WorkbenchItem>((item) => item.order);
+  // 工作台时间线：助手 segment 与工具卡按 timeline_order 混排。
+  const workbenchTimeline = memoLast((messages: Message[], tools: ToolRun[]) =>
+    sortWorkbench([
+      ...messages
+        .filter((message) => message.source !== "tool")
+        .map((message) =>
+          workbenchItem(message, () => ({ kind: "message", order: message.timeline_order, message })),
+        ),
+      ...tools.map((run) => workbenchItem(run, () => ({ kind: "tool", order: run.timeline_order, run }))),
+    ]),
+  );
+  const character = memoLast(
+    (conversationId: string, messages: Message[], queueItems: QueueItem[]): ConversationTimelineViewModel => ({
       conversationId,
-      title: conversation.title,
-      isRunning: Boolean(state.activeTasksByConversation[conversationId]),
-      isQueued: (state.queueItemsByConversation[conversationId] ?? []).some(
-        (item) => item.status === "queued" || item.status === "processing",
+      messages,
+      isStreaming: messages.some((message) => message.streaming === true),
+      queueItems,
+    }),
+  );
+  const assistant = memoLast(
+    (
+      conversationId: string,
+      messages: Message[],
+      toolRuns: ToolRun[],
+      busy: boolean,
+      activeTask: ActiveTask | null,
+    ): AssistantWorkbenchViewModel => ({
+      conversationId,
+      messages,
+      toolRuns,
+      items: workbenchTimeline(messages, toolRuns),
+      busy,
+      activeTask,
+    }),
+  );
+  const delegation = memoLast(presentDelegation);
+  const workspace = memoLast(
+    (
+      mode: WorkspaceViewModel["mode"],
+      characterView: ConversationTimelineViewModel,
+      assistantView: AssistantWorkbenchViewModel,
+      delegationView: DelegationCardView | null,
+    ): WorkspaceViewModel => ({
+      mode,
+      character: characterView,
+      assistant: assistantView,
+      delegation: delegationView,
+    }),
+  );
+
+  return (state) => {
+    // 工作区渲染本窗口活动标签；没有打开的标签时为空状态。
+    const conversationId = state.activeConversationId;
+    if (!conversationId || !state.conversationsById[conversationId]) return null;
+    const messages = conversationMessages(
+      state.messageIdsByConversation[conversationId] ?? NO_IDS,
+      state.messagesById,
+    );
+    const characterSpace = characterMessages(messages);
+    const assistantSpace = assistantMessages(messages);
+    const tools = conversationTools(
+      state.toolIdsByConversation[conversationId] ?? NO_IDS,
+      state.toolRunsById,
+    );
+    return workspace(
+      selectWindowMode(state),
+      character(
+        conversationId,
+        characterSpace,
+        timelineQueue(state.queueItemsByConversation[conversationId]),
       ),
-      isWaitingApproval: state.approvals.some(
-        (approval) => approval.conversation_id === conversationId,
-      ),
-      isActive: conversationId === state.activeConversationId,
-    };
-  });
+      assistant(conversationId, assistantSpace, tools, state.busy, state.activeTask),
+      delegation(state.pair, messages, state.activeTask),
+    );
+  };
 }
 
-/** 语音设置页「角色音色」区视图模型，卡列表来自 characterLibrary。 */
-export function presentCharacterCardVoicePage(
-  state: DesktopRenderState,
-): CharacterCardVoicePageViewModel {
-  const cards = state.characterLibrary.cards.map((card): CharacterCardVoicePageViewModel["cards"][number] => ({
-    cardId: card.cardId,
-    name: card.name,
-    state: card.state,
-    source: card.source,
-    hasAvatar: card.hasAvatar,
-    voiceState: card.voiceState,
-    active: card.active,
-    readOnly: card.readOnly,
-  }));
-  return { voiceConfigured: presentVoiceConfigured(state.configSnapshot), cards };
-}
+const NAVIGATION_FIELDS = [
+  "projectsById",
+  "activeTasksByConversation",
+  "currentProjectId",
+  "activeConversationId",
+  "currentConversationId",
+  "pair",
+  "pairs",
+] as const;
 
-export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
-  // 工作区渲染本窗口活动标签；没有打开的标签时为空状态。
-  const workspaceConversationId = state.activeConversationId;
-  const workspaceConversation = workspaceConversationId
-    ? state.conversationsById[workspaceConversationId]
-    : undefined;
+function presentNavigation(
+  state: Pick<DesktopRenderState, (typeof NAVIGATION_FIELDS)[number]>,
+): NavigationViewModel | null {
+  if (!state.pair) return null;
   // 项目级活动标记：该项目下任一聊天有活动任务即点亮。
   const activeTaskCountByProject: Record<string, number> = {};
   for (const task of Object.values(state.activeTasksByConversation)) {
     activeTaskCountByProject[task.project_id] =
       (activeTaskCountByProject[task.project_id] ?? 0) + 1;
   }
-  const navigationConversationId = workspaceConversationId ?? state.currentConversationId;
+  const navigationConversationId = state.activeConversationId ?? state.currentConversationId;
   const projects: ProjectViewModel[] = Object.values(state.projectsById).map((project) => {
     const activeTaskCount = activeTaskCountByProject[project.project_id] ?? 0;
     return {
@@ -395,106 +592,187 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
       ),
     };
   });
-
-  // 消息空间归属：user+target=assistant 与 assistant、tool 归工作台；
-  // user+target=character、character、system 归角色区。
-  const characterMessages = workspaceConversation
-    ? messagesFor(state, workspaceConversation.conversation_id).filter(
-        (message) =>
-          (message.source === "user" && message.target !== "assistant") ||
-          message.source === "character" ||
-          message.source === "system",
-      )
-    : [];
-  const assistantMessages = workspaceConversation
-    ? messagesFor(state, workspaceConversation.conversation_id).filter(
-        (message) =>
-          (message.source === "user" && message.target === "assistant") ||
-          message.source === "assistant" ||
-          message.source === "tool",
-      )
-    : [];
-  const assistantTools = workspaceConversation
-    ? toolsFor(state, workspaceConversation.conversation_id)
-    : [];
-  // 审批模式与推理档位是项目设置，取本窗口活动标签所属项目。
-  const windowProjectId = selectWindowProjectId(state);
-  const windowProject = windowProjectId ? state.projectsById[windowProjectId] : undefined;
-  const approvalMode = windowProject?.approval_mode ?? "request_approval";
-  const review = workspaceConversationId
-    ? state.reviewByConversation[workspaceConversationId]
-    : undefined;
-  const currentPairId = workspaceConversation?.pair_id ?? state.pair?.pair_id ?? null;
-
   return {
-    status: state.status,
-    resyncing: state.resyncing,
-    theme: state.theme,
-    currentPairId,
-    navigation: state.pair
-      ? {
-          projects,
-          currentProjectId: state.currentProjectId,
-          currentConversationId: navigationConversationId,
-          currentPair: state.pair,
-          pairs: state.pairs,
-        }
-      : null,
-    chatTabs: presentChatTabs(state),
-    workspace: workspaceConversation
-      ? {
-          mode: selectWindowMode(state),
-          character: {
-            conversationId: workspaceConversation.conversation_id,
-            messages: characterMessages,
-            isStreaming: characterMessages.some((message) => message.streaming === true),
-            queueItems: queuedItemsFor(state, workspaceConversation.conversation_id),
-          },
-          assistant: {
-            conversationId: workspaceConversation.conversation_id,
-            messages: assistantMessages,
-            toolRuns: assistantTools,
-            items: presentWorkbenchItems(assistantMessages, assistantTools),
-            busy: state.busy,
-            activeTask: state.activeTask,
-          },
-          delegation: presentDelegation(state, workspaceConversation.conversation_id),
-        }
-      : null,
-    composer: {
-      target: selectComposerTarget(state),
-      enabled: state.status === "ready" && workspaceConversation !== undefined,
-      approvalMode,
-      reasoningEffort: windowProject?.reasoning_effort ?? "low",
-      asrPartial: state.voice.asr_partial,
-    },
-    approval: {
-      mode: approvalMode,
-      pending: state.approvals.map((approval) => ({
-        ...approval,
-        resolving: Boolean(state.approvalResolvingById[approval.approval_id]),
-      })),
-      reviewActive: review?.active ?? false,
-      reviewText: review?.text ?? null,
-    },
-    voice: {
-      ...state.voice,
-      canPushToTalk: state.status === "ready",
-    },
-    error: state.error,
-    queueItems: workspaceConversationId ? presentQueueItems(state, workspaceConversationId) : [],
-    toasts: state.toasts as ToastItem[],
-    voiceMiniPlayer: presentVoiceMiniPlayer(state),
-    accountGate: presentAccountGate(state),
-    onboarding:
-      state.currentAccount !== null &&
-      state.currentAccount.username !== "default" &&
-      state.currentAccount.onboarding_complete === false,
-    settings: presentSettings(state),
-    // 角色卡与远程配对在 store 层已按视图模型形状维护，直接透传。
-    mainView: state.mainView,
-    characterLibrary: state.characterLibrary,
-    characterCreate: state.characterCreate,
-    remotePairing: state.remotePairing,
+    projects,
+    currentProjectId: state.currentProjectId,
+    currentConversationId: navigationConversationId,
+    currentPair: state.pair,
+    pairs: state.pairs,
   };
+}
+
+const CHAT_TAB_FIELDS = [
+  "openConversationIds",
+  "conversationsById",
+  "activeTasksByConversation",
+  "queueItemsByConversation",
+  "approvals",
+  "activeConversationId",
+  "syncingConversationIds",
+] as const;
+
+/** 聊天标签视图：标题取自会话记录，状态点只反映该聊天自己的运行、排队与待审批。 */
+function presentChatTabs(
+  state: Pick<DesktopRenderState, (typeof CHAT_TAB_FIELDS)[number]>,
+): ChatTabsViewModel[] {
+  return state.openConversationIds.map((conversationId) => {
+    const conversation = state.conversationsById[conversationId];
+    return {
+      conversationId,
+      title: conversation.title,
+      isRunning: Boolean(state.activeTasksByConversation[conversationId]),
+      isQueued: (state.queueItemsByConversation[conversationId] ?? []).some(
+        (item) => item.status === "queued" || item.status === "processing",
+      ),
+      isWaitingApproval: state.approvals.some(
+        (approval) => approval.conversation_id === conversationId,
+      ),
+      isActive: conversationId === state.activeConversationId,
+      isSyncing: Boolean(state.syncingConversationIds[conversationId]),
+    };
+  });
+}
+
+/** 审批模式与推理档位是项目设置，取本窗口活动标签所属项目。 */
+function windowProjectOf(
+  state: Pick<DesktopRenderState, "activeProjectId" | "currentProjectId" | "projectsById">,
+) {
+  const projectId = selectWindowProjectId(state);
+  return projectId ? state.projectsById[projectId] : undefined;
+}
+
+const COMPOSER_FIELDS = [
+  "composerTarget",
+  "activeConversationId",
+  "conversationsById",
+  "status",
+  "activeProjectId",
+  "currentProjectId",
+  "projectsById",
+  "voice",
+] as const;
+
+function presentComposer(
+  state: Pick<DesktopRenderState, (typeof COMPOSER_FIELDS)[number]>,
+): ComposerViewModel {
+  const windowProject = windowProjectOf(state);
+  return {
+    target: selectComposerTarget(state),
+    enabled:
+      state.status === "ready" &&
+      state.activeConversationId !== null &&
+      state.conversationsById[state.activeConversationId] !== undefined,
+    approvalMode: windowProject?.approval_mode ?? "request_approval",
+    reasoningEffort: windowProject?.reasoning_effort ?? "low",
+    asrPartial: state.voice.asr_partial,
+  };
+}
+
+const APPROVAL_FIELDS = [
+  "approvals",
+  "approvalResolvingById",
+  "reviewByConversation",
+  "activeConversationId",
+  "activeProjectId",
+  "currentProjectId",
+  "projectsById",
+] as const;
+
+function presentApproval(
+  state: Pick<DesktopRenderState, (typeof APPROVAL_FIELDS)[number]>,
+): ApprovalViewModel {
+  const review = state.activeConversationId
+    ? state.reviewByConversation[state.activeConversationId]
+    : undefined;
+  return {
+    mode: windowProjectOf(state)?.approval_mode ?? "request_approval",
+    pending: state.approvals.map((approval) => ({
+      ...approval,
+      resolving: Boolean(state.approvalResolvingById[approval.approval_id]),
+    })),
+    reviewActive: review?.active ?? false,
+    reviewText: review?.text ?? null,
+  };
+}
+
+function presentVoice(state: Pick<DesktopRenderState, "voice" | "status">): VoiceViewModel {
+  return { ...state.voice, canPushToTalk: state.status === "ready" };
+}
+
+/** 语音设置页「角色音色」区视图模型，卡列表来自 characterLibrary。 */
+export function presentCharacterCardVoicePage(
+  state: Pick<DesktopRenderState, "characterLibrary" | "configSnapshot">,
+): CharacterCardVoicePageViewModel {
+  const cards = state.characterLibrary.cards.map((card): CharacterCardVoicePageViewModel["cards"][number] => ({
+    cardId: card.cardId,
+    name: card.name,
+    state: card.state,
+    source: card.source,
+    hasAvatar: card.hasAvatar,
+    voiceState: card.voiceState,
+    active: card.active,
+    readOnly: card.readOnly,
+  }));
+  return { voiceConfigured: presentVoiceConfigured(state.configSnapshot), cards };
+}
+
+/**
+ * 创建带缓存的 AppShell 视图模型投影。各区域只在自己读取的 store 字段变化时重算，
+ * 结果与上次逐字段相同时沿用上次的对象；流式分片只换掉工作区里变化的那条消息。
+ */
+export function createAppShellPresenter(): (state: DesktopRenderState) => AppShellViewModel {
+  const navigation = memoByFields(NAVIGATION_FIELDS, presentNavigation);
+  const chatTabs = memoByFields(CHAT_TAB_FIELDS, presentChatTabs);
+  const workspace = createWorkspacePresenter();
+  const composer = memoByFields(COMPOSER_FIELDS, presentComposer);
+  const approval = memoByFields(APPROVAL_FIELDS, presentApproval);
+  const voice = memoByFields(["voice", "status"], presentVoice);
+  const queueItems = memoByFields(
+    ["queueItemsByConversation", "activeTasksByConversation", "activeConversationId"],
+    presentQueueItems,
+  );
+  const voiceMiniPlayer = memoByFields(["pair", "voice"], presentVoiceMiniPlayer);
+  const accountGate = memoByFields(["currentAccount", "accounts", "status"], presentAccountGate);
+  const settings = memoByFields(SETTINGS_FIELDS, presentSettings);
+  let previous: AppShellViewModel | null = null;
+
+  return (state) => {
+    const workspaceConversation = state.activeConversationId
+      ? state.conversationsById[state.activeConversationId]
+      : undefined;
+    const next: AppShellViewModel = {
+      status: state.status,
+      resyncing: state.resyncing,
+      theme: state.theme,
+      currentPairId: workspaceConversation?.pair_id ?? state.pair?.pair_id ?? null,
+      navigation: navigation(state),
+      chatTabs: chatTabs(state),
+      workspace: workspace(state),
+      composer: composer(state),
+      approval: approval(state),
+      voice: voice(state),
+      error: state.error,
+      queueItems: queueItems(state),
+      toasts: state.toasts as ToastItem[],
+      voiceMiniPlayer: voiceMiniPlayer(state),
+      accountGate: accountGate(state),
+      onboarding:
+        state.currentAccount !== null &&
+        state.currentAccount.username !== "default" &&
+        state.currentAccount.onboarding_complete === false,
+      settings: settings(state),
+      // 角色卡与远程配对在 store 层已按视图模型形状维护，直接透传。
+      mainView: state.mainView,
+      characterLibrary: state.characterLibrary,
+      characterCreate: state.characterCreate,
+      remotePairing: state.remotePairing,
+    };
+    previous = previous === null ? next : keepIfShallowEqual(previous, next);
+    return previous;
+  };
+}
+
+/** 一次性投影，不跨调用缓存。 */
+export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
+  return createAppShellPresenter()(state);
 }

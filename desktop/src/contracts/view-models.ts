@@ -9,6 +9,7 @@ import type {
   PairSummary,
   PendingApproval,
   ProjectRecord,
+  ReasoningEffort,
   ToolRun,
   VoiceState,
 } from "./protocol";
@@ -51,6 +52,8 @@ export interface ChatTabsViewModel {
   /** 该聊天有待审批项。 */
   isWaitingApproval: boolean;
   isActive: boolean;
+  /** 已用缓存切到该聊天，正在等待 conversation.open 的权威结果。 */
+  isSyncing: boolean;
 }
 
 export interface NavigationViewModel {
@@ -102,7 +105,7 @@ export interface ComposerViewModel {
   target: "character" | "assistant";
   enabled: boolean;
   approvalMode: ApprovalMode;
-  reasoningEffort: string;
+  reasoningEffort: ReasoningEffort;
   asrPartial: string;
 }
 

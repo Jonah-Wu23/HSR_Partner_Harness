@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 interface ReasoningRibbonProps {
   /** 思考增量文本（后端只推干净 reasoning，原始 JSON 永不进这里）。 */
@@ -23,15 +23,16 @@ export function ReasoningRibbon({ text, streaming, expanded: controlledExpanded,
   };
   const bodyRef = useRef<HTMLDivElement>(null);
 
-  // 流式期间始终贴底，呈现打字机效果
-  useEffect(() => {
-    const body = bodyRef.current;
-    if (body && streaming) body.scrollTop = body.scrollHeight;
+  // 流式期间始终贴底，呈现打字机效果；在绘制前完成，新文字不会先在旧位置闪一帧。
+  useLayoutEffect(() => {
+    if (!streaming) return;
+    const body = bodyRef.current!;
+    body.scrollTop = body.scrollHeight;
   }, [text, streaming]);
 
-  // 思考结束自动收成摘要
+  // 思考结束自动收成摘要。受控时外部按 streaming 给出默认展开值，这里只收起本地状态。
   useEffect(() => {
-    if (previousStreamingRef.current && !streaming) setExpanded(false);
+    if (previousStreamingRef.current && !streaming) setLocalExpanded(false);
     previousStreamingRef.current = streaming;
   }, [streaming]);
 

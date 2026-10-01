@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { HarnessActions } from "../../contracts/actions";
 import { selectWindowProjectId, useDesktopStore } from "../../stores/desktopStore";
 import { ContextStatusStrip } from "./ContextStatusStrip";
@@ -14,7 +15,9 @@ interface ContextStatusStripHostProps {
  * summaries 为 null 表示该聊天还没有摘要事件；重新生成目标只在 summary.failed 后出现；
  * projectId 为 null 表示日常聊天（无项目），组件说明不读写长期记忆。
  */
-export function ContextStatusStripHost({ actions }: ContextStatusStripHostProps) {
+export const ContextStatusStripHost = memo(function ContextStatusStripHost({
+  actions,
+}: ContextStatusStripHostProps) {
   const conversationId = useDesktopStore((state) => state.activeConversationId);
   const summaries = useDesktopStore((state) =>
     conversationId ? (state.summariesByConversation[conversationId] ?? null) : null,
@@ -33,4 +36,4 @@ export function ContextStatusStripHost({ actions }: ContextStatusStripHostProps)
       projectId={projectId}
     />
   );
-}
+});
