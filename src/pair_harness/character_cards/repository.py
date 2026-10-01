@@ -1,18 +1,5 @@
-"""角色卡持久化仓库（V0.3.3 强逻辑 AI 轨道，成员 A）。
-
-本模块复用 :class:`SQLiteStore` 的同一连接，把所有角色卡读写集中到一张
-``character_cards`` 表。序列化只走 :func:`codec.load_card_json` /
-:func:`codec.dump_card_v3`，本模块不得重新实现解析、不得二次清洗字段。
-
-生命周期说明：
-
-- 角色卡本体生命周期状态（draft / saved / imported / invalid）存表的 ``state`` 列；
-- 归档集合不引入新的状态值，而是用 ``app_state`` 键 ``character_cards.archived``
-  （JSON 数组，存已归档 card_id）承载；
-- “正在使用”的角色卡用 ``app_state`` 键 ``character_cards.active`` 记录单一值。
-
-真实失败（主键冲突、库损坏、解析失败、不存在的卡）直接抛出，不吞。
-"""
+# 角色卡存于 character_cards 表，序列化统一走 codec。生命周期状态存 state 列；
+# 归档集合与当前使用的卡存于 app_state，不占用 state 取值。
 
 from __future__ import annotations
 
@@ -24,6 +11,7 @@ from uuid import uuid4
 
 from pair_harness.character_cards.codec import dump_card_v3, load_card_json
 from pair_harness.character_cards.models import CharacterCard, HsrExtension, VoiceProfile
+from pair_harness.character_cards.states import CharacterVoiceState
 from pair_harness.storage.sqlite_store import SQLiteStore
 
 # app_state 键：已归档角色卡 id 集合（JSON 数组）。
@@ -66,7 +54,6 @@ class CharacterCardRepository:
     """角色卡持久化仓库，复用 ``store.connection``。"""
 
     def __init__(self, store: SQLiteStore) -> None:
-        self.store = store
         self.connection = store.connection
 
     # ---------------------------------------------------------------- 查询
@@ -138,21 +125,18 @@ class CharacterCardRepository:
     def import_card(self, card: CharacterCard, *, as_duplicate: bool = False) -> CardRecord:
         """导入一张解析后的卡：state=imported, source=tavern_import，新 card_id。
 
-        ``as_duplicate=True`` 时名称追加「（副本）」——deepcopy 后修改，
-        不改变传入对象。语义与 create_draft/update_card 一致：真实失败直接抛。
+        ``as_duplicate=True`` 时在副本上给名称追加「（副本）」，不改变传入对象。
+        导入文件里的资产引用指向其他设备的资产库，按导出形态落库去掉。
         """
-        if as_duplicate:
-            card_to_store = copy.deepcopy(card)
-            card_to_store.name = f"{card_to_store.name}（副本）"
-        else:
-            card_to_store = card
+        name = f"{card.name}（副本）" if as_duplicate else card.name
+        card_to_store = replace(card, name=name)
         card_id = uuid4().hex
         now = _now()
         self.connection.execute(
             "INSERT INTO character_cards("
             "card_id, state, name, source, card_json, created_at, updated_at"
             ") VALUES (?, 'imported', ?, 'tavern_import', ?, ?, ?)",
-            (card_id, card_to_store.name, dump_card_v3(card_to_store), now, now),
+            (card_id, name, dump_card_v3(card_to_store, for_export=True), now, now),
         )
         self.connection.commit()
         return self.get_card(card_id)
@@ -225,7 +209,7 @@ class CharacterCardRepository:
         self.connection.commit()
 
     def publish_card(self, card_id: str) -> CardRecord:
-        """V0.3.5：draft → saved（完成创建）。非 draft 幂等返回当前记录。"""
+        """完成创建：draft 改为 saved；其他状态原样返回当前记录。"""
         record = self.get_card(card_id)
         if record.state != "draft":
             return record
@@ -238,7 +222,7 @@ class CharacterCardRepository:
         return self.get_card(card_id)
 
     def is_archived(self, card_id: str) -> bool:
-        """V0.3.5：卡是否在归档集合（active 快照判断用）。"""
+        """卡是否在归档集合。"""
         return card_id in self._archived_ids()
 
     def get_active_card_id(self) -> str | None:
@@ -260,8 +244,8 @@ class CharacterCardRepository:
     def _voice_state(card: CharacterCard) -> str:
         hsr = card.hsr
         if hsr is None or hsr.voice_profile is None:
-            return "voice_unconfigured"
-        return hsr.voice_profile.state or "voice_unconfigured"
+            return CharacterVoiceState.UNCONFIGURED.value
+        return hsr.voice_profile.state
 
     def _summary_from_row(self, row, active: bool) -> CardSummary:
         card = load_card_json(row["card_json"]).card

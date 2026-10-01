@@ -1,9 +1,5 @@
-"""Character Card v2/v3 JSON 导入与 v3 JSON 导出（纯编解码）。
-
-只做协议一致性：根级兼容字段与 ``data`` 正式字段归一化、未知合法
-扩展原样保留、缺失/非法字段直接失败。不做语义猜测，不执行任何
-导入内容，不把失败改写为空卡。
-"""
+# Character Card v2/v3 JSON 导入与 v3 JSON 导出。只做结构校验与归一化：未知合法扩展原样保留，
+# 缺失或非法字段直接失败，导入内容一律不执行。字段契约见 docs/character-card/角色卡数据契约.md。
 
 from __future__ import annotations
 
@@ -17,7 +13,6 @@ from pair_harness.character_cards.activation import (
 )
 from pair_harness.character_cards.macros import find_macros
 from pair_harness.character_cards.models import (
-    FIXED_TTS_MODEL,
     HSR_SCHEMA_VERSION,
     AvatarAsset,
     CharacterBook,
@@ -25,7 +20,9 @@ from pair_harness.character_cards.models import (
     HsrExtension,
     VoiceProfile,
     WorldBookEntry,
+    parse_depth_prompt,
 )
+from pair_harness.voice_models import VOICE_TTS_MODEL
 
 EXPORT_SPEC = "chara_card_v3"
 EXPORT_SPEC_VERSION = "3.0"
@@ -57,17 +54,21 @@ _DATA_RESERVED_KEYS = _ROOT_STANDARD_KEYS | {"extensions", "character_book"}
 # Character Book v3 在 v2 基础上增补的条目字段。
 _ENTRY_V3_FIELDS = ("name", "case_sensitive", "priority")
 
-# 世界书支持的 position 值（契约 §3.6，与激活引擎一致）。
+# 世界书支持的 position 值，与激活引擎一致。
 _SUPPORTED_POSITIONS = frozenset({"before_char", 0, "after_char", 1, "atDepth", 4})
+
+# SillyTavern 导入世界书时先读 extensions.position 数值，缺失时顶层 position 只认
+# before_char，其余一律当作 after_char。顶层为 atDepth 或数值时，导出补写 extensions.position。
+_ST_POSITION_VALUES = {"atDepth": 4, 4: 4, 0: 0, 1: 1}
 
 # 只在本机资产库有效的引用字段；导出给其他设备的文件不写出。
 _LOCAL_AVATAR_KEYS = frozenset({"asset_id"})
 _LOCAL_VOICE_KEYS = frozenset({"reference_audio_asset", "voice_prompt_asset"})
 
-# 数据宏白名单（契约 §5.2）：大小写敏感、精确匹配这两个 token。
+# 数据宏白名单：大小写敏感、精确匹配这两个 token。
 _WHITELIST_MACROS = frozenset({"{{char}}", "{{user}}"})
 
-# 关键字 ``/pattern/flags`` 形态与可编译 flags（契约 §3.3，与激活引擎一致）。
+# 关键字 ``/pattern/flags`` 形态与可编译 flags，与激活引擎一致。
 _REGEX_FORM_RE = re.compile(r"^/(.+)/([gimsuy]*)$")
 _REGEX_FLAG_MAP = {"i": re.IGNORECASE, "m": re.MULTILINE, "s": re.DOTALL}
 
@@ -101,42 +102,25 @@ _WORLD_BOOK_NOT_RUN_FIELDS = (
 
 
 class CardImportError(ValueError):
-    """角色卡导入失败（JSON 非法、缺必填字段、结构不符）。
-
-    携带可读原因；调用方据此把卡置为 ``invalid`` 并保留原始错误。
-    """
+    """角色卡导入失败：JSON 非法、缺必填字段或结构不符，消息携带可读原因。"""
 
 
 @dataclass
 class CompatReport:
-    """导入/导出兼容报告。
+    """导入兼容报告。
 
-    - ``applied``：已进入内部规范模型并将在运行时装配的模块。
-    - ``preserved``：未识别但合法、已原样保留的字段路径。
-    - ``not_executed``：已保留但永不会作为应用代码执行的字段路径
-      （政策性声明，与内容无关；本模块从不执行任何导入内容）。
-    - ``normalized_from_root``：因 ``data`` 缺失而从根级兼容字段读取的字段。
-    - ``warnings`` / ``errors``：软告警与致命错误（errors 非空时导入失败）。
+    - ``applied``：进入内部模型并在运行时装配的模块。
+    - ``preserved``：未识别但合法、原样保留的字段路径。
+    - ``not_executed``：保留但永不作为应用代码执行的字段路径。
+    - ``normalized_from_root``：因 ``data`` 缺失而取自根级兼容副本的字段。
     """
 
-    spec: str = ""
     applied: list[str] = field(default_factory=list)
     preserved: list[str] = field(default_factory=list)
     not_executed: list[str] = field(default_factory=list)
     normalized_from_root: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
-
-    def to_dict(self) -> dict:
-        return {
-            "spec": self.spec,
-            "applied": list(self.applied),
-            "preserved": list(self.preserved),
-            "not_executed": list(self.not_executed),
-            "normalized_from_root": list(self.normalized_from_root),
-            "warnings": list(self.warnings),
-            "errors": list(self.errors),
-        }
 
 
 @dataclass
@@ -159,18 +143,16 @@ def load_card_json(text: str) -> ImportResult:
 
 
 def load_card_payload(payload: dict) -> ImportResult:
-    """解析已反序列化的角色卡字典（PNG 元数据复用同一入口）。"""
+    """解析已反序列化的角色卡字典。"""
     report = CompatReport()
     spec_raw = payload.get("spec")
     spec = spec_raw if isinstance(spec_raw, str) else ""
     if spec not in ("chara_card_v2", "chara_card_v3"):
-        # SillyTavern 导出的 v2 卡常缺少 spec；只要存在标准结构即可导入，
-        # 但必须在报告中说明，不能静默当作确认过的 v3。
+        # SillyTavern 导出的 v2 卡常缺少 spec，按 v2 结构导入并在报告中说明。
         if spec:
             raise CardImportError(f"不支持的 spec: {spec!r}")
         report.warnings.append("缺少 spec 字段，按 v2 兼容结构解析")
         spec = "chara_card_v2"
-    report.spec = spec
     spec_version = _take_str(payload, "spec_version")
 
     data = payload.get("data")
@@ -220,17 +202,19 @@ def load_card_payload(payload: dict) -> ImportResult:
         raise CardImportError(
             f"data.extensions.hsr 必须是 JSON 对象，得到 {type(hsr_raw).__name__}"
         )
-    hsr = _load_hsr(hsr_raw) if isinstance(hsr_raw, dict) else None
-    if hsr is not None:
-        _voice = hsr.voice_profile
-        _raw_voice = hsr_raw.get("voice_profile") if isinstance(hsr_raw, dict) else None
-        _raw_model = (
-            _raw_voice.get("target_model") if isinstance(_raw_voice, dict) else None
-        )
-        if _raw_model not in (None, "", FIXED_TTS_MODEL):
+    depth_raw = extensions.get("depth_prompt")
+    if isinstance(depth_raw, dict) and not isinstance(depth_raw.get("entries"), list):
+        try:
+            parse_depth_prompt(depth_raw)
+        except ValueError as exc:
+            raise CardImportError(f"data.extensions.{exc}") from exc
+    hsr = _load_hsr(hsr_raw) if hsr_raw is not None else None
+    if hsr is not None and hsr.voice_profile is not None:
+        raw_model = hsr_raw["voice_profile"].get("target_model")
+        if raw_model not in (None, "", VOICE_TTS_MODEL):
             report.warnings.append(
-                f"导入卡 voice_profile.target_model={_raw_model!r} 与固定模型不符，"
-                f"已按产品常量归一为 {FIXED_TTS_MODEL}"
+                f"导入卡 voice_profile.target_model={raw_model!r} 与固定模型不符，"
+                f"已按产品常量归一为 {VOICE_TTS_MODEL}"
             )
     report.preserved.extend(f"data.extensions.{key}" for key in extensions)
 
@@ -263,11 +247,8 @@ def load_card_payload(payload: dict) -> ImportResult:
     if hsr is not None:
         report.applied.append("data.extensions.hsr")
         if hsr.command_panels:
-            # 政策性声明：声明式面板只作为数据保留与呈现，永不执行。
+            # 声明式面板只作为数据保留与呈现，永不执行。
             report.not_executed.append("data.extensions.hsr.command_panels")
-    # 兼容报告增补（契约 §11）：世界书存而不运行字段、非白名单宏、
-    # runtime_trigger 非 turn kind，以及关键字非法正则退化的警告。
-    # 只在成功路径上做静态扫描，不改变 errors 语义。
     _extend_compat_report(card, report)
     return ImportResult(card=card, report=report)
 
@@ -277,7 +258,8 @@ def dump_card_v3(card: CharacterCard, *, for_export: bool = False) -> str:
 
     ``data`` 为正式字段权威位置；根级写标准字段兼容副本与原根级
     未知字段，保持 SillyTavern 的读写惯例。本机存储与界面往返用缺省
-    参数；``for_export=True`` 用于写出 JSON/PNG 文件，去掉本机资产库引用。
+    参数；``for_export=True`` 生成可在其他设备使用的形态：去掉本机资产库
+    引用，并为世界书条目补写 SillyTavern 能识别的 ``extensions.position``。
     """
     data = _card_data_dict(card, for_export=for_export)
     root: dict = {}
@@ -300,7 +282,7 @@ def _card_data_dict(card: CharacterCard, *, for_export: bool) -> dict:
     if extensions:
         data["extensions"] = extensions
     if card.character_book is not None:
-        data["character_book"] = _book_to_dict(card.character_book)
+        data["character_book"] = _book_to_dict(card.character_book, for_export=for_export)
     return data
 
 
@@ -420,7 +402,6 @@ def _load_hsr(raw: dict) -> HsrExtension:
         raise CardImportError("hsr.avatar_asset 必须是 JSON 对象")
     if voice_raw is not None and not isinstance(voice_raw, dict):
         raise CardImportError("hsr.voice_profile 必须是 JSON 对象")
-    voice = _load_voice_profile(voice_raw) if isinstance(voice_raw, dict) else None
     return HsrExtension(
         schema_version=_take_str(raw, "schema_version") or HSR_SCHEMA_VERSION,
         world_architecture=_take_dict(raw, "world_architecture"),
@@ -429,9 +410,8 @@ def _load_hsr(raw: dict) -> HsrExtension:
         event_system=_take_dict(raw, "event_system"),
         narrative_rules=_take_dict(raw, "narrative_rules"),
         command_panels=list(command_panels),
-        avatar_asset=_load_avatar_asset(avatar_raw)
-        if isinstance(avatar_raw, dict) else None,
-        voice_profile=voice,
+        avatar_asset=_load_avatar_asset(avatar_raw) if avatar_raw is not None else None,
+        voice_profile=_load_voice_profile(voice_raw) if voice_raw is not None else None,
         extras={k: v for k, v in raw.items() if k not in known},
     )
 
@@ -456,8 +436,8 @@ def _load_voice_profile(raw: dict) -> VoiceProfile:
     return VoiceProfile(
         state=_take_str(raw, "state") or "voice_unconfigured",
         voice_id=_take_str(raw, "voice_id"),
-        # 固定模型：忽略外部卡中的任何模型名，统一产品常量。
-        target_model=FIXED_TTS_MODEL,
+        # 忽略外部卡中的模型名，统一为产品常量。
+        target_model=VOICE_TTS_MODEL,
         creation_mode=_take_str(raw, "creation_mode"),
         prefix=_take_str(raw, "prefix"),
         reference_audio_asset=_take_str(raw, "reference_audio_asset"),
@@ -519,8 +499,10 @@ def _hsr_to_dict(hsr: HsrExtension, *, for_export: bool) -> dict:
     return out
 
 
-def _book_to_dict(book: CharacterBook) -> dict:
-    out: dict = {"entries": [_entry_to_dict(entry) for entry in book.entries]}
+def _book_to_dict(book: CharacterBook, *, for_export: bool) -> dict:
+    out: dict = {
+        "entries": [_entry_to_dict(entry, for_export=for_export) for entry in book.entries]
+    }
     if book.name:
         out["name"] = book.name
     if book.description:
@@ -537,7 +519,7 @@ def _book_to_dict(book: CharacterBook) -> dict:
     return out
 
 
-def _entry_to_dict(entry: WorldBookEntry) -> dict:
+def _entry_to_dict(entry: WorldBookEntry, *, for_export: bool) -> dict:
     out: dict = {}
     if entry.entry_id is not None:
         out["id"] = entry.entry_id
@@ -556,8 +538,11 @@ def _entry_to_dict(entry: WorldBookEntry) -> dict:
         value = getattr(entry, v3_field)
         if value is not None:
             out[v3_field] = value
-    if entry.extensions:
-        out["extensions"] = entry.extensions
+    extensions = entry.extensions
+    if for_export and "position" not in extensions and entry.position in _ST_POSITION_VALUES:
+        extensions = {**extensions, "position": _ST_POSITION_VALUES[entry.position]}
+    if extensions:
+        out["extensions"] = extensions
     out.update(entry.extras)
     return out
 
@@ -610,12 +595,7 @@ def _optional_str(source: dict, key: str) -> str | None:
 
 
 def _extend_compat_report(card: CharacterCard, report: CompatReport) -> None:
-    """在导入成功路径上追加静态兼容扫描（契约 §11）。
-
-    只调整 ``not_executed`` 与 ``warnings``，绝不触碰 ``errors`` 语义
-    （errors 非空时仍由调用方决定导入失败）。全部基于输入数据推导，
-    对同一卡重复导入结果完全一致（幂等）。
-    """
+    """静态扫描导入的卡，补充 ``not_executed`` 与 ``warnings``。"""
     book = card.character_book
     if book is not None:
         report.not_executed.extend(_scan_world_book_not_run(book))
@@ -627,33 +607,33 @@ def _extend_compat_report(card: CharacterCard, report: CompatReport) -> None:
 
 
 def _scan_world_book_not_run(book: CharacterBook) -> list[str]:
-    """世界书存而不运行字段（契约 §3.11），返回 ``not_executed`` 条目。"""
+    """世界书中保留但不运行的字段，返回 ``not_executed`` 条目。"""
     items: list[str] = []
     declared: dict[str, list[int]] = {}
     for index, entry in enumerate(book.entries):
         sources = (entry.extensions, entry.extras)
-        for field, keys in _WORLD_BOOK_NOT_RUN_FIELDS:
+        for label, keys in _WORLD_BOOK_NOT_RUN_FIELDS:
             if any(any(k in src for k in keys) for src in sources):
-                declared.setdefault(field, []).append(index)
-    for field, _ in _WORLD_BOOK_NOT_RUN_FIELDS:
-        indices = declared.get(field)
+                declared.setdefault(label, []).append(index)
+    for label, _ in _WORLD_BOOK_NOT_RUN_FIELDS:
+        indices = declared.get(label)
         if not indices:
             continue
         if len(indices) == 1:
-            items.append(f"character_book.entries[{indices[0]}].{field}（存而不运行）")
+            items.append(f"character_book.entries[{indices[0]}].{label}（存而不运行）")
         else:
             items.append(
-                f"character_book.entries[...].{field}（存而不运行，{len(indices)} 处）"
+                f"character_book.entries[...].{label}（存而不运行，{len(indices)} 处）"
             )
 
     # content 首行 ``@@`` 开头的装饰器（@@activate / @@dont_activate 及其他）。
     decorators: dict[str, list[int]] = {}
     for index, entry in enumerate(book.entries):
-        content = (entry.content or "").strip()
+        content = entry.content.strip()
         if not content:
             continue
         first_line = content.splitlines()[0].strip()
-        if first_line.startswith("@@") and first_line:
+        if first_line.startswith("@@"):
             decorators.setdefault(first_line, []).append(index)
     for token, indices in decorators.items():
         if len(indices) == 1:
@@ -663,7 +643,7 @@ def _scan_world_book_not_run(book: CharacterBook) -> list[str]:
                 f"character_book.entries[...].{token}（存而不运行，{len(indices)} 处）"
             )
 
-    # position 不属于支持集合的条目整体排除（契约 §3.6）。
+    # position 不在支持集合内的条目整体不注入。
     for index, entry in enumerate(book.entries):
         position = entry_position(entry)
         if position not in _SUPPORTED_POSITIONS:
@@ -692,7 +672,7 @@ def _scan_entry_warnings(
                     f"character_book.entries[{index}].keyword 非法正则已退化字面匹配: {key}"
                 )
         elif entry.use_regex:
-            # bare key 在 use_regex=True 时按正则编译（契约 §3.3，ST 无此概念）。
+            # use_regex=True 时裸关键字也按正则编译，SillyTavern 没有这一行为。
             flag_chars = "" if entry.case_sensitive else "i"
             try:
                 re.compile(key, _regex_flags(flag_chars))
@@ -717,10 +697,9 @@ def _regex_flags(flag_chars: str) -> int:
 
 
 def _scan_card_macros(card: CharacterCard) -> list[str]:
-    """全卡文本字段非白名单宏扫描（契约 §5.3），返回 ``not_executed`` 条目。
+    """扫描全卡文本字段中的非白名单宏，返回 ``not_executed`` 条目。
 
-    只对字符串值扫描，键名不是值不入扫描；白名单宏 ``{{char}}``/``{{user}}``
-    精确匹配不报告。同一 (宏 token, 字段路径) 按实际出现次数合并计数。
+    只扫描字符串值；同一 (宏 token, 字段路径) 按实际出现次数合并计数。
     """
     counts: dict[tuple[str, str], int] = {}
     order: list[tuple[str, str]] = []
@@ -788,7 +767,7 @@ def _string_leaves(node, prefix):
 
 
 def _extend_runtime_trigger_not_run(hsr: HsrExtension, report: CompatReport) -> None:
-    """runtime_trigger 非 turn kind 存而不运行（契约 §6.1）。"""
+    """kind 不是 turn 的 runtime_trigger 只保留不运行。"""
     paths: dict[int, str] = {}
     _collect_runtime_trigger_paths(hsr.event_system, "", paths)
     for entry, trigger in iter_runtime_trigger_declarations(hsr.event_system):

@@ -1,28 +1,13 @@
-"""Character Card v2/v3 PNG 元数据读取与 v3 PNG 写入。
-
-PNG 角色卡约定（SillyTavern 惯例）：
-
-- v2：``tEXt`` 块，关键字 ``chara``，值为 base64(UTF-8 JSON)；
-- v3：``tEXt`` 块，关键字 ``ccv3``，值为 base64(UTF-8 JSON)。
-
-写入时只写 ``ccv3``（v3 PNG 导出）；读取时 ``ccv3`` 优先，回退
-``chara``。除元数据块外的全部 PNG 块按原始字节复制，头像图像
-数据在导入—导出—再导入过程中保持不变。
-"""
+# PNG 角色卡沿用 SillyTavern 惯例：tEXt 块关键字 chara（v2）或 ccv3（v3），值为 base64(UTF-8 JSON)。
+# 写入只写 ccv3，读取 ccv3 优先；元数据块以外的 PNG 块按原始字节复制，头像图像数据不重编码。
 
 from __future__ import annotations
 
 import base64
-import json
 import struct
 import zlib
 
-from pair_harness.character_cards.codec import (
-    CardImportError,
-    ImportResult,
-    dump_card_v3,
-    load_card_payload,
-)
+from pair_harness.character_cards.codec import ImportResult, dump_card_v3, load_card_json
 from pair_harness.character_cards.models import CharacterCard
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -31,11 +16,11 @@ KEYWORD_V3 = b"ccv3"
 
 
 class PngCardError(ValueError):
-    """PNG 角色卡读取/写入失败（签名不符、缺元数据、base64 或 JSON 非法）。"""
+    """PNG 载体错误：签名或块结构不合法、缺少元数据块、base64/UTF-8 解码失败。"""
 
 
 def _iter_chunks(data: bytes):
-    """按 PNG 块结构迭代，返回 (type, data, start, end)。"""
+    """按 PNG 块结构迭代并校验 CRC，产出 (type, data)。"""
     offset = len(PNG_SIGNATURE)
     chunk_index = 0
     saw_iend = False
@@ -55,7 +40,7 @@ def _iter_chunks(data: bytes):
             raise PngCardError(f"PNG 块 CRC 错误（type={ctype!r}）")
         if chunk_index == 0 and (ctype != b"IHDR" or length != 13):
             raise PngCardError("PNG 首块必须是长度为 13 的 IHDR")
-        yield ctype, cdata, offset, end + 4
+        yield ctype, cdata
         offset = end + 4
         chunk_index += 1
         if ctype == b"IEND":
@@ -70,12 +55,13 @@ def _iter_chunks(data: bytes):
 def read_png_card(data: bytes) -> ImportResult:
     """从 PNG 字节读取角色卡元数据并归一化。
 
-    ``ccv3``（v3）优先于 ``chara``（v2/旧 v3）。
+    载体问题抛 :class:`PngCardError`；卡片 JSON 或字段非法时与 JSON 导入一样抛
+    ``CardImportError``。
     """
     if not data.startswith(PNG_SIGNATURE):
         raise PngCardError("不是合法 PNG 文件（签名不符）")
     payloads: dict[bytes, bytes] = {}
-    for ctype, cdata, _start, _end in _iter_chunks(data):
+    for ctype, cdata in _iter_chunks(data):
         if ctype != b"tEXt":
             continue
         sep = cdata.find(b"\x00")
@@ -96,28 +82,17 @@ def read_png_card(data: bytes) -> ImportResult:
         raise PngCardError(
             f"PNG 元数据 base64/UTF-8 解码失败（关键字 {keyword.decode()}）: {exc}"
         ) from exc
-    try:
-        payload = json.loads(card_json)
-    except json.JSONDecodeError as exc:
-        raise PngCardError(f"PNG 元数据 JSON 解析失败: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise PngCardError("PNG 元数据必须是 JSON 对象")
-    try:
-        result = load_card_payload(payload)
-    except CardImportError as exc:
-        raise PngCardError(f"PNG 角色卡导入失败: {exc}") from exc
-    keyword_note = keyword.decode()
-    result.report.warnings.append(f"PNG 元数据来源 tEXt 关键字: {keyword_note}")
+    result = load_card_json(card_json)
+    result.report.warnings.append(f"PNG 元数据来源 tEXt 关键字: {keyword.decode()}")
     return result
 
 
 def write_png_card(card: CharacterCard, avatar_png: bytes) -> bytes:
     """把 v3 角色卡元数据写入头像 PNG，返回单文件角色卡字节。
 
-    移除原有 ``chara``/``ccv3`` tEXt 块后在 IHDR 之后插入新的
-    ``ccv3`` 块；其余块（含图像数据）原样保留。
+    去掉原有 ``chara``/``ccv3`` tEXt 块，在 IHDR 之后插入新的 ``ccv3`` 块，
+    其余块原样保留。JPEG/WebP 头像无法承载 PNG 块，直接报错。
     """
-    # PNG 卡把元数据写进头像自身的块结构，JPEG/WebP 头像无法承载，直接报错。
     if not avatar_png.startswith(PNG_SIGNATURE):
         raise PngCardError(
             "头像不是 PNG 图片（文件签名不符），无法导出 PNG 角色卡；"
@@ -128,19 +103,16 @@ def write_png_card(card: CharacterCard, avatar_png: bytes) -> bytes:
     chunk = _make_text_chunk(KEYWORD_V3, text)
 
     out = bytearray(PNG_SIGNATURE)
-    inserted = False
-    for ctype, cdata, _start, _end in _iter_chunks(avatar_png):
+    for index, (ctype, cdata) in enumerate(_iter_chunks(avatar_png)):
         if ctype == b"tEXt":
             sep = cdata.find(b"\x00")
             keyword = cdata[:sep] if sep >= 0 else cdata
             if keyword in (KEYWORD_V3, KEYWORD_V2):
-                continue  # 替换旧元数据
+                continue
         out += _chunk_bytes(ctype, cdata)
-        if not inserted and ctype == b"IHDR":
+        # _iter_chunks 已保证首块是 IHDR，元数据块紧随其后。
+        if index == 0:
             out += chunk
-            inserted = True
-    if not inserted:
-        raise PngCardError("头像 PNG 缺少 IHDR 块")
     return bytes(out)
 
 
@@ -155,29 +127,12 @@ def _make_text_chunk(keyword: bytes, text: bytes) -> bytes:
 
 
 def png_image_dimensions(data: bytes) -> tuple[int, int] | None:
-    """探测 PNG 头像尺寸（IHDR 宽高），不做完整校验。
+    """读取已通过 :func:`read_png_card` 校验的 PNG 的 IHDR 宽高。
 
-    本函数只做尺寸探测：校验 PNG 签名后读取首块 IHDR 数据区的宽高
-    （大端 uint32，偏移 0 与 4）。宽高为 0 或超过 ``2**31 - 1`` 视为
-    非法，返回 None。任何畸形输入（签名不符、首块非 IHDR、IHDR 长度
-    或数据截断、数据区不足 8 字节）一律返回 None，不抛异常。
-
-    完整校验（块结构、CRC、IEND、元数据解码）是
-    :func:`read_png_card` 的职责；本函数供 ``card.peek_import`` 的
-    PNG 分支快速取头像尺寸，解析失败如实返回 None 并入 warnings。
+    首块必为 IHDR，宽高是数据区前 8 字节。宽高为 0 或超过 PNG 规范上限
+    ``2**31 - 1`` 时返回 None。
     """
-    if not data.startswith(PNG_SIGNATURE):
-        return None
-    # 首块头紧跟 8 字节签名：4 字节长度 + 4 字节块类型。
-    if len(data) < len(PNG_SIGNATURE) + 12:
-        return None
-    (length,) = struct.unpack(">I", data[8:12])
-    if data[12:16] != b"IHDR" or length < 8:
-        return None
-    if len(data) < 16 + 8:
-        return None
     width, height = struct.unpack(">II", data[16:24])
-    max_dim = 2**31 - 1
-    if width <= 0 or height <= 0 or width > max_dim or height > max_dim:
+    if not (0 < width < 2**31 and 0 < height < 2**31):
         return None
     return width, height
