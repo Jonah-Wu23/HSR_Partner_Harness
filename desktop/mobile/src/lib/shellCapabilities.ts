@@ -91,22 +91,13 @@ export function onShellEnvironmentChange(
   };
 }
 
-/** 停止壳环境轮询；最后一个订阅者退订时调用，测试也用它复位模块状态。 */
-export function resetShellEnvironmentWatch(): void {
+/** 停止壳环境轮询；最后一个订阅者退订时调用。 */
+function resetShellEnvironmentWatch(): void {
   shellPollActive = false;
   if (shellPollTimer !== null) {
     window.clearTimeout(shellPollTimer);
     shellPollTimer = null;
   }
-}
-
-/** 通知插件 JS API 的最小形状（@tauri-apps/plugin-notification v2 核心函数）。 */
-export interface NotificationModuleLike {
-  isPermissionGranted: () => Promise<boolean>;
-  requestPermission: () => Promise<boolean>;
-  sendNotification: (options: NotificationSendOptions) => void;
-  /** Android 8+ 通知必须先建渠道：channelId 指向不存在的渠道时通知不投递。 */
-  createChannel: (channel: NotificationChannelLike) => Promise<void> | void;
 }
 
 /** 发送本地通知的最小参数（@tauri-apps/plugin-notification v2 Options 子集）。 */
@@ -131,79 +122,18 @@ export type NotificationCapability =
   | { kind: "unavailable"; reason: "plugin_unavailable" }
   | { kind: "ready"; permission_granted: boolean };
 
-type NotificationModuleLoader = () => Promise<unknown> | unknown;
-
-function loadNotificationModule(): unknown {
-  // 插件模块静态导入，打包期已解析；没有注册插件的环境在调用时失败，由探测结果反映。
-  return {
-    isPermissionGranted,
-    requestPermission,
-    sendNotification,
-    createChannel,
-  };
-}
-
-let notificationModuleLoader: NotificationModuleLoader = loadNotificationModule;
-
-/** 已就绪的模块缓存（loader 可能是异步的，首次加载后缓存 resolve 值）。 */
-let notificationModuleReady: Promise<unknown> | null = null;
-
-/** 替换通知插件加载器（测试用），传 null 恢复静态导入的插件。 */
-export function setNotificationModuleLoader(
-  loader: NotificationModuleLoader | null,
-): void {
-  notificationModuleLoader = loader ?? loadNotificationModule;
-  notificationModuleReady = null;
-}
-
-function isNotificationModule(value: unknown): value is NotificationModuleLike {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Record<string, unknown>;
-  return (
-    typeof candidate.isPermissionGranted === "function" &&
-    typeof candidate.requestPermission === "function" &&
-    typeof candidate.sendNotification === "function" &&
-    typeof candidate.createChannel === "function"
-  );
-}
-
-function loadNotificationModuleOnce(): Promise<unknown> {
-  if (notificationModuleReady === null) {
-    notificationModuleReady = Promise.resolve(notificationModuleLoader());
-  }
-  return notificationModuleReady;
-}
-
 /**
  * 探测当前环境能否发起本地通知，结果写在返回值里：
- * - PWA 返回 not_shell，不加载插件；
- * - 壳内插件缺失或调用失败返回 plugin_unavailable，原始错误进日志；
+ * - PWA 返回 not_shell，不调用插件；
+ * - 壳内插件未注册或调用失败返回 plugin_unavailable，原始错误进日志；
  * - 插件可调用返回 ready 与授权状态（false 表示尚未授权或已被拒绝）。
  */
 export async function probeNotificationCapability(): Promise<NotificationCapability> {
-  const environment = detectShellEnvironment();
-  if (environment === "pwa") {
+  if (detectShellEnvironment() === "pwa") {
     return { kind: "unavailable", reason: "not_shell" };
   }
-  let moduleValue: unknown;
   try {
-    moduleValue = await loadNotificationModuleOnce();
-  } catch (error) {
-    console.warn("[shellCapabilities] 通知插件加载失败，按不可用处理：", error);
-    return { kind: "unavailable", reason: "plugin_unavailable" };
-  }
-  if (!isNotificationModule(moduleValue)) {
-    // null/undefined 表示插件包本身不存在；对象存在但缺 API 才值得保留诊断日志。
-    if (moduleValue !== null && moduleValue !== undefined) {
-      console.warn(
-        "[shellCapabilities] 通知插件已加载但缺少约定 API（isPermissionGranted/requestPermission/sendNotification），按不可用处理。",
-      );
-    }
-    return { kind: "unavailable", reason: "plugin_unavailable" };
-  }
-  try {
-    const granted = await moduleValue.isPermissionGranted();
-    return { kind: "ready", permission_granted: granted === true };
+    return { kind: "ready", permission_granted: await isPermissionGranted() };
   } catch (error) {
     console.warn("[shellCapabilities] 通知权限查询失败，按不可用处理：", error);
     return { kind: "unavailable", reason: "plugin_unavailable" };
@@ -212,31 +142,22 @@ export async function probeNotificationCapability(): Promise<NotificationCapabil
 
 /**
  * 申请系统通知权限（Android 13+ 的 POST_NOTIFICATIONS 运行时弹窗），只在探测结果为 ready 时调用。
- * 插件缺失时抛错；返回 false 表示用户拒绝或系统策略未放行。
+ * 插件返回 granted 时为 true；denied（拒绝）与 default（未作选择）为 false，调用失败抛出原始错误。
  */
 export async function requestNotificationPermission(): Promise<boolean> {
-  const moduleValue: unknown = await loadNotificationModuleOnce();
-  if (!isNotificationModule(moduleValue)) {
-    throw new Error("当前环境未加载通知能力，无法申请系统通知权限");
-  }
-  return (await moduleValue.requestPermission()) === true;
+  return (await requestPermission()) === "granted";
 }
 
 /**
- * 发送一条本地通知。插件缺失或调用失败时记日志并跳过这一条，
+ * 发送一条本地通知。插件调用失败时记日志并跳过这一条，
  * 通知引擎的事件处理不因单条通知失败而中断。
  */
 export function sendLocalNotification(options: NotificationSendOptions): void {
-  void loadNotificationModuleOnce()
-    .then((moduleValue) => {
-      if (!isNotificationModule(moduleValue)) {
-        throw new Error("当前环境未加载通知能力，无法发送本地通知");
-      }
-      moduleValue.sendNotification(options);
-    })
-    .catch((error: unknown) => {
-      console.warn("[shellCapabilities] 本地通知发送失败，跳过该条：", error);
-    });
+  try {
+    sendNotification(options);
+  } catch (error) {
+    console.warn("[shellCapabilities] 本地通知发送失败，跳过该条：", error);
+  }
 }
 
 /**
@@ -244,23 +165,13 @@ export function sendLocalNotification(options: NotificationSendOptions): void {
  * 单个渠道创建失败记日志，不影响其余渠道。
  */
 export function ensureNotificationChannels(channels: NotificationChannelLike[]): void {
-  void loadNotificationModuleOnce()
-    .then(async (moduleValue) => {
-      if (!isNotificationModule(moduleValue)) {
-        throw new Error("当前环境未加载通知能力，无法创建通知渠道");
+  void (async () => {
+    for (const channel of channels) {
+      try {
+        await createChannel(channel);
+      } catch (error) {
+        console.warn(`[shellCapabilities] 通知渠道创建失败 ${channel.id}：`, error);
       }
-      for (const channel of channels) {
-        try {
-          await moduleValue.createChannel(channel);
-        } catch (error) {
-          console.warn(
-            `[shellCapabilities] 通知渠道创建失败 ${channel.id}：`,
-            error,
-          );
-        }
-      }
-    })
-    .catch((error: unknown) => {
-      console.warn("[shellCapabilities] 通知渠道初始化失败：", error);
-    });
+    }
+  })();
 }

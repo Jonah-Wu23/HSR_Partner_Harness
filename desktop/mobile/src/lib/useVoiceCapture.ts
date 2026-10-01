@@ -55,11 +55,12 @@ function buildDisabledReason(
       ? "等待与桌面端连接…"
       : "与桌面端连接已断开，无法使用语音。";
   }
-  if (!availability.supported) {
-    return "当前浏览器不支持麦克风采集。";
-  }
+  // 浏览器在非安全上下文不提供麦克风接口，先给出 HTTPS 指引。
   if (!availability.secureContext) {
     return `当前为 HTTP 局域网连接，${DOCS_HINT}`;
+  }
+  if (!availability.supported) {
+    return "当前浏览器不支持麦克风采集。";
   }
   if (availability.micPermission === "denied") {
     return "麦克风权限被拒绝，请前往浏览器设置授权后重试。";

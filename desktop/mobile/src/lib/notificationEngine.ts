@@ -88,15 +88,6 @@ function storeConversationTitle(conversationId: string): string {
   return useMobileStore.getState().conversationsById[conversationId]?.title || "新聊天";
 }
 
-let titleResolver: (conversationId: string) => string = storeConversationTitle;
-
-/** 替换会话标题解析（测试用），传 null 恢复读取 store。 */
-export function setNotificationTitleResolver(
-  resolver: ((conversationId: string) => string) | null,
-): void {
-  titleResolver = resolver ?? storeConversationTitle;
-}
-
 function handleTurnStatusChanged({ turn }: { turn: Turn }): PendingNotification | null {
   const statusText = TERMINAL_TURN_STATUS_TEXT[turn.status];
   if (!statusText) return null;
@@ -104,7 +95,7 @@ function handleTurnStatusChanged({ turn }: { turn: Turn }): PendingNotification 
   return {
     type: isDelegation ? "delegationResult" : "taskCompleted",
     title: isDelegation ? "委派结果" : "任务完成",
-    body: `「${titleResolver(turn.conversation_id)}」${statusText}`,
+    body: `「${storeConversationTitle(turn.conversation_id)}」${statusText}`,
     conversationId: turn.conversation_id,
   };
 }
@@ -113,7 +104,7 @@ function handleApprovalRequested(approval: PendingApproval): PendingNotification
   return {
     type: "approvalRequested",
     title: "审批请求",
-    body: `「${titleResolver(approval.conversation_id)}」${approval.operation.summary || approval.reason}`,
+    body: `「${storeConversationTitle(approval.conversation_id)}」${approval.operation.summary || approval.reason}`,
     conversationId: approval.conversation_id,
   };
 }
@@ -211,6 +202,5 @@ export function startNotificationEngine(): () => void {
     unsubscribeEvents?.();
     unsubscribeEvents = null;
     document.removeEventListener("visibilitychange", handleVisibilityChange);
-    titleResolver = storeConversationTitle;
   };
 }

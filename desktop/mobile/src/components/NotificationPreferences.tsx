@@ -133,21 +133,11 @@ type ProbePhase =
   | { stage: "unavailable"; reason: "not_shell" | "plugin_unavailable" }
   | { stage: "ready"; permissionGranted: boolean };
 
-export interface NotificationPreferencesProps {
-  /** 初始偏好；缺省从 localStorage 读取。 */
-  initialPreferences?: NotificationPreferencesState;
-  /** 偏好变更时回调。 */
-  onPreferencesChange?: (preferences: NotificationPreferencesState) => void;
-}
-
-export function NotificationPreferences({
-  initialPreferences,
-  onPreferencesChange,
-}: NotificationPreferencesProps) {
+export function NotificationPreferences() {
   const [phase, setPhase] = useState<ProbePhase>({ stage: "probing" });
-  const [preferences, setPreferences] = useState<NotificationPreferencesState>(() => ({
-    ...(initialPreferences ?? loadNotificationPreferences()),
-  }));
+  const [preferences, setPreferences] = useState<NotificationPreferencesState>(
+    loadNotificationPreferences,
+  );
   const [requesting, setRequesting] = useState(false);
   const [requestError, setRequestError] = useState<string | null>(null);
   const isAndroid = detectShellEnvironment() === "android_shell";
@@ -183,12 +173,6 @@ export function NotificationPreferences({
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   }, []);
 
-  useEffect(() => {
-    if (initialPreferences) {
-      setPreferences({ ...initialPreferences });
-    }
-  }, [initialPreferences]);
-
   const updateItem = (
     key: NotificationTypeKey,
     patch: Partial<NotificationPreferenceItem>,
@@ -199,7 +183,6 @@ export function NotificationPreferences({
     };
     setPreferences(next);
     saveNotificationPreferences(next);
-    onPreferencesChange?.(next);
   };
 
   const handleRequestPermission = async () => {
