@@ -23,9 +23,8 @@ import "./CharacterCreate.css";
 interface CharacterCreatePageProps {
   vm: CharacterCreateViewModel;
   actions: HarnessActions;
-  /** Tauri 文件选择桥（头像需要真实绝对路径）；浏览器 mock 环境缺省，
-      此时改用 HTML 文件选择（只能拿到文件名，见 BasicInfoSection 注释）。 */
-  onPickFile?: (options?: { title?: string; filters?: FileFilter[] }) => Promise<string | null>;
+  /** 系统文件对话框；头像经 card.set_avatar 按绝对路径上传。 */
+  onPickFile: (options?: { title?: string; filters?: FileFilter[] }) => Promise<string | null>;
   /** 回到聊天回调（优先返回正在运行的聊天）。 */
   onReturnToChat?: () => void;
 }
@@ -39,6 +38,9 @@ export function CharacterCreatePage({ vm, actions, onPickFile, onReturnToChat }:
   const [formData, setFormData] = useState<CharacterFormData>(() => extractFormData(vm.card));
   const [currentCardId, setCurrentCardId] = useState<string | null>(vm.cardId);
   const [cardDetails, setCardDetails] = useState<CardGetResult | null>(null);
+  const [cardDetailsError, setCardDetailsError] = useState<string | null>(null);
+  // 递增后重新读取卡详情（读取失败后的重试）。
+  const [cardDetailsAttempt, setCardDetailsAttempt] = useState(0);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>(() => (vm.cardId ? "saved" : "idle"));
   const [lastSavedTime, setLastSavedTime] = useState<string | null>(() =>
     vm.cardId ? formatTime() : null,
@@ -81,29 +83,31 @@ export function CharacterCreatePage({ vm, actions, onPickFile, onReturnToChat }:
     setPublishError(null);
   }, [vm.cardId, vm.card]);
 
-  // 拉取服务端权威状态（state/avatar）：vm 进入或本地创建 draft 后都触发。
+  // 读取服务端的卡状态与头像：vm 进入或本地创建 draft 后都触发。
   useEffect(() => {
+    setCardDetailsError(null);
     if (!currentCardId) {
       setCardDetails(null);
       return;
     }
     let cancelled = false;
-    actions
-      .cardGet(currentCardId)
-      .then((result: CardGetResult) => {
+    actions.cardGet(currentCardId).then(
+      (result) => {
+        if (!cancelled) setCardDetails(result);
+      },
+      (error: unknown) => {
         if (cancelled) return;
-        setCardDetails(result);
-      })
-      .catch(() => {
-        // 拉取失败时保持本地假设
         setCardDetails(null);
-      });
+        setCardDetailsError(error instanceof Error ? error.message : String(error));
+      },
+    );
     return () => {
       cancelled = true;
     };
-  }, [currentCardId, actions]);
+  }, [currentCardId, actions, cardDetailsAttempt]);
 
-  const cardState: CharacterCardState = cardDetails?.state ?? (currentCardId ? "saved" : "draft");
+  // 卡详情读取成功前状态未知，按未发布处理。
+  const cardState: CharacterCardState | undefined = cardDetails?.state;
 
   const performSave = useCallback(async (): Promise<boolean> => {
     const currentData = latestFormDataRef.current;
@@ -179,9 +183,10 @@ export function CharacterCreatePage({ vm, actions, onPickFile, onReturnToChat }:
     setPublishError(null);
     try {
       await actions.cardPublish(targetId);
-      // 发布成功后刷新服务端权威状态，使「完成创建」按钮立即转为「开始对话」。
+      // 发布成功后重新读取卡状态，使「完成创建」按钮立即转为「开始对话」。
       const refreshed = await actions.cardGet(targetId);
       setCardDetails(refreshed);
+      setCardDetailsError(null);
       setPublishStatus("published");
       return true;
     } catch (err) {
@@ -429,6 +434,23 @@ export function CharacterCreatePage({ vm, actions, onPickFile, onReturnToChat }:
           </div>
         ) : null}
 
+        {cardDetailsError ? (
+          <div className="char-create-banner error" role="alert" data-testid="card-details-error-banner">
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <AlertCircleIcon />
+              <span>读取角色卡状态失败：{cardDetailsError}</span>
+            </div>
+            <button
+              type="button"
+              className="char-btn char-btn-outline"
+              style={{ minHeight: "28px", padding: "2px 10px", fontSize: "12px" }}
+              onClick={() => setCardDetailsAttempt((attempt) => attempt + 1)}
+            >
+              重新读取
+            </button>
+          </div>
+        ) : null}
+
         {saveError ? (
           <div className="char-create-banner error" role="alert" data-testid="save-error-banner">
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -471,14 +493,8 @@ export function CharacterCreatePage({ vm, actions, onPickFile, onReturnToChat }:
                 onPickFile={onPickFile}
                 onFieldChange={handleFieldChange}
                 onClearNameError={() => setNameError(null)}
-                onAvatarChange={async () => {
-                  if (!currentCardId) return;
-                  try {
-                    const result = await actions.cardGet(currentCardId);
-                    setCardDetails(result);
-                  } catch {
-                    // 失败保留旧头像
-                  }
+                onAvatarChange={async (cardId) => {
+                  setCardDetails(await actions.cardGet(cardId));
                 }}
               />
 
@@ -532,7 +548,6 @@ export function CharacterCreatePage({ vm, actions, onPickFile, onReturnToChat }:
               cardState={cardState}
               publishStatus={publishStatus}
               publishError={publishError}
-              actions={actions}
               onPublish={performPublish}
               onStartChat={() => void handleStartChat(currentCardId)}
             />

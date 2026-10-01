@@ -7,9 +7,9 @@ export interface RemotePairingPanelProps {
   onIssuePairingCode: () => void;
   onListRemoteDevices: () => void;
   onRevokeRemoteDevice: (deviceName: string) => void;
-  onTunnelStart?: () => void | Promise<void>;
-  onTunnelStop?: () => void | Promise<void>;
-  onQueryTunnelStatus?: () => void | Promise<void>;
+  onTunnelStart: () => void;
+  onTunnelStop: () => void;
+  onQueryTunnelStatus: () => void;
 }
 
 /**
@@ -126,7 +126,7 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
   const queryTunnelStatusRef = useRef(onQueryTunnelStatus);
   queryTunnelStatusRef.current = onQueryTunnelStatus;
   useEffect(() => {
-    queryTunnelStatusRef.current?.();
+    queryTunnelStatusRef.current();
   }, []);
 
   // 驱动配对码倒计时

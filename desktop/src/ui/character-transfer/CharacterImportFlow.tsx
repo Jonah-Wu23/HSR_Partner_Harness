@@ -15,7 +15,7 @@ import {
 import "./character-transfer.css";
 
 interface CharacterImportFlowProps {
-  backend?: DesktopBackend;
+  backend: DesktopBackend;
   actions: HarnessActions;
   onClose: () => void;
   onSuccess?: () => void;
@@ -124,14 +124,6 @@ export function CharacterImportFlow({
   );
 
   const handlePickFile = useCallback(async () => {
-    if (!backend) {
-      handleError(
-        new Error("当前环境未提供桌面后端，无法打开文件对话框。请在 Tauri 桌面端重试。"),
-        null,
-        "环境不可用",
-      );
-      return;
-    }
     let path: string | null;
     try {
       path = await backend.pickFile({ title: "选择角色卡文件", filters: CARD_FILE_FILTERS });

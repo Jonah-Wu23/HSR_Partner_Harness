@@ -17,8 +17,8 @@ export interface DiagnosticsDrawerProps {
   metricsError?: string | null;
   metricsNextCursor?: string | null;
   /** 显式只读查询；打开抽屉即用户显式请求，内容组件挂载时调用一次。 */
-  onLoadMetrics?: () => void;
-  onLoadMoreMetrics?: () => void;
+  onLoadMetrics: () => void;
+  onLoadMoreMetrics: () => void;
   /** diagnostics.prompt_assembly 结果（经 adaptPromptAssembly 适配）。 */
   assembly?: PromptAssemblyView | null;
   assemblyState?: DiagnosticsLoadState;
@@ -62,7 +62,7 @@ function DiagnosticsContent({
   useEffect(() => {
     if (loadedRef.current) return;
     loadedRef.current = true;
-    onLoadMetrics?.();
+    onLoadMetrics();
     onLoadAssembly?.();
   }, [onLoadAssembly, onLoadMetrics]);
 

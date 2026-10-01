@@ -3,7 +3,7 @@ import { groupNotExecuted } from "./compatView";
 
 import "./character-transfer.css";
 
-/* 兼容报告完整视图：六个字段分组呈现，not_executed 再按条目格式分组。
+/* 兼容报告完整视图：六个字段分组呈现，not_executed 再按条目 category 分组。
    导入流程、导出预览与角色详情的兼容性弹窗共用。 */
 
 interface CompatReportViewProps {
@@ -76,7 +76,7 @@ export function CompatReportView({ report, title, className, compact = false }: 
               <label className="xfer-muted">未执行（存而不运行）</label>
               <div className="xfer-report-subgroups">
                 {notExecutedGroups.map((group) => (
-                  <div key={group.key} className="xfer-report-subgroup">
+                  <div key={group.category} className="xfer-report-subgroup">
                     <span className="xfer-report-subgroup-label">
                       {group.label}（{group.items.length}）
                     </span>

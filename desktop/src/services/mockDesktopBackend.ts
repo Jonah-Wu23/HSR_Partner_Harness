@@ -511,7 +511,9 @@ export class MockDesktopBackend implements DesktopBackend {
       report: {
         applied: ["data.name", "data.description", "data.character_book"],
         preserved: ["data.extensions.talkativeness", "data.extensions.fav", "data.extensions.world"],
-        not_executed: ["data.extensions.hsr.command_panels"],
+        not_executed: [
+          { category: "command_panels" as const, text: "data.extensions.hsr.command_panels" },
+        ],
         normalized_from_root: [],
         warnings: [],
         errors: [],
@@ -1016,7 +1018,8 @@ export class MockDesktopBackend implements DesktopBackend {
             root_path: String(params.root_path ?? item.root_path),
             path_available: params.root_path ? true : item.path_available,
             approval_mode: (params.approval_mode as ProjectRecord["approval_mode"]) ?? item.approval_mode,
-            reasoning_effort: String(params.reasoning_effort ?? item.reasoning_effort),
+            reasoning_effort:
+              (params.reasoning_effort as ProjectRecord["reasoning_effort"]) ?? item.reasoning_effort,
           }
         : item,
     );

@@ -36,7 +36,7 @@ interface CharacterLibraryPageProps {
   /** 「配置音色」直达设置中心语音页并预选该卡（AppShell 注入）。 */
   onConfigureCardVoice?: (cardId: string) => void;
   /** 桌面后端，用于打开文件对话框（AppShell 注入）。 */
-  backend?: DesktopBackend;
+  backend: DesktopBackend;
   /** 返回聊天回调（优先返回正在运行的聊天）。 */
   onReturnToChat?: () => void;
 }

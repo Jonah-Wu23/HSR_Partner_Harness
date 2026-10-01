@@ -5,8 +5,8 @@ import { usePowerStatusQuery } from "./usePowerStatus";
 import "./power.css";
 
 interface PowerStatusSectionProps {
-  /** 挂载时的主动 power.get_status 查询；设置页由 AppShell 传入。 */
-  actions?: HarnessActions;
+  /** 挂载时的主动 power.get_status 查询。 */
+  actions: HarnessActions;
 }
 
 const selectPowerStatus = (state: DesktopState) => state.powerStatus;

@@ -36,17 +36,14 @@ interface SettingsCenterProps {
   /** 从角色库直达语音页时预选的角色卡 id；null 表示无预选。 */
   voiceCardFocus?: string | null;
   /** 角色音色、长期记忆与远程页使用的 actions。 */
-  actions?: HarnessActions;
+  actions: HarnessActions;
   /** 选择本地文件（参考音频等）。 */
-  onPickFile?: (options?: { title?: string; filters?: FileFilter[] }) => Promise<string | null>;
-  /** 远程设备页数据与回调（remote.* 命令）。 */
+  onPickFile: (options?: { title?: string; filters?: FileFilter[] }) => Promise<string | null>;
+  /** 远程设备页数据与回调（remote.* 命令）；公网隧道操作直接调用 actions。 */
   remote: RemotePairingViewModel;
   onIssuePairingCode: () => void;
   onListRemoteDevices: () => void;
   onRevokeRemoteDevice: (deviceName: string) => void;
-  onTunnelStart?: () => void | Promise<void>;
-  onTunnelStop?: () => void | Promise<void>;
-  onQueryTunnelStatus?: () => void | Promise<void>;
   modelTest: TestResult;
   voicePreview: TestResult;
   /** 保存资料与修改密码：页面 await 后就地显示结果。 */
@@ -855,9 +852,9 @@ function RemotePage(props: SettingsCenterProps) {
         onIssuePairingCode={props.onIssuePairingCode}
         onListRemoteDevices={props.onListRemoteDevices}
         onRevokeRemoteDevice={props.onRevokeRemoteDevice}
-        onTunnelStart={props.onTunnelStart ?? (props.actions ? () => props.actions!.tunnelStart() : undefined)}
-        onTunnelStop={props.onTunnelStop ?? (props.actions ? () => props.actions!.tunnelStop() : undefined)}
-        onQueryTunnelStatus={props.onQueryTunnelStatus ?? (props.actions ? () => props.actions!.queryTunnelStatus() : undefined)}
+        onTunnelStart={() => void props.actions.tunnelStart()}
+        onTunnelStop={() => void props.actions.tunnelStop()}
+        onQueryTunnelStatus={() => void props.actions.queryTunnelStatus()}
       />
       {/* 远程设备页常驻电源状态小节（只读，失败显示错误原文）。 */}
       <PowerStatusSection actions={props.actions} />

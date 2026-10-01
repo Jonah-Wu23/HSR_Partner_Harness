@@ -18,7 +18,7 @@ import "./character-transfer.css";
 interface CharacterExportFlowProps {
   cardId: string;
   cardName: string;
-  backend?: DesktopBackend;
+  backend: DesktopBackend;
   actions: HarnessActions;
   onClose: () => void;
   onSuccess?: () => void;
@@ -89,8 +89,7 @@ export function CharacterExportFlow({
   const [exportFormat, setExportFormat] = useState<ExportFormat>("json");
   const [fileName, setFileName] = useState(`${safeFileName(cardName)}.json`);
   const [saveAvatar, setSaveAvatar] = useState(true);
-  // StrictMode 开发模式会 mount→cleanup→再 mount：effect 体必须重新置 true，
-  // 否则 cleanup 后 mountedRef 永久 false，异步阶段的 setPhase 全被守卫吞掉。
+  // 卸载后不再更新阶段。StrictMode 开发模式会先卸载再挂载，所以 effect 内重新置 true。
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -146,10 +145,6 @@ export function CharacterExportFlow({
 
   const handleExport = useCallback(async () => {
     if (phase.kind !== "confirm") return;
-    if (!backend) {
-      handleError(new Error("当前环境未提供桌面后端，无法打开保存对话框。请在 Tauri 桌面端重试。"), "环境不可用");
-      return;
-    }
     const hasAvatar = phase.card.avatar !== null;
     if (exportFormat === "png") {
       let path: string | null;
@@ -172,8 +167,7 @@ export function CharacterExportFlow({
           onSuccess?.();
         }
       } catch (error) {
-        // 无头像卡的 PNG 导出由后端拒绝（card_export_failed）；
-        // UI 不预判成败，只在真实失败后给出「先去设置头像」引导。
+        // 无头像卡的 PNG 导出由后端拒绝（card_export_failed），失败后引导先设置头像。
         const code = (error as Error & { code?: string }).code;
         handleError(error, "导出失败", code === CARD_EXPORT_FAILED && !hasAvatar);
       }
@@ -481,7 +475,6 @@ export function CharacterExportFlow({
               </div>
             </div>
           )}
-          <p className="xfer-muted">目标文件未被创建，请检查路径与权限后重试。</p>
           <div className="xfer-actions xfer-actions-center">
             <button type="button" className="xfer-btn xfer-btn-secondary" onClick={handleRetry}>
               <RetryIcon />

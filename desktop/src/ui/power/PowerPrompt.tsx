@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { HarnessActions } from "../../contracts/actions";
 import { desktopStore, useDesktopStore, type DesktopState } from "../../stores/desktopStore";
 import { formatSleepTimeout, shouldShowPowerPrompt } from "./powerFormat";
@@ -5,8 +6,8 @@ import { usePowerStatusQuery } from "./usePowerStatus";
 import "./power.css";
 
 interface PowerPromptProps {
-  /** 用于挂载时的主动 power.get_status 查询；AppShell 传入。 */
-  actions?: HarnessActions;
+  /** 用于挂载时的主动 power.get_status 查询。 */
+  actions: HarnessActions;
 }
 
 /** 事件与查询共用的最新载荷；可见性判定见 shouldShowPowerPrompt。 */
@@ -21,7 +22,7 @@ const selectPromptStatus = (state: DesktopState) => state.powerStatus;
  * 数据来自 store 电源切片（power.status_changed 事件 + 主动 powerGetStatus），
  * 与 Composer 一样直接订阅 store。
  */
-export function PowerPrompt({ actions }: PowerPromptProps) {
+export const PowerPrompt = memo(function PowerPrompt({ actions }: PowerPromptProps) {
   usePowerStatusQuery(actions);
   const status = useDesktopStore(selectPromptStatus);
   const dismissed = useDesktopStore((state) => state.powerPromptDismissed);
@@ -64,4 +65,4 @@ export function PowerPrompt({ actions }: PowerPromptProps) {
       </p>
     </aside>
   );
-}
+});

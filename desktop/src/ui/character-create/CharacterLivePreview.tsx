@@ -1,19 +1,17 @@
-import type { CharacterCardState } from "../../contracts/protocol";
-import type { HarnessActions } from "../../contracts/actions";
+import type { CardAvatarPayload, CharacterCardState } from "../../contracts/protocol";
 import { avatarDataUri, isCardPublished, type CharacterFormData, type PublishStatus } from "./types";
-import type { CardAvatarPayload } from "../../contracts/protocol";
 
 interface CharacterLivePreviewProps {
   cardId: string | null;
   formData: CharacterFormData;
   avatar: CardAvatarPayload | null | undefined;
   readOnly: boolean;
-  cardState?: CharacterCardState;
+  /** card.get 返回的卡状态；读取成功前为 undefined。 */
+  cardState: CharacterCardState | undefined;
   publishStatus: PublishStatus;
   publishError: string | null;
-  actions: HarnessActions;
-  onPublish?: () => void;
-  onStartChat?: () => void;
+  onPublish: () => void;
+  onStartChat: () => void;
 }
 
 export function CharacterLivePreview({
@@ -24,7 +22,6 @@ export function CharacterLivePreview({
   cardState,
   publishStatus,
   publishError,
-  actions,
   onPublish,
   onStartChat,
 }: CharacterLivePreviewProps) {
@@ -64,9 +61,6 @@ export function CharacterLivePreview({
               <span className="char-create-preview-placeholder">未填写名称</span>
             )}
           </h3>
-          <span className="char-create-meta">
-            {readOnly ? "v1 · 内置角色" : published ? "v1 · 已发布" : "v1 · 创建 · 草稿"}
-          </span>
         </div>
       </div>
 
@@ -136,7 +130,7 @@ export function CharacterLivePreview({
           style={{ background: "var(--text-muted, #6B7686)" }}
           aria-hidden="true"
         />
-        <span>音色未配置 · 可在创建后前往「角色语音」</span>
+        <span>音色在「角色语音」页配置</span>
       </div>
 
       {cardId && !readOnly ? (
@@ -146,7 +140,7 @@ export function CharacterLivePreview({
               type="button"
               className="char-btn char-btn-primary"
               style={{ width: "100%" }}
-              onClick={() => onStartChat?.()}
+              onClick={onStartChat}
               data-testid="btn-start-chat"
             >
               使用该角色开始对话
@@ -156,7 +150,7 @@ export function CharacterLivePreview({
               type="button"
               className="char-btn char-btn-primary"
               style={{ width: "100%" }}
-              onClick={() => onPublish?.()}
+              onClick={onPublish}
               disabled={publishStatus === "publishing"}
               data-testid="btn-publish"
             >

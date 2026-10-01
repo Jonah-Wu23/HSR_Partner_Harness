@@ -136,7 +136,7 @@ export interface ProjectRecord {
   name: string;
   root_path: string;
   approval_mode: ApprovalMode;
-  reasoning_effort: string;
+  reasoning_effort: ReasoningEffort;
   archived: boolean;
   created_at: string | null;
   last_opened_at: string | null;
@@ -521,11 +521,20 @@ export interface VoiceProvisionEventPayload {
 /* 角色卡导入、导出、头像、音色与手机语音的线缆类型。
    字段保持 snake_case；camelCase 视图模型在 view-models.ts。 */
 
+/** 已保留但不运行条目的类别（character_cards/codec.py 的 NotExecutedCategory）。 */
+export type NotExecutedCategory = "world_book" | "macro" | "runtime_trigger" | "command_panels";
+
+/** 一条已保留但不运行的内容；text 是字段路径与说明。 */
+export interface NotExecutedItemPayload {
+  category: NotExecutedCategory;
+  text: string;
+}
+
 /** 角色卡兼容报告（character_cards/codec.py 的 CompatReport）。 */
 export interface CompatReportPayload {
   applied: string[];
   preserved: string[];
-  not_executed: string[];
+  not_executed: NotExecutedItemPayload[];
   normalized_from_root: string[];
   warnings: string[];
   errors: string[];

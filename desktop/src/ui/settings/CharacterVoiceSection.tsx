@@ -4,7 +4,6 @@ import type {
   CardGetResult,
   CharacterVoiceState,
   CharacterCardSource,
-  CharacterCardState,
 } from "../../contracts/protocol";
 import type { FileFilter } from "../../services/backend";
 import type { CharacterCardVoicePageViewModel } from "../../contracts/view-models";
@@ -13,7 +12,6 @@ import {
   ErrorIcon,
   PlusIcon,
   RecordVoiceIcon,
-  RefreshIcon,
   VoiceWaveIcon,
   WarningIcon,
 } from "../../assets/icons/icons";
@@ -21,10 +19,9 @@ import {
 export interface CharacterVoiceSectionProps {
   characterVoice: CharacterCardVoicePageViewModel;
   voiceCardFocus?: string | null;
-  /** AppShell 传入后角色音色流程才可用。 */
-  actions?: HarnessActions;
-  /** 选择本地文件；AppShell 需传入 backend.pickFile 的包装。 */
-  onPickFile?: (options?: {
+  actions: HarnessActions;
+  /** 系统文件对话框，选择参考音频。 */
+  onPickFile: (options?: {
     title?: string;
     filters?: FileFilter[];
   }) => Promise<string | null>;
@@ -32,28 +29,23 @@ export interface CharacterVoiceSectionProps {
   onScrollToAccountConfig?: () => void;
 }
 
+/** card.get 中 data.extensions.hsr.voice_profile 的线缆形状（codec 序列化的字段全部为字符串）。 */
+interface VoiceProfilePayload {
+  state: string;
+  voice_id: string;
+  reference_audio_asset: string;
+  last_error: string;
+}
+
 interface VoiceProfileDetail {
   voiceId: string;
   state: CharacterVoiceState;
-  creationMode: string;
-  prefix: string;
-  referenceAudioAsset?: {
-    asset_id: string;
-    duration_seconds: number;
-    size_bytes: number;
-    mime_type: string;
-  } | null;
   referenceAudioAssetId: string;
-  lastError: string | null;
-  updatedAt: string;
+  lastError: string;
 }
 
 interface CardDetail {
-  cardId: string;
   name: string;
-  source: CharacterCardSource;
-  state: CharacterCardState;
-  readOnly: boolean;
   voiceProfile: VoiceProfileDetail;
 }
 
@@ -64,85 +56,42 @@ type ConfirmAction = "recreate" | "unbind" | null;
 const FIXED_ASR_MODEL = "qwen-audio-3.0-asr-flash-streaming";
 const FIXED_TTS_MODEL = "qwen-audio-3.0-tts-flash";
 
-function extractCardName(card: CardGetResult): string {
-  const root = (card.card ?? {}) as Record<string, unknown>;
-  const data = (root.data ?? {}) as Record<string, unknown>;
-  return typeof data.name === "string" ? data.name : "";
+const VOICE_STATE_LABEL: Record<CharacterVoiceState, string> = {
+  voice_unconfigured: "未配置",
+  voice_creating: "创建中",
+  voice_ready: "已绑定",
+  voice_failed: "失败",
+};
+
+const SOURCE_LABEL: Record<CharacterCardSource, string> = {
+  builtin: "内置",
+  user_created: "自定义",
+  tavern_import: "导入",
+};
+
+function parseVoiceState(value: string): CharacterVoiceState {
+  if (Object.hasOwn(VOICE_STATE_LABEL, value)) return value as CharacterVoiceState;
+  throw new Error(`角色卡音色状态未知：${value}`);
 }
 
-function extractVoiceProfile(card: CardGetResult): VoiceProfileDetail {
-  const root = (card.card ?? {}) as Record<string, unknown>;
-  const data = (root.data ?? {}) as Record<string, unknown>;
-  const extensions = (data.extensions ?? {}) as Record<string, unknown>;
-  const hsr = (extensions.hsr ?? {}) as Record<string, unknown>;
-  const profile = (hsr.voice_profile ?? {}) as Record<string, unknown>;
-  const rawReference = profile.reference_audio_asset;
-  let referenceAudioAsset: VoiceProfileDetail["referenceAudioAsset"] = null;
-  let referenceAudioAssetId = "";
-  if (typeof rawReference === "string" && rawReference) {
-    referenceAudioAssetId = rawReference;
-  } else if (
-    rawReference !== null &&
-    typeof rawReference === "object" &&
-    typeof (rawReference as Record<string, unknown>).asset_id === "string"
-  ) {
-    const obj = rawReference as Record<string, unknown>;
-    referenceAudioAssetId = String(obj.asset_id);
-    referenceAudioAsset = {
-      asset_id: referenceAudioAssetId,
-      duration_seconds: Number(obj.duration_seconds) || 0,
-      size_bytes: Number(obj.size_bytes) || 0,
-      mime_type: String(obj.mime_type || ""),
-    };
-  }
-  return {
-    voiceId: typeof profile.voice_id === "string" ? profile.voice_id : "",
-    state: normalizeVoiceState(profile.state),
-    creationMode: typeof profile.creation_mode === "string" ? profile.creation_mode : "",
-    prefix: typeof profile.prefix === "string" ? profile.prefix : "",
-    referenceAudioAsset,
-    referenceAudioAssetId,
-    lastError: typeof profile.last_error === "string" ? profile.last_error : null,
-    updatedAt: typeof profile.updated_at === "string" ? profile.updated_at : "",
+/** 卡上没有 voice_profile 时按未配置处理，与卡库摘要的 voice_state 一致；状态值不在枚举内时抛错。 */
+function cardDetailOf(result: CardGetResult): CardDetail {
+  const data = result.card.data as {
+    name: string;
+    extensions?: { hsr?: { voice_profile?: VoiceProfilePayload } };
   };
-}
-
-function normalizeVoiceState(value: unknown): CharacterVoiceState {
-  if (
-    value === "voice_unconfigured" ||
-    value === "voice_creating" ||
-    value === "voice_ready" ||
-    value === "voice_failed"
-  ) {
-    return value;
-  }
-  return "voice_unconfigured";
-}
-
-function stateLabel(state: CharacterVoiceState): string {
-  if (state === "voice_creating") return "创建中";
-  if (state === "voice_ready") return "已绑定";
-  if (state === "voice_failed") return "失败";
-  return "未配置";
-}
-
-function sourceLabel(source: CharacterCardSource): string {
-  if (source === "builtin") return "内置";
-  if (source === "tavern_import") return "导入";
-  return "自定义";
-}
-
-function formatDuration(seconds: number): string {
-  const total = Math.round(seconds ?? 0);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${bytes} B`;
+  const profile = data.extensions?.hsr?.voice_profile;
+  return {
+    name: data.name,
+    voiceProfile: profile
+      ? {
+          voiceId: profile.voice_id,
+          state: parseVoiceState(profile.state),
+          referenceAudioAssetId: profile.reference_audio_asset,
+          lastError: profile.last_error,
+        }
+      : { voiceId: "", state: "voice_unconfigured", referenceAudioAssetId: "", lastError: "" },
+  };
 }
 
 function defaultPrefix(name: string): string {
@@ -187,12 +136,12 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
     if (voiceCardFocus) setSelectedCardId(voiceCardFocus);
   }, [voiceCardFocus]);
 
-  // 选中卡变化时拉取卡详情（参考音频/音色 id/失败错误以 cardGet 为准）。
+  // 选中卡变化时读取卡详情（参考音频、音色 id、失败错误以 cardGet 为准）。
   useEffect(() => {
     setOperationError(null);
     setCardDetail(null);
     setDetailError(null);
-    if (!selectedCardId || !actions) {
+    if (!selectedCardId) {
       setDetailLoading(false);
       return;
     }
@@ -201,19 +150,10 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
     actions
       .cardGet(selectedCardId)
       .then((result) => {
-        if (cancelled) return;
-        setCardDetail({
-          cardId: result.card_id,
-          name: extractCardName(result),
-          source: result.source,
-          state: result.state,
-          readOnly: result.read_only,
-          voiceProfile: extractVoiceProfile(result),
-        });
+        if (!cancelled) setCardDetail(cardDetailOf(result));
       })
       .catch((error: unknown) => {
-        if (cancelled) return;
-        setDetailError(error instanceof Error ? error.message : String(error));
+        if (!cancelled) setDetailError(error instanceof Error ? error.message : String(error));
       })
       .finally(() => {
         if (!cancelled) setDetailLoading(false);
@@ -223,9 +163,9 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
     };
   }, [selectedCardId, actions]);
 
-  // 当外部 voiceState 从 creating 变成 ready/failed 时重新拉取详情，获取 voice_id/last_error。
+  // 卡库摘要的 voiceState 离开 creating 后重新读取详情，拿到 voice_id 或 last_error。
   useEffect(() => {
-    if (!selectedCardId || !actions || !cardDetail) return;
+    if (!selectedCardId || !cardDetail) return;
     if (
       cardDetail.voiceProfile.state === "voice_creating" &&
       selectedSummary?.voiceState !== "voice_creating"
@@ -233,16 +173,7 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
       setDetailLoading(true);
       actions
         .cardGet(selectedCardId)
-        .then((result) => {
-          setCardDetail({
-            cardId: result.card_id,
-            name: extractCardName(result),
-            source: result.source,
-            state: result.state,
-            readOnly: result.read_only,
-            voiceProfile: extractVoiceProfile(result),
-          });
-        })
+        .then((result) => setCardDetail(cardDetailOf(result)))
         .catch((error: unknown) => setDetailError(error instanceof Error ? error.message : String(error)))
         .finally(() => setDetailLoading(false));
     }
@@ -257,7 +188,7 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
   }, [selectedCardId, cardDetail?.name]);
 
   const handlePickReference = async () => {
-    if (!actions || !onPickFile || !selectedCardId) return;
+    if (!selectedCardId) return;
     setOperationError(null);
     const path = await onPickFile({
       title: "选择参考音频",
@@ -270,15 +201,7 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
     setBinding(true);
     try {
       await actions.voiceCardBindReference(selectedCardId, path);
-      const result = await actions.cardGet(selectedCardId);
-      setCardDetail({
-        cardId: result.card_id,
-        name: extractCardName(result),
-        source: result.source,
-        state: result.state,
-        readOnly: result.read_only,
-        voiceProfile: extractVoiceProfile(result),
-      });
+      setCardDetail(cardDetailOf(await actions.cardGet(selectedCardId)));
     } catch (error: unknown) {
       setOperationError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -287,7 +210,7 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
   };
 
   const handleCreate = async () => {
-    if (!actions || !selectedCardId || !selectedSummary) return;
+    if (!selectedCardId) return;
     setOperationError(null);
     setCreating(true);
     try {
@@ -295,10 +218,10 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
       const trimmedPrefix = prefix.trim();
       if (trimmedPrefix) opts.prefix = trimmedPrefix;
       if (createMode === "design") {
+        // 失败后的重试与确认重新创建不经过创建按钮的禁用判断，这里再校验一次描述词。
         const prompt = voicePrompt.trim();
         if (!prompt) {
           setOperationError("声音设计模式必须填写声音描述词。");
-          setCreating(false);
           return;
         }
         opts.voicePrompt = prompt;
@@ -306,15 +229,7 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
         if (preview) opts.previewText = preview;
       }
       await actions.voiceCardCreate(selectedCardId, createMode, opts);
-      const result = await actions.cardGet(selectedCardId);
-      setCardDetail({
-        cardId: result.card_id,
-        name: extractCardName(result),
-        source: result.source,
-        state: result.state,
-        readOnly: result.read_only,
-        voiceProfile: extractVoiceProfile(result),
-      });
+      setCardDetail(cardDetailOf(await actions.cardGet(selectedCardId)));
     } catch (error: unknown) {
       setOperationError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -323,20 +238,12 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
   };
 
   const handleUnbind = async () => {
-    if (!actions || !selectedCardId) return;
+    if (!selectedCardId) return;
     setOperationError(null);
     setUnbinding(true);
     try {
       await actions.voiceCardUnbind(selectedCardId);
-      const result = await actions.cardGet(selectedCardId);
-      setCardDetail({
-        cardId: result.card_id,
-        name: extractCardName(result),
-        source: result.source,
-        state: result.state,
-        readOnly: result.read_only,
-        voiceProfile: extractVoiceProfile(result),
-      });
+      setCardDetail(cardDetailOf(await actions.cardGet(selectedCardId)));
     } catch (error: unknown) {
       setOperationError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -346,7 +253,7 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
   };
 
   const handlePreview = async () => {
-    if (!actions || !selectedCardId) return;
+    if (!selectedCardId) return;
     setOperationError(null);
     setPreviewing(true);
     try {
@@ -360,9 +267,8 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
   };
 
   const isBusy = binding || creating || unbinding || previewing || detailLoading;
-  // 详情面板以 cardGet 返回的 voice_profile.state 为准（实时），列表摘要作兜底。
-  const effectiveVoiceState =
-    cardDetail?.voiceProfile.state ?? selectedSummary?.voiceState ?? "voice_unconfigured";
+  // 详情读取完成前状态条显示卡库摘要的 voiceState。
+  const statusBarState = cardDetail?.voiceProfile.state ?? selectedSummary?.voiceState;
 
   return (
     <section className="character-voice-section" data-testid="character-voice-section">
@@ -387,7 +293,7 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
           <option value="">— 请选择 —</option>
           {characterVoice.cards.map((card) => (
             <option key={card.cardId} value={card.cardId}>
-              {card.name}（{sourceLabel(card.source)}）
+              {card.name}（{SOURCE_LABEL[card.source]}）
             </option>
           ))}
         </select>
@@ -433,30 +339,16 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
         </div>
       ) : null}
 
-      {selectedCardId && !selectedSummary?.readOnly && characterVoice.voiceConfigured && !actions ? (
-        <div className="settings-status-card" role="alert" data-testid="environment-unavailable-block">
-          <div className="character-voice-state-hero warn">
-            <WarningIcon width={24} height={24} />
-          </div>
-          <div>
-            <div className="h3" style={{ color: "var(--warning)" }}>
-              角色音色服务未接入
-            </div>
-            <p className="settings-hint" style={{ marginTop: 4 }}>
-              当前环境缺少操作接口，无法读取角色卡详情或提交音色创建。请在桌面端（Tauri + Sidecar）打开本页后重试。
-            </p>
-          </div>
-        </div>
-      ) : null}
-
-      {selectedCardId && !selectedSummary?.readOnly && characterVoice.voiceConfigured && actions ? (
+      {selectedCardId && !selectedSummary?.readOnly && characterVoice.voiceConfigured ? (
         <div className="character-voice-flow">
-          <div className="character-voice-status-bar">
-            <span className="character-voice-status-label">当前音色状态</span>
-            <span className={`voice-state-pill voice-state-${effectiveVoiceState}`}>
-              {stateLabel(effectiveVoiceState)}
-            </span>
-          </div>
+          {statusBarState ? (
+            <div className="character-voice-status-bar">
+              <span className="character-voice-status-label">当前音色状态</span>
+              <span className={`voice-state-pill voice-state-${statusBarState}`}>
+                {VOICE_STATE_LABEL[statusBarState]}
+              </span>
+            </div>
+          ) : null}
 
           {detailLoading && !cardDetail ? (
             <div className="settings-hint" role="status" data-testid="detail-loading">
@@ -477,31 +369,18 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
                   <RecordVoiceIcon width={16} height={16} />
                   <span>参考音频</span>
                 </div>
-                {cardDetail.voiceProfile.referenceAudioAsset ||
-                cardDetail.voiceProfile.referenceAudioAssetId ? (
+                {cardDetail.voiceProfile.referenceAudioAssetId ? (
                   <div className="character-voice-ref-card">
                     <div className="character-voice-ref-info">
                       <VoiceWaveIcon width={20} height={20} />
-                      {cardDetail.voiceProfile.referenceAudioAsset ? (
-                        <>
-                          <span className="character-voice-ref-mime">
-                            {cardDetail.voiceProfile.referenceAudioAsset.mime_type}
-                          </span>
-                          <span className="character-voice-ref-meta">
-                            {formatDuration(cardDetail.voiceProfile.referenceAudioAsset.duration_seconds)} ·{" "}
-                            {formatBytes(cardDetail.voiceProfile.referenceAudioAsset.size_bytes)}
-                          </span>
-                        </>
-                      ) : (
-                        <code className="character-voice-ref-mime">
-                          {cardDetail.voiceProfile.referenceAudioAssetId}
-                        </code>
-                      )}
+                      <code className="character-voice-ref-mime">
+                        {cardDetail.voiceProfile.referenceAudioAssetId}
+                      </code>
                     </div>
                     <button
                       type="button"
                       className="btn btn-outline"
-                      disabled={isBusy || !onPickFile}
+                      disabled={isBusy}
                       onClick={handlePickReference}
                       data-testid="replace-reference-btn"
                     >
@@ -512,7 +391,7 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
                   <button
                     type="button"
                     className="character-voice-dropzone"
-                    disabled={isBusy || !onPickFile}
+                    disabled={isBusy}
                     onClick={handlePickReference}
                     data-testid="pick-reference-btn"
                   >
@@ -525,11 +404,6 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
                     </div>
                   </button>
                 )}
-                {!onPickFile ? (
-                  <p className="field-error" role="alert">
-                    文件选择器尚未接入，无法选择参考音频。
-                  </p>
-                ) : null}
               </div>
 
               <div className="character-voice-create">
@@ -621,7 +495,6 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
                     className="btn btn-primary"
                     disabled={
                       isBusy ||
-                      !actions ||
                       !isValidPrefix(prefix) ||
                       (createMode === "design" && !voicePrompt.trim())
                     }
@@ -633,7 +506,7 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
                 </div>
               </div>
 
-              {effectiveVoiceState === "voice_creating" ? (
+              {cardDetail.voiceProfile.state === "voice_creating" ? (
                 <div className="settings-status-card" role="status" data-testid="voice-state-creating">
                   <div className="character-voice-state-hero accent">
                     <VoiceWaveIcon width={24} height={24} />
@@ -649,7 +522,7 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
                 </div>
               ) : null}
 
-              {effectiveVoiceState === "voice_ready" && cardDetail.voiceProfile.voiceId ? (
+              {cardDetail.voiceProfile.state === "voice_ready" && cardDetail.voiceProfile.voiceId ? (
                 <div className="settings-status-card" role="status" data-testid="voice-state-ready">
                   <div className="character-voice-state-hero ok">
                     <CheckIcon width={24} height={24} />
@@ -694,7 +567,7 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
                 </div>
               ) : null}
 
-              {effectiveVoiceState === "voice_failed" ? (
+              {cardDetail.voiceProfile.state === "voice_failed" ? (
                 <div className="settings-status-card" role="alert" data-testid="voice-state-failed">
                   <div className="character-voice-state-hero danger">
                     <ErrorIcon width={24} height={24} />
@@ -723,8 +596,7 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
                 </div>
               ) : null}
 
-              {effectiveVoiceState === "voice_unconfigured" &&
-              !cardDetail.voiceProfile.referenceAudioAsset &&
+              {cardDetail.voiceProfile.state === "voice_unconfigured" &&
               !cardDetail.voiceProfile.referenceAudioAssetId ? (
                 <div className="settings-status-card" role="status" data-testid="voice-state-unconfigured">
                   <div className="character-voice-state-hero">
