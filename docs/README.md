@@ -9,7 +9,7 @@
 
 ## 顶层文件（用户指引）
 
-- `手机远程语音说明.md`：手机语音用户指引（V0.4.0 及以后）：Cloudflare Tunnel 接入、配对安全须知、麦克风权限、语音静音边界与故障排查。
+- `手机远程语音说明.md`：手机语音用户指引（V0.4.0 及以后），包括 Cloudflare Tunnel 接入、配对安全须知、麦克风权限、语音静音边界与故障排查。
 
 ## 子目录
 
@@ -19,7 +19,7 @@
 | `release-notes/` | 历次版本发布说明：v0.4.1（当前基线）、v0.4.0、v0.3.2-patch1、v0.3.2、v0.2.0。 | `release-notes/README.md` |
 | `character-card/` | 角色卡数据契约（hsr schema 1.0）、酒馆字段映射、状态枚举与接入清单。`src/pair_harness/character_cards/` 注释引用此处路径，移动文件需同步代码。 | `character-card/README.md` |
 | `design/` | 设计调研与参考：`research/`（mufy、SillyTavern、DeepSeek-Reasonix 外部调研）、`dashscope/`（千问语音 API 参考，`src/` 多处注释引用其路径）、`web-prototype/`（V0.4.0 视觉原型交付包）、`旧版/`（v0.2.0 时代文档）。 | `design/README.md` |
-| `website/` | 官网相关文档：`官网文案规则.md`（官网与宣发文案的写作方法论）。 | — |
+| `website/` | 官网相关文档：`官网文案规则.md`（官网与宣发文案的写作方法论）。 | 无 |
 | `promo/` | 宣发工作目录：B 站视频大纲、口播稿、宣发计划、素材/成品视频/抽帧/BGM。本地目录，Git 忽略，不入库。 | `promo/README.md` |
 
 ## 维护约定

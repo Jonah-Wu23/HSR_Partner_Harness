@@ -23,7 +23,7 @@
 
 ## 和喜欢的角色，一起把想做的事做出来。
 
-HSR Partner Harness 是一款 Windows 桌面工作台：你喜欢的角色和你讨论想法，把要做的事交给编程助手，在你的电脑上真实执行，成果直接落在本地的项目文件夹里。角色有自己的设定、世界书、记忆和声音；助手负责把事情做完，把过程与结果端到你面前。
+HSR Partner Harness 是一款 Windows 桌面工作台：你喜欢的角色和你讨论想法，把要做的事交给编程助手，在你的电脑上真实执行，成果直接保存在本地的项目文件夹里。角色有自己的设定、世界书、记忆和声音；助手负责把事情做完，把过程与结果端到你面前。
 
 ## 30 秒了解
 
@@ -38,7 +38,7 @@ Windows x64 · 开源 Apache-2.0 · 模型与语音使用你自己的账号 · �
 
 ## 一条会话，两条工作轨
 
-这句标语描述的是产品结构：聊天模式专注角色交流，协作模式展开助手工作台。模式切换时上下文保持连贯，角色能够结合执行结果继续对话。
+聊天模式专注角色交流，协作模式展开助手工作台。模式切换时上下文保持连贯，角色能够结合执行结果继续对话。
 
 | 产品特点 | 具体表现 |
 | --- | --- |
@@ -98,7 +98,7 @@ Windows x64 · 开源 Apache-2.0 · 模型与语音使用你自己的账号 · �
 
 开启按键说话后，输入区右下角显示聆听状态；开启 VAD 后无需按键即可直接说话。只有角色的自然语言回复会进入朗读，工具记录、命令输出和系统事件保持静音。
 
-语音设置页集中管理账号、音色与固定模型：上方填写自己的 DashScope 账号，下方为三个内置搭档生成专属音色，也能为任意自定义角色上传参考音频创建音色。
+语音设置页上方填写自己的 DashScope 账号，下方为三个内置搭档生成专属音色，也能为任意自定义角色上传参考音频创建音色。
 
 ![语音设置页：保存 DashScope 账号后，为三个内置搭档生成专属音色](output/real/readme-14-settings-voice.png)
 
@@ -112,10 +112,10 @@ Windows x64 · 开源 Apache-2.0 · 模型与语音使用你自己的账号 · �
 
 连接方式二选一：
 
-- **Cloudflare Quick Tunnel（推荐）**：一键开启，应用下载官方 `cloudflared` 并校验哈希后托管为子进程，自动生成 `https://*.trycloudflare.com` 公网 HTTPS 地址，手机在蜂窝网络下也能直连，麦克风安全上下文成立。主机名每次启动都会变化，二维码需重新生成；隧道流量经由 Cloudflare 边缘。
+- **Cloudflare Quick Tunnel（推荐）**：一键开启，应用下载官方 `cloudflared` 并校验哈希后托管为子进程，自动生成 `https://*.trycloudflare.com` 公网 HTTPS 地址，手机在蜂窝网络下也能直连，满足浏览器使用麦克风所需的安全上下文。主机名每次启动都会变化，二维码需重新生成；隧道流量经由 Cloudflare 边缘。
 - **局域网直连**：显式开启后桌面常驻“局域网已暴露”提示，适合可信网络。
 
-安全边界：配对码一次性且短期有效，任意时刻仅一枚有效；连续输错触发来源封锁；设备令牌最长 30 天、7 天不用即失效，可在桌面端随时撤销。隧道地址会进入公开的证书透明度日志，地址被看到不等于被接入，真正的防线是配对码与设备令牌。
+安全边界：配对码一次性且短期有效，任意时刻仅一枚有效；连续输错触发来源封锁；设备令牌最长 30 天、7 天不用即失效，可在桌面端随时撤销。隧道地址会进入公开的证书透明度日志，看到地址的人仍需配对码或设备令牌才能接入。
 
 ![远程设备设置：公网接入与手机配对](output/real/readme-13-settings-remote.png)
 
@@ -132,7 +132,7 @@ Windows x64 · 开源 Apache-2.0 · 模型与语音使用你自己的账号 · �
 
 ## 模型接入
 
-编程助手复用角色对话所用的供应商配置（OpenAI 兼容的 Chat Completions 端点），经打包的 DeepSeek-Reasonix ACP 执行任务，没有独立的助手登录。角色模型与助手模型共用当前供应商设置。
+编程助手复用角色对话所用的供应商配置（OpenAI 兼容的 Chat Completions 端点），经打包的 DeepSeek-Reasonix ACP 执行任务，助手无需单独登录。角色模型与助手模型共用当前供应商设置。
 
 推理档位与 API effort 的对应关系如下：
 
@@ -162,9 +162,9 @@ Windows x64 安装包和 Android arm64 安装包发布于 [GitHub Releases](http
 | `DASHSCOPE_API_KEY` | DashScope 语音密钥。 |
 | `PAIR_HARNESS_DASHSCOPE_HOST` | DashScope 工作空间域名。 |
 
-参考音频和声音设计提示词随项目资源分发，音色生成结果按本地账号保存。用户只需在语音设置页填写自己的 DashScope API Key 与服务地址；API Key 只显示掩码，不写入 README 或事件日志。
+参考音频和声音设计提示词随项目资源分发，音色生成结果按本地账号保存。用户只需在语音设置页填写自己的 DashScope API Key 与服务地址；API Key 在界面上只显示掩码，也不写入事件日志。
 
-启动模式：**默认即真实模式**，不需要任何环境变量或 `.env`。演示模式只在显式请求时启用（`PAIR_HARNESS_DEMO=1`，或桌面端以 `--demo` 启动）；`PAIR_HARNESS_REAL=1` 用于显式声明真实模式。两个变量指向不同模式时按配置冲突直接报错，不做二选一的猜测。未配置 Key 也能完成首次引导，在引导内填写并测试账号级密钥即可；真实模式不要求仓库内存在 `.env`。
+启动模式：**默认即真实模式**，不需要任何环境变量或 `.env`。演示模式只在显式请求时启用（`PAIR_HARNESS_DEMO=1`，或桌面端以 `--demo` 启动）；`PAIR_HARNESS_REAL=1` 用于显式声明真实模式。两个变量指向不同模式时，启动按配置冲突直接报错。未配置 Key 也能完成首次引导，在引导内填写并测试账号级密钥即可。
 
 ## 从源码运行
 
@@ -226,7 +226,7 @@ Python Sidecar 管理业务状态，桌面端与手机端通过 JSONL/WebSocket 
 
 ## 语音费用与账号
 
-语音请求直接使用用户自己配置的 DashScope 账号、服务地址和额度。本项目不代存作者 Key，也不提供作者承担费用的语音服务器。
+语音请求直接使用用户自己配置的 DashScope 账号、服务地址和额度，费用由该账号结算。
 
 ## 参与项目
 
@@ -237,8 +237,6 @@ Python Sidecar 管理业务状态，桌面端与手机端通过 JSONL/WebSocket 
 本项目受 [Herta](https://github.com/PersonaCLI/Herta) 启发。
 
 `src/pair_harness/config/providers.py` 的供应商识别方式与推理档位语义参考 [DeepSeek-Reasonix](https://github.com/esengine/deepseek-reasonix)。原项目采用 MIT License，完整声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-编程助手复用角色对话的 OpenAI 兼容端点配置（Chat Completions），通过打包的 DeepSeek-Reasonix ACP 执行文件操作与命令；原先内置的 [OpenAI Codex](https://github.com/openai/codex) app-server 已按产品决策 B-03 剥离，当前版本不再包含该运行时。
 
 代码采用 [Apache License 2.0](LICENSE)，版权所有 © 2026 Zonghe Wu。
 
