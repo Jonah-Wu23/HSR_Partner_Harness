@@ -25,7 +25,6 @@ import type { FileFilter } from "./backend";
 import { DesktopRequestError } from "./backend";
 import {
   APPROVAL_ALREADY_RESOLVED,
-  CARD_AVATAR_TOO_LARGE,
   CARD_AVATAR_UNSUPPORTED,
   CARD_EXPORT_FAILED,
   CARD_IMPORT_FAILED,
@@ -57,6 +56,7 @@ import {
   MOCK_ARCHIVED_CARD_IDS,
   MOCK_REMOTE_DEVICES,
   MOCK_USER_CARDS,
+  mockBuiltinCardPayload,
   mockCardPayload,
   type MockCardSummary,
 } from "../mocks/characterCards";
@@ -72,6 +72,45 @@ const EMPTY_COMPAT_REPORT: CompatReportPayload = {
   warnings: [],
   errors: [],
 };
+
+const BUILTIN_PREFIX = "builtin:";
+
+/** voice.card_create 模拟供应商创建音色的耗时（毫秒）。 */
+const MOCK_VOICE_PROVIDER_DELAY_MS = 50;
+
+/** mock 不读真实文件：样例卡、card.set_avatar 与 PNG 导入共用这张 1x1 PNG 作头像数据。 */
+const PLACEHOLDER_AVATAR_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+/** 与 Sidecar 的 _required_string 一致：缺少或为空白时以 invalid_params 拒绝。 */
+function requiredString(params: Record<string, unknown>, key: string): string {
+  const value = params[key];
+  if (typeof value !== "string" || !value.trim()) {
+    throw new DesktopRequestError("invalid_params", `缺少非空参数：${key}`);
+  }
+  return value;
+}
+
+/** card.update 整卡的角色名。mock 只接受带 data 对象的 v3 形状，缺 name 时与 Sidecar 一样拒绝。 */
+function cardName(card: Record<string, unknown>): string {
+  const data = card.data;
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new DesktopRequestError("card_invalid_payload", "角色卡数据非法：data 必须是 JSON 对象");
+  }
+  const name = (data as Record<string, unknown>).name;
+  if (typeof name !== "string" || name === "") {
+    throw new DesktopRequestError(
+      "card_invalid_payload",
+      "角色卡数据非法：缺少必填字段 name（data 与根级均无有效值）",
+    );
+  }
+  return name;
+}
+
+/** 换名后的整卡 JSON（复制卡时名称追加「（副本）」）。 */
+function renamedCard(card: Record<string, unknown>, name: string): Record<string, unknown> {
+  return { ...card, data: { ...(card.data as Record<string, unknown>), name } };
+}
 
 /** mock 后端可配置开关，便于 UI 开发与测试覆盖异常路径。 */
 export interface MockDesktopBackendOptions {
@@ -98,6 +137,10 @@ export class MockDesktopBackend implements DesktopBackend {
   /* 角色卡可变状态，样例数据见 mocks/characterCards。 */
   private cards: MockCardSummary[] = MOCK_USER_CARDS.map((card) => ({ ...card }));
   private archivedCardIds = new Set<string>(MOCK_ARCHIVED_CARD_IDS);
+  /** card.get 返回的整卡 JSON；card.update 整体替换。 */
+  private cardPayloads = new Map<string, Record<string, unknown>>(
+    MOCK_USER_CARDS.map((card) => [card.card_id, mockCardPayload(card.name)]),
+  );
 
   voiceConfigured: boolean;
   voiceProvisionFail: boolean;
@@ -105,11 +148,24 @@ export class MockDesktopBackend implements DesktopBackend {
   pickFileResult: string | null;
   saveFileResult: string | null;
 
-  /* 角色卡头像、参考音频与音色创建状态。 */
-  private cardAvatars = new Map<string, CardAvatarPayload>();
+  /* 角色卡头像、参考音频与音色状态；样例卡按摘要的 has_avatar 与 voice_state 预置。 */
+  private cardAvatars = new Map<string, CardAvatarPayload>(
+    MOCK_USER_CARDS.filter((card) => card.has_avatar).map((card) => [
+      card.card_id,
+      { mime_type: "image/png", data_base64: PLACEHOLDER_AVATAR_BASE64 },
+    ]),
+  );
   private cardReferenceAudios = new Map<string, { asset_id: string; duration_seconds: number; size_bytes: number; mime_type: string }>();
   private voiceProvisioningCardIds = new Set<string>();
-  private voiceProfiles = new Map<string, { voice_id: string; state: CharacterVoiceState }>();
+  private voiceProfiles = new Map<string, { voice_id: string; state: CharacterVoiceState }>(
+    MOCK_USER_CARDS.filter((card) => card.voice_state !== "voice_unconfigured").map((card) => [
+      card.card_id,
+      {
+        voice_id: card.voice_state === "voice_ready" ? `mock-voice-${card.card_id}` : "",
+        state: card.voice_state,
+      },
+    ]),
+  );
 
   /** 已裁决的审批终态，用于首个终态获胜的仲裁。 */
   private resolvedApprovals = new Map<string, ApprovalResolvedPayload>();
@@ -120,7 +176,8 @@ export class MockDesktopBackend implements DesktopBackend {
   /** 当前有效的一次性配对码。 */
   private pairingCode: string | null = null;
 
-  private mobileAudioSessions = new Map<string, { conversation_id: string; last_seq: number | null }>();
+  /** 手机转写会话；分片序号从 0 严格递增。 */
+  private mobileAudioSessions = new Map<string, { conversation_id: string; expected_seq: number }>();
 
   /** 最近一次 power.status_changed 载荷，供开发与测试检查。 */
   lastPowerStatus: PowerStatusPayload | null = null;
@@ -298,7 +355,7 @@ export class MockDesktopBackend implements DesktopBackend {
       case "voice.card_bind_reference":
         return this.voiceCardBindReference(command.params) as T;
       case "voice.card_create":
-        return this.voiceCardCreate(command.params) as T;
+        return (await this.voiceCardCreate(command.params)) as T;
       case "voice.card_unbind":
         return this.voiceCardUnbind(command.params) as T;
       case "voice.card_preview":
@@ -368,9 +425,38 @@ export class MockDesktopBackend implements DesktopBackend {
     this.emitHost("connection.status", { status: "connected" });
   }
 
-  /* card.* 命令；失败直接抛错。 */
+  /* card.* 命令；错误码、检查顺序与 Sidecar 一致。 */
 
   private activeCardId: string | null = "card-saved-002";
+
+  /** 与 Sidecar 的 _require_writable_card 一致：内置角色只读。 */
+  private requireWritableCard(cardId: string): void {
+    if (cardId.startsWith(BUILTIN_PREFIX)) {
+      throw new DesktopRequestError(CARD_READ_ONLY, "内置角色为只读，不能修改、归档或删除");
+    }
+  }
+
+  private requireCard(cardId: string): MockCardSummary {
+    const card = this.cards.find((item) => item.card_id === cardId);
+    if (!card) throw new DesktopRequestError("card_not_found", "角色卡不存在");
+    return card;
+  }
+
+  private requireBuiltinCard(cardId: string): MockCardSummary {
+    const card = MOCK_BUILTIN_CARDS.find((item) => item.card_id === cardId);
+    if (!card) throw new DesktopRequestError("card_not_found", "内置角色不存在");
+    return card;
+  }
+
+  private patchCard(cardId: string, patch: Partial<MockCardSummary>): void {
+    this.cards = this.cards.map((card) => (card.card_id === cardId ? { ...card, ...patch } : card));
+  }
+
+  /** 新卡入库：摘要排在最前，整卡 JSON 供 card.get 读取。 */
+  private addCard(summary: MockCardSummary, payload: Record<string, unknown>): void {
+    this.cards = [summary, ...this.cards];
+    this.cardPayloads.set(summary.card_id, payload);
+  }
 
   private cardList(params: Record<string, unknown>): { cards: CardSummaryPayload[] } {
     const includeArchived = params.include_archived === true;
@@ -385,31 +471,57 @@ export class MockDesktopBackend implements DesktopBackend {
     return { cards: [...cards, ...builtin] };
   }
 
+  /** 整卡带上 data.extensions.hsr.voice_profile，字段与 codec 序列化一致，全部为字符串。 */
+  private cardWithVoiceProfile(cardId: string): Record<string, unknown> {
+    const card = this.clone(this.cardPayloads.get(cardId)!);
+    const profile = this.voiceProfiles.get(cardId);
+    if (!profile) return card;
+    const data = (card.data ?? {}) as Record<string, unknown>;
+    const extensions = (data.extensions ?? {}) as Record<string, unknown>;
+    const hsr = (extensions.hsr ?? {}) as Record<string, unknown>;
+    hsr.voice_profile = {
+      state: profile.state,
+      voice_id: profile.voice_id,
+      target_model: "qwen-audio-3.0-tts-flash",
+      creation_mode: "clone",
+      prefix: "",
+      reference_audio_asset: this.cardReferenceAudios.get(cardId)?.asset_id ?? "",
+      reference_audio_url: "",
+      voice_prompt_asset: "",
+      last_error: "",
+      updated_at: "",
+    };
+    extensions.hsr = hsr;
+    data.extensions = extensions;
+    card.data = data;
+    return card;
+  }
+
   private cardGet(params: Record<string, unknown>) {
     const cardId = String(params.card_id ?? "");
-    const builtin = MOCK_BUILTIN_CARDS.find((card) => card.card_id === cardId);
-    if (builtin) {
+    if (!cardId) throw new DesktopRequestError("invalid_params", "card.get 需要 card_id");
+    if (cardId.startsWith(BUILTIN_PREFIX)) {
+      const builtin = this.requireBuiltinCard(cardId);
       return {
-        card_id: builtin.card_id,
-        state: builtin.state,
-        source: builtin.source,
+        card_id: cardId,
+        state: "saved",
+        source: "builtin",
         created_at: "",
         updated_at: "",
-        card: mockCardPayload(builtin.name),
+        card: mockBuiltinCardPayload(cardId, builtin.name),
         read_only: true,
-        avatar: this.cardAvatars.get(cardId) ?? null,
+        avatar: null,
         compat_report: EMPTY_COMPAT_REPORT,
       };
     }
-    const found = this.cards.find((card) => card.card_id === cardId);
-    if (!found) throw new DesktopRequestError("card_not_found", "角色卡不存在");
+    const found = this.requireCard(cardId);
     return {
       card_id: found.card_id,
       state: found.state,
       source: found.source,
       created_at: found.updated_at,
       updated_at: found.updated_at,
-      card: mockCardPayload(found.name),
+      card: this.cardWithVoiceProfile(cardId),
       read_only: false,
       avatar: this.cardAvatars.get(cardId) ?? null,
       // 导入的卡沿用样例导入报告，其余卡没有兼容问题。
@@ -420,65 +532,105 @@ export class MockDesktopBackend implements DesktopBackend {
 
   private cardCreateDraft(params: Record<string, unknown>) {
     const name = String(params.name ?? "").trim();
-    if (!name) throw new Error("card.create_draft 需要 name");
+    if (!name) throw new DesktopRequestError("invalid_params", "card.create_draft 需要 name");
     const cardId = `card-mock-${this.cards.length + 1}`;
-    const now = new Date().toISOString();
-    this.cards = [
+    this.addCard(
       {
         card_id: cardId,
         name,
         state: "draft",
         source: "user_created",
-        updated_at: now,
+        updated_at: new Date().toISOString(),
         has_avatar: false,
-        voice_state: "voice_unconfigured" as const,
+        voice_state: "voice_unconfigured",
         active: false,
         read_only: false,
       },
-      ...this.cards,
-    ];
+      mockCardPayload(name),
+    );
     return { card_id: cardId, state: "draft" };
   }
 
   private cardUpdate(params: Record<string, unknown>) {
     const cardId = String(params.card_id ?? "");
+    this.requireWritableCard(cardId);
+    const card = params.card;
+    if (!card || typeof card !== "object" || Array.isArray(card)) {
+      throw new DesktopRequestError("invalid_params", "card.update 需要 card（角色卡 JSON 对象）");
+    }
+    const payload = this.clone(card as Record<string, unknown>);
+    const name = cardName(payload);
+    this.requireCard(cardId);
     const now = new Date().toISOString();
-    this.cards = this.cards.map((card) =>
-      card.card_id === cardId ? { ...card, updated_at: now } : card,
-    );
+    this.cardPayloads.set(cardId, payload);
+    this.patchCard(cardId, { name, updated_at: now });
     return { card_id: cardId, updated_at: now };
   }
 
   private cardDuplicate(params: Record<string, unknown>) {
     const cardId = String(params.card_id ?? "");
-    const source = this.cards.find((card) => card.card_id === cardId);
-    if (!source) throw new Error("角色卡不存在");
     const newId = `card-mock-copy-${this.cards.length + 1}`;
+    const now = new Date().toISOString();
+    if (cardId.startsWith(BUILTIN_PREFIX)) {
+      // 内置卡按导入卡入库一份可编辑副本，没有头像与音色。
+      const builtin = this.requireBuiltinCard(cardId);
+      const name = `${builtin.name}（副本）`;
+      this.addCard(
+        {
+          card_id: newId,
+          name,
+          state: "imported",
+          source: "tavern_import",
+          updated_at: now,
+          has_avatar: false,
+          voice_state: "voice_unconfigured",
+          active: false,
+          read_only: false,
+        },
+        renamedCard(mockBuiltinCardPayload(cardId, builtin.name), name),
+      );
+      return { card_id: newId, name };
+    }
+    const source = this.requireCard(cardId);
     const name = `${source.name}（副本）`;
-    this.cards = [{ ...source, card_id: newId, name, active: false }, ...this.cards];
+    // 副本保留源卡的状态、来源、头像与音色。
+    this.addCard(
+      { ...source, card_id: newId, name, updated_at: now, active: false },
+      renamedCard(this.clone(this.cardPayloads.get(cardId)!), name),
+    );
+    const avatar = this.cardAvatars.get(cardId);
+    if (avatar) this.cardAvatars.set(newId, avatar);
+    const reference = this.cardReferenceAudios.get(cardId);
+    if (reference) this.cardReferenceAudios.set(newId, reference);
+    const profile = this.voiceProfiles.get(cardId);
+    if (profile) this.voiceProfiles.set(newId, profile);
     return { card_id: newId, name };
   }
 
   private cardArchive(params: Record<string, unknown>) {
     const cardId = String(params.card_id ?? "");
-    const source = this.cards.find((card) => card.card_id === cardId);
-    if (!source) throw new Error("角色卡不存在");
-    if (source.state === "draft") throw new Error("草稿不能归档，请先保存");
+    this.requireWritableCard(cardId);
+    if (this.requireCard(cardId).state === "draft") {
+      throw new DesktopRequestError("card_invalid_state", "草稿不能归档，请先保存");
+    }
     this.archivedCardIds.add(cardId);
     return { card_id: cardId, archived: true };
   }
 
   private cardUnarchive(params: Record<string, unknown>) {
-    const cardId = String(params.card_id ?? "");
-    if (!this.cards.some((card) => card.card_id === cardId)) throw new Error("角色卡不存在");
+    const cardId = requiredString(params, "card_id");
+    this.requireWritableCard(cardId);
+    this.requireCard(cardId);
     this.archivedCardIds.delete(cardId);
     return { card_id: cardId, archived: false };
   }
 
   private cardDelete(params: Record<string, unknown>) {
     const cardId = String(params.card_id ?? "");
-    if (params.confirm !== true) throw new Error("删除需要确认");
+    this.requireWritableCard(cardId);
+    if (params.confirm !== true) throw new DesktopRequestError("card_confirm_required", "删除需要确认");
     this.cards = this.cards.filter((card) => card.card_id !== cardId);
+    this.cardPayloads.delete(cardId);
     this.archivedCardIds.delete(cardId);
     this.cardAvatars.delete(cardId);
     this.cardReferenceAudios.delete(cardId);
@@ -488,8 +640,9 @@ export class MockDesktopBackend implements DesktopBackend {
 
   private cardSelectActive(params: Record<string, unknown>) {
     const cardId = String(params.card_id ?? "");
+    this.requireWritableCard(cardId);
     if (this.archivedCardIds.has(cardId)) {
-      throw new Error(`已归档角色卡不能设为当前使用: ${cardId}`);
+      throw new DesktopRequestError("card_invalid_state", `已归档角色卡不能设为当前使用: ${cardId}`);
     }
     this.activeCardId = cardId;
     return { card_id: cardId };
@@ -521,13 +674,40 @@ export class MockDesktopBackend implements DesktopBackend {
     };
   }
 
+  /** mock 不读真实文件：路径含 invalid 或 missing 时按无法解析的文件拒绝。 */
+  private rejectUnparsableCardFile(path: string): void {
+    if (path.includes("invalid") || path.includes("missing")) {
+      throw new DesktopRequestError(CARD_IMPORT_FAILED, `模拟导入失败：无法解析 ${path}`);
+    }
+  }
+
+  /** 导入的卡入库为酒馆导入卡；PNG 字节同时作为头像。 */
+  private importCard(cardId: string, params: Record<string, unknown>, withAvatar: boolean) {
+    const preview = this.sampleBaiImportPreview();
+    const name = params.as_duplicate === true ? `${preview.name}（副本）` : preview.name;
+    this.addCard(
+      {
+        card_id: cardId,
+        name,
+        state: "imported",
+        source: "tavern_import",
+        updated_at: new Date().toISOString(),
+        has_avatar: withAvatar,
+        voice_state: "voice_unconfigured",
+        active: false,
+        read_only: false,
+      },
+      mockCardPayload(name),
+    );
+    if (withAvatar) {
+      this.cardAvatars.set(cardId, { mime_type: "image/png", data_base64: PLACEHOLDER_AVATAR_BASE64 });
+    }
+    return { card_id: cardId, name, state: "imported", report: preview.report };
+  }
+
   private cardPeekImport(params: Record<string, unknown>) {
     const path = String(params.path ?? "");
-    if (path.includes("invalid") || path.includes("missing")) {
-      const error = new Error(`模拟导入失败：无法解析 ${path}`);
-      (error as Error & { code?: string }).code = CARD_IMPORT_FAILED;
-      throw error;
-    }
+    this.rejectUnparsableCardFile(path);
     if (path.toLowerCase().endsWith(".png")) {
       // 真实后端按 PNG 签名分派；mock 无文件可读，按扩展名模拟 PNG 分支。
       return {
@@ -552,99 +732,40 @@ export class MockDesktopBackend implements DesktopBackend {
   }
 
   private cardImportJson(params: Record<string, unknown>) {
-    const path = String(params.path ?? "");
-    if (path.includes("invalid") || path.includes("missing")) {
-      const error = new Error(`模拟导入失败：无法解析 ${path}`);
-      (error as Error & { code?: string }).code = CARD_IMPORT_FAILED;
-      throw error;
-    }
-    const asDuplicate = params.as_duplicate === true;
-    const preview = this.sampleBaiImportPreview();
-    const now = new Date().toISOString();
-    const cardId = `card-imported-${this.cards.length + 1}`;
-    const name = asDuplicate ? `${preview.name}（副本）` : preview.name;
-    this.cards = [
-      {
-        card_id: cardId,
-        name,
-        state: "imported",
-        source: "tavern_import",
-        updated_at: now,
-        has_avatar: false,
-        voice_state: "voice_unconfigured",
-        active: false,
-        read_only: false,
-      },
-      ...this.cards,
-    ];
-    return { card_id: cardId, name, state: "imported", report: preview.report };
+    this.rejectUnparsableCardFile(String(params.path ?? ""));
+    return this.importCard(`card-imported-${this.cards.length + 1}`, params, false);
   }
 
   private cardImportPng(params: Record<string, unknown>) {
-    const path = String(params.path ?? "");
-    if (path.includes("invalid") || path.includes("missing")) {
-      const error = new Error(`模拟导入失败：无法解析 ${path}`);
-      (error as Error & { code?: string }).code = CARD_IMPORT_FAILED;
-      throw error;
-    }
-    const asDuplicate = params.as_duplicate === true;
-    const preview = this.sampleBaiImportPreview();
-    const now = new Date().toISOString();
-    const cardId = `card-imported-png-${this.cards.length + 1}`;
-    const name = asDuplicate ? `${preview.name}（副本）` : preview.name;
-    this.cards = [
-      {
-        card_id: cardId,
-        name,
-        state: "imported",
-        source: "tavern_import",
-        updated_at: now,
-        has_avatar: true,
-        voice_state: "voice_unconfigured",
-        active: false,
-        read_only: false,
-      },
-      ...this.cards,
-    ];
-    // PNG 字节即头像；mock 复用 card.set_avatar 的占位 PNG。
-    this.cardSetAvatar({ card_id: cardId, path: "mock-import.png" });
-    return { card_id: cardId, name, state: "imported", report: preview.report };
+    this.rejectUnparsableCardFile(String(params.path ?? ""));
+    return this.importCard(`card-imported-png-${this.cards.length + 1}`, params, true);
   }
 
   private cardExportJson(params: Record<string, unknown>) {
-    const cardId = String(params.card_id ?? "");
-    if (cardId.startsWith("builtin:")) {
-      const error = new Error("内置角色卡只读，导出前请先复制");
-      (error as Error & { code?: string }).code = CARD_READ_ONLY;
-      throw error;
+    const cardId = requiredString(params, "card_id");
+    if (cardId.startsWith(BUILTIN_PREFIX)) {
+      throw new DesktopRequestError(CARD_READ_ONLY, "内置角色为只读，请先复制为可编辑卡再导出");
     }
-    const path = String(params.path ?? "");
-    const saveAvatar = params.save_avatar === true;
+    const path = requiredString(params, "path");
+    this.requireCard(cardId);
     return {
       exported: true,
       path,
-      avatar_saved: saveAvatar && this.cardAvatars.has(cardId),
+      avatar_saved: params.save_avatar === true && this.cardAvatars.has(cardId),
     };
   }
 
   private cardExportPng(params: Record<string, unknown>) {
-    const cardId = String(params.card_id ?? "");
-    if (cardId.startsWith("builtin:")) {
-      const error = new Error("内置角色卡只读，导出前请先复制");
-      (error as Error & { code?: string }).code = CARD_READ_ONLY;
-      throw error;
-    }
-    const card = this.cards.find((item) => item.card_id === cardId);
-    if (!card) throw new Error("角色卡不存在");
-    if (!card.has_avatar) {
-      // 无头像的卡导出 PNG 被拒绝，与真实后端一致。
-      const error = new Error("卡未设置头像，请先设置头像后再导出 PNG");
-      (error as Error & { code?: string }).code = CARD_EXPORT_FAILED;
-      throw error;
+    const cardId = requiredString(params, "card_id");
+    this.requireWritableCard(cardId);
+    const path = requiredString(params, "path");
+    const card = this.requireCard(cardId);
+    if (!this.cardAvatars.has(cardId)) {
+      throw new DesktopRequestError(CARD_EXPORT_FAILED, "卡未设置头像，请先设置头像后再导出 PNG");
     }
     return {
       exported: true,
-      path: String(params.path ?? ""),
+      path,
       name: card.name,
       spec_version: "3.0",
       greeting_count: 6,
@@ -653,28 +774,23 @@ export class MockDesktopBackend implements DesktopBackend {
     };
   }
 
+  /** 草稿发布前检查整卡里的角色名与第一条消息；其他状态原样返回。 */
   private cardPublish(params: Record<string, unknown>) {
-    const cardId = String(params.card_id ?? "");
-    const card = this.cards.find((item) => item.card_id === cardId);
-    if (!card) throw new Error("角色卡不存在");
+    const cardId = requiredString(params, "card_id");
+    this.requireWritableCard(cardId);
+    const card = this.requireCard(cardId);
     if (card.state !== "draft") {
       return { card_id: cardId, state: card.state };
     }
-    const payload = mockCardPayload(card.name);
-    const firstMes = String((payload.data as Record<string, unknown>)?.first_mes ?? "");
-    if (!card.name.trim()) {
-      const error = new Error("card_publish_invalid：缺少 name");
-      (error as Error & { code?: string }).code = CARD_PUBLISH_INVALID;
-      throw error;
+    const data = this.cardPayloads.get(cardId)!.data as Record<string, unknown>;
+    const labels = { name: "角色名称", first_mes: "第一条消息" } as const;
+    const missing = (Object.keys(labels) as Array<keyof typeof labels>)
+      .filter((key) => !String(data[key] ?? "").trim())
+      .map((key) => labels[key]);
+    if (missing.length > 0) {
+      throw new DesktopRequestError(CARD_PUBLISH_INVALID, `完成创建前必填：${missing.join("、")}`);
     }
-    if (!firstMes.trim()) {
-      const error = new Error("card_publish_invalid：缺少 first_mes");
-      (error as Error & { code?: string }).code = CARD_PUBLISH_INVALID;
-      throw error;
-    }
-    this.cards = this.cards.map((item) =>
-      item.card_id === cardId ? { ...item, state: "saved" as const } : item,
-    );
+    this.patchCard(cardId, { state: "saved", updated_at: new Date().toISOString() });
     return { card_id: cardId, state: "saved" };
   }
 
@@ -687,49 +803,43 @@ export class MockDesktopBackend implements DesktopBackend {
   }
 
   private cardSetAvatar(params: Record<string, unknown>) {
-    const cardId = String(params.card_id ?? "");
-    const path = String(params.path ?? "");
-    const mimeType = this.avatarMimeFromPath(path);
+    const cardId = requiredString(params, "card_id");
+    this.requireWritableCard(cardId);
+    const mimeType = this.avatarMimeFromPath(requiredString(params, "path"));
     if (!mimeType) {
-      const error = new Error("card_avatar_unsupported：仅支持 png/jpeg/webp");
-      (error as Error & { code?: string }).code = CARD_AVATAR_UNSUPPORTED;
-      throw error;
+      throw new DesktopRequestError(CARD_AVATAR_UNSUPPORTED, "头像仅支持 PNG / JPEG / WebP 图片");
     }
-    // mock 不读真实文件，固定返回 1x1 PNG data URI 占位。
-    const dataUri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
-    const base64 = dataUri.split(",")[1] ?? "";
-    const assetId = `avatar-${cardId}`;
-    this.cardAvatars.set(cardId, { mime_type: mimeType, data_base64: base64 });
-    this.cards = this.cards.map((card) =>
-      card.card_id === cardId ? { ...card, has_avatar: true } : card,
-    );
-    return { card_id: cardId, asset_id: assetId, mime_type: mimeType };
+    this.requireCard(cardId);
+    this.cardAvatars.set(cardId, { mime_type: mimeType, data_base64: PLACEHOLDER_AVATAR_BASE64 });
+    this.patchCard(cardId, { has_avatar: true });
+    return { card_id: cardId, asset_id: `avatar-${cardId}`, mime_type: mimeType };
   }
 
   private cardRemoveAvatar(params: Record<string, unknown>) {
-    const cardId = String(params.card_id ?? "");
+    const cardId = requiredString(params, "card_id");
+    this.requireWritableCard(cardId);
+    this.requireCard(cardId);
     this.cardAvatars.delete(cardId);
-    this.cards = this.cards.map((card) =>
-      card.card_id === cardId ? { ...card, has_avatar: false } : card,
-    );
+    this.patchCard(cardId, { has_avatar: false });
     return { card_id: cardId, removed: true };
   }
 
   /* 电源状态。 */
 
   private powerGetStatus(): PowerStatusPayload {
-    // Windows 读取成功的形状；at_risk 场景由 emitPowerStatusChanged 模拟。
+    // Windows 上读取成功、未以 --serve 开启远程服务时的结果；at_risk 场景由 emitPowerStatusChanged 模拟。
     return {
       supported: true,
-      platform: "windows",
+      platform: "win32",
       plan_name: "平衡",
       ac_sleep_timeout_seconds: 1800,
       dc_sleep_timeout_seconds: 1200,
       remote_serve_enabled: false,
       threshold_seconds: 900,
       at_risk: false,
-      reason: "AC/DC 睡眠超时均不低于阈值",
+      reason: "远程服务未开启",
       checked_at: new Date().toISOString(),
+      warnings: [],
     };
   }
 
@@ -749,121 +859,140 @@ export class MockDesktopBackend implements DesktopBackend {
   }
 
   private voiceCardBindReference(params: Record<string, unknown>) {
-    const cardId = String(params.card_id ?? "");
-    const path = String(params.path ?? "");
-    const mimeType = this.referenceMimeFromPath(path);
+    const cardId = requiredString(params, "card_id");
+    this.requireWritableCard(cardId);
+    const mimeType = this.referenceMimeFromPath(requiredString(params, "path"));
     if (!mimeType) {
-      const error = new Error("voice_reference_invalid：仅支持 wav/mp3/m4a");
-      (error as Error & { code?: string }).code = VOICE_REFERENCE_INVALID;
-      throw error;
+      throw new DesktopRequestError(VOICE_REFERENCE_INVALID, "参考音频仅支持 WAV / MP3 / M4A");
     }
+    this.requireCard(cardId);
     const assetId = `ref-audio-${cardId}`;
     const asset = { asset_id: assetId, duration_seconds: 5.2, size_bytes: 102400, mime_type: mimeType };
     this.cardReferenceAudios.set(cardId, asset);
     return { card_id: cardId, ...asset };
   }
 
-  private voiceCardCreate(params: Record<string, unknown>) {
-    const cardId = String(params.card_id ?? "");
-    const mode = String(params.mode ?? "clone") as "clone" | "design";
-    if (!this.voiceConfigured) {
-      const error = new Error("voice_not_configured：账号未配置语音 Key");
-      (error as Error & { code?: string }).code = VOICE_NOT_CONFIGURED;
-      throw error;
+  /** 音色状态写进卡摘要并推送 voice.card_provision_changed。 */
+  private publishCardProvision(
+    cardId: string,
+    state: CharacterVoiceState,
+    voiceId: string | null,
+    error: string | null,
+  ): void {
+    this.patchCard(cardId, { voice_state: state });
+    this.emit("voice.card_provision_changed", { card_id: cardId, state, voice_id: voiceId, error });
+  }
+
+  /**
+   * 与 Sidecar 一致：校验通过后先推送 voice_creating，等待供应商期间同一张卡再次创建被拒；
+   * 成功推送 voice_ready 后响应，失败推送 voice_failed 后以 voice_card_create_failed 拒绝。
+   */
+  private async voiceCardCreate(params: Record<string, unknown>) {
+    const cardId = requiredString(params, "card_id");
+    this.requireWritableCard(cardId);
+    const mode = requiredString(params, "mode");
+    if (mode !== "clone" && mode !== "design") {
+      throw new DesktopRequestError("invalid_params", "mode 必须是 clone 或 design");
     }
     if (this.voiceProvisioningCardIds.has(cardId)) {
-      const error = new Error("voice_card_provision_in_progress：同卡创建中");
-      (error as Error & { code?: string }).code = VOICE_CARD_PROVISION_IN_PROGRESS;
-      throw error;
-    }
-    if (mode === "clone" && !this.cardReferenceAudios.has(cardId)) {
-      const error = new Error("voice_reference_missing：clone 模式需要参考音频");
-      (error as Error & { code?: string }).code = VOICE_REFERENCE_MISSING;
-      throw error;
+      throw new DesktopRequestError(VOICE_CARD_PROVISION_IN_PROGRESS, "该角色卡正在创建音色，请等待完成后再试");
     }
     this.voiceProvisioningCardIds.add(cardId);
-    this.emit("voice.card_provision_changed", { card_id: cardId, state: "voice_creating", voice_id: null, error: null });
-    const voiceId = `mock-voice-${Math.random().toString(36).slice(2, 8)}`;
-    setTimeout(() => {
-      if (this.voiceProvisionFail) {
-        this.voiceProfiles.set(cardId, { voice_id: "", state: "voice_failed" });
-        this.voiceProvisioningCardIds.delete(cardId);
-        this.emit("voice.card_provision_changed", {
-          card_id: cardId,
-          state: "voice_failed",
-          voice_id: null,
-          error: "模拟音色创建失败",
-        });
-        return;
+    try {
+      if (!this.voiceConfigured) {
+        throw new DesktopRequestError(
+          VOICE_NOT_CONFIGURED,
+          "请先在语音页保存 DashScope API Key 与服务地址，再为角色创建音色",
+        );
       }
+      this.requireCard(cardId);
+      if (mode === "clone" && !this.cardReferenceAudios.has(cardId)) {
+        throw new DesktopRequestError(VOICE_REFERENCE_MISSING, "请先绑定参考音频（voice.card_bind_reference）");
+      }
+      if (mode === "design" && !String(params.voice_prompt ?? "").trim()) {
+        throw new DesktopRequestError("voice_invalid_request", "声音设计需要非空 voice_prompt");
+      }
+      this.publishCardProvision(cardId, "voice_creating", null, null);
+      await new Promise((resolve) => setTimeout(resolve, MOCK_VOICE_PROVIDER_DELAY_MS));
+      if (this.voiceProvisionFail) {
+        const detail = "模拟音色创建失败";
+        // 失败保留旧音色 id，与 Sidecar 的 _mark_card_voice_failed 一致。
+        const previousVoiceId = this.voiceProfiles.get(cardId)?.voice_id ?? "";
+        this.voiceProfiles.set(cardId, { voice_id: previousVoiceId, state: "voice_failed" });
+        this.publishCardProvision(cardId, "voice_failed", previousVoiceId || null, detail);
+        throw new DesktopRequestError("voice_card_create_failed", detail);
+      }
+      const voiceId = `mock-voice-${Math.random().toString(36).slice(2, 8)}`;
       this.voiceProfiles.set(cardId, { voice_id: voiceId, state: "voice_ready" });
+      this.publishCardProvision(cardId, "voice_ready", voiceId, null);
+      return { card_id: cardId, state: "voice_ready", voice_id: voiceId };
+    } finally {
       this.voiceProvisioningCardIds.delete(cardId);
-      this.cards = this.cards.map((card) =>
-        card.card_id === cardId ? { ...card, voice_state: "voice_ready" as const } : card,
-      );
-      this.emit("voice.card_provision_changed", {
-        card_id: cardId,
-        state: "voice_ready",
-        voice_id: voiceId,
-        error: null,
-      });
-    }, 50);
-    return { card_id: cardId, state: "voice_ready", voice_id: voiceId };
+    }
   }
 
   private voiceCardUnbind(params: Record<string, unknown>) {
-    const cardId = String(params.card_id ?? "");
+    const cardId = requiredString(params, "card_id");
+    this.requireWritableCard(cardId);
+    this.requireCard(cardId);
     this.voiceProfiles.delete(cardId);
-    this.cards = this.cards.map((card) =>
-      card.card_id === cardId ? { ...card, voice_state: "voice_unconfigured" as const } : card,
-    );
+    this.patchCard(cardId, { voice_state: "voice_unconfigured" });
     return { card_id: cardId, state: "voice_unconfigured" };
   }
 
   private voiceCardPreview(params: Record<string, unknown>) {
-    const cardId = String(params.card_id ?? "");
+    const cardId = requiredString(params, "card_id");
+    this.requireCard(cardId);
     const profile = this.voiceProfiles.get(cardId);
-    if (!profile || profile.state !== "voice_ready") {
-      const error = new Error("voice_card_not_ready：卡音色未就绪");
-      (error as Error & { code?: string }).code = VOICE_CARD_NOT_READY;
-      throw error;
+    if (!profile || profile.state !== "voice_ready" || !profile.voice_id) {
+      throw new DesktopRequestError(VOICE_CARD_NOT_READY, "该角色卡尚未创建可用音色");
     }
-    return { voice: { voice_id: profile.voice_id, state: profile.state } };
+    return { voice: this.scenario.snapshot.voice };
   }
 
   /* 手机远程语音。 */
 
+  private requireMobileSession(sessionId: string) {
+    const session = this.mobileAudioSessions.get(sessionId);
+    if (!session) throw new DesktopRequestError("voice_session_not_found", "转写会话不存在或已结束");
+    return session;
+  }
+
   private voiceMobilePttStart(params: Record<string, unknown>) {
     const conversationId = String(params.conversation_id ?? "");
     const sessionId = `mobile-ptt-${this.sequence + 1}`;
-    this.mobileAudioSessions.set(sessionId, { conversation_id: conversationId, last_seq: null });
+    this.mobileAudioSessions.set(sessionId, { conversation_id: conversationId, expected_seq: 0 });
     return { session_id: sessionId };
   }
 
   private voiceMobileAudioChunk(params: Record<string, unknown>) {
-    const sessionId = String(params.session_id ?? "");
-    const seq = Number(params.seq ?? -1);
-    const session = this.mobileAudioSessions.get(sessionId);
-    if (!session) throw new Error("转写会话不存在");
-    if (session.last_seq !== null && seq !== session.last_seq + 1) {
-      const error = new Error("voice_audio_seq_gap：音频分片 seq 不连续");
-      (error as Error & { code?: string }).code = VOICE_AUDIO_SEQ_GAP;
-      throw error;
+    const sessionId = requiredString(params, "session_id");
+    const seq = params.seq;
+    if (typeof seq !== "number" || !Number.isInteger(seq)) {
+      throw new DesktopRequestError("invalid_params", "seq 必须是整数");
     }
-    session.last_seq = seq;
-    return {};
+    if (typeof params.data !== "string" || !params.data) {
+      throw new DesktopRequestError("invalid_params", "data 必须是非空 base64 字符串");
+    }
+    const session = this.requireMobileSession(sessionId);
+    if (seq !== session.expected_seq) {
+      throw new DesktopRequestError(
+        VOICE_AUDIO_SEQ_GAP,
+        `音频分片序号跳号：期望 ${session.expected_seq}，实际 ${seq}`,
+      );
+    }
+    session.expected_seq += 1;
+    return { accepted: true };
   }
 
   private voiceMobilePttStop(params: Record<string, unknown>) {
-    const sessionId = String(params.session_id ?? "");
-    const session = this.mobileAudioSessions.get(sessionId);
-    if (!session) throw new Error("转写会话不存在");
+    const sessionId = requiredString(params, "session_id");
+    const session = this.requireMobileSession(sessionId);
+    this.mobileAudioSessions.delete(sessionId);
     const conversationId = session.conversation_id;
     const transcript = this.mobileTranscriptEmpty ? "" : "模拟手机语音转写文本";
     if (transcript === "") {
-      const error = new Error("voice_transcript_empty：转写结果为空");
-      (error as Error & { code?: string }).code = VOICE_TRANSCRIPT_EMPTY;
-      throw error;
+      throw new DesktopRequestError(VOICE_TRANSCRIPT_EMPTY, "未识别到语音内容");
     }
     // 异步下发转写事件与角色回复/TTS 分片。
     setTimeout(() => {

@@ -427,7 +427,7 @@ export function CharacterCreatePage({ vm, actions, onPickFile, onReturnToChat }:
               type="button"
               className="char-btn char-btn-outline"
               style={{ minHeight: "28px", padding: "2px 10px", fontSize: "12px" }}
-              onClick={() => actions.openCharacterCreate(vm.cardId ?? undefined)}
+              onClick={() => actions.openCharacterCreate(vm.requestedCardId ?? undefined)}
             >
               重试
             </button>

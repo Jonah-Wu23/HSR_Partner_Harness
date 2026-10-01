@@ -92,14 +92,37 @@ export const MOCK_USER_CARDS: MockCardSummary[] = [
 /** 初始归档集合：card.list(include_archived=false) 会排除这些 id。 */
 export const MOCK_ARCHIVED_CARD_IDS: readonly string[] = ["card-imported-004"];
 
+/** 到期时间取签发后 30 天与最近使用后 7 天中较早的一个。 */
 export const MOCK_REMOTE_DEVICES: RemoteDevice[] = [
   {
     device_name: "小米 14",
     issued_at: "2026-08-19T09:00:00+00:00",
     last_used_at: "2026-08-19T12:30:00+00:00",
+    expires_at: "2026-08-26T12:30:00+00:00",
     revoked: false,
   },
 ];
+
+/** 内置角色的提示词路径（config/pairs 中各搭档的 character.prompt）。 */
+const MOCK_BUILTIN_PROMPTS: Record<string, string> = {
+  "builtin:phainon": "config/prompts/characters/phainon.md",
+  "builtin:firefly": "config/prompts/characters/firefly.md",
+  "builtin:march7": "config/prompts/characters/march7.md",
+};
+
+/** 内置角色的只读整卡（对应 Sidecar _builtin_card：由搭档目录生成，不入库）。 */
+export function mockBuiltinCardPayload(cardId: string, name: string): Record<string, unknown> {
+  const payload = mockCardPayload(name);
+  return {
+    ...payload,
+    data: {
+      ...(payload.data as Record<string, unknown>),
+      creator: "HSR Partner Harness",
+      tags: ["builtin"],
+      creator_notes: `内置角色，提示词来源：${MOCK_BUILTIN_PROMPTS[cardId]}`,
+    },
+  };
+}
 
 /** card.get 返回的最小有效 v3 JSON（未知扩展原样保留在 data.extensions）。 */
 export function mockCardPayload(name: string): Record<string, unknown> {

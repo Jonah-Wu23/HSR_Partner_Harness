@@ -166,7 +166,9 @@ export interface CharacterLibraryViewModel {
 }
 
 export interface CharacterCreateViewModel {
-  /** 正在编辑的草稿/卡 id；全新未保存为 null。 */
+  /** 打开创作页时请求读取的卡 id；新建为 null。读取失败后按它重试。 */
+  requestedCardId: string | null;
+  /** 已载入的草稿/卡 id；全新未保存或尚未读取完成为 null。 */
   cardId: string | null;
   /** card.get 载入的 v3 JSON（编辑已有卡时非空）。 */
   card: Record<string, unknown> | null;
@@ -199,7 +201,7 @@ export interface RemoteDeviceView {
   deviceName: string;
   issuedAt: string;
   lastUsedAt: string;
-  expiresAt?: string;
+  expiresAt: string;
   revoked: boolean;
 }
 

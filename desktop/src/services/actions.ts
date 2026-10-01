@@ -470,6 +470,7 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       desktopStore.getState().setMainView("characterCreate");
       if (!cardId) {
         desktopStore.getState().setCharacterCreate({
+          requestedCardId: null,
           cardId: null,
           card: null,
           readOnly: false,
@@ -480,6 +481,7 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       }
       // 先清空再载入：重新打开同一张卡时 cardId 也会变化一次，创作页据此用最新内容水合。
       desktopStore.getState().setCharacterCreate({
+        requestedCardId: cardId,
         cardId: null,
         card: null,
         readOnly: false,

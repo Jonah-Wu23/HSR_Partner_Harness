@@ -5,7 +5,6 @@ import type {
   AccountListItem,
   AccountRecord,
   ActiveTask,
-  CharacterVoiceState,
   ConversationOpenResult,
   ConversationRecord,
   ConversationSummary,
@@ -26,6 +25,7 @@ import type {
   TunnelFailedPayload,
   TunnelStartedPayload,
   TurnMetric,
+  VoiceCardProvisionChangedPayload,
   VoiceState,
 } from "../contracts/protocol";
 import type {
@@ -334,7 +334,14 @@ function createInitialState(): DesktopData {
     syncingConversationIds: {},
     mainView: "chat",
     characterLibrary: { cards: [], loading: false, error: null, loaded: false },
-    characterCreate: { cardId: null, card: null, readOnly: false, loading: false, error: null },
+    characterCreate: {
+      requestedCardId: null,
+      cardId: null,
+      card: null,
+      readOnly: false,
+      loading: false,
+      error: null,
+    },
     remotePairing: {
       code: null,
       ttlSeconds: 300,
@@ -877,14 +884,22 @@ function replayBufferedEvents(state: DesktopState, draft: BatchDraft): DesktopSt
   return current;
 }
 
-/** 连接事件与错误通道之外的事件都来自 Sidecar 的有序事件流。 */
+/** Sidecar 发出的事件都带序号；Rust 宿主合成的事件不带。 */
 function isSequencedEvent(event: DesktopStreamEvent): event is DesktopEvent {
-  return event.event !== "connection.status" && event.event !== "error.reported";
+  return event.sequence !== undefined;
+}
+
+/**
+ * 暂存等待快照核对的事件。错误报告不进快照，暂存的同时立即上屏：
+ * 没有快照时致命启动错误也要显示，重放时按序号推进游标。
+ */
+function bufferEvent(state: DesktopState, event: DesktopEvent): DesktopState {
+  const buffered = { ...state, eventBuffer: [...state.eventBuffer, event] };
+  return event.event === "error.reported" ? applyErrorReported(buffered, event) : buffered;
 }
 
 function applyEvent(state: DesktopState, event: DesktopStreamEvent, draft: BatchDraft): DesktopState {
-  // 连接事件与错误通道在序号过滤前处理：Rust 合成的这两类事件不带序号，
-  // 错误在 bootstrap 期间也必须立即显示，否则没有快照时致命启动错误永远不会上屏。
+  // 宿主事件不带序号，不经过序号过滤。
   if (!isSequencedEvent(event)) {
     return event.event === "connection.status"
       ? applyConnectionStatus(state, event)
@@ -902,18 +917,13 @@ function applyEvent(state: DesktopState, event: DesktopStreamEvent, draft: Batch
   }
   // 新代次 bootstrap 或序号缺口期间暂存业务事件，等快照水合后核对重放。
   if (state.needsBootstrap || state.status === "booting") {
-    return { ...state, eventBuffer: [...state.eventBuffer, event] };
+    return bufferEvent(state, event);
   }
   // 同代次重复序号直接丢弃。
   if (event.sequence <= state.lastSequence) return state;
   if (state.lastSequence >= 0 && event.sequence !== state.lastSequence + 1) {
     // 序号缺口：重新拉取快照，界面保持可用；缺口后的事件等待快照核对。
-    return {
-      ...state,
-      needsBootstrap: true,
-      resyncing: true,
-      eventBuffer: [...state.eventBuffer, event],
-    };
+    return bufferEvent({ ...state, needsBootstrap: true, resyncing: true }, event);
   }
   if (includedInConversationView(state.conversationViewSequence, event)) {
     // conversation.open 的装载结果已包含这条事件的效果，只推进序号。
@@ -1222,33 +1232,14 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent, draft: Bat
       next.voice = { ...next.voice, ...(event.payload.voice as Partial<VoiceState>) };
       break;
     case "voice.card_provision_changed": {
-      // 卡音色状态变化同步到角色库，以及正在编辑同一张卡的创作页。
-      const payload = event.payload as {
-        card_id?: string;
-        state?: CharacterVoiceState;
-        voice_id?: string | null;
-        error?: string | null;
+      // 卡音色状态变化同步到角色库摘要；音色详情由读取方经 card.get 获取。
+      const payload = event.payload as unknown as VoiceCardProvisionChangedPayload;
+      next.characterLibrary = {
+        ...next.characterLibrary,
+        cards: next.characterLibrary.cards.map((card) =>
+          card.cardId === payload.card_id ? { ...card, voiceState: payload.state } : card,
+        ),
       };
-      const cardId = String(payload.card_id ?? "");
-      const voiceState = payload.state ?? next.characterLibrary.cards.find((c) => c.cardId === cardId)?.voiceState ?? "voice_unconfigured";
-      if (cardId) {
-        next.characterLibrary = {
-          ...next.characterLibrary,
-          cards: next.characterLibrary.cards.map((card) =>
-            card.cardId === cardId ? { ...card, voiceState } : card,
-          ),
-        };
-        if (next.characterCreate.cardId === cardId) {
-          next.characterCreate = {
-            ...next.characterCreate,
-            card: {
-              ...next.characterCreate.card,
-              voice_state: voiceState,
-              voice_id: payload.voice_id ?? undefined,
-            },
-          };
-        }
-      }
       break;
     }
     case "voice.provision_changed": {
@@ -1388,6 +1379,8 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent, draft: Bat
     case "diagnostic.warning":
       console.warn("[diagnostic.warning]", event.payload);
       break;
+    case "error.reported":
+      return applyErrorReported(next, event);
     case "serve.started":
       // host 为 null 表示服务已在监听但没有可用的局域网地址，原因见 reason。
       next.remotePairing = remotePairingWithServeAddress(next.remotePairing, event.payload);

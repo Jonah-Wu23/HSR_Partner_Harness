@@ -468,9 +468,9 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
                   )}
                 </div>
                 <div className="settings-hint" style={{ fontSize: "12px", display: "flex", gap: "12px", flexWrap: "wrap" }}>
-                  <span>配对时间：{device.issuedAt || "未知"}</span>
-                  <span>最近使用：{device.lastUsedAt || "未知"}</span>
-                  <span>到期时间：{device.expiresAt || "未知"}</span>
+                  <span>配对时间：{device.issuedAt}</span>
+                  <span>最近使用：{device.lastUsedAt}</span>
+                  <span>到期时间：{device.expiresAt}</span>
                 </div>
               </div>
 

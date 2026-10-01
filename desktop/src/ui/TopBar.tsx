@@ -13,8 +13,8 @@ interface TopBarProps {
   assistantBusy: boolean;
   connectionStatus: ConnectionViewStatus;
   onOpenTechDetails: () => void;
-  /** 诊断抽屉入口（指标与提示词装配）；没有诊断查询能力时不传，按钮随之隐藏。 */
-  onOpenDiagnostics?: () => void;
+  /** 诊断抽屉入口（指标与提示词装配）。 */
+  onOpenDiagnostics: () => void;
   /** 设置中心入口（右侧按钮）。 */
   onOpenSettings: () => void;
   actions: HarnessActions;
@@ -103,17 +103,15 @@ export const TopBar = memo(function TopBar({
         </button>
       ) : null}
 
-      {onOpenDiagnostics ? (
-        <button
-          type="button"
-          className="btn btn-outline"
-          onClick={onOpenDiagnostics}
-          title="诊断（指标与提示词装配）"
-          data-testid="topbar-diagnostics"
-        >
-          诊断
-        </button>
-      ) : null}
+      <button
+        type="button"
+        className="btn btn-outline"
+        onClick={onOpenDiagnostics}
+        title="诊断（指标与提示词装配）"
+        data-testid="topbar-diagnostics"
+      >
+        诊断
+      </button>
 
       {/* 设置中心入口（打开时拉取 config.get） */}
       <button

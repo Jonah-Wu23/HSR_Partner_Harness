@@ -452,7 +452,6 @@ export type DesktopEventName =
   | "remote.control_changed"
   | "remote.paired"
   | "conversation.card_missing"
-  | "connection.status"
   | "error.reported"
   | "diagnostic.warning"
   | "serve.started"
@@ -471,15 +470,19 @@ export interface DesktopEvent<T = Record<string, unknown>> {
   payload: T;
 }
 
-/** Rust 宿主合成的连接事件：断开、恢复与断开原因，不带序号。 */
+/**
+ * Rust 宿主合成的事件：连接断开与恢复、断开原因和非法输出报告，不带序号。
+ * Sidecar 自己发出的 error.reported 带序号，属于 DesktopEvent。
+ */
 export interface HostEvent {
   kind: "event";
   event: "connection.status" | "error.reported";
+  sequence?: never;
   stream_id?: string;
   payload: Record<string, unknown>;
 }
 
-/** 桌面窗口订阅流：Sidecar 事件与宿主连接事件。 */
+/** 桌面窗口订阅流：Sidecar 事件与宿主事件，按信封是否带 sequence 区分。 */
 export type DesktopStreamEvent = DesktopEvent | HostEvent;
 
 export interface MessageCreatedPayload {
@@ -808,6 +811,7 @@ export interface PowerStatusPayload {
   at_risk: boolean;
   reason: string;
   checked_at: string;
+  warnings: string[];
 }
 
 /* card.* 与 remote.* 命令的线缆类型。 */
@@ -911,7 +915,8 @@ export interface RemoteDevice {
   device_name: string;
   issued_at: string;
   last_used_at: string;
-  expires_at?: string;
+  /** 签发后 30 天与最近使用后 7 天中较早的一个。 */
+  expires_at: string;
   revoked: boolean;
 }
 

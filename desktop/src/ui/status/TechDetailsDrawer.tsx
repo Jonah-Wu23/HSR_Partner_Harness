@@ -6,11 +6,8 @@ interface TechDetailsDrawerProps {
   status: ConnectionViewStatus;
   details: ConnectionDetails;
   onClose: () => void;
-  /** 立即重连（app.reconnect）；缺省时隐藏对应按钮。 */
-  onReconnect?: () => void;
-  onRestartSidecar?: () => void;
-  /** 打开诊断抽屉；缺省时隐藏对应按钮。 */
-  onOpenDiagnostics?: () => void;
+  /** 立即重连（app.reconnect）。 */
+  onReconnect: () => void;
 }
 
 /** 技术详情抽屉：连接、Sidecar、日志等技术词全部收在这里。 */
@@ -20,8 +17,6 @@ export function TechDetailsDrawer({
   details,
   onClose,
   onReconnect,
-  onRestartSidecar,
-  onOpenDiagnostics,
 }: TechDetailsDrawerProps) {
   if (!open) return null;
   return (
@@ -71,29 +66,9 @@ export function TechDetailsDrawer({
         </dl>
 
         <div className="tech-drawer-actions">
-          {onOpenDiagnostics ? (
-            <button
-              type="button"
-              className="btn btn-outline"
-              onClick={() => {
-                onClose();
-                onOpenDiagnostics();
-              }}
-              data-testid="tech-drawer-open-diagnostics"
-            >
-              打开诊断（指标与装配）
-            </button>
-          ) : null}
-          {onReconnect ? (
-            <button type="button" className="btn btn-secondary" onClick={onReconnect}>
-              立即重连
-            </button>
-          ) : null}
-          {onRestartSidecar ? (
-            <button type="button" className="btn btn-outline" onClick={onRestartSidecar}>
-              重启本地服务
-            </button>
-          ) : null}
+          <button type="button" className="btn btn-secondary" onClick={onReconnect}>
+            立即重连
+          </button>
         </div>
       </aside>
     </div>
