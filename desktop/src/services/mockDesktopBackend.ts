@@ -12,6 +12,7 @@ import type {
   ProjectRecord,
   PowerStatusPayload,
   QueueItem,
+  TaskCancelResult,
   ToolRun,
   Turn,
 } from "../contracts/protocol";
@@ -230,6 +231,8 @@ export class MockDesktopBackend implements DesktopBackend {
         return this.cardDuplicate(command.params) as T;
       case "card.archive":
         return this.cardArchive(command.params) as T;
+      case "card.unarchive":
+        return this.cardUnarchive(command.params) as T;
       case "card.delete":
         return this.cardDelete(command.params) as T;
       case "card.select_active":
@@ -418,6 +421,13 @@ export class MockDesktopBackend implements DesktopBackend {
     return { card_id: cardId, archived: true };
   }
 
+  private cardUnarchive(params: Record<string, unknown>) {
+    const cardId = String(params.card_id ?? "");
+    if (!this.cards.some((card) => card.card_id === cardId)) throw new Error("角色卡不存在");
+    this.archivedCardIds.delete(cardId);
+    return { card_id: cardId, archived: false };
+  }
+
   private cardDelete(params: Record<string, unknown>) {
     const cardId = String(params.card_id ?? "");
     if (params.confirm !== true) throw new Error("删除需要确认");
@@ -509,7 +519,7 @@ export class MockDesktopBackend implements DesktopBackend {
         card_id: cardId,
         name,
         state: "imported",
-        source: "imported_json",
+        source: "tavern_import",
         updated_at: now,
         has_avatar: false,
         voice_state: "voice_unconfigured",
@@ -538,7 +548,7 @@ export class MockDesktopBackend implements DesktopBackend {
         card_id: cardId,
         name,
         state: "imported",
-        source: "imported_png",
+        source: "tavern_import",
         updated_at: now,
         has_avatar: true,
         voice_state: "voice_unconfigured",
@@ -1039,7 +1049,8 @@ export class MockDesktopBackend implements DesktopBackend {
     };
   }
 
-  private cancelTask(params: Record<string, unknown>): { cancelled: true; conversation_id: string; task_id: string } {
+  /** 与真实 task.cancel 一致：没有匹配的运行中任务时返回 cancelled=false，不抛错。 */
+  private cancelTask(params: Record<string, unknown>): TaskCancelResult {
     const conversationId = String(params.conversation_id ?? "");
     const taskId = String(params.task_id ?? "");
     const activeTasks = this.scenario.snapshot.active_tasks ?? [];
@@ -1047,7 +1058,7 @@ export class MockDesktopBackend implements DesktopBackend {
       (item) => item.conversation_id === conversationId && item.task_id === taskId,
     );
     if (!active) {
-      throw new Error("当前聊天没有匹配的活动任务");
+      return { cancelled: false };
     }
     this.scenario.snapshot.active_tasks = activeTasks.filter(
       (item) => item.task_id !== taskId,
@@ -1063,7 +1074,7 @@ export class MockDesktopBackend implements DesktopBackend {
       active_task: null,
       active_tasks: this.scenario.snapshot.active_tasks,
     });
-    return { cancelled: true, conversation_id: conversationId, task_id: taskId };
+    return { cancelled: true };
   }
 
   private renameConversation(params: Record<string, unknown>): DesktopSnapshot {
@@ -1301,7 +1312,8 @@ export class MockDesktopBackend implements DesktopBackend {
         enabled: "true",
         assistant_voice_enabled: "false",
         base_url: "https://dashscope.aliyuncs.com/api/v1",
-        api_key_masked: "sk-v…5678",
+        api_key_masked: this.voiceConfigured ? "sk-v…5678" : "",
+        credential_source: this.voiceConfigured ? "account" : "not_configured",
         asr_model: "qwen-audio-3.0-asr-flash-streaming",
         tts_model: "qwen-audio-3.0-tts-flash",
         character_voice: "qwen-audio-3.0-tts-flash-phainon-46e9bd0087cd4c4c8d29e1b9f1b5db32",

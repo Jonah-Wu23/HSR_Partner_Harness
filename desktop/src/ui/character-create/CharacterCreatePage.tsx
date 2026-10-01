@@ -59,19 +59,27 @@ export function CharacterCreatePage({ vm, actions, onPickFile, onReturnToChat }:
   const cardJsonRef = useRef(cardJson);
   cardJsonRef.current = cardJson;
   const isSavingRef = useRef(false);
+  // 每次编辑推进一次；保存完成时与保存开始时不同，说明保存的是旧内容。
+  const editRevisionRef = useRef(0);
+  // 保存进行中又触发了保存：当前保存结束后补存一次最新内容。
+  const resaveRef = useRef(false);
+  const hydratedCardIdRef = useRef(vm.cardId);
 
-  // 当 vm.card 外部变更时水合；同时拉取服务端 state/avatar 权威状态。
+  // 只在打开的卡（vm.cardId）变化时水合表单与整卡草稿；页面编辑期间 store 中卡内容的
+  // 其他变化不回灌，避免重置用户正在编辑的内容。
   useEffect(() => {
+    if (hydratedCardIdRef.current === vm.cardId) return;
+    hydratedCardIdRef.current = vm.cardId;
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     setCardJson(vm.card);
-    if (vm.card) {
-      setFormData(extractFormData(vm.card));
-      setCurrentCardId(vm.cardId);
-      setSaveStatus("saved");
-      setLastSavedTime(formatTime());
-      setPublishStatus("idle");
-      setPublishError(null);
-    }
-  }, [vm.card, vm.cardId]);
+    setFormData(extractFormData(vm.card));
+    setCurrentCardId(vm.cardId);
+    setSaveStatus(vm.cardId ? "saved" : "idle");
+    setLastSavedTime(vm.cardId ? formatTime() : null);
+    setSaveError(null);
+    setPublishStatus("idle");
+    setPublishError(null);
+  }, [vm.cardId, vm.card]);
 
   // 拉取服务端权威状态（state/avatar）：vm 进入或本地创建 draft 后都触发。
   useEffect(() => {
@@ -111,14 +119,20 @@ export function CharacterCreatePage({ vm, actions, onPickFile, onReturnToChat }:
       return false;
     }
 
-    if (vm.readOnly || isSavingRef.current) {
+    if (vm.readOnly) {
+      return false;
+    }
+    if (isSavingRef.current) {
+      resaveRef.current = true;
       return false;
     }
 
     isSavingRef.current = true;
+    const revision = editRevisionRef.current;
     setSaveStatus("saving");
     setSaveError(null);
 
+    let saved = false;
     try {
       let targetId = currentCardIdRef.current;
       if (!targetId) {
@@ -130,9 +144,15 @@ export function CharacterCreatePage({ vm, actions, onPickFile, onReturnToChat }:
       const payload = buildCardPayload(cardJsonRef.current, currentData);
       await actions.updateCard(targetId, payload);
 
-      const timeStr = formatTime();
-      setLastSavedTime(timeStr);
-      setSaveStatus("saved");
+      saved = true;
+      setLastSavedTime(formatTime());
+      // 保存期间又有编辑时，服务端拿到的是旧内容：保持「未保存」并补存。
+      if (editRevisionRef.current === revision) {
+        setSaveStatus("saved");
+      } else {
+        setSaveStatus("unsaved");
+        resaveRef.current = true;
+      }
       return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -141,8 +161,13 @@ export function CharacterCreatePage({ vm, actions, onPickFile, onReturnToChat }:
       return false;
     } finally {
       isSavingRef.current = false;
+      const resave = saved && resaveRef.current;
+      resaveRef.current = false;
+      if (resave && latestFormDataRef.current.name.trim()) void performSaveRef.current();
     }
   }, [actions, vm.readOnly]);
+  const performSaveRef = useRef(performSave);
+  performSaveRef.current = performSave;
 
   // 发布流程
   const performPublish = useCallback(async (): Promise<boolean> => {
@@ -171,6 +196,7 @@ export function CharacterCreatePage({ vm, actions, onPickFile, onReturnToChat }:
 
   // 未保存标记 + 防抖自动保存：表单字段与整卡 JSON（世界书 / mufy）编辑共用同一状态机。
   const markDirtyAndScheduleSave = useCallback(() => {
+    editRevisionRef.current += 1;
     setSaveStatus("unsaved");
     setSaveError(null);
     setPublishStatus("idle");

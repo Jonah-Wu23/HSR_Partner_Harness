@@ -21,6 +21,8 @@ interface CharacterCardItemProps {
   onDuplicate: (cardId: string) => void;
   onExport: (card: CharacterCardSummaryView) => void;
   onArchive: (cardId: string) => void;
+  /** 已归档卡的「恢复」（card.unarchive）。 */
+  onUnarchive: (cardId: string) => void;
   onDeleteRequest: (card: CharacterCardSummaryView) => void;
   onViewError: (card: CharacterCardSummaryView) => void;
   onViewCompat?: (card: CharacterCardSummaryView) => void;
@@ -34,6 +36,7 @@ export function CharacterCardItem({
   onDuplicate,
   onExport,
   onArchive,
+  onUnarchive,
   onDeleteRequest,
   onViewError,
   onViewCompat,
@@ -46,17 +49,8 @@ export function CharacterCardItem({
 
   const firstChar = card.name.trim().charAt(0) || "角";
 
-  // 来源文本推导
-  let sourceText = "创建";
-  if (card.source === "builtin") {
-    sourceText = "内置 · 只读";
-  } else if (card.source === "imported_json") {
-    sourceText = "导入 (JSON)";
-  } else if (card.source === "imported_png") {
-    sourceText = "导入 (PNG)";
-  } else if (card.source === "user_created") {
-    sourceText = "创建";
-  }
+  const sourceText =
+    card.source === "builtin" ? "内置 · 只读" : card.source === "tavern_import" ? "导入" : "创建";
 
   // 音色状态推导
   let voiceDotClass = "char-dot-muted";
@@ -193,7 +187,7 @@ export function CharacterCardItem({
                 className="char-icon-btn"
                 title="恢复"
                 aria-label={`恢复${card.name}`}
-                onClick={() => onArchive(card.cardId)}
+                onClick={() => onUnarchive(card.cardId)}
               >
                 <RestoreIcon />
               </button>

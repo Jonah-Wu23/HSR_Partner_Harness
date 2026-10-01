@@ -6,8 +6,13 @@ import type {
   ProjectViewModel,
   WorkbenchItem,
 } from "../contracts/view-models";
-import type { Message, QueueItem, ToolRun } from "../contracts/protocol";
-import type { DesktopRenderState } from "../stores/desktopStore";
+import type { Message, QueueItem, ToolRun, VoiceState } from "../contracts/protocol";
+import {
+  selectComposerTarget,
+  selectWindowMode,
+  selectWindowProjectId,
+  type DesktopRenderState,
+} from "../stores/desktopStore";
 import type { QueueItemView, ToastItem } from "../ui/status/types";
 import type { DelegationCardView } from "../ui/workspace/DelegationCard";
 import type { VoiceMiniPlayerView } from "../ui/composer/VoiceMiniPlayer";
@@ -44,27 +49,35 @@ function queuedItemsFor(state: DesktopRenderState, conversationId: string): Queu
     .sort((a, b) => a.position - b.position);
 }
 
-/** V0.2 M4：排队条视图——指定会话未撤回的队列项按 position 升序。
-    V0.3.8 T5（C3）：waitingFor 按真实状态派生，区分执行中/排队，不再
-    硬编码“等待当前回复结束”；空闲会话出现排队项时如实呈现“等待派发”。 */
+/** 排队条视图：指定会话未撤回的队列项按 position 升序。waitingFor 按真实状态派生；
+    派发失败的项不再等待，只显示失败原因，也不计入后面各项的等待数。 */
 function presentQueueItems(state: DesktopRenderState, conversationId: string): QueueItemView[] {
   const ordered = queuedItemsFor(state, conversationId);
   const hasActiveTurn = Boolean(state.activeTasksByConversation[conversationId]);
-  return ordered.map((item, index) => ({
-    queueItemId: item.queue_item_id,
-    target: item.target,
-    summary: truncateSingleLine(item.text),
-    position: item.position + 1,
-    waitingFor:
-      item.status === "processing"
-        ? "执行中"
-        : hasActiveTurn
-          ? index === 0
-            ? "等待当前回复结束"
-            : `等待当前回复及前面 ${index} 项`
-          : "等待派发",
-    intent: item.intent,
-  }));
+  let pendingAhead = 0;
+  return ordered.map((item) => {
+    const failed = item.status === "failed";
+    const view: QueueItemView = {
+      queueItemId: item.queue_item_id,
+      target: item.target,
+      summary: truncateSingleLine(item.text),
+      position: item.position + 1,
+      waitingFor: failed
+        ? ""
+        : item.status === "processing"
+          ? "执行中"
+          : hasActiveTurn
+            ? pendingAhead === 0
+              ? "等待当前回复结束"
+              : `等待当前回复及前面 ${pendingAhead} 项`
+            : "等待派发",
+      intent: item.intent,
+      failed,
+      error: item.error,
+    };
+    if (!failed) pendingAhead += 1;
+    return view;
+  });
 }
 
 /** V0.2 M4：委派卡——指定会话中角色发起的委派（origin=character_delegation
@@ -171,6 +184,22 @@ function presentProviderUnavailable(
   };
 }
 
+/** VAD 运行时状态：语音运行时不可用或 VAD 模型不可用为 unavailable，正在聆听或识别为 running。 */
+function presentVadStatus(voice: VoiceState): VoicePageView["vadStatus"] {
+  if (!voice.supported || voice.vad === "unavailable") return "unavailable";
+  return voice.vad === "idle" ? "ready" : "running";
+}
+
+/** 角色音色依赖当前账号保存的 DashScope Key 与服务地址（config.get 的 credential_source=account）。 */
+function presentVoiceConfigured(config: Record<string, unknown> | null): boolean {
+  const voice = (config as ConfigShape | null)?.voice;
+  return (
+    voice?.credential_source === "account" &&
+    typeof voice.base_url === "string" &&
+    voice.base_url.length > 0
+  );
+}
+
 /** V0.2 M4：设置中心四页视图——configSnapshot 映射，无数据给默认空值。 */
 function presentSettings(state: DesktopRenderState): AppShellViewModel["settings"] {
   const config = state.configSnapshot as ConfigShape | null;
@@ -241,7 +270,7 @@ function presentSettings(state: DesktopRenderState): AppShellViewModel["settings
     assistantVoiceId,
     assistantVoiceName,
     vadEnabled: Boolean(voiceConfig.vad_enabled === "true"),
-    vadStatus: "ready",
+    vadStatus: presentVadStatus(state.voice),
     baseUrl: typeof voiceConfig.base_url === "string" ? voiceConfig.base_url : "",
     apiKeyMasked:
       typeof voiceConfig.api_key_masked === "string" ? voiceConfig.api_key_masked : "",
@@ -333,7 +362,7 @@ function presentChatTabs(state: DesktopRenderState): ChatTabsViewModel[] {
       title: conversation?.title ?? "未知聊天",
       isRunning: Boolean(state.activeTasksByConversation[conversationId]),
       isQueued: (state.queueItemsByConversation[conversationId] ?? []).some(
-        (item) => item.status !== "withdrawn",
+        (item) => item.status === "queued" || item.status === "processing",
       ),
       isWaitingApproval: state.approvals.some(
         (approval) => approval.conversation_id === conversationId,
@@ -365,7 +394,7 @@ export function presentCharacterCardVoicePage(
   }));
   const selectedCard = cards.find((card) => card.cardId === selectedCardId) ?? null;
   return {
-    voiceConfigured: state.configSnapshot?.voice !== undefined,
+    voiceConfigured: presentVoiceConfigured(state.configSnapshot),
     cards,
     selectedCardId,
     selectedCard,
@@ -373,7 +402,6 @@ export function presentCharacterCardVoicePage(
 }
 
 export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
-  const currentProject = state.projectsById[state.currentProjectId];
   // V0.3.2 M5：工作区渲染本窗口活动标签；没有打开的标签（全部关闭）时为空状态。
   const workspaceConversationId = state.activeConversationId;
   const workspaceConversation = workspaceConversationId
@@ -431,12 +459,19 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
   const assistantTools = workspaceConversation
     ? toolsFor(state, workspaceConversation.conversation_id)
     : [];
-  const approvalMode = currentProject?.approval_mode ?? "request_approval";
+  // 审批模式与推理档位是项目设置，取本窗口活动标签所属项目。
+  const windowProjectId = selectWindowProjectId(state);
+  const windowProject = windowProjectId ? state.projectsById[windowProjectId] : undefined;
+  const approvalMode = windowProject?.approval_mode ?? "request_approval";
+  const review = workspaceConversationId
+    ? state.reviewByConversation[workspaceConversationId]
+    : undefined;
   const currentPairId =
     workspaceConversation?.pair_id || state.pair?.pair_id || "phainon_ancient_machine";
 
   return {
     status: state.status,
+    resyncing: state.resyncing,
     theme: state.theme,
     currentPairId,
     navigation: state.pair
@@ -451,7 +486,7 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
     chatTabs: presentChatTabs(state),
     workspace: workspaceConversation
       ? {
-          mode: state.mode,
+          mode: selectWindowMode(state),
           character: {
             conversationId: workspaceConversation.conversation_id,
             messages: characterMessages,
@@ -472,11 +507,11 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
         }
       : null,
     composer: {
-      target: state.composerTarget,
+      target: selectComposerTarget(state),
       draft: state.composerDraft,
       enabled: state.status === "ready" && workspaceConversation !== undefined,
       approvalMode,
-      reasoningEffort: currentProject?.reasoning_effort ?? "low",
+      reasoningEffort: windowProject?.reasoning_effort ?? "low",
       asrPartial: state.voice.asr_partial,
     },
     approval: {
@@ -486,8 +521,8 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
         resolving: Boolean(state.approvalResolvingById[approval.approval_id]),
       })),
       resolved: state.resolvedApprovals,
-      reviewActive: state.reviewActive,
-      reviewText: state.reviewText,
+      reviewActive: review?.active ?? false,
+      reviewText: review?.text ?? null,
     },
     voice: {
       ...state.voice,

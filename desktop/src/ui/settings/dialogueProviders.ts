@@ -28,13 +28,3 @@ export const DIALOGUE_PROVIDERS: Record<DialogueProviderId, DialogueProviderOpti
 export function isSupportedDialogueProvider(value: string): value is DialogueProviderId {
   return DIALOGUE_PROVIDER_IDS.some((id) => id === value);
 }
-
-/** 把 config.get 的 dialogue.provider 收敛为界面选项 id。识别不了的值原样返回，
-    由调用方按「不在选项内」呈现——不做语义猜测，也不替用户改配置；是否可用
-    由后端 dialogue.provider_supported 判定。 */
-export function normalizeDialogueProvider(value: string): string {
-  const normalized = value.trim().toLowerCase().replaceAll("_", " ");
-  if (normalized.includes("deepseek")) return "deepseek";
-  if (normalized.includes("oauth")) return "openai_oauth";
-  return "openai_compatible";
-}

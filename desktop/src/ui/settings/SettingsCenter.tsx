@@ -13,7 +13,6 @@ import {
   DIALOGUE_PROVIDERS,
   DIALOGUE_PROVIDER_IDS,
   isSupportedDialogueProvider,
-  normalizeDialogueProvider,
 } from "./dialogueProviders";
 import type { CharacterCardVoicePageViewModel, RemotePairingViewModel } from "../../contracts/view-models";
 import type { FileFilter } from "../../services/backend";
@@ -50,16 +49,17 @@ interface SettingsCenterProps {
   onQueryTunnelStatus?: () => void | Promise<void>;
   modelTest: TestResult;
   voicePreview: TestResult;
-  onSaveProfile: (displayName: string) => void;
-  onChangePassword: (oldPassword: string, newPassword: string) => void;
+  /** 保存资料与修改密码：页面 await 后就地显示结果。 */
+  onSaveProfile: (displayName: string) => Promise<void>;
+  onChangePassword: (oldPassword: string, newPassword: string) => Promise<void>;
   onLogout: () => void;
   onSaveModel: (config: CharacterModelPageView & { apiKey?: string }) => void | Promise<void>;
   onTestModel: () => void;
-  /** 保存当前本地账号的语音配置与开关偏好。 */
+  /** 保存当前本地账号的语音配置与开关偏好；只携带本次变化的字段。 */
   onSaveVoice: (config: {
-    enabled: boolean;
-    assistantVoiceEnabled: boolean;
-    vadEnabled: boolean;
+    enabled?: boolean;
+    assistantVoiceEnabled?: boolean;
+    vadEnabled?: boolean;
     baseUrl?: string;
     /** 只接受当前输入框的新 Key；已保存 Key 不会从 view 回传。 */
     apiKey?: string;
@@ -209,11 +209,55 @@ export function SettingsCenter(props: SettingsCenterProps) {
   );
 }
 
+/** 表单提交的就地结果：成功提示或失败原文。 */
+type FormOutcome = { ok: boolean; text: string } | null;
+
+function FormOutcomeNote({ outcome }: { outcome: FormOutcome }) {
+  if (!outcome) return null;
+  return (
+    <p className={outcome.ok ? "field-ok" : "field-error"} role={outcome.ok ? "status" : "alert"}>
+      {outcome.text}
+    </p>
+  );
+}
+
 function AccountPage(props: SettingsCenterProps) {
   const [name, setName] = useState(props.account.displayName);
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirming, setConfirming] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileOutcome, setProfileOutcome] = useState<FormOutcome>(null);
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [passwordOutcome, setPasswordOutcome] = useState<FormOutcome>(null);
+
+  const saveProfile = async () => {
+    setProfileSaving(true);
+    setProfileOutcome(null);
+    try {
+      await props.onSaveProfile(name.trim());
+      setProfileOutcome({ ok: true, text: "资料已保存" });
+    } catch (error) {
+      setProfileOutcome({ ok: false, text: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+  const changePassword = async () => {
+    setPasswordSaving(true);
+    setPasswordOutcome(null);
+    try {
+      await props.onChangePassword(oldPassword, newPassword);
+      setOldPassword("");
+      setNewPassword("");
+      setPasswordOutcome({ ok: true, text: "密码已修改" });
+    } catch (error) {
+      setPasswordOutcome({ ok: false, text: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setPasswordSaving(false);
+    }
+  };
 
   return (
     <section className="settings-page">
@@ -221,12 +265,13 @@ function AccountPage(props: SettingsCenterProps) {
         <span className="field-label">显示名称</span>
         <input value={name} onChange={(event) => setName(event.target.value)} />
       </label>
+      <FormOutcomeNote outcome={profileOutcome} />
       <div className="settings-row">
         <button
           type="button"
           className="btn btn-secondary"
-          disabled={!name.trim() || name === props.account.displayName}
-          onClick={() => props.onSaveProfile(name.trim())}
+          disabled={profileSaving || !name.trim() || name === props.account.displayName}
+          onClick={() => void saveProfile()}
         >
           保存资料
         </button>
@@ -241,12 +286,13 @@ function AccountPage(props: SettingsCenterProps) {
         <span className="field-label">新密码（至少 6 位）</span>
         <input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
       </label>
+      <FormOutcomeNote outcome={passwordOutcome} />
       <div className="settings-row">
         <button
           type="button"
           className="btn btn-secondary"
-          disabled={!oldPassword || newPassword.length < 6}
-          onClick={() => props.onChangePassword(oldPassword, newPassword)}
+          disabled={passwordSaving || !oldPassword || newPassword.length < 6}
+          onClick={() => void changePassword()}
         >
           修改密码
         </button>
@@ -286,11 +332,9 @@ function CodingAssistantPage() {
 }
 
 function CharacterModelPage(props: SettingsCenterProps) {
-  const [form, setForm] = useState({
-    ...props.model,
-    provider: normalizeDialogueProvider(props.model.provider),
-  });
-  const initialProvider = normalizeDialogueProvider(props.model.provider);
+  // config.get 的 dialogue.provider 是后端规范化后的服务商 id，直接作为选项值。
+  const [form, setForm] = useState({ ...props.model });
+  const initialProvider = props.model.provider;
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -484,6 +528,7 @@ function VoicePage(props: SettingsCenterProps) {
   const completedCount = speakers.filter((speaker) => speaker.state === "completed").length;
   const provisioning = provisioningIds.length > 0;
 
+  // 开关只提交变化的那一项：带上服务地址会让后端重建语音运行时并打断正在进行的朗读。
   const savePreferences = async (config: {
     enabled?: boolean;
     assistantVoiceEnabled?: boolean;
@@ -491,12 +536,7 @@ function VoicePage(props: SettingsCenterProps) {
   }) => {
     setSaveError(null);
     try {
-      await props.onSaveVoice({
-        enabled: config.enabled ?? voice.enabled,
-        assistantVoiceEnabled: config.assistantVoiceEnabled ?? voice.assistantVoiceEnabled,
-        vadEnabled: config.vadEnabled ?? voice.vadEnabled,
-        baseUrl: baseUrl.trim() || undefined,
-      });
+      await props.onSaveVoice(config);
     } catch (error: unknown) {
       setSaveError(error instanceof Error ? error.message : String(error));
     }
@@ -514,9 +554,6 @@ function VoicePage(props: SettingsCenterProps) {
     setSaveNotice(null);
     try {
       await props.onSaveVoice({
-        enabled: voice.enabled,
-        assistantVoiceEnabled: voice.assistantVoiceEnabled,
-        vadEnabled: voice.vadEnabled,
         baseUrl: nextBaseUrl,
         ...(nextApiKey ? { apiKey: nextApiKey } : {}),
       });

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { RemotePairingViewModel } from "../../../contracts/view-models";
+import type { RemotePairingViewModel, TunnelViewModel } from "../../../contracts/view-models";
 import { QrCode } from "../../primitives/QrCode";
 
 export interface RemotePairingPanelProps {
@@ -151,7 +151,7 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
   const isExpired = vm.issuedAtEpochMs !== null && remainingSeconds <= 0;
 
   // 隧道五态
-  const tunnel = vm.tunnel ?? {
+  const tunnel: TunnelViewModel = vm.tunnel ?? {
     state: "off",
     publicUrl: null,
     hostname: null,
@@ -320,6 +320,11 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
           ) : (
             <p className="settings-hint">未开启公网接入，仅可通过本地局域网或回环连接。</p>
           )}
+          {tunnel.requestError ? (
+            <p className="field-error" role="alert" data-testid="tunnel-request-error">
+              公网隧道请求失败：{tunnel.requestError}
+            </p>
+          ) : null}
         </div>
       </div>
 

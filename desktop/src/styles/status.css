@@ -233,6 +233,7 @@
 }
 .queue-capsule-target { font-weight: 600; }
 .queue-capsule-waiting { color: var(--text-muted); }
+.queue-capsule-error { color: var(--danger); }
 
 .queue-capsule-actions {
   display: none;

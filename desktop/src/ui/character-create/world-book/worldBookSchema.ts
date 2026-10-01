@@ -107,6 +107,19 @@ export function getExtensions(entry: Record<string, unknown>): Record<string, un
   return isPlainObject(entry.extensions) ? entry.extensions : null;
 }
 
+/** SillyTavern 位置数值枚举中受支持的三档，编辑位置时写入 extensions.position。 */
+export const ST_POSITION_VALUES: Record<SupportedPosition, number> = {
+  before_char: 0,
+  after_char: 1,
+  atDepth: 4,
+};
+
+/** 条目生效位置：与 ST 导入及运行时一致，extensions.position 存在时优先于顶层 position。 */
+export function entryPosition(entry: Record<string, unknown>): unknown {
+  const ext = getExtensions(entry);
+  return ext?.position ?? entry.position;
+}
+
 function roleFromValue(raw: unknown): string | null {
   if (typeof raw === "string" && (ROLES as readonly string[]).includes(raw)) return raw;
   if (raw === 0) return "system";
@@ -126,11 +139,12 @@ export function readRole(ext: Record<string, unknown>): string | null {
 }
 
 export function positionSummary(entry: Record<string, unknown>): string {
-  const normalized = normalizePosition(entry.position);
+  const position = entryPosition(entry);
+  const normalized = normalizePosition(position);
   if (normalized === null) {
-    return entry.position === undefined
+    return position === undefined
       ? "角色定义前（缺省）"
-      : `不支持的位置 ${displayPositionRaw(entry.position)}（不注入）`;
+      : `不支持的位置 ${displayPositionRaw(position)}（不注入）`;
   }
   if (normalized === "atDepth") {
     const ext = getExtensions(entry) ?? {};
@@ -209,7 +223,7 @@ export function collectEntryNotRunFields(entry: Record<string, unknown>): NotRun
     if ("role" in ext && roleFromValue(ext.role) === null) {
       add("ext-role-invalid", "extensions.role 不是 system/user/assistant（运行时按 system 处理）", "extensions", ext.role);
     }
-    if (normalizePosition(entry.position) !== "atDepth" && ("depth" in ext || "role" in ext)) {
+    if (normalizePosition(entryPosition(entry)) !== "atDepth" && ("depth" in ext || "role" in ext)) {
       add("ext-depth-role-dormant", "depth / role（仅 atDepth 位置生效，当前不生效）", "extensions", {
         depth: ext.depth,
         role: ext.role,
@@ -221,13 +235,13 @@ export function collectEntryNotRunFields(entry: Record<string, unknown>): NotRun
     add("content-decorator", "@@activate / @@dont_activate 装饰器（content 前缀）", "content", entry.content);
   }
 
-  const normalized = normalizePosition(entry.position);
-  if (normalized === null && entry.position !== undefined) {
+  const position = entryPosition(entry);
+  if (normalizePosition(position) === null && position !== undefined) {
     add(
       "position",
-      `position=${displayPositionRaw(entry.position)}（不支持的位置，不注入、不静默改写）`,
+      `position=${displayPositionRaw(position)}（不支持的位置，不注入、不静默改写）`,
       "位置",
-      entry.position,
+      position,
     );
   }
 
@@ -276,6 +290,7 @@ const KNOWN_ENTRY_KEYS = new Set([
 
 const KNOWN_EXTENSION_KEYS = new Set([
   "selectiveLogic",
+  "position",
   "depth",
   "role",
   ...EXTENSIONS_NOT_RUN_KEYS.map(([key]) => key),

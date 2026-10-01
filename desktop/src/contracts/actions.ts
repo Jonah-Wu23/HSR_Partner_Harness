@@ -1,5 +1,11 @@
 import type { ApprovalMode, PairMemory, ReasoningEffort } from "./protocol";
 
+/** config.test_connection 的连通结论与说明原文。 */
+export interface ConnectionTestResult {
+  ok: boolean;
+  message: string;
+}
+
 /** chat.submit 的真实返回：快速接受时 status=received，忙碌入队时 queued=true。 */
 export interface SubmitMessageResult {
   message_id?: string;
@@ -71,8 +77,8 @@ export interface HarnessActions {
   completeOnboarding(): Promise<void>;
   getConfig(): Promise<void>;
   setConfig(updates: Record<string, string>): Promise<void>;
-  /** 测试对话服务连接；返回人话结果（如「连接正常（延迟 12 ms）」「Key 无效…」）。 */
-  testConnection(): Promise<string>;
+  /** 测试对话服务连接；ok 是服务端给出的连通结论，message 是说明原文。 */
+  testConnection(): Promise<ConnectionTestResult>;
   /** 本地 Toast 关闭（不经过后端）。 */
   dismissToast(id: string): void;
   /** 试听音色：text 试听文本，voiceId 缺省/非当前有效音色时用角色音色；
@@ -90,12 +96,14 @@ export interface HarnessActions {
   openCharacterCreate(cardId?: string): Promise<void>;
   /** 返回聊天工作区视图。 */
   openChat(): void;
-  /** 创建最小草稿，返回 card_id；同时记为创作页当前草稿。 */
+  /** 创建最小草稿，返回 card_id（由创作页持有）。 */
   createCardDraft(name: string): Promise<string>;
   /** 以完整 v3 JSON 覆盖保存角色卡。 */
   updateCard(cardId: string, card: Record<string, unknown>): Promise<void>;
   duplicateCard(cardId: string): Promise<void>;
   archiveCard(cardId: string): Promise<void>;
+  /** 把已归档的角色卡恢复到角色库（card.unarchive）。 */
+  unarchiveCard(cardId: string): Promise<void>;
   /** 删除角色卡；页面确认后才允许调用（confirm=true 固定由本方法携带）。 */
   deleteCard(cardId: string): Promise<void>;
   selectActiveCard(cardId: string): Promise<void>;

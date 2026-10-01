@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { Message, MessageSource, PairRecord } from "../../contracts/protocol";
+import type { Message, MessageSource, PairRecord, QueueItem } from "../../contracts/protocol";
 import type { ConversationTimelineViewModel } from "../../contracts/view-models";
 import { ConversationList, type ConversationItemState } from "../conversation/ConversationList";
 import { ReasoningRibbon } from "./ReasoningRibbon";
@@ -127,7 +127,14 @@ export function MessageBubble({
 
 type MessageListItem =
   | { kind: "message"; id: string; message: Message }
-  | { kind: "queue"; id: string; text: string; status: string };
+  | { kind: "queue"; id: string; text: string; status: QueueItem["status"]; error: string | null };
+
+const QUEUE_BADGE: Record<QueueItem["status"], string> = {
+  queued: "排队中",
+  processing: "执行中",
+  failed: "派发失败",
+  withdrawn: "已撤回",
+};
 
 const messageItemKey = (item: MessageListItem) => item.id;
 
@@ -144,6 +151,7 @@ export function MessageList({ timeline, pair, emptyText }: MessageListProps) {
       id: `queue:${item.queue_item_id}`,
       text: item.text,
       status: item.status,
+      error: item.error,
     })),
   ], [timeline.messages, timeline.queueItems]);
 
@@ -165,10 +173,15 @@ export function MessageList({ timeline, pair, emptyText }: MessageListProps) {
       renderItem={(item, itemState) => item.kind === "message" ? (
         <MessageBubble message={item.message} pair={pair} itemState={itemState} />
       ) : (
-        <div className="msg-row msg-row-user" data-queued="true">
+        <div className="msg-row msg-row-user" data-queued="true" data-queue-status={item.status}>
           <div className="msg-bubble msg-user queue-in-stream-bubble">
-            <span className="queue-in-stream-badge">{item.status === "processing" ? "执行中" : "排队中"}</span>
+            <span className="queue-in-stream-badge">{QUEUE_BADGE[item.status]}</span>
             {item.text}
+            {item.status === "failed" && item.error ? (
+              <div className="msg-status-banner msg-status-failed" role="alert">
+                <span className="msg-status-detail">{item.error}</span>
+              </div>
+            ) : null}
           </div>
         </div>
       )}

@@ -14,6 +14,7 @@ import type {
   DesktopSnapshot,
   MemoryWirePayload,
   Message,
+  MessageDeltaPayload,
   PairMemory,
   PairRecord,
   PairSummary,
@@ -37,6 +38,7 @@ import type {
 } from "../contracts/view-models";
 // 线缆解码是运行期函数（不是类型）：memory.* 的扁平载荷在这里转成前端记录。
 import { pairMemoryFromPayload } from "../contracts/protocol";
+import { applyMessageDelta } from "./messageDelta";
 
 export type DesktopStatus = "booting" | "ready" | "disconnected" | "error";
 
@@ -113,11 +115,19 @@ export interface PlaybackInterruption {
   occurred_at: string | null;
 }
 
+/** 某聊天最近一次审查智能体状态（review.* 事件）。 */
+export interface ReviewStatus {
+  active: boolean;
+  /** 审查结论或失败原因；审查进行中为 null。 */
+  text: string | null;
+}
+
 export interface DesktopState {
   status: DesktopStatus;
   error: string | null;
+  /** 序号缺口触发的重新同步进行中；界面保持可用，只显示同步提示。 */
+  resyncing: boolean;
   theme: "dark" | "light";
-  mode: "chat" | "collaboration";
   composerTarget: "character" | "assistant";
   composerDraft: string;
   projectsById: Record<string, ProjectRecord>;
@@ -153,8 +163,7 @@ export interface DesktopState {
     task_id?: string;
   }>;
   approvalResolvingById: Record<string, boolean>;
-  reviewActive: boolean;
-  reviewText: string | null;
+  reviewByConversation: Record<string, ReviewStatus>;
   voice: VoiceState;
   /** V0.2 M4：Toast 队列（recoverable/info 错误入列，同 code+message 去重，最多 5 条）。 */
   toasts: StoreToast[];
@@ -166,6 +175,9 @@ export interface DesktopState {
   streamId: string | null;
   /** M2.1：bootstrap/缺口期间暂存的同一代次业务事件，快照水合后核对重放。 */
   eventBuffer: DesktopEvent[];
+  /** conversation.open 结果对应的事件序号：序号不超过它的会话内消息、工具、回合与队列事件
+      已包含在装载结果里，经常驻订阅再次到达时只推进序号。 */
+  conversationViewSequence: Record<string, number>;
   /** V0.3.2 M5：本窗口视图 id——多窗口请求 id 与 conversation.open 的 view_id。 */
   viewId: string;
   /** V0.3.2 M5：本窗口打开的聊天标签（顺序即标签顺序）。 */
@@ -273,6 +285,8 @@ export interface DesktopState {
   setTunnelStarting(): void;
   setTunnelStopping(): void;
   setTunnelFailed(error: string): void;
+  /** 隧道停止或状态查询请求失败：记录错误原文，隧道状态保持不变。 */
+  setTunnelRequestFailed(error: string): void;
   hydrate(snapshot: DesktopSnapshot): void;
   applyEvents(events: DesktopEvent[]): void;
   /** V0.3.2 M5：装载 conversation.open 的只读结果并打开对应标签（不改全局当前聊天）。 */
@@ -287,11 +301,9 @@ export interface DesktopState {
   setActiveConversation(conversationId: string): void;
   setStatus(status: DesktopStatus, error?: string | null): void;
   setTheme(theme: "dark" | "light"): void;
-  setMode(mode: "chat" | "collaboration"): void;
   setComposerTarget(target: "character" | "assistant"): void;
   setComposerDraft(draft: string): void;
   setApprovalResolving(approvalId: string, resolving: boolean): void;
-  setReviewStatus(active: boolean, text?: string | null): void;
   dismissToast(id: string): void;
   pushToast(toast: StoreToast): void;
   setConfigSnapshot(snapshot: Record<string, unknown> | null): void;
@@ -301,8 +313,8 @@ export type DesktopRenderState = Pick<
   DesktopState,
   | "status"
   | "error"
+  | "resyncing"
   | "theme"
-  | "mode"
   | "composerTarget"
   | "composerDraft"
   | "projectsById"
@@ -327,8 +339,7 @@ export type DesktopRenderState = Pick<
   | "approvals"
   | "resolvedApprovals"
   | "approvalResolvingById"
-  | "reviewActive"
-  | "reviewText"
+  | "reviewByConversation"
   | "voice"
   | "toasts"
   | "configSnapshot"
@@ -402,11 +413,9 @@ function createInitialState(): Omit<
   | "setActiveConversation"
   | "setStatus"
   | "setTheme"
-  | "setMode"
   | "setComposerTarget"
   | "setComposerDraft"
   | "setApprovalResolving"
-  | "setReviewStatus"
   | "dismissToast"
   | "pushToast"
   | "setConfigSnapshot"
@@ -419,6 +428,7 @@ function createInitialState(): Omit<
   | "setTunnelStarting"
   | "setTunnelStopping"
   | "setTunnelFailed"
+  | "setTunnelRequestFailed"
   | "setPowerStatus"
   | "setPowerError"
   | "setPowerQueryInFlight"
@@ -448,8 +458,8 @@ function createInitialState(): Omit<
   return {
     status: "booting",
     error: null,
+    resyncing: false,
     theme: readThemePreference(),
-    mode: "chat",
     composerTarget: "character",
     composerDraft: "",
     projectsById: {},
@@ -475,8 +485,7 @@ function createInitialState(): Omit<
     approvals: [],
     resolvedApprovals: [],
     approvalResolvingById: {},
-    reviewActive: false,
-    reviewText: null,
+    reviewByConversation: {},
     voice: emptyVoice,
     toasts: [],
     configSnapshot: null,
@@ -484,6 +493,7 @@ function createInitialState(): Omit<
     needsBootstrap: false,
     streamId: null,
     eventBuffer: [],
+    conversationViewSequence: {},
     viewId: readUrlParam("view_id") ?? randomViewId(),
     openConversationIds: [],
     activeConversationId: null,
@@ -509,6 +519,7 @@ function createInitialState(): Omit<
         publicUrl: null,
         hostname: null,
         error: null,
+        requestError: null,
         loading: false,
       },
     },
@@ -751,10 +762,6 @@ function normalizeRemoteControl(value: unknown): RemoteControlState | null {
   };
 }
 
-function snapshotMode(snapshot: DesktopSnapshot): "chat" | "collaboration" {
-  return snapshot.current_conversation.last_mode === "collaboration" ? "collaboration" : "chat";
-}
-
 function normalizeStreamId(value: unknown): string | undefined {
   if (typeof value === "string" || typeof value === "number") {
     return String(value);
@@ -777,10 +784,11 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
   let indexed = indexSnapshot(snapshot);
   const sameAccount =
     state.currentAccountId === "" || state.currentAccountId === snapshot.current_account_id;
+  let replacedConversationIds: string[] = [];
   if (sameAccount) {
     // Sidecar 快照只携带全局当前聊天的消息详情。保留本窗口其他
     // 已打开标签的缓存，只替换快照明确覆盖的聊天。
-    const replacedConversationIds = Array.from(
+    replacedConversationIds = Array.from(
       new Set(
         [
           snapshot.current_conversation_id,
@@ -848,16 +856,11 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
   const activeConversationId = seedInitialTab
     ? snapshot.current_conversation_id
     : pruned.activeConversationId;
-  // V0.3.2 M5：模式和项目上下文跟随本窗口活动标签，而不是跟随
-  // Sidecar 可能被另一个窗口改写的 current_conversation_id。
+  // 项目上下文跟随本窗口活动标签，而不是跟随 Sidecar 可能被另一个窗口
+  // 改写的 current_conversation_id。
   const selectedConversation = activeConversationId
     ? indexed.conversationsById[activeConversationId]
     : undefined;
-  const mode = selectedConversation
-    ? selectedConversation.last_mode === "collaboration"
-      ? "collaboration"
-      : "chat"
-    : state.mode;
   const pairs = snapshot.pairs ?? (snapshot.pair ? [snapshot.pair] : []);
   const selectedPair = selectedConversation
     ? pairs.find((item) => item.pair_id === selectedConversation.pair_id) ??
@@ -869,6 +872,7 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
     ...indexed,
     status: "ready",
     error: null,
+    resyncing: false,
     currentAccountId: snapshot.current_account_id,
     accountGeneration:
       state.currentAccountId !== "" && state.currentAccountId !== snapshot.current_account_id
@@ -894,8 +898,7 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
     summaryRegenerateTarget: state.summaryRegenerateTarget ?? null,
     remoteControl: normalizeRemoteControl(snapshot.remote_control),
     approvalResolvingById: {},
-    reviewActive: false,
-    reviewText: null,
+    reviewByConversation: {},
     voice: snapshot.voice,
     // V0.2 M4：快照水合保留仍有效的本地 Toast；configSnapshot 只在新快照显式
     // 携带 config 字段时覆盖，否则继续使用 config.get 的结果。
@@ -904,13 +907,18 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
       "config" in snapshot
         ? (snapshot as DesktopSnapshot & { config?: Record<string, unknown> }).config ?? null
         : state.configSnapshot,
-    mode,
-    // M4.4：任何路径进入 chat 模式（含切换会话水合）都重置发送对象为角色。
-    composerTarget: mode === "chat" ? "character" : state.composerTarget,
     lastSequence: snapshot.sequence,
     needsBootstrap: false,
     streamId: snapshotStreamId ?? null,
     eventBuffer: [],
+    conversationViewSequence:
+      sameAccount && (snapshotStreamId ?? null) === state.streamId
+        ? pendingViewSequences(
+            state.conversationViewSequence,
+            snapshot.sequence,
+            replacedConversationIds,
+          )
+        : {},
     openConversationIds,
     activeConversationId,
     activeProjectId:
@@ -945,15 +953,14 @@ function applyErrorReported(state: DesktopState, event: DesktopEvent): DesktopSt
     };
   }
   const text = String(payload.message ?? "");
-  // V039-S4-007：Rust 的 publish_disconnected 在同一次调用里先发
-  // connection.status{disconnected}，再发这条 error.reported（lib.rs:520-548）。
-  // 两路描述同一个事实；只要这条错误上屏，连接就确实已经断开，因此连接状态
-  // 也如实落到 disconnected，避免药丸显示「已连接」而与通知互相矛盾。
+  // Rust 的 publish_disconnected 在同一次调用里先发 connection.status{disconnected}，
+  // 再发这条 error.reported。两路描述同一个事实：这条错误上屏时连接确实已断开，
+  // 连接状态同样记为 disconnected，药丸与通知保持一致。
   const disconnected = payload.code === "backend_disconnected";
   return {
     ...state,
     ...(disconnected
-      ? { status: "disconnected" as DesktopStatus, needsBootstrap: false }
+      ? { status: "disconnected" as DesktopStatus, needsBootstrap: false, resyncing: false }
       : {}),
     error: text,
     remotePairing: remotePairingWithServeFailure(state.remotePairing, payload.code, text),
@@ -1049,8 +1056,7 @@ function applyConnectionStatus(state: DesktopState, event: DesktopEvent): Deskto
   // connected 总是权威：新代次到达时用它切换 streamId。
   // disconnected 只接受当前代次；旧 reader 迟到的 disconnected 不能覆盖新连接。
   if (status === "connected") {
-    // V039-S4-007：恢复即事实——「正在重连…」这类瞬时通知随恢复撤回，
-    // 不再与「已连接」同屏矛盾（toast 无 TTL，必须显式撤回）。
+    // 连接恢复后撤回「正在重连…」这类瞬时通知（toast 没有 TTL，需要显式撤回）。
     const recovered = retractDisconnectNotices(state);
     return {
       ...recovered,
@@ -1068,7 +1074,13 @@ function applyConnectionStatus(state: DesktopState, event: DesktopEvent): Deskto
     ) {
       return state; // 旧代次的 disconnected
     }
-    return { ...state, status: "disconnected", needsBootstrap: false, eventBuffer: [] };
+    return {
+      ...state,
+      status: "disconnected",
+      needsBootstrap: false,
+      resyncing: false,
+      eventBuffer: [],
+    };
   }
   return state;
 }
@@ -1118,21 +1130,6 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
     // 错误通道不参与业务序号过滤：bootstrap 期间/旧代次高序号之后都必须显示。
     return applyErrorReported(state, event);
   }
-  // R1-002（M10）/R1-001：隧道与配对通知按控制通道即时应用，不参与业务序号
-  // 缺口缓冲。remote-only 手机语音事件消费全局序号但不写桌面 stdout，桌面事件
-  // 流因此存在序号缺口；缺口走「缓冲 → 快照 → 按序号丢弃」路径会静默吞掉
-  // tunnel.failed，设置面板停留「已连接」。这些事件的状态只存在于 remotePairing
-  // slice（快照不携带），带代次隔离的即时应用不破坏快照一致性。它们仍由同一
-  // EventEmitter 分配全局序号，应用后按已观察序号推进 lastSequence——否则紧随
-  // 其后的普通业务事件会被连续性检查误判成缺口，触发多余的 bootstrap。
-  if (
-    event.event === "tunnel.started" ||
-    event.event === "tunnel.stopped" ||
-    event.event === "tunnel.failed" ||
-    event.event === "remote.paired"
-  ) {
-    return applyTunnelAndPairingNotice(state, event);
-  }
   // 新代次 bootstrap 或序号缺口期间：暂存业务事件，等快照水合后核对重放。
   if (state.needsBootstrap || state.status === "booting") {
     return { ...state, eventBuffer: [...state.eventBuffer, event] };
@@ -1141,15 +1138,65 @@ function applyEvent(state: DesktopState, event: DesktopEvent): DesktopState {
     return state; // 同代次重复序号直接丢弃
   }
   if (state.lastSequence >= 0 && event.sequence !== state.lastSequence + 1) {
-    // 序号缺口：触发 bootstrap，并保留缺口后的事件等待快照核对。
+    // 序号缺口：重新拉取快照，界面保持可用；缺口后的事件等待快照核对。
     return {
       ...state,
       needsBootstrap: true,
+      resyncing: true,
       eventBuffer: [...state.eventBuffer, event],
+    };
+  }
+  if (includedInConversationView(state.conversationViewSequence, event)) {
+    // conversation.open 的装载结果已包含这条事件的效果，只推进序号。
+    return {
+      ...state,
+      lastSequence: event.sequence,
+      conversationViewSequence: pendingViewSequences(
+        state.conversationViewSequence,
+        event.sequence,
+      ),
     };
   }
 
   return applyBusinessEvent(state, event);
+}
+
+/** conversation.open 按会话整体替换的数据（消息、工具、回合、队列）只受这些事件影响。 */
+const CONVERSATION_VIEW_EVENTS: ReadonlySet<DesktopEvent["event"]> = new Set([
+  "message.created",
+  "message.status_changed",
+  "message.delta",
+  "message.finalized",
+  "tool_run.upserted",
+  "turn.started",
+  "turn.status_changed",
+  "queue.changed",
+]);
+
+function includedInConversationView(
+  viewSequence: Record<string, number>,
+  event: DesktopEvent,
+): boolean {
+  if (!CONVERSATION_VIEW_EVENTS.has(event.event)) return false;
+  return Object.entries(viewSequence).some(
+    ([conversationId, sequence]) =>
+      event.sequence <= sequence && eventTargetsConversation(event, conversationId),
+  );
+}
+
+/** 保留仍有待跳过事件的会话序号：不超过 lastSequence 或数据已被快照替换的条目移除。 */
+function pendingViewSequences(
+  viewSequence: Record<string, number>,
+  lastSequence: number,
+  replacedConversationIds: readonly string[] = [],
+): Record<string, number> {
+  const pending: Record<string, number> = {};
+  for (const [conversationId, sequence] of Object.entries(viewSequence)) {
+    if (sequence > lastSequence && !replacedConversationIds.includes(conversationId)) {
+      pending[conversationId] = sequence;
+    }
+  }
+  return pending;
 }
 
 function eventTargetsConversation(event: DesktopEvent, conversationId: string): boolean {
@@ -1175,99 +1222,24 @@ function eventTargetsConversation(event: DesktopEvent, conversationId: string): 
   );
 }
 
-/**
- * R1-002（M10）/R1-001：隧道与配对通知通道。事件即时应用、不缓冲、
- * 不推进业务序号；状态只落在 remotePairing slice（快照不携带）。
- */
-function applyTunnelAndPairingNotice(state: DesktopState, event: DesktopEvent): DesktopState {
-  const next: DesktopState = { ...state };
-  // 消费已观察通知的序号：防回退（迟到/重复事件不得倒退 lastSequence）。
-  // 缺口场景（中间序号被 remote-only 消费）一并越过——那类序号桌面永远
-  // 观察不到，停留旧值只会把下一条业务事件误判成缺口。
-  next.lastSequence = Math.max(state.lastSequence, event.sequence);
-  switch (event.event) {
-    case "tunnel.started": {
-      const payload = (event.payload && typeof event.payload === "object" ? event.payload : {}) as {
-        public_url?: string;
-        hostname?: string;
-      };
-      const currentTunnel = next.remotePairing.tunnel ?? {
-        state: "off",
-        publicUrl: null,
-        hostname: null,
-        error: null,
-        loading: false,
-      };
-      next.remotePairing = {
-        ...next.remotePairing,
-        tunnel: {
-          ...currentTunnel,
+/** tunnel.* 事件是隧道状态的权威来源：整体替换隧道视图并清除上一次请求错误。 */
+function remotePairingWithTunnelEvent(
+  remotePairing: DesktopState["remotePairing"],
+  event: DesktopEvent,
+): DesktopState["remotePairing"] {
+  const payload = event.payload as { public_url?: string; hostname?: string; error?: string };
+  const tunnel: TunnelViewModel =
+    event.event === "tunnel.started"
+      ? {
           state: "ready",
           publicUrl: payload.public_url ?? null,
           hostname: payload.hostname ?? null,
           error: null,
-          loading: false,
-        },
-      };
-      break;
-    }
-    case "tunnel.stopped": {
-      const currentTunnel = next.remotePairing.tunnel ?? {
-        state: "off",
-        publicUrl: null,
-        hostname: null,
-        error: null,
-        loading: false,
-      };
-      next.remotePairing = {
-        ...next.remotePairing,
-        tunnel: {
-          ...currentTunnel,
-          state: "off",
-          publicUrl: null,
-          hostname: null,
-          error: null,
-          loading: false,
-        },
-      };
-      break;
-    }
-    case "tunnel.failed": {
-      const payload = (event.payload && typeof event.payload === "object" ? event.payload : {}) as {
-        error?: string;
-      };
-      const currentTunnel = next.remotePairing.tunnel ?? {
-        state: "off",
-        publicUrl: null,
-        hostname: null,
-        error: null,
-        loading: false,
-      };
-      next.remotePairing = {
-        ...next.remotePairing,
-        tunnel: {
-          ...currentTunnel,
-          state: "failed",
-          publicUrl: null,
-          hostname: null,
-          error: payload.error ?? "公网隧道异常",
-          loading: false,
-        },
-      };
-      break;
-    }
-    case "remote.paired": {
-      // R1-001：配对成功通知；面板据 devicesRevision 变化重拉设备列表。
-      const payload = event.payload as { device_name?: string };
-      if (!payload?.device_name) break;
-      next.remotePairing = {
-        ...next.remotePairing,
-        devicesRevision: (next.remotePairing.devicesRevision ?? 0) + 1,
-      };
-      break;
-    }
-  }
-  return next;
+        }
+      : event.event === "tunnel.failed"
+        ? { state: "failed", publicUrl: null, hostname: null, error: payload.error ?? null }
+        : { state: "off", publicUrl: null, hostname: null, error: null };
+  return { ...remotePairing, tunnel: { ...tunnel, requestError: null, loading: false } };
 }
 
 function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopState {
@@ -1299,9 +1271,9 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
       break;
     }
     case "message.status_changed": {
-      // V0.2 消息生命周期推进：按真实 id 对账（失败保留文字，可重试）。
-      // M5.4：完整 Message 执行 upsert（即使 status_changed 先于 message.created
-      // 到达也能落库）；缺少必要字段时触发 bootstrap，不能静默丢弃。
+      // 消息生命周期推进：按真实 id 对账（失败保留文字，可重试）。完整 Message
+      // 执行 upsert（status_changed 先于 message.created 到达也能落库）；缺少必要
+      // 字段时重新同步快照，不静默丢弃。
       const message = event.payload.message as Partial<Message> | null | undefined;
       const hasRequiredFields =
         !!message &&
@@ -1316,6 +1288,7 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
         return {
           ...next,
           needsBootstrap: true,
+          resyncing: true,
           eventBuffer: [...next.eventBuffer, event],
         };
       }
@@ -1331,64 +1304,12 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
       break;
     }
     case "message.delta": {
-      const payload = event.payload as unknown as {
-        message_id: string;
-        conversation_id: string;
-        pair_id?: string;
-        source: Message["source"];
-        kind: Message["kind"];
-        delta?: string;
-        channel?: string;
-        started?: boolean;
-        completed?: boolean;
-        reasoning_streaming?: boolean;
-        task_id?: string | null;
-        segment_index?: number | null;
-        timeline_order?: number | null;
-      };
-      const current = next.messagesById[payload.message_id];
-      const delta = String(payload.delta ?? "");
-      const reasoningDelta =
-        (payload.source === "character" && payload.channel === "reasoning") ||
-        (payload.source === "assistant" && payload.kind === "assistant.reasoning");
-      const messagePayload: Record<string, unknown> = { ...(current?.payload ?? {}) };
-      let text = current?.text ?? "";
-      if (payload.reasoning_streaming !== undefined) {
-        messagePayload.reasoning_streaming = payload.reasoning_streaming;
-      }
-      if (payload.timeline_order !== undefined && payload.timeline_order !== null) {
-        messagePayload.timeline_order = payload.timeline_order;
-      }
-      if (reasoningDelta) {
-        const reasoning = typeof messagePayload.reasoning === "string" ? messagePayload.reasoning : "";
-        messagePayload.reasoning = reasoning + delta;
-        if (payload.reasoning_streaming === undefined && (payload.started || payload.completed !== undefined)) {
-          messagePayload.reasoning_streaming = !payload.completed;
-        }
-      } else {
-        text += delta;
-      }
-      const message: Message = current
-        ? { ...current, text, payload: messagePayload, streaming: true }
-        : {
-            message_id: payload.message_id,
-            conversation_id: payload.conversation_id,
-            pair_id:
-              payload.pair_id ??
-              next.conversationsById[payload.conversation_id]?.pair_id ??
-              next.pair?.pair_id ??
-              "",
-            engine_turn_id: null,
-            source: payload.source,
-            kind: payload.kind,
-            text,
-            payload: messagePayload,
-            tts_eligible: payload.source === "character" || payload.source === "assistant",
-            created_at: new Date().toISOString(),
-            streaming: true,
-            task_id: payload.task_id ?? null,
-            timeline_order: payload.timeline_order ?? null,
-          };
+      const payload = event.payload as unknown as MessageDeltaPayload;
+      const message = applyMessageDelta(next.messagesById[payload.message_id], payload, {
+        pairId:
+          next.conversationsById[payload.conversation_id]?.pair_id ?? next.pair?.pair_id ?? "",
+        createdAt: new Date().toISOString(),
+      });
       next.messagesById = { ...next.messagesById, [message.message_id]: message };
       const ids = next.messageIdsByConversation[payload.conversation_id] ?? [];
       if (!ids.includes(payload.message_id)) {
@@ -1574,26 +1495,29 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
       break;
     }
     case "review.started":
-      // V0.2 问题 14：只有审查智能体真正被调用时才显示审查状态
-      next.reviewActive = true;
-      next.reviewText = null;
-      break;
-    case "review.completed": {
-      const payload = event.payload as { allow?: boolean; reason?: string };
-      next.reviewActive = false;
-      if (payload.allow === false) {
-        next.reviewText = `审查否决：${payload.reason ?? ""}`;
-      } else if (payload.allow === true) {
-        next.reviewText = "审查通过";
-      } else {
-        next.reviewText = null;
-      }
+    case "review.completed":
+    case "review.failed": {
+      // 只有审查智能体真正被调用时才有审查状态；按事件归属的聊天存放。
+      const payload = event.payload as { conversation_id?: string; allow?: boolean; reason?: string };
+      const conversationId = payload.conversation_id ?? "";
+      if (!conversationId) break;
+      const review: ReviewStatus =
+        event.event === "review.started"
+          ? { active: true, text: null }
+          : event.event === "review.failed"
+            ? { active: false, text: `审查失败：${payload.reason ?? ""}` }
+            : {
+                active: false,
+                text:
+                  payload.allow === false
+                    ? `审查否决：${payload.reason ?? ""}`
+                    : payload.allow === true
+                      ? "审查通过"
+                      : null,
+              };
+      next.reviewByConversation = { ...next.reviewByConversation, [conversationId]: review };
       break;
     }
-    case "review.failed":
-      next.reviewActive = false;
-      next.reviewText = "审查失败：已按安全默认否决";
-      break;
     case "project.changed": {
       const project = event.payload.project as ProjectRecord;
       // 设置类命令（审批模式/推理档位）的 project.changed 只携带项目字段，
@@ -1950,6 +1874,23 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
       next.remotePairing = remotePairingWithServeAddress(next.remotePairing, event.payload);
       break;
     }
+    case "tunnel.started":
+    case "tunnel.stopped":
+    case "tunnel.failed":
+      next.remotePairing = remotePairingWithTunnelEvent(next.remotePairing, event);
+      break;
+    case "remote.paired": {
+      // 配对码一次性有效，配对成功即作废；面板据 devicesRevision 变化重拉设备列表。
+      const payload = event.payload as { device_name?: string };
+      if (!payload.device_name) break;
+      next.remotePairing = {
+        ...next.remotePairing,
+        code: null,
+        issuedAtEpochMs: null,
+        devicesRevision: (next.remotePairing.devicesRevision ?? 0) + 1,
+      };
+      break;
+    }
     case "power.status_changed": {
       // V0.3.7 §2.1：payload 与 power.get_status result 完全同形；事件即权威读取，
       // 覆盖旧状态与旧查询错误。at_risk 消失时复位「本次持续期内不再提示」，
@@ -1995,8 +1936,8 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent): DesktopSt
           next.approvalResolvingById = {};
           next.voice = { ...emptyVoice };
           next.composerDraft = "";
-          next.reviewActive = false;
-          next.reviewText = null;
+          next.reviewByConversation = {};
+          next.conversationViewSequence = {};
           next.mainView = "chat";
           next.characterLibrary = { cards: [], loading: false, error: null, loaded: false };
           next.characterCreate = {
@@ -2151,12 +2092,10 @@ export const desktopStore = createStore<DesktopState>((set, get) => ({
         result.remote_control === undefined
           ? state.remoteControl
           : normalizeRemoteControl(result.remote_control);
-      // 打开本窗口标签并聚焦；模式随该会话的 last_mode 采纳。
+      // 打开本窗口标签并聚焦。
       const openConversationIds = state.openConversationIds.includes(conversationId)
         ? state.openConversationIds
         : [...state.openConversationIds, conversationId];
-      const mode =
-        conversation.last_mode === "collaboration" ? "collaboration" : "chat";
       const next: DesktopState = {
         ...state,
         conversationsById,
@@ -2183,32 +2122,41 @@ export const desktopStore = createStore<DesktopState>((set, get) => ({
           result.pair && !state.pairs.some((item) => item.pair_id === result.pair!.pair_id)
             ? [...state.pairs, result.pair]
             : state.pairs,
-        mode,
-        // M4.4：进入 chat 模式时发送对象重置为角色。
-        composerTarget: mode === "chat" ? "character" : state.composerTarget,
       };
-      const hydrated = {
+      // 装载结果反映 result.sequence 时的会话数据，窗口全局游标保持常驻订阅的进度。
+      // 常驻订阅尚未应用、序号不超过 result.sequence 的会话内事件之后到达时由
+      // conversationViewSequence 跳过，避免 message.delta 等事件重复叠加。
+      const hydrated: DesktopState = {
         ...next,
         ...refreshWindowTask(next),
-        // conversation.open 只替换目标会话；窗口全局游标继续保持常驻订阅的进度。
-        lastSequence: state.lastSequence,
         streamId: resultStream,
+        conversationViewSequence:
+          result.sequence > state.lastSequence
+            ? { ...state.conversationViewSequence, [conversationId]: result.sequence }
+            : pendingViewSequences(state.conversationViewSequence, state.lastSequence, [
+                conversationId,
+              ]),
       };
+      // 常驻订阅已应用、序号在 result.sequence 之后的目标会话事件被整体替换抹掉，
+      // 按序号重放一次；更新的事件之后经常驻订阅正常到达。
       const seenSequences = new Set<number>();
-      const targetEvents = bufferedEvents
+      const wipedEvents = bufferedEvents
         .filter((event) => {
           if (event.event === "connection.status" || event.event === "state.snapshot") return false;
           const eventStream = event.stream_id == null ? null : String(event.stream_id);
           if (resultStream && eventStream !== resultStream) return false;
-          if (event.sequence <= result.sequence || seenSequences.has(event.sequence)) return false;
+          if (event.sequence <= result.sequence || event.sequence > state.lastSequence) return false;
+          if (seenSequences.has(event.sequence)) return false;
           if (!eventTargetsConversation(event, conversationId)) return false;
           seenSequences.add(event.sequence);
           return true;
         })
         .sort((left, right) => left.sequence - right.sequence);
-      const globalSequence = hydrated.lastSequence;
-      return targetEvents.reduce(
-        (current, event) => ({ ...applyBusinessEvent(current, event), lastSequence: globalSequence }),
+      return wipedEvents.reduce(
+        (current, event) => ({
+          ...applyBusinessEvent(current, event),
+          lastSequence: state.lastSequence,
+        }),
         hydrated,
       );
     });
@@ -2273,10 +2221,6 @@ export const desktopStore = createStore<DesktopState>((set, get) => ({
   setTheme(theme) {
     set({ theme });
   },
-  setMode(mode) {
-    // M4.4：切回聊天时发送对象强制回到角色，store 是唯一状态源。
-    set(mode === "chat" ? { mode, composerTarget: "character" } : { mode });
-  },
   setComposerTarget(target) {
     set({ composerTarget: target });
   },
@@ -2296,9 +2240,6 @@ export const desktopStore = createStore<DesktopState>((set, get) => ({
       const { [approvalId]: _resolved, ...remaining } = state.approvalResolvingById;
       return { approvalResolvingById: remaining };
     });
-  },
-  setReviewStatus(active, text = null) {
-    set({ reviewActive: active, reviewText: text });
   },
   dismissToast(id) {
     set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) }));
@@ -2344,6 +2285,7 @@ export const desktopStore = createStore<DesktopState>((set, get) => ({
             publicUrl: status.public_url ?? null,
             hostname: status.hostname ?? null,
             error: status.error ?? null,
+            requestError: null,
             loading: false,
           },
         },
@@ -2366,6 +2308,7 @@ export const desktopStore = createStore<DesktopState>((set, get) => ({
             ...currentTunnel,
             state: "starting",
             error: null,
+            requestError: null,
             loading: true,
           },
         },
@@ -2386,6 +2329,7 @@ export const desktopStore = createStore<DesktopState>((set, get) => ({
           ...state.remotePairing,
           tunnel: {
             ...currentTunnel,
+            requestError: null,
             loading: true,
           },
         },
@@ -2410,6 +2354,23 @@ export const desktopStore = createStore<DesktopState>((set, get) => ({
             error,
             loading: false,
           },
+        },
+      };
+    });
+  },
+  setTunnelRequestFailed(error) {
+    set((state) => {
+      const currentTunnel = state.remotePairing.tunnel ?? {
+        state: "off",
+        publicUrl: null,
+        hostname: null,
+        error: null,
+        loading: false,
+      };
+      return {
+        remotePairing: {
+          ...state.remotePairing,
+          tunnel: { ...currentTunnel, requestError: error, loading: false },
         },
       };
     });
@@ -2680,14 +2641,31 @@ export const selectWindowConversationId = (state: DesktopState): string | null =
   state.activeConversationId;
 
 /** V0.3.2 M5：本窗口当前项目由活动标签所属项目决定，最后回退到后端快照指针。 */
-export const selectWindowProjectId = (state: DesktopState): string | null =>
+export const selectWindowProjectId = (
+  state: Pick<DesktopState, "activeProjectId" | "currentProjectId">,
+): string | null =>
   state.activeProjectId ?? (state.currentProjectId || null);
+
+/** 本窗口模式取自活动标签会话的 last_mode；没有打开的聊天时为 chat。 */
+export const selectWindowMode = (
+  state: Pick<DesktopState, "activeConversationId" | "conversationsById">,
+): "chat" | "collaboration" =>
+  state.activeConversationId &&
+  state.conversationsById[state.activeConversationId]?.last_mode === "collaboration"
+    ? "collaboration"
+    : "chat";
+
+/** 实际发送对象：聊天模式只能对角色说，协作模式沿用用户选择。 */
+export const selectComposerTarget = (
+  state: Pick<DesktopState, "activeConversationId" | "conversationsById" | "composerTarget">,
+): "character" | "assistant" =>
+  selectWindowMode(state) === "chat" ? "character" : state.composerTarget;
 
 export const selectDesktopRenderState = (state: DesktopState): DesktopRenderState => ({
   status: state.status,
   error: state.error,
+  resyncing: state.resyncing,
   theme: state.theme,
-  mode: state.mode,
   composerTarget: state.composerTarget,
   composerDraft: state.composerDraft,
   projectsById: state.projectsById,
@@ -2712,8 +2690,7 @@ export const selectDesktopRenderState = (state: DesktopState): DesktopRenderStat
   approvals: state.approvals,
   resolvedApprovals: state.resolvedApprovals,
   approvalResolvingById: state.approvalResolvingById,
-  reviewActive: state.reviewActive,
-  reviewText: state.reviewText,
+  reviewByConversation: state.reviewByConversation,
   voice: state.voice,
   toasts: state.toasts,
   configSnapshot: state.configSnapshot,

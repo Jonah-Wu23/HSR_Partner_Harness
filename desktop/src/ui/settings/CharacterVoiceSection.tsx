@@ -128,8 +128,7 @@ function stateLabel(state: CharacterVoiceState): string {
 
 function sourceLabel(source: CharacterCardSource): string {
   if (source === "builtin") return "内置";
-  if (source === "imported_json") return "导入 JSON";
-  if (source === "imported_png") return "导入 PNG";
+  if (source === "tavern_import") return "导入";
   return "自定义";
 }
 
@@ -772,7 +771,7 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
             <p className="settings-hint">
               {confirmAction === "unbind"
                 ? `解除后角色「${selectedSummary?.name ?? ""}」将回到未配置状态，音色 ID 会被移除且不可恢复。`
-                : "重新创建将丢弃当前音色并回到创建流程，可再次选择参考音频或修改描述词。"}
+                : `将按上方当前的创建方式（${createMode === "clone" ? "声音复刻" : "声音设计"}）重新提交创建，成功后新音色替换当前音色 ID。`}
             </p>
             <div className="settings-row" style={{ justifyContent: "flex-end" }}>
               <button
@@ -788,7 +787,7 @@ export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
                 className={confirmAction === "unbind" ? "btn btn-danger" : "btn btn-primary"}
                 onClick={confirmAction === "unbind" ? handleUnbind : () => {
                   setConfirmAction(null);
-                  setCreateMode("clone");
+                  void handleCreate();
                 }}
                 data-testid="confirm-ok"
               >

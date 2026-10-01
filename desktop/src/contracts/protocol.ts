@@ -70,7 +70,7 @@ export interface ToolRun {
 export type ApprovalMode = "request_approval" | "review" | "full_auto";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export type ConversationMode = "chat" | "collaboration";
-export type TaskStatus = "pending" | "running" | "amendment_pending" | "completed" | "failed" | "cancelled";
+export type TaskStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
 export type TurnStatus =
   | "queued"
@@ -102,9 +102,15 @@ export interface QueueItem {
   text: string;
   intent: QueueIntent;
   position: number;
-  status: "queued" | "processing" | "withdrawn";
+  status: "queued" | "processing" | "withdrawn" | "failed";
+  /** 派发失败的原始原因；其余状态为 null。 */
+  error: string | null;
   created_at: string;
   source_message_id: string | null;
+  /** 提交来源，派发出的回合沿用。 */
+  origin: "desktop" | "remote";
+  remote_device_key: string | null;
+  remote_device_name: string | null;
 }
 
 export interface ProjectRuntimeContext {
@@ -313,6 +319,20 @@ export interface ConversationOpenResult {
     无角色卡的普通会话不参与复用。 */
 export type ConversationCreateResult = DesktopSnapshot & { reused: boolean };
 
+/** task.cancel：cancelled=false 表示服务端没有取消任何任务（任务不在运行或已结束）。 */
+export interface TaskCancelResult {
+  cancelled: boolean;
+}
+
+/** config.test_connection：ok 是连通结论，message 是服务端给出的说明原文。 */
+export interface ConfigTestConnectionResult {
+  ok: boolean;
+  message: string;
+  provider?: string;
+  base_url?: string;
+  model?: string;
+}
+
 export type DesktopCommandMethod =
   | "ping"
   | "app.bootstrap"
@@ -359,6 +379,7 @@ export type DesktopCommandMethod =
   | "card.update"
   | "card.duplicate"
   | "card.archive"
+  | "card.unarchive"
   | "card.delete"
   | "card.select_active"
   /* V0.3.7：card.peek_import 为规范名；card.peek_import_json 保留为同一 handler 的别名（deprecated）。 */
@@ -797,12 +818,8 @@ export interface PowerStatusPayload {
 
 /** 角色卡生命周期（character_cards/states.py CharacterCardState）。 */
 export type CharacterCardState = "draft" | "saved" | "imported" | "invalid";
-/** 角色卡来源。 */
-export type CharacterCardSource =
-  | "builtin"
-  | "user_created"
-  | "imported_json"
-  | "imported_png";
+/** 角色卡来源（character_cards 表 source 列；JSON 与 PNG 导入同为 tavern_import）。 */
+export type CharacterCardSource = "builtin" | "user_created" | "tavern_import";
 /** 角色卡音色绑定状态（CharacterVoiceState）。 */
 export type CharacterVoiceState =
   | "voice_unconfigured"
@@ -855,6 +872,7 @@ export interface CardDuplicateResult {
   name: string;
 }
 
+/** card.archive 与 card.unarchive 的结果；archived 为命令执行后的归档状态。 */
 export interface CardArchiveResult {
   card_id: string;
   archived: boolean;

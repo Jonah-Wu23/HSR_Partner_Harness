@@ -339,6 +339,7 @@ export function CharacterLibraryPage({
                       onDuplicate={(id) => void actions.duplicateCard(id)}
                       onExport={(c) => setExportCard(c)}
                       onArchive={(id) => void actions.archiveCard(id)}
+                      onUnarchive={(id) => void actions.unarchiveCard(id)}
                       onDeleteRequest={(c) => setDeletingCard(c)}
                       onViewError={(c) => showInvalidErrorNotice(c)}
                       onViewCompat={setCompatCard}
@@ -359,6 +360,7 @@ export function CharacterLibraryPage({
                   onDuplicate={(id) => void actions.duplicateCard(id)}
                   onExport={(c) => setExportCard(c)}
                   onArchive={(id) => void actions.archiveCard(id)}
+                  onUnarchive={(id) => void actions.unarchiveCard(id)}
                   onDeleteRequest={(c) => setDeletingCard(c)}
                   onViewError={(c) => showInvalidErrorNotice(c)}
                   onViewCompat={setCompatCard}

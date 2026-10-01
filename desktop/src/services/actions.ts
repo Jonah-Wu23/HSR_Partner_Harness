@@ -20,6 +20,7 @@ import type {
   CardRemoveAvatarResult,
   CardSetAvatarResult,
   CardUpdateResult,
+  ConfigTestConnectionResult,
   ConversationCreateResult,
   ConversationOpenResult,
   DesktopCommand,
@@ -34,6 +35,7 @@ import type {
   RemoteTunnelStartResult,
   RemoteTunnelStopResult,
   RemoteTunnelStatusResult,
+  TaskCancelResult,
   VoiceCardBindReferenceResult,
   VoiceCardCreateResult,
   VoiceCardUnbindResult,
@@ -56,6 +58,7 @@ import { RequestIdFactory } from "./backend";
 import { isDesktopSnapshot } from "./mockDesktopBackend";
 import {
   desktopStore,
+  selectComposerTarget,
   selectWindowConversationId,
   selectWindowProjectId,
 } from "../stores/desktopStore";
@@ -67,11 +70,16 @@ export interface ActionController {
   conversationOpen(conversationId: string): Promise<void>;
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export function createActionController(backend: DesktopBackend): ActionController {
-  // V0.3.2 M5：请求 id 携带本窗口 viewId（多窗口全应用唯一），失败如常上抛。
+  // 请求 id 携带本窗口 viewId，多窗口之间全应用唯一。
   const ids = new RequestIdFactory(() => desktopStore.getState().viewId);
   let conversationOpenGeneration = 0;
 
+  /** 请求失败统一推送带原始错误的 Toast，错误继续抛给调用方。 */
   async function request<T>(method: DesktopCommandMethod, params: Record<string, unknown> = {}): Promise<T> {
     const viewId = desktopStore.getState().viewId;
     const command: DesktopCommand = {
@@ -81,9 +89,27 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       params,
       view_id: viewId,
     };
-    const result = await backend.request<T>(command);
+    let result: T;
+    try {
+      result = await backend.request<T>(command);
+    } catch (error) {
+      const message = errorMessage(error);
+      desktopStore.getState().pushToast({
+        id: `request-failed:${method}:${message}`,
+        kind: "error",
+        text: `${method} 失败：${message}`,
+        hasDetails: true,
+      });
+      throw error;
+    }
     if (isDesktopSnapshot(result)) desktopStore.getState().hydrate(result);
     return result;
+  }
+
+  /** 发请求前的前置条件不满足：与请求失败一样推送 Toast 并抛出。 */
+  function rejectAction(id: string, text: string): never {
+    desktopStore.getState().pushToast({ id, kind: "error", text });
+    throw new Error(text);
   }
 
   /** 记忆命令一律按会话下发，作用域由服务端解析；没有会话上下文时如实失败。 */
@@ -105,12 +131,13 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     return memory;
   }
 
+  // 序号缺口触发的重新同步不切到启动状态页：界面与输入区保持可用，直到快照水合。
   const loadBootstrap = async () => {
-    desktopStore.getState().setStatus("booting");
+    if (!desktopStore.getState().resyncing) desktopStore.getState().setStatus("booting");
     try {
       await request<DesktopSnapshot>("app.bootstrap");
     } catch (error) {
-      desktopStore.getState().setStatus("error", error instanceof Error ? error.message : String(error));
+      desktopStore.getState().setStatus("error", errorMessage(error));
     }
   };
 
@@ -220,27 +247,12 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       await request("conversation.archive", { conversation_id: conversationId });
     },
     async switchMode(mode) {
-      // V0.2 模式独立：模式由后端按会话持久化，走独立命令。
-      // M5.3：先持久化成功再切换本地模式；失败恢复原模式并保留真实错误。
-      const previous = desktopStore.getState().mode;
-      // V0.3.2 M5：模式保存到本窗口当前聊天（活动标签优先）。
+      // 模式按会话持久化在 last_mode；界面模式随后由 conversation.changed 更新。
       const conversationId = selectWindowConversationId(desktopStore.getState());
-      try {
-        if (conversationId) {
-          await request("conversation.set_mode", { conversation_id: conversationId, mode });
-        }
-        desktopStore.getState().setMode(mode);
-      } catch (error) {
-        desktopStore.getState().setMode(previous);
-        const message = error instanceof Error ? error.message : String(error);
-        desktopStore.getState().pushToast({
-          id: `mode:${message}`,
-          kind: "error",
-          text: `模式切换保存失败：${message}`,
-          hasDetails: true,
-        });
-        throw error;
+      if (!conversationId) {
+        rejectAction("mode:no-conversation", "当前窗口没有打开的聊天，无法切换模式");
       }
+      await request("conversation.set_mode", { conversation_id: conversationId, mode });
     },
     switchTheme(theme) {
       if (typeof window !== "undefined") window.localStorage.setItem("pair-harness-theme", theme);
@@ -248,13 +260,9 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     },
     async submitMessage(text, target, intent) {
       const state = desktopStore.getState();
-      const actualTarget = target ?? state.composerTarget;
-      // M5.3：草稿由 Composer 在收到 accepted/queued 回执后清除；这里不清空，
-      // 请求失败时输入文字与 target 都保留。
-      // V0.3.2 M5：提交到本窗口当前聊天（活动标签优先），其他窗口不受影响。
-      // V0.3.8 T6：不再携带窗口全局 mode——会话保持自己的 last_mode，
-      // 顺带改写会把普通消息盖成“委派”标签；显式切换走 switchMode
-      // （conversation.set_mode）。
+      const actualTarget = target ?? selectComposerTarget(state);
+      // 草稿由 Composer 在收到 accepted/queued 回执后清除，请求失败时输入保留。
+      // 消息提交到本窗口活动标签的聊天；模式只经 switchMode 修改。
       return request<SubmitMessageResult>("chat.submit", {
         conversation_id: selectWindowConversationId(state),
         target: actualTarget,
@@ -284,20 +292,27 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       await request("queue.prioritize", { queue_item_id: queueItemId });
     },
     async cancelTask() {
-      // V0.3.2 M5：定向取消必须携带本窗口当前聊天的 conversation_id 与
-      // 该聊天活动任务的 task_id；缺少任一项时不发送模糊的旧式全局取消。
+      // 定向取消携带本窗口聊天的 conversation_id 与其活动任务的 task_id。
+      // cancelled=false 表示服务端没有取消任何任务，如实提示。
       const state = desktopStore.getState();
       const conversationId = selectWindowConversationId(state);
       const activeTask = conversationId
         ? state.activeTasksByConversation[conversationId]
         : undefined;
       if (!conversationId || !activeTask) {
-        throw new Error("当前聊天没有可取消的活动任务");
+        rejectAction("task-cancel:no-task", "当前聊天没有可取消的活动任务");
       }
-      await request("task.cancel", {
+      const result = await request<TaskCancelResult>("task.cancel", {
         conversation_id: conversationId,
         task_id: activeTask.task_id,
       });
+      if (!result.cancelled) {
+        desktopStore.getState().pushToast({
+          id: `task-cancel:not-cancelled:${activeTask.task_id}`,
+          kind: "warning",
+          text: `取消未生效：服务端没有取消任务 ${activeTask.task_id}`,
+        });
+      }
     },
     async resolveApproval(approvalId, decision) {
       const state = desktopStore.getState();
@@ -312,12 +327,12 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     },
     async setApprovalMode(mode: ApprovalMode) {
       const projectId = selectWindowProjectId(desktopStore.getState());
-      if (!projectId) throw new Error("当前窗口没有项目上下文");
+      if (!projectId) rejectAction("approval-mode:no-project", "当前窗口没有项目上下文");
       await request("project.update_settings", { project_id: projectId, approval_mode: mode });
     },
     async setReasoningEffort(effort: ReasoningEffort) {
       const projectId = selectWindowProjectId(desktopStore.getState());
-      if (!projectId) throw new Error("当前窗口没有项目上下文");
+      if (!projectId) rejectAction("reasoning-effort:no-project", "当前窗口没有项目上下文");
       await request("project.update_settings", { project_id: projectId, reasoning_effort: effort });
     },
     async setVadEnabled(enabled) {
@@ -327,7 +342,7 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       const state = desktopStore.getState();
       const conversationId = selectWindowConversationId(state);
       await request("voice.ptt_start", {
-        target: target ?? state.composerTarget,
+        target: target ?? selectComposerTarget(state),
         ...(conversationId ? { conversation_id: conversationId } : {}),
       });
     },
@@ -400,10 +415,8 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       }
     },
     async testConnection() {
-      // V0.2 M4：返回人话结果（Onboarding 保存并测试 / 设置中心模型页）
-      const result = await request<{ ok?: boolean; message?: string }>("config.test_connection");
-      if (result?.ok === false) return result.message ?? "连接失败，请检查配置";
-      return result?.message ?? "连接正常";
+      const result = await request<ConfigTestConnectionResult>("config.test_connection");
+      return { ok: result.ok, message: result.message };
     },
     async voicePreview(text, voiceId) {
       await request("voice.preview", { text, ...(voiceId ? { voice_id: voiceId } : {}) });
@@ -468,7 +481,14 @@ export function createActionController(backend: DesktopBackend): ActionControlle
         });
         return;
       }
-      desktopStore.getState().setCharacterCreate({ loading: true, error: null });
+      // 先清空再载入：重新打开同一张卡时 cardId 也会变化一次，创作页据此用最新内容水合。
+      desktopStore.getState().setCharacterCreate({
+        cardId: null,
+        card: null,
+        readOnly: false,
+        loading: true,
+        error: null,
+      });
       try {
         const result = await request<CardGetResult>("card.get", { card_id: cardId });
         desktopStore.getState().setCharacterCreate({
@@ -486,8 +506,9 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       desktopStore.getState().setMainView("chat");
     },
     async createCardDraft(name) {
+      // 草稿 id 由创作页自己持有；store 的 cardId 只表示经 openCharacterCreate 打开的卡，
+      // 创作页只在它变化时重新水合表单。
       const result = await request<CardCreateDraftResult>("card.create_draft", { name });
-      desktopStore.getState().setCharacterCreate({ cardId: result.card_id });
       return result.card_id;
     },
     async updateCard(cardId, card) {
@@ -499,6 +520,10 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     },
     async archiveCard(cardId) {
       await request<CardArchiveResult>("card.archive", { card_id: cardId });
+      await this.listCards();
+    },
+    async unarchiveCard(cardId) {
+      await request<CardArchiveResult>("card.unarchive", { card_id: cardId });
       await this.listCards();
     },
     async deleteCard(cardId) {
@@ -536,26 +561,15 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       await this.listCards();
       return result;
     },
+    // 头像由服务端写入卡的 avatar_asset；创作页经 card.get 刷新头像，
+    // 这里只刷新角色库的 has_avatar。
     async cardSetAvatar(cardId, path) {
       const result = await request<CardSetAvatarResult>("card.set_avatar", { card_id: cardId, path });
-      // V0.3.5：刷新创作页与角色库中该卡的头像状态。
-      const create = desktopStore.getState().characterCreate;
-      if (create.cardId === cardId) {
-        desktopStore.getState().setCharacterCreate({
-          card: { ...create.card, avatar_asset_id: result.asset_id },
-        });
-      }
       await this.listCards();
       return result;
     },
     async cardRemoveAvatar(cardId) {
       const result = await request<CardRemoveAvatarResult>("card.remove_avatar", { card_id: cardId });
-      const create = desktopStore.getState().characterCreate;
-      if (create.cardId === cardId) {
-        desktopStore.getState().setCharacterCreate({
-          card: { ...create.card, avatar_asset_id: null },
-        });
-      }
       await this.listCards();
       return result;
     },
@@ -662,17 +676,18 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       try {
         await request<RemoteTunnelStartResult>("remote.tunnel_start");
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        desktopStore.getState().setTunnelFailed(message);
+        desktopStore.getState().setTunnelFailed(errorMessage(error));
+        throw error;
       }
     },
+    // 停止或查询失败只说明这次请求失败，隧道状态以 tunnel.* 事件与状态查询结果为准。
     async tunnelStop() {
       desktopStore.getState().setTunnelStopping();
       try {
         await request<RemoteTunnelStopResult>("remote.tunnel_stop");
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        desktopStore.getState().setTunnelFailed(message);
+        desktopStore.getState().setTunnelRequestFailed(errorMessage(error));
+        throw error;
       }
     },
     async queryTunnelStatus() {
@@ -680,8 +695,8 @@ export function createActionController(backend: DesktopBackend): ActionControlle
         const result = await request<RemoteTunnelStatusResult>("remote.tunnel_status");
         desktopStore.getState().setTunnelStatus(result);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        desktopStore.getState().setTunnelFailed(message);
+        desktopStore.getState().setTunnelRequestFailed(errorMessage(error));
+        throw error;
       }
     },
     /* —— V0.3.9 摘要、记忆与诊断（PM/视觉 V-B 2a1fccb）—— */

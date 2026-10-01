@@ -157,8 +157,8 @@ function deriveWorldBookItems(
     if (typeof world === "string" ? world.trim() !== "" : world !== undefined && world !== null) {
       fieldHits.set("world", [...(fieldHits.get("world") ?? []), index]);
     }
-    // 位置值不在支持集合 → 条目不注入（§3.6）
-    const position = entry.position ?? extensions.position;
+    // 位置值不在支持集合 → 条目不注入（§3.6）；与 ST 及运行时一致，extensions.position 优先
+    const position = extensions.position ?? entry.position;
     if (
       position !== undefined &&
       !SUPPORTED_POSITIONS.has(position as string | number)

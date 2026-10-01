@@ -2,6 +2,7 @@ import type {
   QueueItem,
   ActiveTask,
   ApprovalMode,
+  CharacterCardSource,
   ConversationRecord,
   Message,
   PairRecord,
@@ -204,7 +205,7 @@ export interface CharacterCardSummaryView {
   cardId: string;
   name: string;
   state: "draft" | "saved" | "imported" | "invalid";
-  source: "builtin" | "user_created" | "imported_json" | "imported_png";
+  source: CharacterCardSource;
   updatedAt: string;
   hasAvatar: boolean;
   voiceState: "voice_unconfigured" | "voice_creating" | "voice_ready" | "voice_failed";
@@ -236,7 +237,7 @@ export interface CharacterCardVoiceView {
   cardId: string;
   name: string;
   state: "draft" | "saved" | "imported" | "invalid";
-  source: "builtin" | "user_created" | "imported_json" | "imported_png";
+  source: CharacterCardSource;
   hasAvatar: boolean;
   voiceState: "voice_unconfigured" | "voice_creating" | "voice_ready" | "voice_failed";
   active: boolean;
@@ -283,6 +284,8 @@ export interface TunnelViewModel {
   publicUrl: string | null;
   hostname: string | null;
   error: string | null;
+  /** 停止隧道或查询状态的请求失败原文；隧道状态本身不因此改变。 */
+  requestError?: string | null;
   loading?: boolean;
 }
 
@@ -320,6 +323,8 @@ export interface RemotePairingViewModel {
 
 export interface AppShellViewModel {
   status: "booting" | "ready" | "disconnected" | "error";
+  /** 序号缺口后正在重新同步快照；界面保持可用。 */
+  resyncing: boolean;
   theme: "dark" | "light";
   currentPairId: string;
   navigation: NavigationViewModel | null;

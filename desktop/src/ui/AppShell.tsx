@@ -48,11 +48,11 @@ function StatePage({ title, detail }: { title: string; detail?: string | null })
   );
 }
 
-/** 试连接/试听的三态推进：testing → 结果映射 → 失败兜底。 */
-function runTest(
+/** 试连接/试听的三态推进：testing → 结果映射；请求失败显示错误原文。 */
+function runTest<T>(
   setResult: (result: TestResult) => void,
-  task: () => Promise<unknown>,
-  toResult: (value: unknown) => TestResult,
+  task: () => Promise<T>,
+  toResult: (value: T) => TestResult,
 ): void {
   setResult({ state: "testing" });
   void task()
@@ -200,7 +200,7 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
           await actions.setConfig(updates);
           return actions.testConnection();
         }}
-        onFinish={() => void actions.completeOnboarding()}
+        onFinish={() => actions.completeOnboarding()}
       />
     );
   } else if (!vm.navigation) {
@@ -238,10 +238,16 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
             />
             {vm.status === "disconnected" || vm.status === "error" ? (
               <div className="connection-banner" role="alert">
-                与本地服务失去连接，正在重试。已加载的对话不受影响，发送的消息会在恢复后处理。
+                {vm.status === "disconnected"
+                  ? "与本地服务失去连接，恢复前无法发送消息。已加载的对话仍可查看。"
+                  : `本地服务出错，暂时无法发送消息${vm.error ? `：${vm.error}` : "。"}`}
                 <button type="button" onClick={() => setTechDetailsOpen(true)}>
                   查看技术详情
                 </button>
+              </div>
+            ) : vm.resyncing ? (
+              <div className="connection-banner" role="status">
+                正在与本地服务重新同步…
               </div>
             ) : null}
             {vm.mainView === "characters" ? (
@@ -372,9 +378,9 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
         onTunnelStart={() => void actions.tunnelStart()}
         onTunnelStop={() => void actions.tunnelStop()}
         onQueryTunnelStatus={() => void actions.queryTunnelStatus()}
-        onSaveProfile={(displayName) => void actions.updateAccountProfile(displayName)}
+        onSaveProfile={(displayName) => actions.updateAccountProfile(displayName)}
         onChangePassword={(oldPassword, newPassword) =>
-          void actions.changePassword(oldPassword, newPassword)
+          actions.changePassword(oldPassword, newPassword)
         }
         onLogout={() => {
           // 退出登录回到登录页：账号门重新出现（默认账号无密码，仍可空密码进入）
@@ -397,25 +403,23 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
           await actions.setConfig(updates);
         }}
         onTestModel={() =>
-          runTest(setModelTest, () => actions.testConnection(), (value) => {
-            const text = String(value ?? "");
-            return { state: text.startsWith("连接正常") ? "ok" : "failed", text };
-          })
+          runTest(setModelTest, () => actions.testConnection(), (result) => ({
+            state: result.ok ? "ok" : "failed",
+            text: result.message,
+          }))
         }
         onSaveVoice={(config) => {
-          // M6：Key 与服务地址属于当前本地账号配置；Key 只由后端写入
-          // secret_refs，前端不保存明文。模型与音色没有可编辑入口。
-          const updates: Record<string, string> = {
-            "voice.enabled": String(config.enabled),
-            "assistant_voice_enabled": String(config.assistantVoiceEnabled),
-            "vad_enabled": String(config.vadEnabled),
-          };
+          // 只写本次变化的键：凭据（Key/服务地址）变化会让后端重建语音运行时并打断朗读，
+          // 开关偏好由 config.set 直接作用于运行时。Key 只由后端写入 secret_refs。
+          const updates: Record<string, string> = {};
+          if (config.enabled !== undefined) updates["voice.enabled"] = String(config.enabled);
+          if (config.assistantVoiceEnabled !== undefined) {
+            updates["assistant_voice_enabled"] = String(config.assistantVoiceEnabled);
+          }
+          if (config.vadEnabled !== undefined) updates["vad_enabled"] = String(config.vadEnabled);
           if (config.baseUrl !== undefined) updates["voice.base_url"] = config.baseUrl;
           if (config.apiKey) updates["voice.api_key"] = config.apiKey;
-          return actions.setConfig(updates).then(() =>
-            // VAD 开关立即作用于运行时；语音关闭时停止聆听。
-            actions.setVadEnabled(config.enabled ? config.vadEnabled : false),
-          );
+          return actions.setConfig(updates);
         }}
         onProvisionVoices={(speakerIds, replaceExisting) =>
           actions.provisionVoices(speakerIds, replaceExisting)

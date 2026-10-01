@@ -33,7 +33,11 @@ export interface QueueItemView {
   summary: string;
   /** 排在第几（从 1 开始）。 */
   position: number;
-  /** 在等什么结束，例如「等待当前回复结束」。 */
+  /** 在等什么结束，例如「等待当前回复结束」；派发失败的项为空串。 */
   waitingFor: string;
   intent: QueueIntent;
+  /** 派发失败：不会再被自动派发，只能撤回。 */
+  failed: boolean;
+  /** 派发失败的原始原因；未失败为 null。 */
+  error: string | null;
 }
