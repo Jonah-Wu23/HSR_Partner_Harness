@@ -58,6 +58,7 @@ DESKTOP_COMMANDS = frozenset(
         "card.update",
         "card.duplicate",
         "card.archive",
+        "card.unarchive",
         "card.delete",
         "card.select_active",
         # V0.3.7：card.peek_import 为规范名；card.peek_import_json 保留为

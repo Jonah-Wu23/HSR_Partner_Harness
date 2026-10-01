@@ -178,12 +178,14 @@ async def _run(args: argparse.Namespace) -> int:
             stream_id=stream_id,
         )
     except ServiceError as exc:
+        # 退出码 2 表示启动配置错误，Rust 据此停止自动重连。
         report_startup_error(exc.code, str(exc))
         return 2
     except Exception as exc:  # noqa: BLE001 - 启动失败仍输出可识别事件
+        # 未预期异常按崩溃退出，Rust 按退避重连。
         logging.getLogger(__name__).exception("sidecar startup failed")
         report_startup_error("startup_error", str(exc))
-        return 2
+        return 1
 
     # V039-S4-004：远程服务地址的权威来源，供服务层按需读取（配对码响应等），
     # 桌面端不必只依赖启动时的一次性 serve.started 事件。
@@ -283,10 +285,9 @@ async def _run(args: argparse.Namespace) -> int:
                 service.pairing_service.add_revoke_listener(
                     ws_server.close_connections_for_token
                 )
-                # V0.3.7 电源契约 §1.5/§2.1：仅 --serve 成功开启时置远程服务
-                # 位（power.get_status 的 remote_serve_enabled 数据源）并启动
-                # 电源监视（启动即 emit 一次 power.status_changed；WS 启动失败
-                # 时如实保持 False，不伪造远程可用）。
+                # 仅 --serve 成功开启时置远程服务位（power.get_status 的
+                # remote_serve_enabled 数据源）并启动电源监视；监视任务由
+                # service.shutdown 取消。
                 service.remote_serve_enabled = True
                 service.start_power_monitor()
         if router is None:
@@ -298,8 +299,6 @@ async def _run(args: argparse.Namespace) -> int:
         if ws_server is not None:
             await ws_server.stop()
         if service is not None and not service._shutdown:
-            # V0.3.7 电源契约 §2.1：退出路径停止电源监视线程（未启动时 no-op）。
-            service.stop_power_monitor()
             await service.shutdown()
     return 0
 

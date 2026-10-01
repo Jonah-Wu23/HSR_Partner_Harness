@@ -120,8 +120,8 @@ class MobileAsrSessionManager:
     - 同一 ``connection_key`` 允许多个会话并行。
     - 会话绑定发起连接；``cancel_all_for_connection`` 在连接断开时静默
       取消该连接的全部会话（§5.3）。
-    - 本类的方法不保证并发调用同一会话的线程安全（单事件循环/单线程
-      调用即可）；泵线程只读取会话字段并回调 ``on_transcript``。
+    - ``end_session`` 由集成方放到工作线程执行，会话登记表因此由
+      ``_lock`` 保护；泵线程只读取会话字段并回调 ``on_transcript``。
     """
 
     def __init__(
@@ -131,6 +131,7 @@ class MobileAsrSessionManager:
     ) -> None:
         # on_transcript(conversation_id, session_id, text, is_final)
         self._on_transcript = on_transcript
+        self._lock = threading.Lock()
         self._sessions: dict[str, _AsrSession] = {}
         self._conversation_ids: dict[str, str] = {}
 
@@ -148,10 +149,11 @@ class MobileAsrSessionManager:
         重复启动同一 conversation 抛 ``MobileAudioError``
         （code ``voice_session_exists``）。
         """
-        if self._conversation_ids.get(conversation_id) in self._sessions:
-            raise MobileAudioError(
-                "voice_session_exists", "该会话已有进行中的语音转写"
-            )
+        with self._lock:
+            if self._conversation_ids.get(conversation_id) in self._sessions:
+                raise MobileAudioError(
+                    "voice_session_exists", "该会话已有进行中的语音转写"
+                )
         recognizer = recognizer_factory()
         session_id = uuid.uuid4().hex
         session = _AsrSession(
@@ -160,8 +162,9 @@ class MobileAsrSessionManager:
             connection_key=connection_key,
             recognizer=recognizer,
         )
-        self._sessions[session_id] = session
-        self._conversation_ids[conversation_id] = session_id
+        with self._lock:
+            self._sessions[session_id] = session
+            self._conversation_ids[conversation_id] = session_id
         thread = threading.Thread(
             target=self._pump_worker,
             args=(session,),
@@ -182,7 +185,8 @@ class MobileAsrSessionManager:
         且不消耗序号）。解码后的字节交给会话的 recognizer（内部泵任务异步
         喂送）。
         """
-        session = self._get_session(session_id)
+        with self._lock:
+            session = self._get_session(session_id)
         try:
             pcm = base64.b64decode(data_base64, validate=True)
         except (binascii.Error, ValueError):
@@ -199,18 +203,19 @@ class MobileAsrSessionManager:
         assert session.loop is not None and session.queue is not None
         session.loop.call_soon_threadsafe(session.queue.put_nowait, pcm)
 
-    def end_session(self, session_id: str) -> str:
+    def end_session(self, session_id: str) -> tuple[str, str]:
         """结束识别（对应 ``voice.mobile_ptt_stop``）。
 
         向识别器发流结束哨兵，等待收尾取得最终文本；回调
-        ``on_transcript(..., is_final=True)``，清理会话，返回 final 文本。
-        文本可能为空串——空串由调用方决定是否报 ``voice_transcript_empty``
-        （§5.1），本模块如实返回并同样回调。识别器报错时抛
-        ``MobileAudioError("voice_asr_failed")``（message 含底层错误）。
+        ``on_transcript(..., is_final=True)``，清理会话，返回
+        ``(conversation_id, final 文本)``。文本可能为空串，由调用方决定是否报
+        ``voice_transcript_empty``（§5.1），本模块如实返回并同样回调。识别器
+        报错时抛 ``MobileAudioError("voice_asr_failed")``（message 含底层错误）。
         """
-        session = self._get_session(session_id)
-        session.stopped = True
-        self._remove_session(session)
+        with self._lock:
+            session = self._get_session(session_id)
+            session.stopped = True
+            self._remove_session(session)
         session.ready.wait()
         assert session.loop is not None and session.queue is not None
         session.loop.call_soon_threadsafe(session.queue.put_nowait, _ASR_END)
@@ -219,20 +224,22 @@ class MobileAsrSessionManager:
             raise MobileAudioError("voice_asr_failed", session.error)
         text = session.final_text
         self._on_transcript(session.conversation_id, session_id, text, True)
-        return text
+        return session.conversation_id, text
 
-    def cancel_session(self, session_id: str) -> None:
-        """静默取消（连接断开/错误路径）：清理会话，不发任何事件。
+    def cancel_session(self, session_id: str) -> str | None:
+        """静默取消（连接断开/超时路径）：清理会话，不发任何事件。
 
-        幂等：未知 ``session_id`` 直接返回。取消会向识别器发流结束哨兵，
-        收尾在后台泵线程完成（daemon），不阻塞调用方。
+        返回被取消会话的 conversation_id；未知或已结束的 ``session_id``
+        返回 None。取消会向识别器发流结束哨兵，收尾在后台泵线程完成
+        （daemon），不阻塞调用方。
         """
-        session = self._sessions.pop(session_id, None)
-        if session is None:
-            return
-        self._conversation_ids.pop(session.conversation_id, None)
-        session.cancelled = True
-        session.stopped = True
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return None
+            self._remove_session(session)
+            session.cancelled = True
+            session.stopped = True
         if not session.done.is_set() and session.ready.is_set():
             try:
                 session.loop.call_soon_threadsafe(  # type: ignore[union-attr]
@@ -241,19 +248,26 @@ class MobileAsrSessionManager:
             except RuntimeError:
                 # 泵线程恰在收尾后关闭事件循环的竞态：会话已清理，无需再发哨兵
                 pass
+        return session.conversation_id
 
-    def cancel_all_for_connection(self, connection_key: str) -> None:
-        """取消某连接的全部会话（连接断开时调用；幂等，不发事件）。"""
-        for session_id in [
-            sid
-            for sid, s in self._sessions.items()
-            if s.connection_key == connection_key
-        ]:
-            self.cancel_session(session_id)
+    def cancel_all_for_connection(self, connection_key: str) -> list[str]:
+        """取消某连接的全部会话（连接断开时调用；不发事件），返回被取消的 session_id。"""
+        with self._lock:
+            session_ids = [
+                sid
+                for sid, s in self._sessions.items()
+                if s.connection_key == connection_key
+            ]
+        return [
+            session_id
+            for session_id in session_ids
+            if self.cancel_session(session_id) is not None
+        ]
 
     # ------------------------------------------------------------------ 内部
 
     def _get_session(self, session_id: str) -> _AsrSession:
+        # 调用方持有 _lock
         session = self._sessions.get(session_id)
         if session is None or session.stopped:
             raise MobileAudioError(

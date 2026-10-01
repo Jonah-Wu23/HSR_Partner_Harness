@@ -10,6 +10,7 @@ import datetime
 import hmac
 import secrets
 import time as _time
+from collections import deque
 from typing import Callable, TypedDict
 
 from .ws_server import AuthDecision, RemoteAuthenticator, UNAUTHENTICATED_METHODS
@@ -32,30 +33,24 @@ TOKEN_IDLE_TTL_SECONDS: float = 7 * 86400.0       # 空闲有效期 7 天
 # 令牌空闲刷新（authorize 成功路径）的节流落盘周期：崩溃时最多丢失
 # 该窗口内的空闲延期，相对 7 天空闲期可忽略，避免每帧鉴权整表写库。
 TOKEN_REFRESH_PERSIST_INTERVAL = 300.0
-MAX_PAIRING_FAILURES: int = 5                     # 触发封锁的连续失败次数
-INITIAL_BACKOFF_SECONDS: float = 60.0             # 初始封锁 60 秒
-MAX_BACKOFF_SECONDS: float = 1800.0               # 最大退避 30 分钟 (1800 秒)
+# 单个配对码允许的错误尝试次数；用尽即作废，需在桌面端重新生成。
+MAX_PAIRING_FAILURES: int = 5
+# 内存审计条目上限，超出后丢弃最早的条目。
+AUDIT_MAX_ENTRIES: int = 200
 
 
 class PairingError(RuntimeError):
     """配对码操作错误。
 
     code 取值：
-    - "invalid_code"：配对码不存在或已被使用
+    - "invalid_code"：配对码不匹配，或当前没有有效配对码
     - "expired_code"：配对码已过期
-    - "rate_limited"：来源封锁中
+    - "code_exhausted"：当前配对码错误次数用尽，已作废
     """
 
-    def __init__(
-        self,
-        message: str,
-        *,
-        code: str,
-        retry_after_s: int | float | None = None,
-    ) -> None:
+    def __init__(self, message: str, *, code: str) -> None:
         super().__init__(message)
         self.code = code
-        self.retry_after_s = retry_after_s
 
 
 class DeviceInfo(TypedDict):
@@ -68,30 +63,17 @@ class DeviceInfo(TypedDict):
 
 
 class _CodeEntry:
-    """内部配对码条目。"""
+    """当前有效的配对码及其累计错误次数。"""
 
-    __slots__ = ("issued_at", "ttl_seconds", "claimed")
-
-    def __init__(self, issued_at: float, ttl_seconds: int) -> None:
-        self.issued_at = issued_at
-        self.ttl_seconds = ttl_seconds
-        self.claimed = False
-
-
-class _RateLimitEntry:
-    """内部来源限流条目。"""
-
-    __slots__ = ("fail_count", "blocked_until", "backoff_seconds")
+    __slots__ = ("code", "issued_at", "ttl_seconds", "failures")
 
     def __init__(
-        self,
-        fail_count: int = 0,
-        blocked_until: float = 0.0,
-        backoff_seconds: float = INITIAL_BACKOFF_SECONDS,
+        self, code: str, issued_at: float, ttl_seconds: int, failures: int = 0
     ) -> None:
-        self.fail_count = fail_count
-        self.blocked_until = blocked_until
-        self.backoff_seconds = backoff_seconds
+        self.code = code
+        self.issued_at = issued_at
+        self.ttl_seconds = ttl_seconds
+        self.failures = failures
 
 
 class _TokenEntry:
@@ -150,20 +132,17 @@ class PairingService:
     ) -> None:
         self._ttl_seconds = ttl_seconds
         self._clock = clock or _time.time
-        # 配对码存储
-        self._codes: dict[str, _CodeEntry] = {}
+        # 同一时刻只有一枚有效配对码
+        self._code: _CodeEntry | None = None
         # token 存储（按 token 原文索引）
         self._tokens: dict[str, _TokenEntry] = {}
-        # 来源限流存储（按 source 索引）
-        self._rate_limits: dict[str, _RateLimitEntry] = {}
         # 已撤销 token 集合（恒定时间比较用原文，但禁止已撤销 token 再次验证）
         self._revoked_hashes: set[str] = set()
-        # 审计日志
-        self._audit: list[dict] = []
-        # R1-003：配对状态随写随持久化钩子。应用服务注入 _persist_pairing_state：
-        # 每条审计写入当刻触发；authorize 成功的令牌空闲刷新按
-        # TOKEN_REFRESH_PERSIST_INTERVAL 节流触发（写回 last_used_at/expires_at，
-        # 崩溃不回退空闲期）。纯逻辑场景（独立构造、测试）保持 None，不碰存储。
+        # 审计只留内存，有上限，不落库
+        self._audit: deque[dict] = deque(maxlen=AUDIT_MAX_ENTRIES)
+        # 配对状态持久化钩子，由应用服务注入 _persist_pairing_state。配对码、
+        # 令牌与撤销状态变化时当刻触发；令牌空闲刷新按
+        # TOKEN_REFRESH_PERSIST_INTERVAL 节流触发。纯逻辑场景保持 None。
         self.state_persist_hook: Callable[[], None] | None = None
         self._refresh_persisted_at: float = 0.0
         # 撤销监听器：revoke 成功后以 (token, device_name) 回调，
@@ -173,7 +152,7 @@ class PairingService:
     # ── 审计 ────────────────────────────────────────────────
 
     def _audit_log(self, event: str, detail: str) -> None:
-        """记录一条审计条目，并按注入的钩子当刻持久化。"""
+        """记录一条内存审计条目。"""
         now = datetime.datetime.fromtimestamp(
             self._clock(), tz=datetime.timezone.utc
         ).isoformat()
@@ -182,6 +161,8 @@ class PairingService:
             "event": event,
             "detail": detail,
         })
+
+    def _persist(self) -> None:
         if self.state_persist_hook is not None:
             self.state_persist_hook()
 
@@ -202,116 +183,55 @@ class PairingService:
     def issue_code(self) -> str:
         """生成一个 6 位数字配对码（000000–999999 均匀分布）。
 
-        单码有效（D4）：生成新码即作废全部旧码。一次性，TTL 默认 300 秒。
+        同一时刻只有一枚有效：生成新码即作废旧码。一次性，TTL 默认 300 秒。
         """
         now = self._clock()
-        # D4：同时只有一枚有效，清空全部旧码
-        self._codes.clear()
         # secrets.randbelow 保证均匀分布，禁止 random
         code = f"{secrets.randbelow(1_000_000):06d}"
-        self._codes[code] = _CodeEntry(issued_at=now, ttl_seconds=self._ttl_seconds)
+        self._code = _CodeEntry(code, issued_at=now, ttl_seconds=self._ttl_seconds)
         self._audit_log("pairing_code_issued", f"ttl_seconds={self._ttl_seconds}")
+        self._persist()
         return code
 
-    def _record_failure(
-        self, source: str, rate_entry: _RateLimitEntry, now: float
-    ) -> None:
-        """记录一次失败并按需触发指数退避封锁（D3）。"""
-        rate_entry.fail_count += 1
-        if rate_entry.fail_count >= MAX_PAIRING_FAILURES:
-            if rate_entry.fail_count == MAX_PAIRING_FAILURES:
-                rate_entry.backoff_seconds = INITIAL_BACKOFF_SECONDS
-            else:
-                # 继续失败退避翻倍，上限 30 分钟
-                rate_entry.backoff_seconds = min(
-                    rate_entry.backoff_seconds * 2.0, MAX_BACKOFF_SECONDS
-                )
-            rate_entry.blocked_until = now + rate_entry.backoff_seconds
-            retry_after_s = int(round(rate_entry.backoff_seconds))
-            self._audit_log(
-                "pairing_rate_limited",
-                f"source={source} retry_after_s={retry_after_s}",
-            )
-            raise PairingError(
-                f"连续配对失败次数过多，来源已封锁，请在 {retry_after_s} 秒后重试",
-                code="rate_limited",
-                retry_after_s=retry_after_s,
-            )
+    def claim(self, code: str, device_name: str = "") -> str:
+        """使用配对码换取 token，成功后该码作废。
 
-    def claim(
-        self,
-        code: str,
-        device_name: str = "",
-        *,
-        source: str = "default",
-        connection_key: str | None = None,
-    ) -> str:
-        """使用配对码换取 token。
-
-        Parameters
-        ----------
-        code : str
-            配对码。
-        device_name : str
-            设备名称。
-        source : str
-            来源标识（以连接为单位），默认 "default"。
-        connection_key : str | None
-            连接标识，若提供则作为来源标识。
-
-        Returns
-        -------
-        str
-            secrets.token_urlsafe(32) 生成的 token，并立刻作废该码。
+        错误尝试计入当前配对码，累计 ``MAX_PAIRING_FAILURES`` 次即作废，
+        与请求来自哪条连接无关。
 
         Raises
         ------
         PairingError
-            code="rate_limited"：来源封锁中
-            code="invalid_code"：配对码不存在或已被使用
+            code="invalid_code"：配对码不匹配，或当前没有有效配对码
             code="expired_code"：配对码已过期
+            code="code_exhausted"：本次错误用尽当前配对码的尝试次数
         """
         now = self._clock()
-        if connection_key is not None:
-            source = connection_key
-        if not device_name:
-            device_name = "unknown"
-        rate_entry = self._rate_limits.setdefault(source, _RateLimitEntry())
-
-        # 1. 检查来源是否处于封锁期
-        if now < rate_entry.blocked_until:
-            retry_after_s = max(1, int(round(rate_entry.blocked_until - now)))
-            self._audit_log(
-                "pairing_rate_limited",
-                f"source={source} retry_after_s={retry_after_s}",
-            )
-            raise PairingError(
-                f"来源封锁中，请在 {retry_after_s} 秒后重试",
-                code="rate_limited",
-                retry_after_s=retry_after_s,
-            )
-
-        if rate_entry.blocked_until > 0.0 and now >= rate_entry.blocked_until:
-            rate_entry.blocked_until = 0.0
-
-        # 2. 检查配对码
-        entry = self._codes.get(code)
-        if entry is None or entry.claimed:
-            self._record_failure(source, rate_entry, now)
+        entry = self._code
+        if entry is None:
             raise PairingError("配对码无效", code="invalid_code")
 
         if now - entry.issued_at > entry.ttl_seconds:
-            del self._codes[code]
-            self._record_failure(source, rate_entry, now)
+            self._code = None
+            self._persist()
             raise PairingError("配对码已过期", code="expired_code")
 
-        # 成功：清除失败计数与封锁
-        rate_entry.fail_count = 0
-        rate_entry.blocked_until = 0.0
-        rate_entry.backoff_seconds = INITIAL_BACKOFF_SECONDS
+        if not hmac.compare_digest(code.encode("utf-8"), entry.code.encode("utf-8")):
+            entry.failures += 1
+            if entry.failures >= MAX_PAIRING_FAILURES:
+                self._code = None
+                self._audit_log("pairing_code_exhausted", f"failures={entry.failures}")
+                self._persist()
+                raise PairingError(
+                    "配对码错误次数过多，已作废，请在桌面端重新生成",
+                    code="code_exhausted",
+                )
+            self._persist()
+            raise PairingError("配对码无效", code="invalid_code")
 
-        entry.claimed = True
-
+        self._code = None
+        if not device_name:
+            device_name = "unknown"
         token = secrets.token_urlsafe(32)
         self._tokens[token] = _TokenEntry(
             token=token,
@@ -319,6 +239,7 @@ class PairingService:
             issued_at=now,
         )
         self._audit_log("connect", f"device={device_name}")
+        self._persist()
         return token
 
     # ── token 鉴权（RemoteAuthenticator Protocol） ──────────
@@ -428,6 +349,7 @@ class PairingService:
         entry.revoked = True
         self._revoked_hashes.add(token)
         self._audit_log("command", f"revoke device={entry.device_name}")
+        self._persist()
         for listener in list(self._revoke_listeners):
             listener(token, entry.device_name)
         return True
@@ -465,12 +387,12 @@ class PairingService:
     # ── 状态快照 ────────────────────────────────────────────
 
     def export_state(self) -> dict:
-        """导出可 JSON 序列化的状态快照（版本 2）。
+        """导出可 JSON 序列化的状态快照（版本 3）。
 
-        包含有效 token、设备元数据、撤销集合、来源限流状态。
-        不含任何 API Key（本模块根本不接触 API Key）。
+        包含 token、设备元数据、撤销集合，以及当前配对码和它的累计错误次数。
+        审计只留内存，不进快照。不含任何 API Key。
 
-        往返后 ``authorize`` 行为一致。
+        往返后 ``authorize`` 与 ``claim`` 行为一致。
         """
         tokens = []
         for entry in self._tokens.values():
@@ -482,29 +404,20 @@ class PairingService:
                 "expires_at": entry.expires_at,
                 "revoked": entry.revoked,
             })
-        codes = []
-        for code, entry in self._codes.items():
-            codes.append({
-                "code": code,
-                "issued_at": entry.issued_at,
-                "ttl_seconds": entry.ttl_seconds,
-                "claimed": entry.claimed,
-            })
-        rate_limits = {}
-        for source, r in self._rate_limits.items():
-            rate_limits[source] = {
-                "fail_count": r.fail_count,
-                "blocked_until": r.blocked_until,
-                "backoff_seconds": r.backoff_seconds,
+        code = None
+        if self._code is not None:
+            code = {
+                "code": self._code.code,
+                "issued_at": self._code.issued_at,
+                "ttl_seconds": self._code.ttl_seconds,
+                "failures": self._code.failures,
             }
         return {
-            "version": 2,
+            "version": 3,
             "ttl_seconds": self._ttl_seconds,
             "tokens": tokens,
-            "codes": codes,
-            "rate_limits": rate_limits,
+            "code": code,
             "revoked_hashes": list(self._revoked_hashes),
-            "audit": list(self._audit),
         }
 
     def load_state(self, state: dict) -> None:
@@ -535,20 +448,16 @@ class PairingService:
             )
             entry.revoked = t.get("revoked", False)
             self._tokens[entry.token] = entry
-        self._codes.clear()
-        for c in state.get("codes", []):
-            entry = _CodeEntry(
-                issued_at=c["issued_at"],
-                ttl_seconds=c["ttl_seconds"],
+        # 版本 3 之前的快照没有 code 字段，载入后没有有效配对码，需重新生成。
+        code = state.get("code")
+        self._code = (
+            None
+            if code is None
+            else _CodeEntry(
+                code["code"],
+                issued_at=code["issued_at"],
+                ttl_seconds=code["ttl_seconds"],
+                failures=code["failures"],
             )
-            entry.claimed = c.get("claimed", False)
-            self._codes[c["code"]] = entry
-        self._rate_limits.clear()
-        for source, r in state.get("rate_limits", {}).items():
-            self._rate_limits[source] = _RateLimitEntry(
-                fail_count=r.get("fail_count", 0),
-                blocked_until=r.get("blocked_until", 0.0),
-                backoff_seconds=r.get("backoff_seconds", INITIAL_BACKOFF_SECONDS),
-            )
+        )
         self._revoked_hashes = set(state.get("revoked_hashes", []))
-        self._audit = list(state.get("audit", []))

@@ -76,7 +76,7 @@ Generate a pairing code or QR code in the settings page and open it in the phone
 - **Cloudflare Quick Tunnel (recommended).** One switch downloads the official `cloudflared` binary, verifies its SHA256 checksum, and hosts it as a child process. The phone reaches `https://*.trycloudflare.com` over HTTPS from cellular networks, which satisfies the secure-context requirement for the microphone. The hostname changes on every start, so the QR code needs to be regenerated; tunnel traffic crosses Cloudflare's edge.
 - **LAN direct connection.** An explicit switch exposes the service on the local network with a persistent warning banner, suitable for trusted networks.
 
-Safety boundaries: a pairing code is one-time and short-lived, only the latest code is valid, repeated failures lock the source out, and device tokens expire after 30 days absolute or 7 days idle. You can revoke any device from the desktop at any time. Tunnel hostnames appear in public certificate-transparency logs, and anyone who finds one still needs a pairing code or device token to connect.
+Safety boundaries: a pairing code is one-time and short-lived, only the latest code is valid, a code is voided after five wrong attempts and must be regenerated on the desktop, and device tokens expire after 30 days absolute or 7 days idle. You can revoke any device from the desktop at any time. Tunnel hostnames appear in public certificate-transparency logs, and anyone who finds one still needs a pairing code or device token to connect.
 
 Pairing, the Quick Tunnel switch, and the paired-device list all live in Settings → Remote devices.
 

@@ -107,8 +107,15 @@ class _RemoteConnection:
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
-        # 真正断开底层 WS，让对端与 handler 循环感知连接已关闭。
         if self._ws is not None:
+            # 关闭前发出已入队的帧：鉴权失败断开时，客户端要先收到带原因的
+            # 错误回执，才能区分令牌过期与撤销。
+            while not self._queue.empty():
+                try:
+                    await self._ws.send_str(encode_message(self._queue.get_nowait()))
+                except Exception:  # noqa: BLE001 - 对端已断开，剩余帧无处可发
+                    break
+            # 真正断开底层 WS，让对端与 handler 循环感知连接已关闭。
             try:
                 await self._ws.close(code=code, message=message)
             except Exception:  # noqa: BLE001 - 对端已断开时关闭即无事可做
@@ -187,18 +194,20 @@ class WSServerMode:
         """
         matched = [conn for conn in self._connections if conn.token == token]
         for conn in matched:
-            self._connections.discard(conn)
-            conn.detach()
+            self._disconnect_unauthorized(conn, b"token revoked")
         if matched:
             logger.info(
                 "撤销 token：断开 %d 条已建立连接 device=%r",
                 len(matched),
                 device_name,
             )
-            loop = asyncio.get_running_loop()
-            for conn in matched:
-                loop.create_task(conn.close(code=4401, message=b"token revoked"))
         return len(matched)
+
+    def _disconnect_unauthorized(self, conn: _RemoteConnection, message: bytes) -> None:
+        """令牌失效的连接：同步退订（事件扇出立即停止），再调度 4401 关闭。"""
+        self._connections.discard(conn)
+        conn.detach()
+        asyncio.get_running_loop().create_task(conn.close(code=4401, message=message))
 
     async def _handle_ws(self, request: web.Request) -> web.WebSocketResponse:
         # V0.3.8 T1（契约 §14.3）：heartbeat=30s——服务端周期 ping，客户端
@@ -273,6 +282,10 @@ class WSServerMode:
                 response_error(_extract_frame_id(payload), err_code, decision.reason)
             )
             logger.warning("远程鉴权拒绝 method=%r reason=%r", method, decision.reason)
+            if conn.authenticated and err_code == "unauthorized":
+                # 已鉴权连接的令牌失效（过期、撤销）：与撤销同路径退订并断开，
+                # 不再向它推送事件。
+                self._disconnect_unauthorized(conn, decision.reason.encode("utf-8"))
             return
 
         # 连接首次业务鉴权后固定 token；后续请求不能切换设备身份，
