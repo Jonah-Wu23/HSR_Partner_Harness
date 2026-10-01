@@ -38,6 +38,8 @@ class Conversation:
     account_id: str = ""
     # V0.3.5：对话绑定的角色卡快照（card_id；内置角色为 None，迁移 v10）。
     character_card_id: str | None = None
+    # 标题来源：default 初始名、auto 助手生成、user 用户命名。
+    title_source: str = "default"
 
 
 @dataclass(frozen=True)

@@ -103,19 +103,13 @@ class _SegmentState:
     def is_open(self) -> bool:
         return self.index >= 0
 
-    def has_any_content(self) -> bool:
-        return bool("".join(self.text_parts).strip()) or self.final_override is not None
-
 
 ApprovalCallback = Callable[
     [PendingOperation, str, str, str, str], Awaitable[ApprovalDecision]
 ]
-"""审批回调签名：操作、approval_id、真实理由（风险标签或“需要用户审批”）、
-conversation_id、task_id。
+"""审批回调签名：操作、approval_id、理由、conversation_id、task_id。
 
-O1.7：approval_id 由编排器生成并贯通到 UI 队列，裁决按 id 对应，
-不再依赖 FIFO 顺序巧合。V0.3.2 M4：显式携带聊天与任务 id，删除通过
-全局当前任务反查归属的方式。
+裁决按 approval_id 对应到 UI 审批队列中的条目。
 """
 
 # O4.3：状态字面量类型别名——ToolRun.status 与 ExecutionReceipt.status
@@ -148,12 +142,12 @@ class ConversationOrchestrator:
         project: ProjectRef,
         dialogue_model: DialogueModel,
         coding_engine: CodingEngine,
+        approval_callback: ApprovalCallback,
         state: GlobalEngineState | None = None,
         store: StateStore | None = None,
         approval_mode: ApprovalMode = ApprovalMode.REQUEST_APPROVAL,
         risk_rules: RiskRules | None = None,
         reviewer: Reviewer | None = None,
-        approval_callback: ApprovalCallback | None = None,
         assistant_instructions: str = "",
     ) -> None:
         self.pair_id = pair_id
@@ -228,6 +222,16 @@ class ConversationOrchestrator:
                 manager.mode = mode
         elif conversation_id in self._approval_managers:
             self._approval_managers[conversation_id].mode = mode
+
+    def set_project_approval_mode(self, project_id: str, mode: ApprovalMode) -> None:
+        """把项目审批模式应用到该项目正在运行的任务。
+
+        尚未开始的任务在提交时从项目设置解析审批模式，这里只更新运行中
+        任务的审批管理器，其他项目的任务不受影响。
+        """
+        for active in self.state.active_tasks():
+            if active.project_id == project_id:
+                self._approval_managers[active.conversation_id].mode = mode
 
     def select_context(
         self,
@@ -495,6 +499,10 @@ class ConversationOrchestrator:
             if message.message_id != message_id:
                 continue
             payload = dict(message.payload)
+            if status == MessageStatus.DONE:
+                # 完成态不保留更早失败或取消留下的原因。
+                payload.pop("error", None)
+                payload.pop("cancelled_reason", None)
             if reason:
                 payload[
                     "cancelled_reason" if status == MessageStatus.CANCELLED else "error"
@@ -537,37 +545,6 @@ class ConversationOrchestrator:
         """移除消息监听器（V0.3.2 M6：替换 VoiceRuntime 时清理旧回调）。"""
         while callback in self._message_listeners:
             self._message_listeners.remove(callback)
-
-    def _engine_policy(
-        self, approval_mode: ApprovalMode | None = None
-    ) -> dict[str, str | None]:
-        """B1：应用层审批模式 → app-server thread/start 策略映射（设计 §14.6）。
-
-        - 请求批准 / 帮我审核：``untrusted`` + ``read-only`` 沙箱。真实联调
-          确认 workspace-write 下工作区写操作不发起 requestApproval（B1 联调
-          记录），改用 read-only 让一切写操作执行前挂起，由 ApprovalManager
-          裁决后经 resolve_approval 回复——三种审批模式真实差异化拦截；
-        - 完全允许运行：``never`` + ``workspace-write``（引擎不发起审批请求，
-          写操作直接执行，工具事件照常持久化）；
-        - ``approvalsReviewer`` 固定 ``"user"``——应用层审查智能体负责裁决，
-          不启用原生 auto_review（§14.6 备注，B1 联调可评估切换）。
-        """
-        mode = approval_mode or self.approval_mode
-        approval_policy = (
-            "never"
-            if mode == ApprovalMode.FULL_AUTO
-            else "untrusted"
-        )
-        sandbox = (
-            "workspace-write"
-            if mode == ApprovalMode.FULL_AUTO
-            else "read-only"
-        )
-        return {
-            "approvalPolicy": approval_policy,
-            "sandbox": sandbox,
-            "approvalsReviewer": "user",
-        }
 
     def restore_conversation(self, snapshot: dict) -> None:
         """O2.2：打开旧聊天时回填消息历史与会话引用。
@@ -618,15 +595,18 @@ class ConversationOrchestrator:
         """O4.2：聊天结束/切换钩子——清理该会话的审批缓存。
 
         “本对话内允许”缓存的生命周期是单次聊天：聊天关闭或切换后
-        必须失效。这里取出会话的 :class:`ApprovalManager`，先清空
-        ``_session_allow`` 缓存，再移除常驻引用（下次使用该会话时
-        新建管理器，缓存与挂起请求均为空）。运行中的任务不受影响：
-        ``_execute`` 在开始时已持有本地 manager 引用，收尾照常。
+        必须失效。这里清空会话 :class:`ApprovalManager` 的
+        ``_session_allow`` 缓存；会话没有运行中任务时再移除常驻引用（下次
+        使用该会话时新建管理器，缓存与挂起请求均为空）。运行中任务的
+        管理器保留登记，项目审批模式切换仍能作用到它。
         未打开过的会话调用是无害空操作。
         """
-        manager = self._approval_managers.pop(conversation_id, None)
-        if manager is not None:
-            manager.clear_session_cache()
+        manager = self._approval_managers.get(conversation_id)
+        if manager is None:
+            return
+        manager.clear_session_cache()
+        if self.state.get_for_conversation(conversation_id) is None:
+            del self._approval_managers[conversation_id]
 
     def _conversation_lock(self, conversation_id: str) -> asyncio.Lock:
         """O2.5：获取会话级入口锁（首次访问时惰性创建）。
@@ -1030,26 +1010,32 @@ class ConversationOrchestrator:
             )
 
         if isinstance(character_turn.delegation, TaskAmendmentDraft):
-            try:
-                await self._apply_amendment(
-                    user_message.message_id,
-                    character_turn.delegation,
-                    conversation_id=conversation_id,
-                )
-            except (RuntimeError, ValueError) as exc:
-                # O2.4：角色建议的修改无法路由（无活动任务、生命周期已终态等）
-                # 时同样转为可见系统提示，不静默
+            draft = character_turn.delegation
+            active = self.state.get_for_conversation(conversation_id)
+            blocker = self._amendment_blocker(active, draft.target_task_id)
+            if blocker is not None:
                 notice = self._message(
                     conversation_id=conversation_id,
                     source=MessageSource.SYSTEM,
                     kind=MessageKind.SYSTEM_STATUS,
-                    text=f"修改未能应用：{exc}",
+                    text=f"修改未能应用：{blocker}",
                     pair_id=exec_context.pair_id,
                 )
                 return ConversationOutcome(
                     messages=(user_message, character, notice),
                     memory_drafts=tuple(character_turn.memory),
                 )
+            await self._steer_turn(
+                active,
+                TaskAmendment(
+                    target_task_id=active.task_id,
+                    origin_message_id=user_message.message_id,
+                    revision=draft.revision or 1,
+                    instructions=draft.instructions,
+                    # 角色建议的修改，来源与用户直接指令区分
+                    origin="character",
+                ),
+            )
         return ConversationOutcome(
             messages=tuple(messages),
             memory_drafts=tuple(character_turn.memory),
@@ -1123,38 +1109,37 @@ class ConversationOrchestrator:
         constraints: tuple[str, ...] = (),
         context: ExecutionContext | None = None,
     ) -> ConversationOutcome:
-        """V0.2：后台处理直发助手的用户消息。
+        """后台处理直发助手的用户消息（消息已落库）。
 
-        用户消息已由快速接受落库；这里按当前状态路由：本聊天无活动任务时
-        新建任务执行；本聊天有活动任务时归一为 TaskAmendment（M2 起默认
-        排队，只有明确「立即插入」才 steer）。V0.3.2 M4：并发单位是
-        conversation——其他聊天是否忙碌不再影响当前聊天的提交判断。
+        本聊天无活动任务时新建任务执行；有活动任务时把消息作为
+        TaskAmendment 发给运行中的引擎 turn。并发按聊天划分，其他聊天
+        是否忙碌不影响本聊天。
         """
         exec_context = self._context_or_current(conversation_id, context)
         active = self.state.get_for_conversation(conversation_id)
         if active is not None:
-            # O2.4：设计 §3.2——运行中用户直接发给助手的新指令拥有最高优先级，
-            # 归一为 TaskAmendment 走 amend_turn，来源标记 user 与角色建议区分
-            try:
-                amendment = TaskAmendment(
+            # 运行中直接发给助手的新指令归一为 TaskAmendment 走 amend_turn，
+            # 来源标记 user 与角色建议区分
+            blocker = self._amendment_blocker(active, None)
+            if blocker is not None:
+                notice = self._message(
+                    conversation_id=conversation_id,
+                    source=MessageSource.SYSTEM,
+                    kind=MessageKind.SYSTEM_STATUS,
+                    text=f"修改未能应用：{blocker}",
+                    pair_id=exec_context.pair_id,
+                )
+                return ConversationOutcome(messages=(user_message, notice))
+            await self._steer_turn(
+                active,
+                TaskAmendment(
                     target_task_id=active.task_id,
                     origin_message_id=user_message.message_id,
                     revision=1,
                     instructions=user_message.text,
                     origin="user",
-                )
-                await self._steer_turn(amendment)
-            except (RuntimeError, ValueError) as exc:
-                # 冲突场景（引擎 turn 尚未绑定、生命周期已终态等）：
-                # 转用户可见系统提示，不再静默失败
-                notice = self._message(
-                    conversation_id=conversation_id,
-                    source=MessageSource.SYSTEM,
-                    kind=MessageKind.SYSTEM_STATUS,
-                    text=f"修改未能应用：{exc}",
-                    pair_id=exec_context.pair_id,
-                )
-                return ConversationOutcome(messages=(user_message, notice))
+                ),
+            )
             # 修改已交给运行中的任务，本次直接输入不再开启新任务
             return ConversationOutcome(messages=(user_message,))
         task = TaskRequest(
@@ -1172,57 +1157,39 @@ class ConversationOrchestrator:
             receipt=execution.receipt,
         )
 
-    async def _apply_amendment(
-        self,
-        origin_message_id: str,
-        draft: TaskAmendmentDraft,
-        *,
-        conversation_id: str,
-    ) -> None:
-        active = self.state.get_for_conversation(conversation_id)
-        if active is None or active.engine_turn_id is None:
-            raise RuntimeError("no running task can accept an amendment")
-        if draft.target_task_id is not None and draft.target_task_id != active.task_id:
-            raise ValueError("amendment target does not match active task")
-        if active.task_id not in self._active_lifecycles:
-            raise RuntimeError("active task lifecycle is missing")
-        amendment = TaskAmendment(
-            target_task_id=active.task_id,
-            origin_message_id=origin_message_id,
-            revision=draft.revision or 1,
-            instructions=draft.instructions,
-            # O2.4：角色建议的修改，来源与用户直接指令区分
-            origin="character",
-        )
-        await self._steer_turn(amendment)
+    def _amendment_blocker(
+        self, active: ActiveTurn | None, target_task_id: str | None
+    ) -> str | None:
+        """活动任务暂时不能接收修改的原因；可以接收时返回 None。"""
+        if active is None:
+            return "当前聊天没有运行中的助手任务"
+        if active.engine_turn_id is None:
+            return "助手任务还在启动，请稍后再发"
+        if self._active_lifecycles[active.task_id].status != TaskStatus.RUNNING:
+            return "助手任务正在取消"
+        if target_task_id is not None and target_task_id != active.task_id:
+            return f"指定的任务 {target_task_id} 不是运行中的任务"
+        return None
 
-    async def _steer_turn(self, amendment: TaskAmendment) -> None:
-        """把 amendment 发送给运行中的引擎 turn，并切换生命周期状态。
+    async def _steer_turn(self, active: ActiveTurn, amendment: TaskAmendment) -> None:
+        """把 amendment 发给运行中的引擎 turn，引擎错误原样上抛。
 
-        O2.4：角色建议与用户直接指令共用此路径；生命周期先转
-        AMENDMENT_PENDING 再回拨 RUNNING——期间若已被取消请求落到
-        CANCELLED（终态）则不再回拨，避免 InvalidTaskTransition。
+        角色建议与用户直接指令共用此路径；调用方先用
+        ``_amendment_blocker`` 确认任务可以接收修改。
         """
-        active = self.state.get_for_task(amendment.target_task_id)
-        lifecycle = self._active_lifecycles.get(amendment.target_task_id)
-        if active is None or active.engine_turn_id is None or lifecycle is None:
-            raise RuntimeError("no running task can accept an amendment")
-        lifecycle.transition(TaskStatus.AMENDMENT_PENDING)
-        session = self._sessions[active.conversation_id]
-        await self.coding_engine.amend_turn(session, active.engine_turn_id, amendment)
-        if lifecycle.status == TaskStatus.AMENDMENT_PENDING:
-            lifecycle.transition(TaskStatus.RUNNING)
+        await self.coding_engine.amend_turn(
+            self._sessions[active.conversation_id], active.engine_turn_id, amendment
+        )
 
     async def cancel_active_task(
         self, conversation_id: str | None = None, task_id: str | None = None
     ) -> bool:
-        """O2.3/M1.2 + V0.3.2 M4：定向取消活动任务。
+        """定向取消活动任务。
 
         显式传入 ``conversation_id``/``task_id`` 时按聊天与任务双重校验
-        （用户切换聊天后旧按钮不得取消新任务）；省略参数时保持旧行为
-        （取消首个活动任务，CLI 兼容）。引擎 turn 尚未绑定时记录取消
-        意图，绑定后由事件循环立即发送 interrupt；已绑定则直接发送。
-        无活动任务或生命周期已终态时返回 False。
+        （用户切换聊天后旧按钮不得取消新任务）；省略参数时取消首个活动
+        任务。引擎 turn 尚未绑定时记录取消意图，绑定后由事件循环立即发送
+        interrupt；已绑定则直接发送。无活动任务或生命周期已终态时返回 False。
         """
         if conversation_id is not None:
             active = self.state.get_for_conversation(conversation_id)
@@ -1240,10 +1207,7 @@ class ConversationOrchestrator:
                 return False
             active = tasks[0]
         lifecycle = self._active_lifecycles.get(active.task_id)
-        if (
-            lifecycle is None
-            or lifecycle.status not in (TaskStatus.RUNNING, TaskStatus.AMENDMENT_PENDING)
-        ):
+        if lifecycle is None or lifecycle.status != TaskStatus.RUNNING:
             return False
         session = self._sessions.get(active.conversation_id)
         if active.engine_turn_id is not None and session is None:
@@ -1423,15 +1387,10 @@ class ConversationOrchestrator:
             raise
         try:
             session = self._sessions.get(task.conversation_id)
-            # B1：按审批模式映射 app-server 策略（设计 §14.6）。
-            # 仅新开线程时生效；恢复线程沿用线程既有设置。
-            policy = self._engine_policy(task_approval_mode)
             session = await self.coding_engine.open_session(
                 task_project,
                 session,
-                approval_policy=policy["approvalPolicy"],
-                sandbox=policy["sandbox"],
-                approvals_reviewer=policy["approvalsReviewer"],
+                approval_mode=task_approval_mode,
                 developer_instructions=task_assistant_instructions or None,
             )
             self._sessions[task.conversation_id] = session
@@ -1794,7 +1753,7 @@ class ConversationOrchestrator:
                             if text not in changed_files:
                                 changed_files.append(text)
                     elif event.type == EngineEventType.TOOL_FINISHED:
-                        status = cast(ToolRunStatus, str(event.payload.get("status", "succeeded")))
+                        status = cast(ToolRunStatus, str(event.payload["status"]))
                         if status == "failed":
                             # 单个工具步骤失败不等于整个 turn 失败：引擎可能会
                             # 重试、改用其他路径，最后正常完成。保留错误明细，
@@ -1845,42 +1804,31 @@ class ConversationOrchestrator:
             )
             if not assistant_text.strip() and final_segment_text:
                 assistant_text = final_segment_text
-            if (
-                not assistant_text.strip()
-                and not segment_state.has_any_content()
-                and terminal_status not in ("failed", "cancelled")
-                and not failed
-            ):
-                raise RuntimeError("古代机械未返回最终回复")
 
-            # O2.3：取消链路接通后，生命周期可能已被 cancel_active_task
-            # 先行落到 CANCELLED（终态），这里只做去重转移——目标状态与
-            # 当前相同就不再 transition，避免 InvalidTaskTransition。
-            target_status = (
-                "cancelled"
-                if cancelled or lifecycle.status == TaskStatus.CANCELLED
-                else terminal_status
-                if terminal_status is not None
-                else "failed"
-                if failed
-                else "completed"
-            )
+            # 生命周期可能已被 cancel_active_task 先行落到 CANCELLED（终态），
+            # 此时回执按取消处理，且不再重复转移。
+            if cancelled or lifecycle.status == TaskStatus.CANCELLED:
+                target_status = "cancelled"
+            elif terminal_status is not None:
+                target_status = terminal_status
+            elif failed:
+                # 本地沙箱或审批否决中断了事件流
+                target_status = "failed"
+            else:
+                raise RuntimeError(
+                    "引擎事件流结束时没有 turn.completed 或 turn.failed 终态事件"
+                    f"（engine_turn_id={engine_turn_id}）"
+                )
+            if target_status == "completed" and not failed and not assistant_text.strip():
+                raise RuntimeError("古代机械未返回最终回复")
             if TaskStatus(target_status) != lifecycle.status:
                 lifecycle.transition(TaskStatus(target_status))
-            # O4.3：出口处收敛为回执状态字面量类型
             status = cast(ReceiptStatus, target_status)
-            if status == "cancelled":
-                # O2.3：中断的演示流程没有收尾文案，回执如实标注已取消
-                summary = assistant_text or "任务已取消"
-            elif status == "failed":
-                summary = assistant_text or "任务执行失败"
-            else:
-                summary = assistant_text or "任务执行完成"
             receipt = ExecutionReceipt(
                 task_id=task.task_id,
                 engine_turn_id=engine_turn_id,
                 status=status,
-                summary=summary,
+                summary=assistant_text,
                 changed_files=tuple(changed_files),
                 checks=tuple(checks),
                 errors=tuple(errors),
@@ -2084,8 +2032,6 @@ class ConversationOrchestrator:
         conversation_id: str,
         task_id: str,
     ) -> ApprovalDecision:
-        if self.approval_callback is None:
-            return ApprovalDecision.DENY
         return await self.approval_callback(
             op, approval_id, reason, conversation_id, task_id
         )

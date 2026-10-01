@@ -12,9 +12,14 @@ from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDia
 from pair_harness.adapters.reviewer import DialogueModelReviewer
 from pair_harness.app_paths import AppPaths
 from pair_harness.config.pairs import load_pair_config, load_prompt
-from pair_harness.config.providers import load_reasoning_preset
-from pair_harness.core.contracts import ApprovalDecision, ApprovalMode, MessageSource, ProjectRef
-from pair_harness.core.orchestrator import ConversationOrchestrator
+from pair_harness.core.contracts import (
+    ApprovalDecision,
+    ApprovalMode,
+    MessageSource,
+    PendingOperation,
+    ProjectRef,
+)
+from pair_harness.core.orchestrator import ApprovalCallback, ConversationOrchestrator
 from pair_harness.settings import Settings
 from pair_harness.storage.sqlite_store import SQLiteStore
 
@@ -70,7 +75,26 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def run_demo(project_path: Path, text: str) -> int:
+def _console_approval(approve: bool) -> ApprovalCallback:
+    """按 ``--approve`` 裁决全部审批请求，并把每次裁决打印到终端。"""
+
+    async def approval_callback(
+        op: PendingOperation,
+        approval_id: str,
+        reason: str,
+        conversation_id: str,
+        task_id: str,
+    ) -> ApprovalDecision:
+        print(
+            f"[审批] {approval_id} {op.summary}（{reason}）"
+            f"→ {'允许' if approve else '拒绝'}"
+        )
+        return ApprovalDecision.ALLOW if approve else ApprovalDecision.DENY
+
+    return approval_callback
+
+
+async def run_demo(project_path: Path, text: str, approve: bool) -> int:
     project_path = project_path.resolve()
     project = ProjectRef(
         project_id="demo-project",
@@ -82,6 +106,7 @@ async def run_demo(project_path: Path, text: str) -> int:
         project=project,
         dialogue_model=ScriptedDialogueModel(),
         coding_engine=ScriptedCodingEngine(),
+        approval_callback=_console_approval(approve),
         approval_mode=ApprovalMode.FULL_AUTO,
     )
     outcome = await orchestrator.handle_character_input(
@@ -120,7 +145,7 @@ async def run_real(
       写入账号私有的 Reasonix 配置；
     - 状态库持久化：同一 ``--conversation`` 二次运行恢复旧聊天与 ACP 会话
       （session/resume），新会话 id 另开会话（不继承旧会话）；
-    - 审批策略按 ``_engine_policy`` 映射（§14.6），三种模式逐一可验。
+    - 审批模式经 ``open_session`` 交给引擎，三种模式逐一可验。
     """
     project_path = project_path.resolve()
     settings = Settings.from_environment()
@@ -154,17 +179,10 @@ async def run_real(
     pair_config = load_pair_config(pair_id)
     assistant_instructions = load_prompt(pair_config.assistant.prompt)
 
-    preset = load_reasoning_preset(settings.dialogue_base_url, settings.dialogue_model)
     dialogue = OpenAICompatibleDialogueModel(
         base_url=settings.dialogue_base_url,
         api_key=settings.dialogue_api_key,
         model=settings.dialogue_model,
-        thinking=preset.default_thinking,
-        reasoning_effort=(
-            None
-            if project_record.reasoning_effort == "auto"
-            else project_record.reasoning_effort
-        ),
         temperature=1.0,
     )
     engine = build_coding_engine(
@@ -174,10 +192,6 @@ async def run_real(
         api_key=settings.dialogue_api_key,
     )
     reviewer = DialogueModelReviewer(dialogue) if approval_mode == ApprovalMode.REVIEW else None
-
-    async def approval_callback(op, approval_id: str, reason: str) -> ApprovalDecision:
-        print(f"[审批] {approval_id} {op.summary}（{reason}）→ {'允许' if approve else '拒绝'}")
-        return ApprovalDecision.ALLOW if approve else ApprovalDecision.DENY
 
     project = ProjectRef(
         project_id=project_record.project_id,
@@ -201,7 +215,7 @@ async def run_real(
             store=store,
             approval_mode=approval_mode,
             reviewer=reviewer,
-            approval_callback=approval_callback,
+            approval_callback=_console_approval(approve),
             assistant_instructions=assistant_instructions,
         )
         snapshot = store.load_conversation(stored_conversation_id)
@@ -237,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
     _configure_stdio_utf8()
     args = build_parser().parse_args(argv)
     if args.demo:
-        return asyncio.run(run_demo(Path(args.project), args.message))
+        return asyncio.run(run_demo(Path(args.project), args.message, args.approve))
     if args.real:
         load_dotenv(Path(__file__).resolve().parents[2] / ".env")
         return asyncio.run(

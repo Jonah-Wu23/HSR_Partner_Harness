@@ -129,7 +129,6 @@ class MessageStatus(str, Enum):
 class TaskStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
-    AMENDMENT_PENDING = "amendment_pending"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"

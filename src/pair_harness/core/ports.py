@@ -6,6 +6,7 @@ from typing import Any
 
 from .contracts import (
     ApprovalDecision,
+    ApprovalMode,
     AsrEvent,
     AudioChunk,
     DialogueEvent,
@@ -65,17 +66,14 @@ class CodingEngine(ABC):
         project: ProjectRef,
         stored_ref: EngineSessionRef | None = None,
         *,
-        approval_policy: str | None = None,
-        sandbox: str | None = None,
-        approvals_reviewer: str | None = None,
+        approval_mode: ApprovalMode,
         developer_instructions: str | None = None,
     ) -> EngineSessionRef:
         """打开（或恢复）引擎会话。
 
-        O3.1：``approval_policy``/``sandbox``/``approvals_reviewer`` 是
-        app-server 策略映射的预留位置（thread/start 的 approvalPolicy /
-        sandbox / approvalsReviewer 字段），B1 联调时由编排器按审批模式
-        与沙箱配置传入；None 表示不设置，交给引擎默认值。
+        ``approval_mode`` 是当前任务的审批模式。沙箱与审批裁决由编排器负责；
+        ``native_preexecution_approval`` 为 True 的引擎在任何审批模式下都要在
+        工具执行前发出 APPROVAL_REQUESTED，等待 ``resolve_approval``。
         """
         raise NotImplementedError
 

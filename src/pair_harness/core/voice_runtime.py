@@ -252,25 +252,33 @@ class VoiceRuntime:
 
     async def _capture_loop(self) -> None:
         assert self._capture is not None
-        async for chunk in self._capture.chunks():
-            if self._ptt_active:
-                # 按键说话：按下即开始攒帧，直接进 ASR（不经 VAD、不进 pre-roll）
-                if self._asr_active:
-                    assert self._asr_input is not None
-                    self._asr_input.put_nowait(chunk)
-                continue
-            if self._queue.playing:
-                # TTS 播放中：暂停向 VAD 喂帧（采集继续，帧丢弃）
-                continue
-            if self._vad_input is not None:
-                self._vad_input.put_nowait(chunk)
+        try:
+            async for chunk in self._capture.chunks():
+                self._dispatch_chunk(chunk)
+        except Exception as exc:  # noqa: BLE001 - 采集中断如实提示，重新开启聆听后恢复
+            logger.exception("麦克风采集中断")
+            self._on_error(f"麦克风采集异常：{exc}")
+            self._on_vad_state("idle")
+
+    def _dispatch_chunk(self, chunk: bytes) -> None:
+        if self._ptt_active:
+            # 按键说话：按下即开始攒帧，直接进 ASR（不经 VAD、不进 pre-roll）
             if self._asr_active:
-                if self._asr_input is not None:
-                    self._asr_input.put_nowait(chunk)
-            else:
-                # pre-roll 只在静默期累积；语音段开始后不再更新，
-                # 避免把上一段语音尾部补发给下一段 ASR
-                self._pre_roll.append(chunk)
+                assert self._asr_input is not None
+                self._asr_input.put_nowait(chunk)
+            return
+        if self._queue.playing:
+            # TTS 播放中：暂停向 VAD 喂帧（采集继续，帧丢弃）
+            return
+        if self._vad_input is not None:
+            self._vad_input.put_nowait(chunk)
+        if self._asr_active:
+            if self._asr_input is not None:
+                self._asr_input.put_nowait(chunk)
+        else:
+            # pre-roll 只在静默期累积；语音段开始后不再更新，
+            # 避免把上一段语音尾部补发给下一段 ASR
+            self._pre_roll.append(chunk)
 
     # ------------------------------------------------------------ 上行：VAD 事件
 

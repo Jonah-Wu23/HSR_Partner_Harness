@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import PurePath
@@ -14,6 +15,8 @@ from .contracts import (
     ReviewerVerdict,
 )
 from .risk_rules import RiskRules, match_high_risk
+
+logger = logging.getLogger(__name__)
 
 
 class ApprovalRequired(RuntimeError):
@@ -167,11 +170,11 @@ class ApprovalManager:
     async def _review_op(
         self, op: PendingOperation, context: list[Message]
     ) -> ReviewerVerdict:
-        """V0.2：调用审查智能体并发出 review.started/completed/failed。
+        """调用审查智能体并发出 review.started/completed/failed。
 
         审查提示只在真正调用审查智能体时出现；低风险直接放行、空闲状态
-        与普通回复不触发本方法（问题 14）。审查异常按安全默认（否决）
-        处理并发出 review.failed。
+        与普通回复不触发本方法。审查调用失败时记录原始异常并否决操作，
+        否决理由携带原始错误文本。
         """
         if self.on_review is not None:
             self.on_review(
@@ -185,10 +188,12 @@ class ApprovalManager:
             )
         try:
             verdict = await self.reviewer.review(op, context or [])
-        except Exception as exc:  # noqa: BLE001 - 审查异常降级为安全否决
+        except Exception as exc:  # noqa: BLE001 - 审查失败按否决处理（fail-closed）
+            logger.exception("审查智能体调用失败：%s", op.summary)
+            reason = f"审查智能体调用失败：{str(exc) or type(exc).__name__}"
             if self.on_review is not None:
-                self.on_review("review.failed", {"reason": str(exc)})
-            return ReviewerVerdict(allow=False, reason="审查智能体异常", suggestion="请重试")
+                self.on_review("review.failed", {"reason": reason})
+            return ReviewerVerdict(allow=False, reason=reason)
         if self.on_review is not None:
             self.on_review(
                 "review.completed",
@@ -219,24 +224,23 @@ class ApprovalManager:
         conversation_id: str,
         task_id: str,
         engine_turn_id: str,
-        tool_call_id: str | None = None,
-        context: list[Message] | None = None,
         request_decision: Callable[
             [PendingOperation, str, str], Awaitable[ApprovalDecision]
-        ]
-        | None = None,
+        ],
+        tool_call_id: str | None = None,
+        context: list[Message] | None = None,
     ) -> GateOutcome:
-        """O3.1：裁决引擎侧挂起的原生审批请求。
+        """裁决引擎侧挂起的原生审批请求。
 
         与 :meth:`gate` 的差异：
-        - ``approval_id`` 来自 app-server（requestApproval 请求 id），
-          由调用方从 ``requested_event.payload`` 读取，不再本地生成；
+        - ``approval_id`` 来自引擎的审批请求 id，由调用方从
+          ``requested_event.payload`` 读取；
         - 裁决结果由调用方经 ``CodingEngine.resolve_approval`` 回复引擎，
           本方法不直接接触引擎；
         - 返回的 ``GateOutcome.events`` 只含 ``approval.resolved``
-          （请求事件由 codec 映射产生，不重复合成）。
-        ``request_decision`` 供“请求批准”模式询问用户（等价于编排器的
-        approval_callback）；未提供时按否决处理（与 gate 路径一致）。
+          （请求事件由引擎适配器产生，不重复合成）。
+        ``request_decision`` 在“请求批准”模式下询问用户，对应编排器的
+        approval_callback。
         """
         approval_id = str(requested_event.payload.get("approval_id") or "")
         reason = str(
@@ -249,12 +253,7 @@ class ApprovalManager:
         if self.mode == ApprovalMode.REQUEST_APPROVAL:
             if self._signature(op) in self._session_allow:
                 return GateOutcome(decision=ApprovalDecision.ALLOW_FOR_CONVERSATION)
-            if request_decision is None:
-                decision = ApprovalDecision.DENY
-                resolved_reason = "未配置审批回调"
-            else:
-                decision = await request_decision(op, approval_id, reason)
-                resolved_reason = reason
+            decision = await request_decision(op, approval_id, reason)
             if (
                 decision == ApprovalDecision.ALLOW_FOR_CONVERSATION
                 and match_high_risk(op, self.rules) is None
@@ -265,7 +264,7 @@ class ApprovalManager:
                 requested_event,
                 decision,
                 actor="user",
-                reason=resolved_reason,
+                reason=reason,
             )
             return GateOutcome(decision=decision, events=(resolved,))
 

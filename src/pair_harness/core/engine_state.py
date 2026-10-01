@@ -16,12 +16,10 @@ class BusyTurnError(RuntimeError):
 _ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     TaskStatus.PENDING: {TaskStatus.RUNNING, TaskStatus.CANCELLED},
     TaskStatus.RUNNING: {
-        TaskStatus.AMENDMENT_PENDING,
         TaskStatus.COMPLETED,
         TaskStatus.FAILED,
         TaskStatus.CANCELLED,
     },
-    TaskStatus.AMENDMENT_PENDING: {TaskStatus.RUNNING, TaskStatus.CANCELLED},
     TaskStatus.COMPLETED: set(),
     TaskStatus.FAILED: set(),
     TaskStatus.CANCELLED: set(),
