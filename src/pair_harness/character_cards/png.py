@@ -117,9 +117,13 @@ def write_png_card(card: CharacterCard, avatar_png: bytes) -> bytes:
     移除原有 ``chara``/``ccv3`` tEXt 块后在 IHDR 之后插入新的
     ``ccv3`` 块；其余块（含图像数据）原样保留。
     """
+    # PNG 卡把元数据写进头像自身的块结构，JPEG/WebP 头像无法承载，直接报错。
     if not avatar_png.startswith(PNG_SIGNATURE):
-        raise PngCardError("头像不是合法 PNG 文件（签名不符）")
-    card_json = dump_card_v3(card).encode("utf-8")
+        raise PngCardError(
+            "头像不是 PNG 图片（文件签名不符），无法导出 PNG 角色卡；"
+            "请把头像换成 PNG 图片后再导出，或改用 JSON 导出"
+        )
+    card_json = dump_card_v3(card, for_export=True).encode("utf-8")
     text = base64.b64encode(card_json)
     chunk = _make_text_chunk(KEYWORD_V3, text)
 

@@ -11,7 +11,10 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from pair_harness.character_cards.activation import iter_runtime_trigger_declarations
+from pair_harness.character_cards.activation import (
+    entry_position,
+    iter_runtime_trigger_declarations,
+)
 from pair_harness.character_cards.macros import find_macros
 from pair_harness.character_cards.models import (
     FIXED_TTS_MODEL,
@@ -56,6 +59,10 @@ _ENTRY_V3_FIELDS = ("name", "case_sensitive", "priority")
 
 # 世界书支持的 position 值（契约 §3.6，与激活引擎一致）。
 _SUPPORTED_POSITIONS = frozenset({"before_char", 0, "after_char", 1, "atDepth", 4})
+
+# 只在本机资产库有效的引用字段；导出给其他设备的文件不写出。
+_LOCAL_AVATAR_KEYS = frozenset({"asset_id"})
+_LOCAL_VOICE_KEYS = frozenset({"reference_audio_asset", "voice_prompt_asset"})
 
 # 数据宏白名单（契约 §5.2）：大小写敏感、精确匹配这两个 token。
 _WHITELIST_MACROS = frozenset({"{{char}}", "{{user}}"})
@@ -265,13 +272,14 @@ def load_card_payload(payload: dict) -> ImportResult:
     return ImportResult(card=card, report=report)
 
 
-def dump_card_v3(card: CharacterCard) -> str:
-    """导出酒馆兼容 Character Card v3 JSON。
+def dump_card_v3(card: CharacterCard, *, for_export: bool = False) -> str:
+    """序列化为酒馆兼容 Character Card v3 JSON。
 
     ``data`` 为正式字段权威位置；根级写标准字段兼容副本与原根级
-    未知字段，保持 SillyTavern 的读写惯例。
+    未知字段，保持 SillyTavern 的读写惯例。本机存储与界面往返用缺省
+    参数；``for_export=True`` 用于写出 JSON/PNG 文件，去掉本机资产库引用。
     """
-    data = _card_data_dict(card)
+    data = _card_data_dict(card, for_export=for_export)
     root: dict = {}
     for key in _ROOT_STANDARD_KEYS:
         root[key] = data[key]
@@ -282,13 +290,13 @@ def dump_card_v3(card: CharacterCard) -> str:
     return json.dumps(root, ensure_ascii=False, indent=4)
 
 
-def _card_data_dict(card: CharacterCard) -> dict:
+def _card_data_dict(card: CharacterCard, *, for_export: bool) -> dict:
     data: dict = dict(card.data_extras)
     data.update({key: getattr(card, key) for key in STANDARD_TEXT_FIELDS})
     data.update({key: list(getattr(card, key)) for key in STANDARD_LIST_FIELDS})
     extensions = dict(card.extensions)
     if card.hsr is not None:
-        extensions["hsr"] = _hsr_to_dict(card.hsr)
+        extensions["hsr"] = _hsr_to_dict(card.hsr, for_export=for_export)
     if extensions:
         data["extensions"] = extensions
     if card.character_book is not None:
@@ -464,7 +472,7 @@ def _load_voice_profile(raw: dict) -> VoiceProfile:
 # ---------------------------------------------------------------- 导出辅助
 
 
-def _hsr_to_dict(hsr: HsrExtension) -> dict:
+def _hsr_to_dict(hsr: HsrExtension, *, for_export: bool) -> dict:
     out: dict = {"schema_version": hsr.schema_version}
     out["world_architecture"] = hsr.world_architecture
     out["character_architecture"] = hsr.character_architecture
@@ -482,6 +490,10 @@ def _hsr_to_dict(hsr: HsrExtension) -> dict:
             "exported_in_png": avatar.exported_in_png,
         }
         avatar_out.update(avatar.extras)
+        if for_export:
+            avatar_out = {
+                k: v for k, v in avatar_out.items() if k not in _LOCAL_AVATAR_KEYS
+            }
         out["avatar_asset"] = avatar_out
     if hsr.voice_profile is not None:
         voice = hsr.voice_profile
@@ -498,6 +510,10 @@ def _hsr_to_dict(hsr: HsrExtension) -> dict:
             "updated_at": voice.updated_at,
         }
         voice_out.update(voice.extras)
+        if for_export:
+            voice_out = {
+                k: v for k, v in voice_out.items() if k not in _LOCAL_VOICE_KEYS
+            }
         out["voice_profile"] = voice_out
     out.update(hsr.extras)
     return out
@@ -649,9 +665,10 @@ def _scan_world_book_not_run(book: CharacterBook) -> list[str]:
 
     # position 不属于支持集合的条目整体排除（契约 §3.6）。
     for index, entry in enumerate(book.entries):
-        if entry.position not in _SUPPORTED_POSITIONS:
+        position = entry_position(entry)
+        if position not in _SUPPORTED_POSITIONS:
             items.append(
-                f"character_book.entries[{index}]（存而不运行：position={entry.position}）"
+                f"character_book.entries[{index}]（存而不运行：position={position}）"
             )
 
     # CharacterBook 级递归扫描声明同样存而不运行。

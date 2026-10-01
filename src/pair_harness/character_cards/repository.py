@@ -18,12 +18,12 @@ from __future__ import annotations
 
 import copy
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from uuid import uuid4
 
 from pair_harness.character_cards.codec import dump_card_v3, load_card_json
-from pair_harness.character_cards.models import CharacterCard
+from pair_harness.character_cards.models import CharacterCard, HsrExtension, VoiceProfile
 from pair_harness.storage.sqlite_store import SQLiteStore
 
 # app_state 键：已归档角色卡 id 集合（JSON 数组）。
@@ -122,6 +122,19 @@ class CharacterCardRepository:
         self.connection.commit()
         return self.get_card(card_id)
 
+    def update_voice_profile(self, card_id: str, **fields: str) -> CardRecord:
+        """只改 ``hsr.voice_profile`` 的指定字段，其余卡内容以库中最新值为准。
+
+        每次调用重读当前卡再写回，音色创建等待期间对卡其他部分的编辑不会
+        被旧快照覆盖。未知字段名抛 TypeError。
+        """
+        card = self.get_card(card_id).card
+        if card.hsr is None:
+            card.hsr = HsrExtension()
+        profile = card.hsr.voice_profile or VoiceProfile()
+        card.hsr.voice_profile = replace(profile, **fields, updated_at=_now())
+        return self.update_card(card_id, card)
+
     def import_card(self, card: CharacterCard, *, as_duplicate: bool = False) -> CardRecord:
         """导入一张解析后的卡：state=imported, source=tavern_import，新 card_id。
 
@@ -178,6 +191,16 @@ class CharacterCardRepository:
             archived.add(card_id)
             self._store_archived(archived)
         self.connection.commit()
+        return record
+
+    def unarchive_card(self, card_id: str) -> CardRecord:
+        """把卡移出归档集合；卡不存在抛 KeyError，未归档的卡原样返回。"""
+        record = self.get_card(card_id)
+        archived = self._archived_ids()
+        if card_id in archived:
+            archived.discard(card_id)
+            self._store_archived(archived)
+            self.connection.commit()
         return record
 
     def delete_card(self, card_id: str, *, confirm: bool = False) -> None:

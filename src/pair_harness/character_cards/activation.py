@@ -270,6 +270,17 @@ def _match_entry(
     return matched
 
 
+def entry_position(entry: WorldBookEntry) -> str | int:
+    """条目的生效位置，取值顺序与 SillyTavern 导入一致。
+
+    ST 把真实位置写在 ``extensions.position``（数值枚举：0 before_char、
+    1 after_char、2/3 作者注释、4 atDepth、5/6 示例消息、7 outlet），顶层
+    ``position`` 只区分 before_char/after_char；前者存在时优先。
+    """
+    position = entry.extensions.get("position")
+    return entry.position if position is None else position
+
+
 def _resolve_position(
     entry: WorldBookEntry, warnings: list[str]
 ) -> tuple[str, int | None, str] | None:
@@ -277,7 +288,7 @@ def _resolve_position(
 
     返回 ``(桶名, depth, role)``；不支持位置返回 None（存而不运行）。
     """
-    bucket = _POSITION_BUCKET.get(entry.position)
+    bucket = _POSITION_BUCKET.get(entry_position(entry))
     if bucket is None:
         return None
     if bucket == "atDepth":
@@ -438,7 +449,8 @@ def activate_world_book(
     )
     warnings: list[str] = []
 
-    haystack = "\n".join(scan_texts[-scan_depth:]) if scanned_message_count else ""
+    # 与 ST 一致，scan_depth 为 0 时不扫描任何消息，只有 constant 条目激活。
+    haystack = "\n".join(scan_texts[-scan_depth:]) if scan_depth > 0 else ""
 
     # 存而不运行字段聚合：对书内全部条目静态检测（契约 §3.11）。
     aggregated_not_run: list[str] = []
@@ -446,8 +458,9 @@ def activate_world_book(
         for label in _entry_not_run_fields(entry):
             if label not in aggregated_not_run:
                 aggregated_not_run.append(label)
-        if _POSITION_BUCKET.get(entry.position) is None:
-            label = f"不支持位置({entry.position})"
+        position = entry_position(entry)
+        if _POSITION_BUCKET.get(position) is None:
+            label = f"不支持位置({position})"
             if label not in aggregated_not_run:
                 aggregated_not_run.append(label)
 
@@ -491,9 +504,7 @@ def activate_world_book(
             if over_budget:
                 overflow.append(_entry_ref(entry))
                 continue
-            # 预算以「候选拼接文本」的总估算为准（Codex Review P1 修复）：
-            # 先前实现先算总估算再叠加旧 budget_used，导致重复累计、虚高
-            # 排除仍在预算内的条目（如旧 1 + 候选总 3 ≥ 预算 4 即被误排除）。
+            # 门控只看候选拼接文本的整体估算，候选文本已包含此前接受的全部正文。
             if token_estimate(candidate_text) >= budget_total:
                 # 溢出条目整体排除（契约 §3.8，对齐 ST :4942-4953），其后
                 # 所有非 constant 条目一并排除。
