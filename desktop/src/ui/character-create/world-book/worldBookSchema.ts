@@ -1,8 +1,7 @@
 import { isPlainObject } from "../mufy/mufyValues";
 
 /**
- * 世界书（character_book）编辑器的契约常量与纯函数。
- * 语义对齐 docs/plans/V0.3.7-契约冻结.md §3（激活语义）与 §3.11（存而不运行清单）。
+ * 世界书（character_book）编辑器的常量与纯函数。
  * 这里只做数据形态判断与展示，不做任何语义猜测；未触及字段一律通过 spread 原样保留。
  */
 
@@ -156,7 +155,7 @@ export function positionSummary(entry: Record<string, unknown>): string {
 const REGEX_FORM = /^\/(.*)\/([gimsuy]*)$/;
 
 /**
- * 关键字正则合法性检查（对齐契约 §3.3）：
+ * 关键字正则合法性检查：
  * `/pattern/flags` 形态编译失败、或 use_regex 开启时裸关键字编译失败 → 警告。
  * 只警告不阻断，不改写任何关键字。
  */
@@ -191,7 +190,7 @@ export function entryRegexWarnings(entry: Record<string, unknown>): string[] {
   return warnings;
 }
 
-/** 条目内「保留但不运行」清单（契约 §3.11）。 */
+/** 条目内「保留但不运行」的字段清单。 */
 export function collectEntryNotRunFields(entry: Record<string, unknown>): NotRunField[] {
   const fields: NotRunField[] = [];
   const add = (id: string, label: string, where: string, value: unknown) =>
@@ -248,7 +247,7 @@ export function collectEntryNotRunFields(entry: Record<string, unknown>): NotRun
   return fields;
 }
 
-/** 书级「保留但不运行」清单（契约 §3.11：recursive_scanning、extensions.world）。 */
+/** 书级「保留但不运行」的字段清单：recursive_scanning、extensions.world。 */
 export function collectBookNotRunFields(book: Record<string, unknown>): NotRunField[] {
   const fields: NotRunField[] = [];
   if ("recursive_scanning" in book) {

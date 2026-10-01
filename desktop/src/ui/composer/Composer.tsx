@@ -90,9 +90,9 @@ interface ComposerProps {
   voice: VoiceViewModel;
   mode: "chat" | "collaboration";
   actions: HarnessActions;
-  /** V0.2 M4：语音迷你播放条视图；tts 播放/合成/失败时非空。 */
+  /** 语音迷你播放条视图；tts 播放/合成/失败时非空。 */
   voiceMiniPlayer?: VoiceMiniPlayerView | null;
-  /** V0.2 M4：QueueStrip「编辑」拉回的草稿（nonce 变化时写入输入区）。 */
+  /** QueueStrip「编辑」拉回的草稿（nonce 变化时写入输入区）。 */
   draftSeed?: { text: string; nonce: number } | null;
 }
 
@@ -105,7 +105,7 @@ export function Composer({
   voiceMiniPlayer,
   draftSeed,
 }: ComposerProps) {
-  // M4.4：store 是 composer target 的唯一来源，不再在组件内保存一次性副本。
+  // composer target 只从 store 读取，组件内不另存副本。
   const target = composer.target;
   const [draft, setDraft] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
@@ -114,7 +114,7 @@ export function Composer({
   const lastSeedNonce = useRef<number | null>(null);
   const pttToggleActive = useRef(false);
   const pttRequestVersion = useRef(0);
-  // V0.2 M4：QueueStrip「编辑」拉回的草稿——nonce 变化时写入输入区
+  // nonce 变化时把 QueueStrip「编辑」拉回的草稿写入输入区。
   useEffect(() => {
     if (draftSeed && draftSeed.nonce !== lastSeedNonce.current) {
       lastSeedNonce.current = draftSeed.nonce;
@@ -193,10 +193,9 @@ export function Composer({
     if (!composer.enabled || !text) return;
     setSendError(null);
     try {
-      // M5.3：只在后端明确接受（快速接受 status=received）或入队（queued）
-      // 后才清空草稿；失败时原文字和 target 都保留。
+      // 只在后端接受（status=received）或入队（queued）后才清空草稿；失败时原文字和 target 都保留。
       const result = await actions.submitMessage(text, target);
-      if (result?.queued || result?.status === "received" || result?.status === "accepted") {
+      if (result.queued || result.status === "received") {
         setDraft("");
       } else {
         setSendError("消息未确认发送，请重试");
@@ -215,7 +214,7 @@ export function Composer({
   return (
     <div className={`composer${composer.enabled ? "" : " is-disabled"}`} data-testid="composer">
       {voiceMiniPlayer ? (
-        // V0.2 M4：语音迷你播放条——停止/关闭走 tts_stop，跳下一条走 tts_skip
+        // 语音迷你播放条：停止和关闭走 tts_stop，跳下一条走 tts_skip
         <VoiceMiniPlayer
           view={voiceMiniPlayer}
           onStop={() => void actions.stopSpeech()}

@@ -22,9 +22,8 @@ export interface HarnessActions {
   repairProjectPath(projectId: string): Promise<void>;
   selectProject(projectId: string): Promise<void>;
   archiveProject(projectId: string): Promise<void>;
-  /** 创建聊天。opts.reuseActive=true（V0.3.8 T6 契约冻结 §14.2）时下发
-      reuse_active：「使用该角色」类入口复用同项目同角色卡的活跃会话；
-      「新建聊天」按钮不传，维持显式新建。 */
+  /** 创建聊天。opts.reuseActive=true 时下发 reuse_active，「使用该角色」类入口复用
+      同项目同角色卡的活跃会话；「新建聊天」按钮不传，总是新建。 */
   createConversation(
     projectId?: string,
     title?: string,
@@ -32,13 +31,11 @@ export interface HarnessActions {
     opts?: { reuseActive?: boolean },
   ): Promise<void>;
   selectConversation(conversationId: string): Promise<void>;
-  /** V0.3.2 M5：打开（或聚焦）本窗口聊天标签；同时把本窗口当前聊天切到该会话
-      （使用只读 conversation.open，不改 Sidecar 全局导航）。 */
+  /** 打开或聚焦本窗口聊天标签，经只读 conversation.open 装载，不改 Sidecar 全局导航。 */
   openConversationTab(conversationId: string): Promise<void>;
-  /** V0.3.2 M5：关闭本窗口聊天标签——只移除视图，不取消任务、不关闭会话；
-      关闭活动标签后相邻标签接替为本窗口当前聊天。 */
+  /** 关闭本窗口聊天标签：只移除视图，不取消任务、不关闭会话；相邻标签接替为当前聊天。 */
   closeConversationTab(conversationId: string): void;
-  /** V0.3.2 M5：在新的 Tauri 窗口打开一份聊天视图。 */
+  /** 在新的 Tauri 窗口打开一份聊天视图。 */
   openConversationWindow(conversationId: string): Promise<void>;
   renameConversation(conversationId: string, title: string): Promise<void>;
   archiveConversation(conversationId: string): Promise<void>;
@@ -54,7 +51,7 @@ export interface HarnessActions {
   prioritizeQueueItem(queueItemId: string): Promise<void>;
   /** 队列条「编辑」：撤回该项并返回原文（拉回输入区用）；不存在返回 null。 */
   editQueueFromStrip(queueItemId: string): Promise<string | null>;
-  /** V0.3.2 M5：定向取消——携带本窗口当前聊天 conversation_id 与其活动任务 task_id。 */
+  /** 定向取消：携带本窗口当前聊天的 conversation_id 与其活动任务 task_id。 */
   cancelTask(): Promise<void>;
   resolveApproval(approvalId: string, decision: string): Promise<void>;
   setApprovalMode(mode: ApprovalMode): Promise<void>;
@@ -81,14 +78,12 @@ export interface HarnessActions {
   testConnection(): Promise<ConnectionTestResult>;
   /** 本地 Toast 关闭（不经过后端）。 */
   dismissToast(id: string): void;
-  /** 试听音色：text 试听文本，voiceId 缺省/非当前有效音色时用角色音色；
-      V0.3.2 M6 音色来自当前账号生成结果（或开发机作者 Key）。 */
+  /** 试听音色：text 为试听文本，voiceId 缺省时用角色音色。 */
   voicePreview(text: string, voiceId?: string): Promise<void>;
-  /** V0.3.2 M6：在当前账号的百炼下生成专属音色（5 复刻 + 1 设计）。
-      speakerIds 缺省表示全部缺失项；replaceExisting=true 用于显式重新生成。 */
+  /** 在当前账号的百炼下生成专属音色。speakerIds 缺省表示全部缺失项；
+      replaceExisting=true 用于显式重新生成。 */
   provisionVoices(speakerIds?: string[], replaceExisting?: boolean): Promise<VoiceProvisionResult>;
-  /* —— V0.3.3 角色卡（card.* 命令）—— */
-  /** 拉取角色卡列表写入 store.characterLibrary（含归档差集标记）；失败写入 slice.error。 */
+  /** 拉取角色卡列表（含已归档）写入 store.characterLibrary；失败写入其 error。 */
   listCards(): Promise<void>;
   /** 打开角色库视图并触发 listCards。 */
   openCharacterLibrary(): Promise<void>;
@@ -109,9 +104,6 @@ export interface HarnessActions {
   selectActiveCard(cardId: string): Promise<void>;
   /** 只读拉取一张卡的完整 v3 JSON（含 avatar 与 hsr 扩展），不切视图、不写 store。 */
   cardGet(cardId: string): Promise<import("./protocol").CardGetResult>;
-  /* —— V0.3.5 角色卡导入导出/发布/头像 —— */
-  /** 预览本地 JSON 角色卡，不落库；失败抛错。 */
-  cardPeekImportJson(path: string): Promise<import("./protocol").CardPeekImportResult>;
   /** 导入本地 JSON 角色卡；asDuplicate=true 时名称追加「（副本）」。 */
   cardImportJson(path: string, asDuplicate?: boolean): Promise<import("./protocol").CardImportJsonResult>;
   /** 导出角色卡 v3 JSON 到 path；saveAvatar=true 时配套另存头像。 */
@@ -122,8 +114,7 @@ export interface HarnessActions {
   cardSetAvatar(cardId: string, path: string): Promise<import("./protocol").CardSetAvatarResult>;
   /** 移除角色卡头像。 */
   cardRemoveAvatar(cardId: string): Promise<import("./protocol").CardRemoveAvatarResult>;
-  /* —— V0.3.7 PNG 导入导出/电源状态 —— */
-  /** 预览本地角色卡（JSON/PNG 按文件签名自动分派），不落库；失败抛错。 */
+  /** 预览本地角色卡（JSON 与 PNG 按文件签名分派），不落库；失败抛错。 */
   cardPeekImport(path: string): Promise<import("./protocol").CardPeekImportResult>;
   /** 导入本地 PNG 角色卡（PNG 字节即头像）；asDuplicate=true 时名称追加「（副本）」。 */
   cardImportPng(path: string, asDuplicate?: boolean): Promise<import("./protocol").CardImportPngResult>;
@@ -131,12 +122,10 @@ export interface HarnessActions {
   cardExportPng(cardId: string, path: string): Promise<import("./protocol").CardExportPngResult>;
   /** 读取电源状态；非 Windows 平台如实返回 supported=false，不抛错。 */
   powerGetStatus(): Promise<import("./protocol").PowerStatusPayload>;
-  /* —— V0.3.5 角色卡音色 —— */
   /** 为角色卡绑定参考音频；不改变音色状态。 */
   voiceCardBindReference(cardId: string, path: string): Promise<import("./protocol").VoiceCardBindReferenceResult>;
-  /** 为角色卡创建音色（clone/design）；成功后监听 voice.card_provision_changed 事件。
-      design 模式必填 voicePrompt；previewText 为 design 可选试听文本，
-      缺省时服务端使用固定默认文本（契约冻结 §3.2，与 _voice_provision design 路径同源）。 */
+  /** 为角色卡创建音色（clone 或 design），进度经 voice.card_provision_changed 事件下发。
+      design 模式必填 voicePrompt；previewText 缺省时服务端使用固定试听文本。 */
   voiceCardCreate(
     cardId: string,
     mode: "clone" | "design",
@@ -146,7 +135,6 @@ export interface HarnessActions {
   voiceCardUnbind(cardId: string): Promise<import("./protocol").VoiceCardUnbindResult>;
   /** 用角色卡绑定音色试听；未就绪时报错。 */
   voiceCardPreview(cardId: string, text?: string): Promise<void>;
-  /* —— V0.3.5 手机远程语音 —— */
   /** 手机端开始 Push-to-Talk 转写会话。 */
   voiceMobilePttStart(conversationId: string): Promise<import("./protocol").VoiceMobilePttStartResult>;
   /** 手机端上传音频分片；seq 从 0 严格递增。 */
@@ -155,26 +143,19 @@ export interface HarnessActions {
   voiceMobilePttStop(sessionId: string): Promise<import("./protocol").VoiceMobilePttStopResult>;
   /** 手机端中断当前 TTS 播放。 */
   voiceMobileTtsStop(messageId: string): Promise<void>;
-  /* —— V0.3.3 手机远程配对（remote.* 命令）—— */
   /** 生成一次性短期配对码，写入 store.remotePairing。 */
   issuePairingCode(): Promise<void>;
   listRemoteDevices(): Promise<void>;
   /** 按设备名撤销其全部 token 并刷新设备列表。 */
   revokeRemoteDevice(deviceName: string): Promise<void>;
-  /* —— V0.4.0 公网隧道（Cloudflare Quick Tunnel）—— */
-  /** 开启公网隧道。 */
+  /** 开启 Cloudflare Quick Tunnel 公网隧道。 */
   tunnelStart(): Promise<void>;
-  /** 关闭公网隧道。 */
   tunnelStop(): Promise<void>;
-  /** 查询公网隧道当前状态。 */
   queryTunnelStatus(): Promise<void>;
-  /* —— V0.3.9 摘要、记忆与诊断（PM/视觉 V-B 2a1fccb）—— */
-  /** 重新生成摘要（summary.regenerate），调用真实模型；只针对真实失败记录或用户显式请求。 */
-  regenerateSummary?(
-    summaryIdOrTarget: string | { summary_id: string; conversation_id?: string; reason?: "failed_record" | "user_request" },
-  ): Promise<void>;
-  /** 显式只读查询回合指标（metrics.query）。 */
-  queryMetrics?(params?: {
+  /** 重新生成摘要（summary.regenerate），调用配置的模型。 */
+  regenerateSummary(summaryId: string, conversationId: string): Promise<void>;
+  /** 只读查询回合指标（metrics.query）。 */
+  queryMetrics(params?: {
     conversation_id?: string;
     cursor?: string | null;
     limit?: number;
@@ -183,39 +164,36 @@ export interface HarnessActions {
     pair_id?: string;
     status?: string;
   }): Promise<{ metrics: import("./protocol").TurnMetric[]; next_cursor: string | null }>;
-  /** 显式只读查询提示词装配诊断（diagnostics.prompt_assembly）；仅显式 includeHidden=true 返回隐藏原文。 */
-  queryPromptAssembly?(params?: {
+  /** 只读查询提示词装配诊断（diagnostics.prompt_assembly）；includeHidden=true 时返回隐藏原文。 */
+  queryPromptAssembly(params?: {
     conversation_id?: string;
     includeHidden?: boolean;
   }): Promise<import("./view-models").PromptAssemblyView>;
-  /* —— V0.3.9 §2 长期记忆（memory.* 命令）—— */
-  /** 读取指定会话（缺省为本窗口当前聊天）作用域内的记忆。
-      作用域由服务端按会话权威解析（account/project/pair/character_ref/assistant_identity），
-      客户端只传 conversation_id，不拼接五元组。 */
-  listMemories?(opts?: {
+  /** 读取指定会话（缺省为本窗口当前聊天）作用域内的记忆；作用域由服务端按会话解析，
+      客户端只传 conversation_id。 */
+  listMemories(opts?: {
     conversationId?: string | null;
     status?: "active" | "deleted";
   }): Promise<PairMemory[]>;
-  /** 在指定会话的权威作用域内新增一条记忆（memory.create）。
-      content 是 JSON 对象，语义归模型/用户，代码不改写、不筛选。 */
-  createMemory?(
+  /** 在指定会话的作用域内新增一条记忆（memory.create）；content 是 JSON 对象，代码不改写。 */
+  createMemory(
     content: Record<string, unknown>,
     opts?: { conversationId?: string | null },
   ): Promise<PairMemory>;
-  /** 改写一条记忆的内容（memory.update）；作用域同样由服务端解析，越作用域真实报错。 */
-  updateMemory?(
+  /** 改写一条记忆的内容（memory.update）；越作用域时服务端报错。 */
+  updateMemory(
     memoryId: string,
     content: Record<string, unknown>,
     opts?: { conversationId?: string | null },
   ): Promise<PairMemory>;
-  /** 软删除一条记忆（memory.delete）；返回服务端落库后的记录。 */
-  deleteMemory?(
+  /** 软删除一条记忆（memory.delete），返回服务端落库后的记录。 */
+  deleteMemory(
     memoryId: string,
     opts?: { conversationId?: string | null },
   ): Promise<PairMemory>;
 }
 
-/** voice.provision 的真实返回：completed 或 partial_failed + 每项结果。 */
+/** voice.provision 的返回：completed 或 partial_failed 加每项结果。 */
 export interface VoiceProvisionResult {
   status?: "completed" | "partial_failed" | string;
   completed?: number;

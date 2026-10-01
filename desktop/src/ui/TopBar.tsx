@@ -12,12 +12,9 @@ interface TopBarProps {
   assistantBusy: boolean;
   connectionStatus: ConnectionViewStatus;
   onOpenTechDetails: () => void;
-  /**
-   * V0.3.9 V03：诊断抽屉的显式入口（指标 + 提示词装配）。
-   * 未提供时不渲染按钮——没有真实诊断查询能力时不留无动作入口。
-   */
+  /** 诊断抽屉入口（指标与提示词装配）；没有诊断查询能力时不传，按钮随之隐藏。 */
   onOpenDiagnostics?: () => void;
-  /** V0.2 M4：设置中心入口（右侧按钮）。 */
+  /** 设置中心入口（右侧按钮）。 */
   onOpenSettings: () => void;
   actions: HarnessActions;
 }
@@ -36,7 +33,7 @@ export function TopBar({
   return (
     <header className="app-topbar">
       <ConnectionPill status={connectionStatus} onOpenDetails={onOpenTechDetails} />
-      {/* V039-S4-002：演示模式与连接状态并列标注，不合并成同一个结论 */}
+      {/* 演示模式标识与连接药丸并列，各自表达一件事 */}
       <DemoModeNotice />
 
       <div className="topbar-brand">
@@ -105,7 +102,6 @@ export function TopBar({
         </button>
       ) : null}
 
-      {/* V0.3.9 V03：诊断抽屉显式入口（可关闭抽屉，普通聊天不显示隐藏内容） */}
       {onOpenDiagnostics ? (
         <button
           type="button"
@@ -118,7 +114,7 @@ export function TopBar({
         </button>
       ) : null}
 
-      {/* V0.2 M4：设置中心入口（打开时拉取 config.get） */}
+      {/* 设置中心入口（打开时拉取 config.get） */}
       <button
         type="button"
         className="icon-btn"

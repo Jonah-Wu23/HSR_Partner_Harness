@@ -8,7 +8,7 @@ export type MemoryContentParseResult =
 /**
  * 解析记忆内容文本。
  *
- * 契约 §2 只要求 content 是 JSON 对象；这里既不预设字段、也不改写内容，
+ * 协议只要求 content 是 JSON 对象；这里不预设字段、不改写内容，
  * 非法输入返回真实解析错误供界面原样展示。
  */
 export function parseMemoryContent(text: string): MemoryContentParseResult {

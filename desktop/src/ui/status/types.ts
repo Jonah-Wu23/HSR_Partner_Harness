@@ -1,6 +1,6 @@
 /* 状态基座组件的视图类型。
    这些类型对应共享协议中的 connection.status / queue_item / error 分级，
-   逻辑线落地协议后由 presenters 映射到这里的形状，组件本身不猜后端字段。 */
+   由 presenters 映射到这里的形状，组件本身不猜后端字段。 */
 
 /** 连接状态机四态在界面上的三态表达（fatal 由 AppShell 整屏处理）。 */
 export type ConnectionViewStatus = "connected" | "connecting" | "disconnected";

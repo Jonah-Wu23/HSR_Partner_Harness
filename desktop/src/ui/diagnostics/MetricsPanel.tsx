@@ -129,7 +129,7 @@ function MetricRow({ metric }: { metric: TurnMetric }) {
 }
 
 /**
- * V0.3.9 V03 指标视图：消费 metrics.query 结果，渲染 TurnMetric 全字段。
+ * 指标视图：消费 metrics.query 结果，渲染 TurnMetric 全字段。
  * 未观测字段（null）显示「无数据」，真实零值显示 0；缺键由适配层直接报错。
  * 空结果分两种：null = 尚未读取/无数据，[] = 服务端返回真实零条。
  */
@@ -141,7 +141,6 @@ export function MetricsPanel({
   onLoad,
   onLoadMore,
 }: MetricsPanelProps) {
-  // metrics 为 null/undefined = 尚未读取，[] = 服务端返回的真实零条。
   const read = metrics !== null && metrics !== undefined;
   const rows = metrics ?? [];
   const failed = state === "failed";
@@ -152,7 +151,7 @@ export function MetricsPanel({
         <div className="diag-panel-title">
           <h3>回合指标</h3>
           <p className="diag-panel-hint">
-            metrics.query 显式只读查询。未观测字段显示「无数据」，真实零值显示 0；应用不估算 token。
+            metrics.query 显式只读查询。未观测字段显示「无数据」，真实零值显示 0。
           </p>
         </div>
         {onLoad ? (

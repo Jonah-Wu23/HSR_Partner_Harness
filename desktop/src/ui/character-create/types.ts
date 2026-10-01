@@ -8,13 +8,13 @@ export interface CharacterFormData {
   scenario: string;
   first_mes: string;
   mes_example: string;
-  /** V0.3.5 高级字段：卡内系统提示。 */
+  /** 高级字段：卡内系统提示。 */
   system_prompt: string;
-  /** V0.3.5 高级字段：历史后指令。 */
+  /** 高级字段：历史后指令。 */
   post_history_instructions: string;
-  /** V0.3.5 高级字段：备选问候列表。 */
+  /** 高级字段：备选问候列表。 */
   alternate_greetings: string[];
-  /** V0.3.5 高级字段：群组问候（单文本，标准字段）。 */
+  /** 高级字段：群组问候。表单内按行编辑，保存时拆成字符串数组。 */
   group_only_greetings: string;
 }
 
@@ -38,7 +38,6 @@ export const EMPTY_FORM_DATA: CharacterFormData = {
 };
 
 export const MAX_PERSONA_FIELD_LENGTH = 2000;
-export const MAX_ADVANCED_TEXT_LENGTH = 8000;
 
 function asString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;

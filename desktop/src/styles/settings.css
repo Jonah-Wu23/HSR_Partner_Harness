@@ -347,7 +347,7 @@
 .voice-vad-running { background: var(--accent-soft); color: var(--running); }
 .voice-vad-unavailable { background: var(--fill-hover); color: var(--text-muted); }
 
-/* ========== V0.3.2 M6：BYOK 语音配置与专属音色 ========== */
+/* ========== BYOK 语音配置与专属音色 ========== */
 
 .settings-endpoint-card,
 .settings-fixed-models {
@@ -430,7 +430,7 @@
   font-style: italic;
 }
 
-/* ========== V0.3.5：角色音色区（设置页语音 Tab） ========== */
+/* ========== 角色音色区（设置页语音 Tab） ========== */
 
 .character-voice-section {
   display: flex;

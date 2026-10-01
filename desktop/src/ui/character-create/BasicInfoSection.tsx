@@ -15,8 +15,8 @@ interface BasicInfoSectionProps {
   onFieldChange: <K extends keyof CharacterFormData>(field: K, value: CharacterFormData[K]) => void;
   onClearNameError: () => void;
   onAvatarChange?: () => void;
-  /** V0.3.5：Tauri 文件选择桥；存在时头像走真实绝对路径（契约只收路径），
-      缺省（浏览器 mock）退回 HTML 文件选择。 */
+  /** Tauri 文件选择桥；存在时头像走真实绝对路径（card.set_avatar 只收路径），
+      缺省（浏览器 mock）时改用 HTML 文件选择。 */
   onPickFile?: (options?: { title?: string; filters?: FileFilter[] }) => Promise<string | null>;
 }
 
@@ -39,13 +39,12 @@ export function BasicInfoSection({
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [avatarLoading, setAvatarLoading] = useState(false);
   const [localPreview, setLocalPreview] = useState<string | null>(null);
-  // V0.3.5 CodeQL：服务端 data URI 头像不直接进 img.src（data:image/svg+xml
-  // 可携带脚本，js/xss-through-dom 判定为 HTML 解释 sink）。统一先转
-  // object URL——img.src 只会收到浏览器生成的 blob: URL，不含用户可控字符串。
+  // 服务端 data URI 头像先转成 object URL 再交给 img.src，img.src 只收到浏览器生成的
+  // blob: URL。data:image/svg+xml 可携带脚本，CodeQL js/xss-through-dom 会把它判为 HTML 解释 sink。
   const [cardAvatarUrl, setCardAvatarUrl] = useState<string | null>(null);
   const cardAvatarUrlRef = useRef<string | null>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
-  // Tauri 对话框拿到的是绝对路径而非 File；无 cardId 时暂存，保存后自动上传。
+  // Tauri 对话框返回绝对路径；无 cardId 时暂存，保存后自动上传。
   const [pendingPath, setPendingPath] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
@@ -106,7 +105,7 @@ export function BasicInfoSection({
   const persistAvatar = useCallback(async (file: File, targetCardId: string) => {
     setAvatarLoading(true);
     try {
-      // 浏览器兜底路径：HTML 文件选择拿不到绝对路径，契约只收路径，
+      // 浏览器路径：HTML 文件选择拿不到绝对路径，card.set_avatar 只收路径，
       // 这里以文件名作为 mock 演示路径；Tauri 环境走 persistAvatarPath 真实路径。
       await actions.cardSetAvatar(targetCardId, file.name);
       await refreshAvatar();
@@ -126,7 +125,7 @@ export function BasicInfoSection({
       setAvatarError(`不支持该图片格式（${file.type || "未知"}）。头像仅支持 PNG / JPEG / WebP。`);
       return;
     }
-    // 大小提示：真实后端会再次校验 >5MB 并返回 card_avatar_too_large。
+    // 后端同样校验 >5MB，超限返回 card_avatar_too_large。
     if (file.size > 5 * 1024 * 1024) {
       setAvatarError("图片超过 5MB 限制，请选择更小的文件。");
       return;
@@ -151,7 +150,7 @@ export function BasicInfoSection({
     await persistAvatar(file, cardId);
   };
 
-  // Tauri 路径：契约 card.set_avatar 只收绝对路径，由后端完成格式/大小校验，
+  // Tauri 路径：card.set_avatar 只收绝对路径，由后端完成格式/大小校验，
   // 失败（card_avatar_unsupported / card_avatar_too_large）如实呈现原始错误。
   const persistAvatarPath = useCallback(async (path: string, targetCardId: string) => {
     setAvatarLoading(true);
@@ -256,13 +255,9 @@ export function BasicInfoSection({
     dropZoneRef.current?.classList.remove("dragover");
   };
 
-  // 头像预览 URL 只接受两种受控来源：本地 File 的 blob: object URL 与
-  // 服务端下发的 data:image/*;base64（见 avatarDataUri）。来源白名单
-  // 截断任意其它文本进入 img src（CodeQL js/xss-through-dom 的污点汇）。
-  // 预览 URL 统一为 blob: object URL：localPreview 直接来自
-  // URL.createObjectURL(file)；卡自带的 data URI 先经 fetch→blob 转
-  // object URL 再使用。img.src 永远只接收浏览器生成的 blob: URL，
-  // 不接收任何用户/服务器可控字符串（CodeQL js/xss-through-dom 修复）。
+  // 预览 URL 统一为 blob: object URL：localPreview 直接来自 URL.createObjectURL(file)，
+  // 卡自带的 data URI（见 avatarDataUri）先经 fetch→blob 转成 object URL。
+  // 用户或服务器可控的字符串不会直接进入 img src（CodeQL js/xss-through-dom）。
   const displayedAvatar = localPreview ?? cardAvatarUrl;
   const avatarChar = formData.name.trim() ? formData.name.trim().charAt(0) : "?";
   const hasAvatar = Boolean(displayedAvatar);
@@ -304,8 +299,7 @@ export function BasicInfoSection({
   }, []);
 
   // 预览图 src 经原生属性赋值。写入 img.src（HTML 解释上下文）前断言
-  // 字符串不含 HTML meta 字符（" & < >）：blob: object URL 恒通过；
-  // 若未来有其它受控路径（如 data:text/html）会被此检查拦截。
+  // 字符串不含 HTML meta 字符（" ' & < >），blob: object URL 恒能通过。
   useEffect(() => {
     const img = previewImgRef.current;
     if (img && displayedAvatar && !/["'&<>]/.test(displayedAvatar)) {

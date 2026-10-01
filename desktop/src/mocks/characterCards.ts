@@ -1,11 +1,11 @@
-/** V0.3.3 角色卡与远程配对样例数据（契约形状见 contracts/protocol.ts，
-    与 Sidecar card.* / remote.* 命令的真实返回一致）。
-    仅供 mock 后端与组件测试使用；生产页面默认接真实 action，
-    样例数据不得出现在生产渲染路径。 */
+/** 角色卡与远程配对样例数据，形状与 Sidecar card.* / remote.* 命令的返回一致，
+    供 mock 后端与组件测试使用。归档状态由 mock 后端的归档集合给出。 */
 import type { CardSummaryPayload, RemoteDevice } from "../contracts/protocol";
 
+export type MockCardSummary = Omit<CardSummaryPayload, "archived">;
+
 /** 内置角色只读摘要（对应 sidecar _builtin_card_summaries：pair 目录角色）。 */
-export const MOCK_BUILTIN_CARDS: CardSummaryPayload[] = [
+export const MOCK_BUILTIN_CARDS: MockCardSummary[] = [
   {
     card_id: "builtin:phainon",
     name: "白厄",
@@ -41,8 +41,8 @@ export const MOCK_BUILTIN_CARDS: CardSummaryPayload[] = [
   },
 ];
 
-/** 用户卡样例：草稿 / 已保存（音色已绑定+使用中）/ 导入失败 / 已导入（已归档）。 */
-export const MOCK_USER_CARDS: CardSummaryPayload[] = [
+/** 用户卡样例：草稿、已保存（音色已绑定且使用中）、导入失败、已导入（已归档）。 */
+export const MOCK_USER_CARDS: MockCardSummary[] = [
   {
     card_id: "card-draft-001",
     name: "新角色草稿",
@@ -89,7 +89,7 @@ export const MOCK_USER_CARDS: CardSummaryPayload[] = [
   },
 ];
 
-/** 归档集合：card.list(include_archived=false) 会排除这些 id。 */
+/** 初始归档集合：card.list(include_archived=false) 会排除这些 id。 */
 export const MOCK_ARCHIVED_CARD_IDS: readonly string[] = ["card-imported-004"];
 
 export const MOCK_REMOTE_DEVICES: RemoteDevice[] = [

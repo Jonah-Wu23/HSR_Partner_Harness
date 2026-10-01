@@ -113,11 +113,11 @@ export function CharacterExportFlow({
     try {
       const result = await actions.cardGet(cardId);
       if (!mountedRef.current) return;
-      if (result.read_only || String(cardId).startsWith("builtin:")) {
+      if (result.read_only) {
         setPhase({ kind: "readonly", message: "内置角色卡只读，导出前请先复制。" });
         return;
       }
-      setFileName(withExtension(`${safeFileName(result.card.name as string || cardName)}`, "json"));
+      setFileName(withExtension(safeFileName(cardName), "json"));
       setPhase({ kind: "confirm", card: result });
     } catch (error) {
       handleError(error, "加载角色卡失败");
@@ -172,7 +172,7 @@ export function CharacterExportFlow({
           onSuccess?.();
         }
       } catch (error) {
-        // §1.3：无头像卡的 PNG 导出由后端真实拒绝（card_export_failed），
+        // 无头像卡的 PNG 导出由后端拒绝（card_export_failed）；
         // UI 不预判成败，只在真实失败后给出「先去设置头像」引导。
         const code = (error as Error & { code?: string }).code;
         handleError(error, "导出失败", code === CARD_EXPORT_FAILED && !hasAvatar);

@@ -6,10 +6,10 @@ interface TechDetailsDrawerProps {
   status: ConnectionViewStatus;
   details: ConnectionDetails;
   onClose: () => void;
-  /** 逻辑线接入 app.reconnect 后提供；缺省时隐藏对应按钮。 */
+  /** 立即重连（app.reconnect）；缺省时隐藏对应按钮。 */
   onReconnect?: () => void;
   onRestartSidecar?: () => void;
-  /** V0.3.9 V03：打开诊断抽屉入口。未提供时隐藏对应按钮。 */
+  /** 打开诊断抽屉；缺省时隐藏对应按钮。 */
   onOpenDiagnostics?: () => void;
 }
 
@@ -50,7 +50,7 @@ export function TechDetailsDrawer({
             <dt>本地服务（Sidecar）</dt>
             <dd>{details.sidecarStatus ?? "未知"}</dd>
           </div>
-          {/* V039-S4-002：Sidecar 自报的运行模式（未上报时不显示，不替它下结论） */}
+          {/* Sidecar 自报的运行模式，未上报时不显示 */}
           <DemoModeNotice variant="detail" />
           {details.lastError ? (
             <div className="tech-drawer-row">

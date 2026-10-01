@@ -44,13 +44,17 @@ export interface MockScenario {
   label: string;
   snapshot: DesktopSnapshot;
   submitEvents: DesktopEvent[];
-  /** V0.3.2 M5：窗口视图状态示例（tabbed-window 等多标签场景）；
-      测试/演示用它播种 store 的 viewId/openConversationIds/activeConversationId。 */
-  viewState?: {
-    viewId: string;
-    openConversationIds: string[];
-    activeConversationId: string | null;
-  };
+}
+
+/** mock 连接代次，快照与事件共用。 */
+export const MOCK_STREAM_ID = "mock-stream";
+
+let timelineCounter = 0;
+
+/** 与后端一致，同一聊天的消息与工具记录共用递增的时间线序号；mock 数据按创建顺序分配。 */
+export function nextTimelineOrder(): number {
+  timelineCounter += 1;
+  return timelineCounter;
 }
 
 export const MOCK_PAIRS: PairRecord[] = [
@@ -112,8 +116,8 @@ export const MOCK_PAIRS: PairRecord[] = [
 
 const pair: PairRecord = MOCK_PAIRS[0];
 
-// V0.2 M4：场景默认已登录非默认账号（username != "default"，不触发账号门）；
-// 账号门/引导场景单独用 gate-default / onboarding-pending。
+// 场景默认已登录非默认账号（username 不是 default，不触发账号门）；
+// 账号门与引导场景单独用 gate-default、onboarding-pending。
 const demoAccount: DesktopSnapshot["current_account"] = {
   account_id: "demo-account",
   username: "demo",
@@ -192,6 +196,7 @@ export function message(
     payload: {},
     tts_eligible: source === "character" || source === "assistant",
     created_at: "2026-08-11T00:00:00+00:00",
+    timeline_order: nextTimelineOrder(),
   };
 }
 
@@ -210,7 +215,7 @@ function toolRun(
     title: "检查项目文件",
     summary: status === "running" ? "正在读取项目状态" : "项目检查已完成",
     details: "mock backend 记录；不访问真实文件系统。",
-    timeline_order: status === "running" ? 2 : null,
+    timeline_order: nextTimelineOrder(),
   };
 }
 
@@ -265,10 +270,16 @@ function baseSnapshot(
     turns: [],
     queue_items: [],
     active_task: null,
-    // V0.3.2 M5：新协议快照始终携带 active_tasks 全量集合（与 active_task/busy 一致）
     active_tasks: [],
     busy: false,
     approvals: [],
+    remote_control: {
+      state: "free",
+      device_key: null,
+      expires_at: null,
+      grace_expires_at: null,
+      reason: null,
+    },
     voice: {
       supported: true,
       enabled: true,
@@ -279,16 +290,17 @@ function baseSnapshot(
       tts: "idle",
       asr_partial: "",
       error: null,
-      // V0.2 M4：待播队列条数（VoiceMiniPlayer 的 queuedCount）
       speech_queue_len: 0,
     },
     pair: activePair,
     pairs: MOCK_PAIRS,
     sequence: 0,
+    stream_id: MOCK_STREAM_ID,
   };
 }
 
 function submitEvents(conversationId: string): DesktopEvent[] {
+  const streamOrder = nextTimelineOrder();
   return [
     {
       kind: "event",
@@ -314,6 +326,7 @@ function submitEvents(conversationId: string): DesktopEvent[] {
         source: "character",
         kind: "character.speech",
         delta: "我已经看见了",
+        timeline_order: streamOrder,
       },
     },
     {
@@ -326,6 +339,7 @@ function submitEvents(conversationId: string): DesktopEvent[] {
         source: "character",
         kind: "character.speech",
         delta: "，我们一起继续。",
+        timeline_order: streamOrder,
       },
     },
     {
@@ -468,7 +482,7 @@ export function createMockScenario(name: MockScenarioName): MockScenario {
     );
     snapshot = baseSnapshot(projects, firstConversation.conversation_id, messages, []);
   } else if (name === "message-failed") {
-    // V0.3.9 V01：消息真实终态离线样例——failed 带原始 error，cancelled 带 cancelled_reason。
+    // 消息终态样例：failed 带原始 error，cancelled 带 cancelled_reason。
     messages = [
       message("message-1", firstConversation.conversation_id, "user", "user.text", "帮我看看这个项目"),
       {
@@ -527,7 +541,7 @@ export function createMockScenario(name: MockScenarioName): MockScenario {
     ];
     snapshot = baseSnapshot(projects, firstConversation.conversation_id, messages, []);
   } else if (name === "background-tasks") {
-    // V0.3.9 V01：跨聊天后台任务与审批归属离线样例（两个项目、四个聊天）。
+    // 跨聊天后台任务与审批归属样例（两个项目、四个聊天）。
     const convA = conversation("conv-1", "project-1", "奥赫玛的项目聊天");
     const convB = conversation("conv-2", "project-1", "星穹项目：长世界书校对");
     const convC = conversation("conv-3", "project-2", "流萤的甜点配方");
@@ -601,7 +615,7 @@ export function createMockScenario(name: MockScenarioName): MockScenario {
       },
     ];
   } else if (name === "perf-many-conversations") {
-    // V0.3.9 V05：导航聊天列表负载样例（单项目 400 个聊天）。
+    // 导航聊天列表负载样例（单项目 400 个聊天）。
     const manyConversations = Array.from({ length: 400 }, (_, index) =>
       conversation(
         `conv-${index + 1}`,
@@ -614,7 +628,7 @@ export function createMockScenario(name: MockScenarioName): MockScenario {
     ];
     snapshot = baseSnapshot(projects, "conv-1", [], []);
   } else if (name === "perf-many-projects") {
-    // V0.3.9 V05：项目轨道负载样例（200 个项目，每项目 2 个聊天）。
+    // 项目轨道负载样例（200 个项目，每项目 2 个聊天）。
     projects = Array.from({ length: 200 }, (_, index) => {
       const projectId = `project-${index + 1}`;
       return project(
@@ -629,7 +643,7 @@ export function createMockScenario(name: MockScenarioName): MockScenario {
     });
     snapshot = baseSnapshot(projects, "project-1-conversation-1", [], []);
   } else if (name === "perf-long-workbench") {
-    // V0.3.9 V05：工作台时间线负载样例（800 条助手消息 + 800 条工具记录）。
+    // 工作台时间线负载样例（800 条助手消息与 800 条工具记录）。
     const characterMessages = Array.from({ length: 40 }, (_, index) =>
       message(
         `char-${index + 1}`,
@@ -665,7 +679,7 @@ export function createMockScenario(name: MockScenarioName): MockScenario {
   } else if (name === "light-theme" || name === "dark-theme") {
     snapshot = baseSnapshot(projects, firstConversation.conversation_id, defaultMessages, []);
   } else if (name === "gate-default") {
-    // V0.2 M4：默认账号（未设密码）→ 整屏账号门；可登录到演示账号进入应用
+    // 默认账号（未设密码）显示整屏账号门，可登录到演示账号进入应用。
     snapshot = baseSnapshot(projects, firstConversation.conversation_id, defaultMessages, []);
     snapshot.current_account_id = defaultLocalAccount.account_id;
     snapshot.current_account = { ...defaultLocalAccount };
@@ -674,7 +688,7 @@ export function createMockScenario(name: MockScenarioName): MockScenario {
       { ...demoAccount, is_last_login: false },
     ];
   } else if (name === "onboarding-pending") {
-    // V0.2 M4：已注册账号但首次引导未完成 → 整屏 Onboarding
+    // 已注册账号但首次引导未完成，显示整屏首次引导。
     snapshot = baseSnapshot(projects, firstConversation.conversation_id, defaultMessages, []);
     const alice = {
       ...demoAccount,

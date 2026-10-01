@@ -23,10 +23,10 @@ import "./CharacterCreate.css";
 interface CharacterCreatePageProps {
   vm: CharacterCreateViewModel;
   actions: HarnessActions;
-  /** V0.3.5：Tauri 文件选择桥（头像需要真实绝对路径）；浏览器 mock 环境缺省，
-      此时退化为 HTML 文件选择（仅能拿到文件名，见 BasicInfoSection 注释）。 */
+  /** Tauri 文件选择桥（头像需要真实绝对路径）；浏览器 mock 环境缺省，
+      此时改用 HTML 文件选择（只能拿到文件名，见 BasicInfoSection 注释）。 */
   onPickFile?: (options?: { title?: string; filters?: FileFilter[] }) => Promise<string | null>;
-  /** V0.3.9 V04：回到聊天回调（优先返回正在运行的聊天） */
+  /** 回到聊天回调（优先返回正在运行的聊天）。 */
   onReturnToChat?: () => void;
 }
 
@@ -105,7 +105,6 @@ export function CharacterCreatePage({ vm, actions, onPickFile, onReturnToChat }:
 
   const cardState: CharacterCardState = cardDetails?.state ?? (currentCardId ? "saved" : "draft");
 
-  // 执行核心保存
   const performSave = useCallback(async (): Promise<boolean> => {
     const currentData = latestFormDataRef.current;
     const name = currentData.name.trim();
@@ -169,7 +168,6 @@ export function CharacterCreatePage({ vm, actions, onPickFile, onReturnToChat }:
   const performSaveRef = useRef(performSave);
   performSaveRef.current = performSave;
 
-  // 发布流程
   const performPublish = useCallback(async (): Promise<boolean> => {
     const saved = await performSave();
     if (!saved) return false;
@@ -202,7 +200,6 @@ export function CharacterCreatePage({ vm, actions, onPickFile, onReturnToChat }:
     setPublishStatus("idle");
     setPublishError(null);
 
-    // 清除前一个防抖计时器并重设
     if (autoSaveTimerRef.current) {
       clearTimeout(autoSaveTimerRef.current);
     }
@@ -214,7 +211,6 @@ export function CharacterCreatePage({ vm, actions, onPickFile, onReturnToChat }:
     }, 1000);
   }, [performSave, vm.readOnly]);
 
-  // 字段变更处理
   const handleFieldChange = useCallback(
     <K extends keyof CharacterFormData>(field: K, value: CharacterFormData[K]) => {
       if (vm.readOnly) return;
@@ -293,7 +289,6 @@ export function CharacterCreatePage({ vm, actions, onPickFile, onReturnToChat }:
     return () => window.removeEventListener("beforeunload", handler);
   }, [saveStatus]);
 
-  // 手动保存
   const handleManualSubmit = async (e?: React.FormEvent) => {
     if (e) {
       e.preventDefault();
@@ -322,7 +317,7 @@ export function CharacterCreatePage({ vm, actions, onPickFile, onReturnToChat }:
       if (!cardId) return;
       confirmLeave(async () => {
         await actions.selectActiveCard(cardId);
-        // V0.3.8 T6：reuse_active 复用同项目同角色卡的活跃会话，不重复建聊天。
+        // reuse_active 复用同项目同角色卡的活跃会话，不重复建聊天。
         await actions.createConversation(undefined, undefined, undefined, { reuseActive: true });
         actions.openChat();
       });

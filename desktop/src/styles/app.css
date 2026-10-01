@@ -1,4 +1,4 @@
-/* HSR Partner Harness 组件样式（v0）
+/* HSR Partner Harness 组件样式。
    所有颜色/圆角/间距/动效引用 tokens.css 语义变量。 */
 
 /* ========== 通用原语 ========== */
@@ -346,7 +346,7 @@
   line-height: var(--text-c1-line);
 }
 
-/* ---- 跨聊天后台任务总览（V0.3.9 V01） ---- */
+/* ---- 跨聊天后台任务总览 ---- */
 .task-overview-backdrop {
   position: fixed;
   inset: 0;
@@ -1019,7 +1019,7 @@
   animation: ph-pulse 1s ease-in-out infinite;
 }
 
-/* ---- 消息状态呈现（V0.3.9 V01：failed/cancelled 显示错误原文与不同终态外观） ---- */
+/* ---- 消息状态呈现：failed/cancelled 显示错误原文与不同终态外观 ---- */
 .msg-bubble.is-failed,
 .msg-bubble-failed {
   border-color: var(--danger) !important;
@@ -1274,7 +1274,7 @@
   animation: ph-pulse 1.6s ease-in-out infinite;
 }
 
-/* ---- 非聊天视图返回运行中聊天横幅（V0.3.9 V04） ---- */
+/* ---- 非聊天视图返回运行中聊天横幅 ---- */
 .non-chat-running-banner {
   display: flex;
   align-items: center;
@@ -1583,7 +1583,7 @@
 }
 .scroll-latest-btn:hover { color: var(--text-primary); }
 
-/* ---- V0.2.0 空间重构：工作台开合、能力签、委派卡 ---- */
+/* ---- 工作台开合、能力签、委派卡 ---- */
 
 .pane-workbench {
   transition: width var(--dur-drawer) var(--ease-out);
@@ -1703,7 +1703,7 @@
 .delegation-card-cancel svg { width: 12px; height: 12px; }
 .delegation-card-cancel:hover { text-decoration: underline; }
 
-/* ---- V0.2.0 思考缎带与语音迷你播放条 ---- */
+/* ---- 思考缎带与语音迷你播放条 ---- */
 
 .reasoning-ribbon {
   margin-bottom: var(--space-2);
@@ -1811,7 +1811,7 @@
   font-size: 13px;
 }
 
-/* ========== V0.3.2 M5：聊天标签栏 ========== */
+/* ========== 聊天标签栏 ========== */
 
 .chat-tabs-wrap {
   flex: none;
@@ -1887,41 +1887,6 @@
 
 .chat-tab-dot.is-approval { background: var(--warning); }
 .chat-tab-dot.is-queued { background: var(--text-muted); }
-.chat-tab-dot.is-completed { background: var(--success); }
-
-.chat-tab-unread-badge,
-.conv-unread-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: var(--radius-full);
-  background: var(--accent);
-  color: #FFFFFF;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1;
-  flex: none;
-}
-
-.conv-unread-badge {
-  margin-left: auto;
-}
-
-.chat-tab-unread-badge {
-  margin-left: 6px;
-}
-
-.conv-completed-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--success);
-  flex: none;
-  margin-right: 4px;
-}
 
 .chat-tab-close {
   flex: none;
@@ -1949,7 +1914,7 @@
 
 .chat-tab-window:hover { background: var(--fill-active); color: var(--text-primary); }
 
-/* V0.3.8 T5（C3）：忙时排队中的用户消息进入消息流尾部（全文可见）。 */
+/* 忙时排队中的用户消息进入消息流尾部（全文可见）。 */
 .queue-in-stream-badge {
   display: inline-block;
   font-size: 11px;

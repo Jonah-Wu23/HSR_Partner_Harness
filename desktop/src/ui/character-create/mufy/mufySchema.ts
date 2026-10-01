@@ -25,7 +25,7 @@ export const MUFY_BLOCKS: MufyBlockMeta[] = [
   {
     key: "world_architecture",
     title: "世界架构",
-    description: "世界基底、地理与城市、社会系统、文化与哲学——角色存在的土壤。",
+    description: "角色所处的世界：世界基底、地理与城市、社会系统、文化与哲学。",
     fields: [
       { key: "world_foundation", label: "世界基底", description: "这个世界是什么：一句话基调、类型与叙事节奏。", createDefault: objectDefault },
       { key: "geography", label: "地理与城市", description: "主舞台、城市分区与关键地点。", createDefault: objectDefault },

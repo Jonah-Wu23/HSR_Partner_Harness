@@ -1,16 +1,16 @@
-import type { DesktopEvent } from "../contracts/protocol";
+import type { DesktopStreamEvent } from "../contracts/protocol";
 
 export function createEventBatcher(
-  flush: (events: DesktopEvent[]) => void,
+  flush: (events: DesktopStreamEvent[]) => void,
   delayMs = 40,
 ): {
-  push(event: DesktopEvent): void;
+  push(event: DesktopStreamEvent): void;
   dispose(): void;
 } {
-  let pending: DesktopEvent[] = [];
+  let pending: DesktopStreamEvent[] = [];
   let timer: ReturnType<typeof setTimeout> | undefined;
 
-  const push = (event: DesktopEvent) => {
+  const push = (event: DesktopStreamEvent) => {
     pending.push(event);
     if (timer !== undefined) return;
     timer = setTimeout(() => {
@@ -26,7 +26,7 @@ export function createEventBatcher(
     dispose() {
       if (timer !== undefined) clearTimeout(timer);
       timer = undefined;
-      // M5.5：StrictMode 卸载前同步 flush 最后一批事件，避免 pending 被丢弃。
+      // StrictMode 卸载前同步 flush 最后一批事件，避免 pending 被丢弃。
       if (pending.length > 0) {
         const batch = pending;
         pending = [];

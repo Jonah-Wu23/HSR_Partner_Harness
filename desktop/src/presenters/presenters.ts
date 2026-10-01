@@ -23,26 +23,25 @@ import type {
   VoiceSpeakerStatus,
 } from "../ui/settings/types";
 
+/** 指定会话的消息，按 timeline_order 排序。 */
 function messagesFor(state: DesktopRenderState, conversationId: string): Message[] {
   return (state.messageIdsByConversation[conversationId] ?? [])
     .map((id) => state.messagesById[id])
-    .filter((message): message is Message => message !== undefined);
+    .sort((left, right) => left.timeline_order - right.timeline_order);
 }
 
 function toolsFor(state: DesktopRenderState, conversationId: string): ToolRun[] {
-  return (state.toolIdsByConversation[conversationId] ?? [])
-    .map((id) => state.toolRunsById[id])
-    .filter((tool): tool is ToolRun => tool !== undefined);
+  return (state.toolIdsByConversation[conversationId] ?? []).map((id) => state.toolRunsById[id]);
 }
 
-/** V0.2 M4：队列项摘要——压缩空白后的单行文本，超 24 字截断加省略号。 */
+/** 队列项摘要：压缩空白后的单行文本，超 24 字截断加省略号。 */
 function truncateSingleLine(text: string, max = 24): string {
   const compact = text.replace(/\s+/g, " ").trim();
   return compact.length <= max ? compact : `${compact.slice(0, max)}…`;
 }
 
-/** V0.3.8 T5：指定会话未撤回的排队项（完整文本，按 position 升序）。
-    消息流尾部呈现排队消息全文用；胶囊条走 presentQueueItems 的截断摘要。 */
+/** 指定会话未撤回的排队项（完整文本，按 position 升序），显示在消息流尾部；
+    队列条用 presentQueueItems 的截断摘要。 */
 function queuedItemsFor(state: DesktopRenderState, conversationId: string): QueueItem[] {
   return (state.queueItemsByConversation[conversationId] ?? [])
     .filter((item) => item.status !== "withdrawn")
@@ -80,8 +79,8 @@ function presentQueueItems(state: DesktopRenderState, conversationId: string): Q
   });
 }
 
-/** V0.2 M4：委派卡——指定会话中角色发起的委派（origin=character_delegation
-    且 delegation_id 非空），取最新一条 user 消息；状态来自真实消息状态。 */
+/** 委派卡：指定会话中角色发起的委派（origin=character_delegation 且 delegation_id 非空），
+    取最新一条 user 消息，状态来自消息状态。 */
 function presentDelegation(
   state: DesktopRenderState,
   conversationId: string,
@@ -119,8 +118,8 @@ function presentDelegation(
   };
 }
 
-/** V0.2 M4：语音迷你播放条——tts 播放/合成/失败时映射；
-    后端 tts 状态没有 speaker 来源，用角色兜底；摘要无数据给空串。 */
+/** 语音迷你播放条：tts 播放、合成或失败时显示。后端 tts 状态不带说话方，显示为角色；
+    摘要没有数据时为空串。 */
 function presentVoiceMiniPlayer(state: DesktopRenderState): VoiceMiniPlayerView | null {
   const pair = state.pair;
   if (!pair || state.voice.tts === "idle") return null;
@@ -143,8 +142,7 @@ function presentVoiceMiniPlayer(state: DesktopRenderState): VoiceMiniPlayerView 
   };
 }
 
-/** V0.2 M4：账号门与引导——默认账号（未设密码）进账号门；
-    非默认账号且引导未完成进 Onboarding。 */
+/** 账号门：默认账号（未设密码）进账号门；非默认账号且引导未完成时进首次引导。 */
 function presentAccountGate(state: DesktopRenderState): AppShellViewModel["accountGate"] {
   if (state.currentAccount?.username !== "default") return null;
   const accounts: AccountListItem[] = state.accounts.map((account) => ({
@@ -162,7 +160,7 @@ interface DialogueConfigShape {
   base_url?: string;
   api_key_masked?: string;
   reasoning_effort?: string;
-  /** B-03：后端判定当前服务商是否可用及其不可用原因（前端只做展示）。 */
+  /** 后端判定当前服务商是否可用及其不可用原因，前端只做展示。 */
   provider_supported?: boolean;
   provider_unavailable?: { code?: string; message?: string } | null;
 }
@@ -200,7 +198,7 @@ function presentVoiceConfigured(config: Record<string, unknown> | null): boolean
   );
 }
 
-/** V0.2 M4：设置中心四页视图——configSnapshot 映射，无数据给默认空值。 */
+/** 设置中心各页视图：由 configSnapshot 映射，尚未拉取配置时给空值。 */
 function presentSettings(state: DesktopRenderState): AppShellViewModel["settings"] {
   const config = state.configSnapshot as ConfigShape | null;
   const dialogue = config?.dialogue ?? {};
@@ -208,16 +206,15 @@ function presentSettings(state: DesktopRenderState): AppShellViewModel["settings
   const reasoningEffort =
     typeof dialogue.reasoning_effort === "string" ? dialogue.reasoning_effort : "auto";
 
-  // V0.3.5 修复：多标签窗口以本窗口激活会话为准；currentConversationId 是
-  // Sidecar 全局指针，标签切换后可能指向其他窗口的会话。
+  // 多标签窗口以本窗口活动会话为准；currentConversationId 是 Sidecar 全局指针，
+  // 可能指向其他窗口的会话。
   const currentConv =
     state.conversationsById[state.activeConversationId ?? state.currentConversationId];
   const activePairId = currentConv?.pair_id || state.pair?.pair_id;
   const activePair =
     state.pairs.find((p) => p.pair_id === activePairId) ?? state.pair;
 
-  // config.get 是 V0.3.2 语音归属的权威来源。只有尚未拉取过配置时才
-  // 回退旧快照里的 pair voice_id，避免把作者音色重新显示为当前账号音色。
+  // 音色以 config.get 为准；尚未拉取配置时显示快照里搭档的 voice_id。
   const hasVoiceConfig = config?.voice !== undefined;
   const configuredCharacterVoiceId =
     typeof voiceConfig.character_voice === "string" ? voiceConfig.character_voice : "";
@@ -311,55 +308,35 @@ function presentSettings(state: DesktopRenderState): AppShellViewModel["settings
       providerUnavailable: presentProviderUnavailable(dialogue.provider_unavailable),
     },
     voice,
-    // V0.3.5：语音页「角色音色」区数据（卡列表+账号语音配置完备性）；
-    // 选中态由 VoicePage 内部维护，这里只投影全量列表。
-    characterVoice: presentCharacterCardVoicePage(state, null),
+    characterVoice: presentCharacterCardVoicePage(state),
     modelTest: idle,
     voicePreview: idle,
   };
 }
 
-/** V0.3.2 M1：工作台统一时间线——助手 segment 与工具卡按 timeline_order
-    混排；没有序号的消息（用户任务卡、system 卡）保持在序号块之前，
-    legacy 记录（全部无序号）自然回退为“先消息后工具”的旧版分组。 */
+/** 工作台时间线：助手 segment 与工具卡按 timeline_order 混排。 */
 function presentWorkbenchItems(
   messages: Message[],
   tools: ToolRun[],
 ): WorkbenchItem[] {
   const messageItems: WorkbenchItem[] = messages
     .filter((message) => message.source !== "tool")
-    .map((message) => ({
-      kind: "message" as const,
-      order:
-        message.timeline_order ??
-        (typeof message.payload?.timeline_order === "number"
-          ? (message.payload.timeline_order as number)
-          : null),
-      message,
-    }));
+    .map((message) => ({ kind: "message" as const, order: message.timeline_order, message }));
   const toolItems: WorkbenchItem[] = tools.map((run) => ({
     kind: "tool" as const,
-    order: run.timeline_order ?? null,
+    order: run.timeline_order,
     run,
   }));
-  const unordered: WorkbenchItem[] = [];
-  const ordered: WorkbenchItem[] = [];
-  for (const item of [...messageItems, ...toolItems]) {
-    if (item.order === null || item.order === undefined) unordered.push(item);
-    else ordered.push(item);
-  }
-  ordered.sort((a, b) => (a.order as number) - (b.order as number));
-  return [...unordered, ...ordered];
+  return [...messageItems, ...toolItems].sort((a, b) => a.order - b.order);
 }
 
-/** V0.3.2 M5：聊天标签视图——标题取自会话记录（conversation.changed 实时更新），
-    状态点只反映该聊天自己的运行/排队/待审批状态。 */
+/** 聊天标签视图：标题取自会话记录，状态点只反映该聊天自己的运行、排队与待审批。 */
 function presentChatTabs(state: DesktopRenderState): ChatTabsViewModel[] {
   return state.openConversationIds.map((conversationId) => {
     const conversation = state.conversationsById[conversationId];
     return {
       conversationId,
-      title: conversation?.title ?? "未知聊天",
+      title: conversation.title,
       isRunning: Boolean(state.activeTasksByConversation[conversationId]),
       isQueued: (state.queueItemsByConversation[conversationId] ?? []).some(
         (item) => item.status === "queued" || item.status === "processing",
@@ -372,11 +349,9 @@ function presentChatTabs(state: DesktopRenderState): ChatTabsViewModel[] {
   });
 }
 
-/** V0.3.5：语音设置页「角色音色」区视图模型。
-    卡列表来自 characterLibrary；参考音频状态由后续真实事件/配置补充。 */
+/** 语音设置页「角色音色」区视图模型，卡列表来自 characterLibrary。 */
 export function presentCharacterCardVoicePage(
   state: DesktopRenderState,
-  selectedCardId: string | null,
 ): CharacterCardVoicePageViewModel {
   const cards = state.characterLibrary.cards.map((card): CharacterCardVoicePageViewModel["cards"][number] => ({
     cardId: card.cardId,
@@ -387,27 +362,17 @@ export function presentCharacterCardVoicePage(
     voiceState: card.voiceState,
     active: card.active,
     readOnly: card.readOnly,
-    hasReferenceAudio: false,
-    referenceAudio: null,
-    voiceId: null,
-    lastError: null,
   }));
-  const selectedCard = cards.find((card) => card.cardId === selectedCardId) ?? null;
-  return {
-    voiceConfigured: presentVoiceConfigured(state.configSnapshot),
-    cards,
-    selectedCardId,
-    selectedCard,
-  };
+  return { voiceConfigured: presentVoiceConfigured(state.configSnapshot), cards };
 }
 
 export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
-  // V0.3.2 M5：工作区渲染本窗口活动标签；没有打开的标签（全部关闭）时为空状态。
+  // 工作区渲染本窗口活动标签；没有打开的标签时为空状态。
   const workspaceConversationId = state.activeConversationId;
   const workspaceConversation = workspaceConversationId
     ? state.conversationsById[workspaceConversationId]
     : undefined;
-  // V0.3.2 M5：项目级活动标记——该项目下任一聊天有活动任务即点亮。
+  // 项目级活动标记：该项目下任一聊天有活动任务即点亮。
   const activeTaskCountByProject: Record<string, number> = {};
   for (const task of Object.values(state.activeTasksByConversation)) {
     activeTaskCountByProject[task.project_id] =
@@ -421,24 +386,17 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
       isCurrent: project.project_id === state.currentProjectId,
       isBusy: activeTaskCount > 0,
       activeTaskCount,
-      conversations: (project.conversations ?? []).map(
-        (conversation): ConversationViewModel => {
-          const isRunning = Boolean(
-            state.activeTasksByConversation[conversation.conversation_id],
-          );
-          return {
-            ...conversation,
-            isCurrent: conversation.conversation_id === navigationConversationId,
-            isRunning,
-            isTaskOrigin: isRunning,
-          };
-        },
+      conversations: project.conversations.map(
+        (conversation): ConversationViewModel => ({
+          ...conversation,
+          isCurrent: conversation.conversation_id === navigationConversationId,
+          isRunning: Boolean(state.activeTasksByConversation[conversation.conversation_id]),
+        }),
       ),
     };
   });
 
-  // V0.2 消息空间归属（问题 7）：不再只按 source 切栏。
-  // user+target=assistant 与 assistant/tool 归工作台；
+  // 消息空间归属：user+target=assistant 与 assistant、tool 归工作台；
   // user+target=character、character、system 归角色区。
   const characterMessages = workspaceConversation
     ? messagesFor(state, workspaceConversation.conversation_id).filter(
@@ -466,8 +424,7 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
   const review = workspaceConversationId
     ? state.reviewByConversation[workspaceConversationId]
     : undefined;
-  const currentPairId =
-    workspaceConversation?.pair_id || state.pair?.pair_id || "phainon_ancient_machine";
+  const currentPairId = workspaceConversation?.pair_id ?? state.pair?.pair_id ?? null;
 
   return {
     status: state.status,
@@ -480,7 +437,7 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
           currentProjectId: state.currentProjectId,
           currentConversationId: navigationConversationId,
           currentPair: state.pair,
-          pairs: state.pairs?.length ? state.pairs : [state.pair],
+          pairs: state.pairs,
         }
       : null,
     chatTabs: presentChatTabs(state),
@@ -491,7 +448,6 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
             conversationId: workspaceConversation.conversation_id,
             messages: characterMessages,
             isStreaming: characterMessages.some((message) => message.streaming === true),
-            // V0.3.8 T5（C3）：排队消息全文进入消息流尾部呈现（操作仍在胶囊条）。
             queueItems: queuedItemsFor(state, workspaceConversation.conversation_id),
           },
           assistant: {
@@ -502,13 +458,11 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
             busy: state.busy,
             activeTask: state.activeTask,
           },
-          // V0.2 M4：委派卡（角色区与工作台之间的视觉桥梁）
           delegation: presentDelegation(state, workspaceConversation.conversation_id),
         }
       : null,
     composer: {
       target: selectComposerTarget(state),
-      draft: state.composerDraft,
       enabled: state.status === "ready" && workspaceConversation !== undefined,
       approvalMode,
       reasoningEffort: windowProject?.reasoning_effort ?? "low",
@@ -520,7 +474,6 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
         ...approval,
         resolving: Boolean(state.approvalResolvingById[approval.approval_id]),
       })),
-      resolved: state.resolvedApprovals,
       reviewActive: review?.active ?? false,
       reviewText: review?.text ?? null,
     },
@@ -529,8 +482,7 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
       canPushToTalk: state.status === "ready",
     },
     error: state.error,
-    // V0.2 M4：视觉方案接口（队列 / Toast / 语音播放条 / 账号门 / 设置）
-    queueItems: presentQueueItems(state, workspaceConversationId ?? ""),
+    queueItems: workspaceConversationId ? presentQueueItems(state, workspaceConversationId) : [],
     toasts: state.toasts as ToastItem[],
     voiceMiniPlayer: presentVoiceMiniPlayer(state),
     accountGate: presentAccountGate(state),
@@ -539,7 +491,7 @@ export function presentAppShell(state: DesktopRenderState): AppShellViewModel {
       state.currentAccount.username !== "default" &&
       state.currentAccount.onboarding_complete === false,
     settings: presentSettings(state),
-    // V0.3.3：角色卡与远程配对 slice 在 store 层按视图模型形状维护，直接透传。
+    // 角色卡与远程配对在 store 层已按视图模型形状维护，直接透传。
     mainView: state.mainView,
     characterLibrary: state.characterLibrary,
     characterCreate: state.characterCreate,

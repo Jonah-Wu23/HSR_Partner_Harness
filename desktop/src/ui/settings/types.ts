@@ -14,14 +14,14 @@ export interface CharacterModelPageView {
   apiKeyMasked: string;
   reasoningEffort: string;
   /** 后端 config.get 的 dialogue.provider_supported：false 表示已保存的服务商不可用。
-      是否可用一律以后端为准，前端不按 provider 取值自行推断。 */
+      前端不按 provider 取值自行推断。 */
   providerSupported: boolean;
   /** 后端 config.get 的 dialogue.provider_unavailable：不可用时的原因与文案；
-      可用或后端未给文案时为 null（前端不编造替代文案）。 */
+      可用或后端未给文案时为 null。 */
   providerUnavailable: { code: string; message: string } | null;
 }
 
-/** V0.3.2 M6：6 个说话方的专属音色生成状态。 */
+/** 6 个说话方的专属音色生成状态。 */
 export interface VoiceSpeakerStatus {
   speakerId: string;
   name: string;
@@ -53,7 +53,7 @@ export interface VoicePageView {
   vadEnabled: boolean;
   vadStatus: "ready" | "running" | "unavailable";
 
-  /* —— DashScope 账号配置（BYOK）—— */
+  /* DashScope 账号配置（BYOK） */
   /** 已保存的服务地址（HTTP API 基址，含 /api/v1）。 */
   baseUrl?: string;
   /** 已保存的 Key 只回显掩码，不回传明文。 */
@@ -72,10 +72,10 @@ export interface VoicePageView {
   /** 音色来源：account=账号自建；env_author=开发机作者 Key；not_provisioned。 */
   voicesSource?: "account" | "env_author" | "not_provisioned";
 
-  /* —— 专属音色生成 —— */
+  /* 专属音色生成 */
   speakers?: VoiceSpeakerStatus[];
 
-  /* —— 当前搭档有效音色（试听按钮回传 voice_id；未生成为空）—— */
+  /* 当前搭档有效音色（试听按钮回传 voice_id；未生成为空） */
   characterVoiceId: string;
   characterVoiceName: string;
   assistantVoiceId: string;

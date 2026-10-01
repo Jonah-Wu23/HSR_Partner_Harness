@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { HarnessActions } from "../../contracts/actions";
-import { deriveCompatViewFromCard } from "../character-transfer/compatView";
+import type { CompatReportPayload } from "../../contracts/protocol";
 import { CompatReportView } from "../character-transfer/CompatReportView";
 import { CloseIcon, CompatCheckIcon, RefreshIcon } from "./CharacterIcons";
 
@@ -16,21 +16,15 @@ type CompatPhase =
   | { kind: "error"; message: string }
   | { kind: "ready" };
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 /**
- * 角色详情「兼容性」弹窗（V6 收尾）：随时回看导入后卡的兼容性视图。
- * 数据用 deriveCompatViewFromCard 从 card.get 返回的完整 v3 JSON 静态派生；
- * 派生边界如实标注——已应用/根级回退等导入时事实不在此还原，导入报告才是权威。
- * 加载失败如实呈现原始错误，不伪造报告。
+ * 角色详情「兼容性」弹窗：随时回看已入库卡的兼容报告。
+ * 报告来自 card.get 的 compat_report，由后端对存储的卡跑导入时同一套静态扫描得到；
+ * 加载失败显示原始错误。
  */
 export function CharacterCompatModal({ cardId, cardName, actions, onClose }: CharacterCompatModalProps) {
   const [phase, setPhase] = useState<CompatPhase>({ kind: "loading" });
-  const [report, setReport] = useState<ReturnType<typeof deriveCompatViewFromCard> | null>(null);
-  // StrictMode 开发模式 mount→cleanup→再 mount：effect 体必须重新置 true，
-  // 否则 cleanup 后 mountedRef 永久 false，异步 setPhase 全被守卫吞掉。
+  const [report, setReport] = useState<CompatReportPayload | null>(null);
+  // StrictMode 开发模式会 mount、cleanup 再 mount，effect 体里重新置 true。
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -57,14 +51,7 @@ export function CharacterCompatModal({ cardId, cardName, actions, onClose }: Cha
     try {
       const result = await actions.cardGet(cardId);
       if (!mountedRef.current) return;
-      if (!isPlainObject(result?.card)) {
-        setPhase({
-          kind: "error",
-          message: "card.get 返回数据缺少完整卡 JSON（协议不一致），无法派生兼容性视图。",
-        });
-        return;
-      }
-      setReport(deriveCompatViewFromCard(result.card));
+      setReport(result.compat_report);
       setPhase({ kind: "ready" });
     } catch (error) {
       if (!mountedRef.current) return;
@@ -139,8 +126,7 @@ export function CharacterCompatModal({ cardId, cardName, actions, onClose }: Cha
         {phase.kind === "ready" && report ? (
           <>
             <p className="char-modal-desc char-compat-modal-note">
-              以下按当前卡内容静态派生：存而不运行项与越界警告随时可回看；
-              已应用、根级回退等导入时的事实以导入当时的报告为准，本视图不做还原。
+              以下按当前保存的卡内容重新扫描得到。
             </p>
             <div className="char-compat-modal-body" data-testid="compat-modal-report">
               <CompatReportView report={report} compact />

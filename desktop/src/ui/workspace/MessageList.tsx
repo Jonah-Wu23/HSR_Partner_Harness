@@ -46,10 +46,6 @@ export function MessageBubble({
   const reasoning =
     typeof message.payload?.reasoning === "string" ? message.payload.reasoning : null;
   const reasoningStreaming = message.payload?.reasoning_streaming === true;
-  const reasoningSeconds =
-    typeof message.payload?.reasoning_seconds === "number"
-      ? message.payload.reasoning_seconds
-      : undefined;
   const rowClass = ROW_CLASS[message.source];
   const baseBubbleClass = BUBBLE_CLASS[message.source];
   const displayText = message.text || (message.streaming ? "..." : "");
@@ -57,21 +53,12 @@ export function MessageBubble({
   const isFailed = message.status === "failed";
   const isCancelled = message.status === "cancelled";
   const isQueued = message.status === "queued";
+  // 后端把失败原因写入 payload.error，取消原因写入 payload.cancelled_reason。
   const errorMessage =
-    isFailed
-      ? (typeof message.payload?.error === "string" && message.payload.error
-          ? message.payload.error
-          : typeof message.payload?.error_message === "string" && message.payload.error_message
-            ? message.payload.error_message
-            : null)
-      : null;
+    isFailed && typeof message.payload.error === "string" ? message.payload.error : null;
   const cancelledReason =
-    isCancelled
-      ? (typeof message.payload?.cancelled_reason === "string" && message.payload.cancelled_reason
-          ? message.payload.cancelled_reason
-          : typeof message.payload?.reason === "string" && message.payload.reason
-            ? message.payload.reason
-            : null)
+    isCancelled && typeof message.payload.cancelled_reason === "string"
+      ? message.payload.cancelled_reason
       : null;
 
   const statusModifier = isFailed
@@ -93,7 +80,6 @@ export function MessageBubble({
           <ReasoningRibbon
             text={reasoning ?? ""}
             streaming={reasoningStreaming}
-            elapsedSeconds={reasoningSeconds}
             expanded={itemState?.isExpanded(`reasoning:${message.message_id}`, reasoningStreaming)}
             onExpandedChange={(expanded) => itemState?.setExpanded(`reasoning:${message.message_id}`, expanded)}
           />

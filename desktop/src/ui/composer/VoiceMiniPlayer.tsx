@@ -9,7 +9,7 @@ export interface VoiceMiniPlayerView {
   summary: string;
   /** 队列里还有几条（不含当前条）。 */
   queuedCount: number;
-  /** 失败时的人话原因。 */
+  /** 失败时语音运行时给出的原因。 */
   errorText?: string;
 }
 
@@ -18,8 +18,6 @@ interface VoiceMiniPlayerProps {
   onStop: () => void;
   /** 跳下一条。 */
   onSkip: () => void;
-  /** 失败后重试。 */
-  onRetry?: () => void;
   onClose: () => void;
 }
 
@@ -27,7 +25,7 @@ interface VoiceMiniPlayerProps {
  * 语音迷你播放条：浮现在输入区左上，合成中 / 播放中 / 失败三态。
  * 文字阅读全程不受遮挡，可随时停止或跳下一条。
  */
-export function VoiceMiniPlayer({ view, onStop, onSkip, onRetry, onClose }: VoiceMiniPlayerProps) {
+export function VoiceMiniPlayer({ view, onStop, onSkip, onClose }: VoiceMiniPlayerProps) {
   return (
     <div className={`voice-mini-player voice-mini-${view.status}`} role="status" aria-live="polite">
       <span
@@ -47,13 +45,10 @@ export function VoiceMiniPlayer({ view, onStop, onSkip, onRetry, onClose }: Voic
           </span>
         </>
       ) : (
-        <span className="voice-mini-text voice-mini-error">{view.errorText ?? "语音服务没响应"}</span>
+        <span className="voice-mini-text voice-mini-error">{view.errorText ?? "朗读失败"}</span>
       )}
 
       <span className="voice-mini-actions">
-        {view.status === "failed" && onRetry ? (
-          <button type="button" onClick={onRetry}>重试</button>
-        ) : null}
         {view.status === "playing" && view.queuedCount > 0 ? (
           <button type="button" onClick={onSkip}>跳下一条</button>
         ) : null}

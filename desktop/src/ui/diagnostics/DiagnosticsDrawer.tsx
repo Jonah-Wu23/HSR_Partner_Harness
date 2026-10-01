@@ -30,11 +30,11 @@ export interface DiagnosticsDrawerProps {
 }
 
 /**
- * V0.3.9 V03 桌面诊断抽屉：显式按钮打开、可关闭。
+ * 桌面诊断抽屉：显式按钮打开、可关闭。
  *
  * 关闭即卸载内容组件，隐藏原文与页签等内部状态随之清除；普通聊天不渲染
- * 任何诊断或隐藏内容。数据全部由 props 注入（待真实接线：store 与 presenters
- * 提供 metrics.query / diagnostics.prompt_assembly 的结果）。
+ * 任何诊断或隐藏内容。数据全部由 props 注入，DiagnosticsDrawerHost 从 store
+ * 取出 metrics.query 与 diagnostics.prompt_assembly 的结果后传入。
  */
 export function DiagnosticsDrawer(props: DiagnosticsDrawerProps) {
   if (!props.open) return null;

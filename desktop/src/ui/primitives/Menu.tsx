@@ -60,9 +60,8 @@ export function Menu({ trigger, items, onSelect, ariaLabel, align = "right", sel
       setActiveIndex(next);
       itemRefs.current[next]?.focus();
     } else if (event.key === "Enter") {
-      // 激活当前聚焦项（禁用项不激活）；与点击行为一致。
-      // 仅响应菜单项内的 Enter——焦点在触发器时按钮自身回车开合，
-      // 不得冒泡到这里误激活首项。
+      // 激活当前聚焦项（禁用项不激活），与点击行为一致。
+      // 只响应菜单项内的 Enter；焦点在触发器上时由按钮自身回车开合，避免误激活首项。
       const target = event.target as HTMLElement;
       if (!target.closest('[role="menuitem"]')) return;
       const item = items[activeIndex];

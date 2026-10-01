@@ -8,7 +8,7 @@ export interface RuntimeTriggerCardProps {
 }
 
 /**
- * runtime_trigger 保留字段（冻结契约 §6）：
+ * runtime_trigger 保留字段：
  * - kind === "turn"：显示「第 N 回合触发」徽章，turn / once 可编辑，其余键原样保留；
  * - 其余值（time 等）：显示「存而不运行」，只读呈现原始 JSON，绝不改写成 turn。
  */
@@ -69,7 +69,7 @@ export function RuntimeTriggerCard({ trigger, onChange, readOnly = false, testId
           存而不运行
         </span>
         <span className="mufy-trigger-note">
-          runtime_trigger 不是回合声明（kind 缺失或非 turn），本版本不会执行它；数据原样保存。
+          runtime_trigger 不是回合声明（kind 缺失或非 turn），运行时不会执行它；数据原样保存。
         </span>
       </div>
       <pre className="char-create-json-view mufy-trigger-json" data-testid={`${testIdPrefix}-raw`}>

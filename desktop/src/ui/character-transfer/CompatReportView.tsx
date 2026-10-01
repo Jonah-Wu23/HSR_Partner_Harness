@@ -3,10 +3,8 @@ import { groupNotExecuted } from "./compatView";
 
 import "./character-transfer.css";
 
-/* ------------------------------------------------------------------ *
- * V0.3.7 兼容报告完整视图（V6）：CompatReport 六字段分组呈现，
- * not_executed 按冻结 §11 类别再分组。导入流程、导出预览与角色详情页共用。
- * ------------------------------------------------------------------ */
+/* 兼容报告完整视图：六个字段分组呈现，not_executed 再按条目格式分组。
+   导入流程、导出预览与角色详情的兼容性弹窗共用。 */
 
 interface CompatReportViewProps {
   report: CompatReportPayload;

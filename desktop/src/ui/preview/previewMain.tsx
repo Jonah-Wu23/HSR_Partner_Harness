@@ -12,7 +12,7 @@ import { desktopStore } from "../../stores/desktopStore";
 /**
  * 视觉预览入口（仅 dev server 手工打开 /preview.html 使用，不进生产包）：
  *   /preview.html?scenario=collaboration-running&mode=collaboration&theme=dark
- * scenario 取 mocks/scenarios 的 16 个场景名；mode/theme 为可选覆写。
+ * scenario 取 mocks/scenarios 的 MOCK_SCENARIO_NAMES；mode/theme 为可选覆写。
  */
 const params = new URLSearchParams(window.location.search);
 const requested = params.get("scenario") ?? "single-project";

@@ -32,9 +32,6 @@ export function applyMessageDelta(
   if (payload.reasoning_streaming !== undefined) {
     messagePayload.reasoning_streaming = payload.reasoning_streaming;
   }
-  if (payload.timeline_order !== undefined && payload.timeline_order !== null) {
-    messagePayload.timeline_order = payload.timeline_order;
-  }
   if (isReasoningDelta(payload)) {
     const reasoning = typeof messagePayload.reasoning === "string" ? messagePayload.reasoning : "";
     messagePayload.reasoning = reasoning + delta;
@@ -63,6 +60,6 @@ export function applyMessageDelta(
     created_at: origin.createdAt,
     streaming: true,
     task_id: payload.task_id ?? null,
-    timeline_order: payload.timeline_order ?? null,
+    timeline_order: payload.timeline_order,
   };
 }

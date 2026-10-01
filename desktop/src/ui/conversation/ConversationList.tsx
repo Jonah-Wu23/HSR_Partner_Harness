@@ -35,7 +35,7 @@ interface Anchor {
   top: number;
 }
 
-/** Shared dynamic-height timeline for desktop and mobile chat. */
+/** 桌面端与移动端聊天共用的动态行高时间线。 */
 export function ConversationList<T>({
   conversationId,
   items,

@@ -21,9 +21,9 @@ import {
 export interface CharacterVoiceSectionProps {
   characterVoice: CharacterCardVoicePageViewModel;
   voiceCardFocus?: string | null;
-  /** V0.3.5：可选 actions；AppShell 传入后角色音色流程才可用。 */
+  /** AppShell 传入后角色音色流程才可用。 */
   actions?: HarnessActions;
-  /** V0.3.5：选择本地文件；AppShell 需传入 backend.pickFile 的包装。 */
+  /** 选择本地文件；AppShell 需传入 backend.pickFile 的包装。 */
   onPickFile?: (options?: {
     title?: string;
     filters?: FileFilter[];
@@ -161,9 +161,7 @@ function isValidPrefix(value: string): boolean {
 export function CharacterVoiceSection(props: CharacterVoiceSectionProps) {
   const { characterVoice, voiceCardFocus, actions, onPickFile, onScrollToAccountConfig } = props;
 
-  const [selectedCardId, setSelectedCardId] = useState<string | null>(
-    characterVoice.selectedCardId ?? voiceCardFocus ?? null,
-  );
+  const [selectedCardId, setSelectedCardId] = useState<string | null>(voiceCardFocus ?? null);
   const [cardDetail, setCardDetail] = useState<CardDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);

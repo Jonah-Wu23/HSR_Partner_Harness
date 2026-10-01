@@ -206,7 +206,7 @@
   font-size: 12px;
 }
 
-/* 兼容报告完整视图（V6） */
+/* 兼容报告完整视图 */
 .xfer-compat-report {
   display: flex;
   flex-direction: column;
@@ -233,7 +233,7 @@
   color: var(--text-secondary);
 }
 
-/* 紧凑变体（V6 角色详情挂载点） */
+/* 紧凑变体（兼容性详情弹窗内使用） */
 .xfer-compat-report-compact {
   gap: 10px;
 }

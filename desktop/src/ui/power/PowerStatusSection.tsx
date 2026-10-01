@@ -14,10 +14,9 @@ const selectPowerError = (state: DesktopState) => state.powerError;
 const selectPowerQueryInFlight = (state: DesktopState) => state.powerQueryInFlight;
 
 /**
- * 设置中心「远程设备」页的电源状态小节（V10）：常驻只读展示当前电源计划、
+ * 设置中心「远程设备」页的电源状态小节：常驻只读展示当前电源计划、
  * AC/DC 睡眠超时、风险阈值、远程服务状态与判定理由。
  * 查询失败如实显示错误原文；非 Windows 如实显示不支持，不伪造数值。
- * 应用只提示与指引，永不代改电源设置（契约冻结 §2.1）。
  */
 export function PowerStatusSection({ actions }: PowerStatusSectionProps) {
   usePowerStatusQuery(actions);
@@ -29,8 +28,7 @@ export function PowerStatusSection({ actions }: PowerStatusSectionProps) {
     <section className="power-status" data-testid="power-status-section">
       <h3 className="settings-subhead">电源状态</h3>
       <p className="settings-hint">
-        电脑进入睡眠会让手机端断开。这里只读展示 Sidecar 读取到的电源状态；
-        应用只提醒，不会代改电源设置。
+        电脑进入睡眠会让手机端断开。这里只读展示 Sidecar 读取到的电源状态。
       </p>
 
       {error ? (

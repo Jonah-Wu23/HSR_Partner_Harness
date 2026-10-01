@@ -34,8 +34,8 @@ import "../styles/characters.css";
 interface AppShellProps {
   vm: AppShellViewModel;
   actions: HarnessActions;
-  /** V0.3.5：文件选择/保存对话框桥（pickFile/saveFile），
-      供角色库导入导出、创作页头像、语音页参考音频使用；测试环境可缺省。 */
+  /** 文件选择与保存对话框（pickFile/saveFile），供角色库导入导出、创作页头像、
+      语音页参考音频使用。 */
   backend?: DesktopBackend;
 }
 
@@ -48,7 +48,7 @@ function StatePage({ title, detail }: { title: string; detail?: string | null })
   );
 }
 
-/** 试连接/试听的三态推进：testing → 结果映射；请求失败显示错误原文。 */
+/** 试连接与试听的三态推进：先 testing，再映射结果；请求失败显示错误原文。 */
 function runTest<T>(
   setResult: (result: TestResult) => void,
   task: () => Promise<T>,
@@ -70,57 +70,50 @@ function toConnectionStatus(status: AppShellViewModel["status"]): ConnectionView
 }
 
 /**
- * 视觉根组件：只消费 ViewModel 与 HarnessActions，不触碰 store / 协议。
- * 搭档色走 tokens.css 的双主题令牌（白厄色值有测试锁定）；
- * 不做 PairRecord.theme 内联注入——它会覆盖浅色主题的搭档色调整，
- * 多搭档配色接入时在令牌层统一扩展。
+ * 视觉根组件：消费 ViewModel 与 HarnessActions。
+ * 搭档色走 tokens.css 的双主题令牌（按 data-pair 切换），浅色主题的搭档色调整也在令牌层。
  *
- * 断线不再接管整屏：已有界面保持可用，状态由连接药丸与技术详情抽屉承接；
- * 只有启动期（尚无 navigation 数据）失败才整屏。
+ * 断线时已有界面保持可用，状态由连接药丸与技术详情抽屉显示；
+ * 只有启动期（尚无 navigation 数据）失败才整屏显示错误。
  */
 export function AppShell({ vm, actions, backend }: AppShellProps) {
   const activeConv = vm.navigation?.projects
     .flatMap((p) => p.conversations)
     .find((c) => c.conversation_id === vm.navigation?.currentConversationId);
-  const activePair =
-    vm.navigation?.pairs?.find((p) => p.pair_id === activeConv?.pair_id) ??
+  const pair =
+    vm.navigation?.pairs.find((p) => p.pair_id === activeConv?.pair_id) ??
     vm.navigation?.currentPair ??
     null;
-  const pair = activePair ?? vm.navigation?.currentPair ?? null;
   const [techDetailsOpen, setTechDetailsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsPage, setSettingsPage] = useState<SettingsPage>("account");
-  // V0.3.5：角色库「配置音色」直达语音页并预选该卡；null 表示无预选。
+  // 角色库「配置音色」直达语音页并预选该卡；null 表示无预选。
   const [voiceCardFocus, setVoiceCardFocus] = useState<string | null>(null);
-  // V0.2 M4：设置中心以 key 重挂载——每次打开拉取 config.get 后重新水合表单
+  // 设置中心以 key 重挂载：每次打开拉取 config.get 后重新水合表单。
   const [settingsRevision, setSettingsRevision] = useState(0);
-  // V0.2 M4：QueueStrip「编辑」拉回输入区的草稿（nonce 驱动 Composer 写入）
+  // 队列条「编辑」拉回输入区的草稿，nonce 驱动 Composer 写入。
   const [draftSeed, setDraftSeed] = useState<{ text: string; nonce: number } | null>(null);
-  // 账号门就地错误（登录/注册失败不清表单）
+  // 账号门就地错误，登录或注册失败不清表单。
   const [gateError, setGateError] = useState<string | null>(null);
-  // V039-S4-005：默认账号（未设密码）登录成功后关掉账号门。账号门只按
-  // 「当前账号 username=default」判定，登录默认账号不改变账号身份，光看身份
-  // 无法区分「冷启动」与「已进入」；退出登录时重新回到登录页（重置本标记）。
+  // 默认账号（未设密码）登录成功后关掉账号门。账号门按「当前账号 username=default」判定，
+  // 登录默认账号不改变账号身份，需要这个标记区分冷启动与已进入；退出登录时重置。
   const [gateEntered, setGateEntered] = useState(false);
-  // 「保存并测试」/「试听」三态结果（组件只消费 props，初值 idle）
+  // 「保存并测试」与「试听」的三态结果。
   const [modelTest, setModelTest] = useState<TestResult>({ state: "idle" });
   const [voicePreview, setVoicePreview] = useState<TestResult>({ state: "idle" });
   const connectionStatus = toConnectionStatus(vm.status);
-  // V0.3.9 V03：诊断抽屉显式开关（仅 TopBar 入口存在时出现）。
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
 
   const openSettings = () => {
     setSettingsOpen(true);
-    // M5.5：每次打开设置都清掉上一轮的测试/试听结果，避免残留状态误导。
+    // 每次打开设置都清掉上一轮的测试、试听结果与角色库直达的预选卡。
     setModelTest({ state: "idle" });
     setVoicePreview({ state: "idle" });
-    // V0.3.5 修复：普通入口打开设置时清掉角色库直达的预选卡，避免跨会话残留串话。
     setVoiceCardFocus(null);
-    // V0.2 M4：打开时拉取 config.get；结果到达后重挂载表单水合最新配置
     void actions.getConfig().finally(() => setSettingsRevision((revision) => revision + 1));
   };
 
-  // V0.3.5：从角色库/创作页直达语音页「角色音色」区并预选卡片。
+  // 从角色库或创作页直达语音页「角色音色」区并预选卡片。
   const openSettingsToVoiceCard = (cardId: string | null) => {
     // 先走普通打开流程（含清预选），再设置本次预选，顺序不可颠倒。
     openSettings();
@@ -128,7 +121,7 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
     setSettingsPage("voice");
   };
 
-  // 登录/注册失败 → 就地显示错误（保持账号门表单不丢失输入）
+  // 登录或注册失败时就地显示错误，账号门表单保留输入。
   const runGateAction = async (task: () => Promise<unknown>) => {
     setGateError(null);
     try {
@@ -139,27 +132,18 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
     }
   };
 
+  // 回到运行中的聊天：打开第一个有活动任务的聊天，再切回聊天视图。
   const handleReturnToRunningChat = () => {
-    // V0.3.9 V04：回到运行中工作——有活动任务的聊天优先，其次最后活跃/当前聊天
-    let targetConvId: string | null = null;
-    let targetProjectId: string | null = null;
-    if (vm.navigation?.projects) {
-      for (const p of vm.navigation.projects) {
-        const runningConv = p.conversations?.find(
-          (c) => (c as unknown as { isRunning?: boolean }).isRunning,
-        );
-        if (runningConv) {
-          targetConvId = runningConv.conversation_id;
-          targetProjectId = p.project_id;
-          break;
-        }
+    const running = vm.navigation?.projects
+      .flatMap((project) =>
+        project.conversations.map((conversation) => ({ project, conversation })),
+      )
+      .find((item) => item.conversation.isRunning);
+    if (running) {
+      if (running.project.project_id !== vm.navigation?.currentProjectId) {
+        void actions.selectProject(running.project.project_id);
       }
-    }
-    if (targetConvId) {
-      if (targetProjectId && targetProjectId !== vm.navigation?.currentProjectId) {
-        void actions.selectProject(targetProjectId);
-      }
-      void actions.openConversationTab(targetConvId);
+      void actions.openConversationTab(running.conversation.conversation_id);
     }
     actions.openChat();
   };
@@ -170,7 +154,7 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
   } else if (vm.status === "error" && !vm.navigation) {
     body = <StatePage title="启动失败" detail={vm.error ?? "未知错误"} />;
   } else if (vm.accountGate && !gateEntered) {
-    // V0.2 M4：默认账号（未设密码）→ 整屏账号门
+    // 默认账号（未设密码）显示整屏账号门。
     body = (
       <AccountGate
         accounts={vm.accountGate.accounts}
@@ -178,17 +162,17 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
         busy={vm.accountGate.busy}
         onLogin={(accountId, password) => void runGateAction(() => actions.loginAccount(accountId, password))}
         onRegister={(displayName, password) => void runGateAction(() => actions.registerAccount(displayName, displayName, password))}
-        // 登录/注册表单互切时清掉上一轮错误，不让它跟着新表单走（V039-S4-006）
+        // 登录与注册表单互切时清掉上一轮错误。
         onClearError={() => setGateError(null)}
       />
     );
   } else if (vm.onboarding) {
-    // V0.2 M4：非默认账号且引导未完成 → 整屏首次引导
+    // 非默认账号且引导未完成时显示整屏首次引导。
     body = (
       <Onboarding
         onCreateProject={actions.createProject}
-        // B-03：只配置 Chat Completions 兼容端点（DeepSeek / 通用 OpenAI 兼容）。
-        // 引擎由后端按 dialogue.provider 推导，前端不写 engine，也不替用户改端点。
+        // 只配置 Chat Completions 兼容端点；引擎由后端按 dialogue.provider 推导，
+        // DeepSeek 不填地址与模型时用该服务商的默认值。
         onSaveModelConfig={async ({ provider, apiKey, baseUrl, model }) => {
           const defaults = DIALOGUE_PROVIDERS[provider];
           const updates: Record<string, string> = {
@@ -207,11 +191,10 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
     body = <StatePage title="暂无打开的项目" detail="等待项目数据" />;
   } else {
     const workspace = vm.workspace;
-    const totalRunningTasks =
-      vm.navigation?.projects.reduce(
-        (sum, p) => sum + (p.activeTaskCount || (p.isBusy ? 1 : 0)),
-        0,
-      ) ?? 0;
+    const totalRunningTasks = vm.navigation.projects.reduce(
+      (sum, project) => sum + project.activeTaskCount,
+      0,
+    );
 
     body = (
       <>
@@ -228,8 +211,7 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
         <div className="app-body">
           <Navigation navigation={vm.navigation} theme={vm.theme} actions={actions} />
           <main className="workspace">
-            {/* V0.3.2 M5：本窗口聊天标签栏（无标签时不渲染）；
-                切换标签聚焦本窗口视图，关闭标签只移除视图。 */}
+            {/* 本窗口聊天标签栏：切换标签聚焦本窗口视图，关闭标签只移除视图。 */}
             <ChatTabs
               tabs={vm.chatTabs}
               onSelect={(conversationId) => void actions.openConversationTab(conversationId)}
@@ -270,7 +252,7 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
                 </div>
               </div>
             )}
-            {/* V0.3.9 V04：非聊天视图（角色库/创作页）隐藏发送区、排队条与审批条，保留返回运行中聊天入口 */}
+            {/* 角色库与创作页隐藏发送区、排队条与审批条，保留返回运行中聊天的入口。 */}
             {vm.mainView !== "chat" ? (
               totalRunningTasks > 0 ? (
                 <div className="non-chat-running-banner" data-testid="non-chat-running-banner">
@@ -289,14 +271,14 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
               ) : null
             ) : (
               <>
-                {/* V0.3.9 V02：上下文状态条（压缩/记忆），输入区之上；无数据时不渲染 */}
+                {/* 上下文状态条（压缩与记忆）位于输入区之上，无数据时不渲染。 */}
                 <ContextStatusStripHost actions={actions} />
                 <ApprovalBar
                   approval={vm.approval}
                   actions={actions}
-                  currentConversationId={vm.navigation?.currentConversationId ?? workspace?.character.conversationId}
+                  currentConversationId={vm.navigation.currentConversationId}
                 />
-                {/* V0.2 M4：排队条——忙碌时发送的消息在此可见可操作（空队列不渲染） */}
+                {/* 排队条：忙碌时发送的消息在此可见可操作，空队列不渲染。 */}
                 <QueueStrip
                   items={vm.queueItems}
                   names={{
@@ -329,7 +311,7 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
           onClose={() => setTechDetailsOpen(false)}
           onReconnect={() => void actions.reconnect()}
         />
-        {/* V0.3.9 V03：诊断抽屉（指标 + 提示词装配），TopBar 显式入口打开 */}
+        {/* 诊断抽屉（指标与提示词装配），由 TopBar 入口打开。 */}
         <DiagnosticsDrawerHost
           open={diagnosticsOpen}
           onClose={() => setDiagnosticsOpen(false)}
@@ -340,18 +322,23 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
   }
 
   return (
-    <div className="app-shell" data-theme={vm.theme} data-pair={vm.currentPairId} data-testid="app-shell">
+    <div
+      className="app-shell"
+      data-theme={vm.theme}
+      data-pair={vm.currentPairId ?? undefined}
+      data-testid="app-shell"
+    >
       {body}
-      {/* V0.2 M4：Toast 队列（右上角）；空队列不渲染 */}
+      {/* Toast 队列（右上角），空队列不渲染。 */}
       <ToastStack
         toasts={vm.toasts}
         onDismiss={(id) => actions.dismissToast(id)}
         onOpenDetails={() => setTechDetailsOpen(true)}
       />
-      {/* V0.3.7 V10：电源非打扰提示（右下角）；无风险/已关闭/不支持时不渲染，
-          挂载时主动 powerGetStatus，后续由 power.status_changed 事件更新。 */}
+      {/* 电源提示（右下角）：挂载时查询 power.get_status，之后由 power.status_changed 更新；
+          无风险、已关闭或平台不支持时不渲染。 */}
       <PowerPrompt actions={actions} />
-      {/* V0.2 M4：设置中心（打开时拉取 config.get；key 保证每次打开表单水合） */}
+      {/* 设置中心：打开时拉取 config.get，key 保证每次打开都重新水合表单。 */}
       <SettingsCenter
         key={settingsRevision}
         open={settingsOpen}
@@ -359,7 +346,7 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
         onPageChange={setSettingsPage}
         onClose={() => {
           setSettingsOpen(false);
-          // V0.3.5 修复：关闭设置中心时清掉音色预选卡，下次从齿轮打开不得残留。
+          // 关闭时清掉音色预选卡，下次从齿轮打开不残留。
           setVoiceCardFocus(null);
         }}
         account={vm.settings.account}
@@ -383,7 +370,7 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
           actions.changePassword(oldPassword, newPassword)
         }
         onLogout={() => {
-          // 退出登录回到登录页：账号门重新出现（默认账号无密码，仍可空密码进入）
+          // 退出登录回到账号门；默认账号无密码，仍可空密码进入。
           setGateEntered(false);
           void actions.logoutAccount();
         }}
@@ -394,9 +381,8 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
             "dialogue.model": config.model,
           };
           if (config.apiKey) updates["dialogue.api_key"] = config.apiKey;
-          // M5.2：角色模型推理等级写入 dialogue.reasoning_effort；编程助手
-          // 的 project.reasoning_effort 继续由 Composer 单独保存。只有 DeepSeek
-          // 端点在请求层有 Reasonix 档位语义，非 DeepSeek 不写无效配置。
+          // 角色模型推理等级写入 dialogue.reasoning_effort，编程助手的 project.reasoning_effort
+          // 由 Composer 单独保存。只有 DeepSeek 端点有推理档位，其他服务商不写这一项。
           if (config.provider === "deepseek") {
             updates["dialogue.reasoning_effort"] = config.reasoningEffort;
           }
@@ -425,7 +411,7 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
           actions.provisionVoices(speakerIds, replaceExisting)
         }
         onPreviewVoice={(voiceId, voiceName) =>
-          // V0.2 M4：试听入队即返回成功（合成结果由 voice 状态机接管）
+          // 试听请求被接受即入播放队列，合成结果由 voice 状态显示。
           runTest(
             setVoicePreview,
             () => actions.voicePreview(`你好，我是${voiceName || "角色"}。这是语音试听。`, voiceId),

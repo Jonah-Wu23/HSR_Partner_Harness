@@ -1,22 +1,28 @@
 import type {
+  ApprovalResolvedPayload,
   CardAvatarPayload,
   CardSummaryPayload,
   CharacterVoiceState,
+  CompatReportPayload,
+  ConversationOpenResult,
   ConversationRecord,
   DesktopCommand,
   DesktopEvent,
   DesktopSnapshot,
+  DesktopStreamEvent,
   Message,
+  MessageDeltaPayload,
   PendingApproval,
-  PairRecord,
   ProjectRecord,
   PowerStatusPayload,
   QueueItem,
+  RemoteIssueCodeResult,
   TaskCancelResult,
   ToolRun,
   Turn,
 } from "../contracts/protocol";
 import type { FileFilter } from "./backend";
+import { DesktopRequestError } from "./backend";
 import {
   APPROVAL_ALREADY_RESOLVED,
   CARD_AVATAR_TOO_LARGE,
@@ -35,10 +41,13 @@ import {
 } from "../contracts/protocol";
 import type { DesktopBackend } from "./backend";
 import { RequestIdFactory } from "./backend";
+import { applyMessageDelta } from "../stores/messageDelta";
 import {
+  MOCK_STREAM_ID,
   createMockScenario,
   conversation,
   message,
+  nextTimelineOrder,
   project,
   type MockScenario,
   type MockScenarioName,
@@ -49,9 +58,22 @@ import {
   MOCK_REMOTE_DEVICES,
   MOCK_USER_CARDS,
   mockCardPayload,
+  type MockCardSummary,
 } from "../mocks/characterCards";
 
-/** V0.3.5 mock 后端可配置开关，便于 UI 开发与测试覆盖异常路径。 */
+/** mock 场景里已有账号的登录密码；默认账号未设密码，空密码登录。注册的账号用注册时的密码。 */
+export const MOCK_ACCOUNT_PASSWORD = "mock-password";
+
+const EMPTY_COMPAT_REPORT: CompatReportPayload = {
+  applied: [],
+  preserved: [],
+  not_executed: [],
+  normalized_from_root: [],
+  warnings: [],
+  errors: [],
+};
+
+/** mock 后端可配置开关，便于 UI 开发与测试覆盖异常路径。 */
 export interface MockDesktopBackendOptions {
   /** 账号是否已配置 voice.api_key/voice.base_url；默认 true。 */
   voiceConfigured?: boolean;
@@ -66,37 +88,41 @@ export interface MockDesktopBackendOptions {
 }
 
 export class MockDesktopBackend implements DesktopBackend {
-  private readonly listeners = new Set<(event: DesktopEvent) => void>();
+  private readonly listeners = new Set<(event: DesktopStreamEvent) => void>();
   private readonly requestIds = new RequestIdFactory();
   private scenario: MockScenario;
   private sequence: number;
-  /** 记录全部 request 命令（供测试断言接线与参数，不参与 mock 行为）。 */
+  /** 记录全部 request 命令，供测试断言接线与参数。 */
   readonly recordedRequests: DesktopCommand[] = [];
 
-  /* V0.3.3：角色卡 mock 可变状态（card.* 命令模拟；样例数据见 mocks/characterCards）。 */
-  private cards: CardSummaryPayload[] = MOCK_USER_CARDS.map((card) => ({ ...card }));
+  /* 角色卡可变状态，样例数据见 mocks/characterCards。 */
+  private cards: MockCardSummary[] = MOCK_USER_CARDS.map((card) => ({ ...card }));
   private archivedCardIds = new Set<string>(MOCK_ARCHIVED_CARD_IDS);
 
-  /* V0.3.5：mock 可配置开关。 */
   voiceConfigured: boolean;
   voiceProvisionFail: boolean;
   mobileTranscriptEmpty: boolean;
   pickFileResult: string | null;
   saveFileResult: string | null;
 
-  /* V0.3.5：角色卡头像/参考音频/音色创建状态。 */
+  /* 角色卡头像、参考音频与音色创建状态。 */
   private cardAvatars = new Map<string, CardAvatarPayload>();
   private cardReferenceAudios = new Map<string, { asset_id: string; duration_seconds: number; size_bytes: number; mime_type: string }>();
   private voiceProvisioningCardIds = new Set<string>();
   private voiceProfiles = new Map<string, { voice_id: string; state: CharacterVoiceState }>();
 
-  /* V0.3.5：审批仲裁状态。 */
-  private resolvedApprovals = new Map<string, { decision: string; resolved_by: string }>();
+  /** 已裁决的审批终态，用于首个终态获胜的仲裁。 */
+  private resolvedApprovals = new Map<string, ApprovalResolvedPayload>();
 
-  /* V0.3.5：手机语音会话状态。 */
+  /** 账号密码（account_id → 密码）；默认账号未设密码。 */
+  private passwords = new Map<string, string>();
+
+  /** 当前有效的一次性配对码。 */
+  private pairingCode: string | null = null;
+
   private mobileAudioSessions = new Map<string, { conversation_id: string; last_seq: number | null }>();
 
-  /* V0.3.7：最近一次 power.status_changed 载荷（线缆快照无电源字段，mock 留存供开发/测试检查）。 */
+  /** 最近一次 power.status_changed 载荷，供开发与测试检查。 */
   lastPowerStatus: PowerStatusPayload | null = null;
 
   constructor(
@@ -105,6 +131,7 @@ export class MockDesktopBackend implements DesktopBackend {
   ) {
     this.scenario = createMockScenario(scenarioName);
     this.sequence = this.scenario.snapshot.sequence;
+    this.resetPasswords();
     this.voiceConfigured = options.voiceConfigured ?? true;
     this.voiceProvisionFail = options.voiceProvisionFail ?? false;
     this.mobileTranscriptEmpty = options.mobileTranscriptEmpty ?? false;
@@ -115,6 +142,16 @@ export class MockDesktopBackend implements DesktopBackend {
   setScenario(name: MockScenarioName): void {
     this.scenario = createMockScenario(name);
     this.sequence = this.scenario.snapshot.sequence;
+    this.resetPasswords();
+  }
+
+  private resetPasswords(): void {
+    this.passwords = new Map(
+      this.scenario.snapshot.accounts.map((account) => [
+        account.account_id,
+        account.username === "default" ? "" : MOCK_ACCOUNT_PASSWORD,
+      ]),
+    );
   }
 
   get scenarioName(): MockScenarioName {
@@ -141,7 +178,7 @@ export class MockDesktopBackend implements DesktopBackend {
     this.saveFileResult = result;
   }
 
-  async request<T>(command: DesktopCommand): Promise<T> {
+  async request<T>(command: DesktopCommand, _timeoutSecs?: number | null): Promise<T> {
     this.recordedRequests.push(command);
     switch (command.method) {
       case "app.bootstrap":
@@ -192,7 +229,7 @@ export class MockDesktopBackend implements DesktopBackend {
       case "voice.tts_stop":
         return this.setVoiceState({ tts: "idle" }) as T;
       case "voice.tts_skip":
-        // V0.2 M4：mock 简化——跳下一条等价于停止播放（tts 回 idle）
+        // mock 没有播放队列，跳过当前条等价于停止播放。
         return this.setVoiceState({ tts: "idle" }) as T;
       case "account.list":
         return this.accountList() as T;
@@ -201,24 +238,29 @@ export class MockDesktopBackend implements DesktopBackend {
       case "account.login":
         return this.accountLogin(command.params) as T;
       case "account.logout":
-        return this.accountLogin({ account_id: "default-local", password: "" }) as T;
+        return this.switchAccount(this.ensureDefaultAccount()) as T;
       case "account.onboarding_complete":
         return this.accountCompleteOnboarding() as T;
       case "account.update_profile":
         return this.updateAccountProfile(command.params) as T;
       case "account.change_password":
-        return { changed: true } as T;
+        return this.accountChangePassword(command.params) as T;
       case "config.get":
         return this.configGet() as T;
       case "config.set":
         return this.configSet(command.params) as T;
       case "config.test_connection":
-        return { ok: true, message: "连接正常（延迟 12 ms）" } as T;
+        throw new DesktopRequestError(
+          "mock_unsupported",
+          "Mock 后端不连接真实对话服务，无法测试连接；请在 Tauri + Python Sidecar 中联调",
+        );
       case "voice.preview":
         return { voice: this.scenario.snapshot.voice } as T;
       case "voice.provision":
-        throw new Error("Mock 后端不提供真实音色生成；请在 Tauri + Python Sidecar 中联调");
-      /* —— V0.3.3 角色卡（card.*）与远程配对（remote.*）—— */
+        throw new DesktopRequestError(
+          "mock_unsupported",
+          "Mock 后端不提供真实音色生成；请在 Tauri + Python Sidecar 中联调",
+        );
       case "card.list":
         return this.cardList(command.params) as T;
       case "card.get":
@@ -237,10 +279,7 @@ export class MockDesktopBackend implements DesktopBackend {
         return this.cardDelete(command.params) as T;
       case "card.select_active":
         return this.cardSelectActive(command.params) as T;
-      /* —— V0.3.5 角色卡导入导出/发布/头像 —— */
-      /* V0.3.7：card.peek_import 为规范名，card.peek_import_json 是同一 handler 的别名（deprecated）。 */
       case "card.peek_import":
-      case "card.peek_import_json":
         return this.cardPeekImport(command.params) as T;
       case "card.import_json":
         return this.cardImportJson(command.params) as T;
@@ -256,7 +295,6 @@ export class MockDesktopBackend implements DesktopBackend {
         return this.cardSetAvatar(command.params) as T;
       case "card.remove_avatar":
         return this.cardRemoveAvatar(command.params) as T;
-      /* —— V0.3.5 角色卡音色 —— */
       case "voice.card_bind_reference":
         return this.voiceCardBindReference(command.params) as T;
       case "voice.card_create":
@@ -265,7 +303,6 @@ export class MockDesktopBackend implements DesktopBackend {
         return this.voiceCardUnbind(command.params) as T;
       case "voice.card_preview":
         return this.voiceCardPreview(command.params) as T;
-      /* —— V0.3.5 手机远程语音 —— */
       case "voice.mobile_ptt_start":
         return this.voiceMobilePttStart(command.params) as T;
       case "voice.mobile_audio_chunk":
@@ -275,9 +312,9 @@ export class MockDesktopBackend implements DesktopBackend {
       case "voice.mobile_tts_stop":
         return {} as T;
       case "remote.issue_code":
-        return { code: "483920", ttl_seconds: 300 } as T;
+        return this.remoteIssueCode() as T;
       case "remote.pair":
-        return { token: "mock-remote-token" } as T;
+        return this.remotePair(command.params) as T;
       case "remote.list_devices":
         return { devices: MOCK_REMOTE_DEVICES } as T;
       case "remote.revoke":
@@ -285,19 +322,20 @@ export class MockDesktopBackend implements DesktopBackend {
           device_name: String(command.params.device_name ?? ""),
           revoked_tokens: 1,
         } as T;
-      /* —— V0.4.0 公网隧道 —— */
+      // mock 不以 --serve 监听，与真实后端在远程服务未监听时一致：开启隧道被拒，隧道保持关闭。
       case "remote.tunnel_start":
-        return { status: "starting" } as T;
+        throw new DesktopRequestError(
+          "serve_not_started",
+          "远程服务未启动（--serve 未监听或端口被占用），无法开启公网接入",
+        );
       case "remote.tunnel_stop":
         return { status: "stopping" } as T;
       case "remote.tunnel_status":
         return { state: "off", public_url: null, hostname: null, error: null } as T;
-      /* —— V0.3.7 电源状态 —— */
       case "power.get_status":
         return this.powerGetStatus() as T;
       default:
-        // 尚未实现的 V0.2 命令在 mock 中返回空对象（不阻断前端流程）
-        return {} as T;
+        throw new DesktopRequestError("unknown_method", `Mock 后端不支持命令：${command.method}`);
     }
   }
 
@@ -313,24 +351,24 @@ export class MockDesktopBackend implements DesktopBackend {
     return this.saveFileResult;
   }
 
-  async openChatWindow(_conversationId: string, _projectId: string, _title: string): Promise<string> {
+  async openChatWindow(_conversationId: string, _title: string): Promise<string> {
     throw new Error("独立聊天窗口需要在 Tauri 桌面运行时打开");
   }
 
   async reconnectSidecar(): Promise<void> {
-    // 模拟一次断线-恢复：先断开并上报可恢复错误，随后立即恢复
-    // （connection.status connected 会驱动 store 进入 booting 并重新 bootstrap）。
-    this.emit("connection.status", { status: "disconnected" });
-    this.emit("error.reported", {
+    // 模拟 Rust 宿主的一次断线与恢复：先断开并上报可恢复错误，随后恢复；
+    // connected 会让 store 进入 booting 并重新 bootstrap。宿主事件不带序号。
+    this.emitHost("connection.status", { status: "disconnected" });
+    this.emitHost("error.reported", {
       code: "backend_disconnected",
       message: "Python Sidecar 已断开，正在重连…",
       severity: "recoverable",
       source: "sidecar",
     });
-    this.emit("connection.status", { status: "connected" });
+    this.emitHost("connection.status", { status: "connected" });
   }
 
-  /* —— V0.3.3 card.* mock 实现（真实失败直接抛错，不合成成功）—— */
+  /* card.* 命令；失败直接抛错。 */
 
   private activeCardId: string | null = "card-saved-002";
 
@@ -338,8 +376,13 @@ export class MockDesktopBackend implements DesktopBackend {
     const includeArchived = params.include_archived === true;
     const cards = this.cards
       .filter((card) => includeArchived || !this.archivedCardIds.has(card.card_id))
-      .map((card) => ({ ...card, active: card.card_id === this.activeCardId }));
-    return { cards: [...cards, ...MOCK_BUILTIN_CARDS.map((card) => ({ ...card }))] };
+      .map((card) => ({
+        ...card,
+        active: card.card_id === this.activeCardId,
+        archived: this.archivedCardIds.has(card.card_id),
+      }));
+    const builtin = MOCK_BUILTIN_CARDS.map((card) => ({ ...card, archived: false }));
+    return { cards: [...cards, ...builtin] };
   }
 
   private cardGet(params: Record<string, unknown>) {
@@ -355,10 +398,11 @@ export class MockDesktopBackend implements DesktopBackend {
         card: mockCardPayload(builtin.name),
         read_only: true,
         avatar: this.cardAvatars.get(cardId) ?? null,
+        compat_report: EMPTY_COMPAT_REPORT,
       };
     }
     const found = this.cards.find((card) => card.card_id === cardId);
-    if (!found) throw new Error("角色卡不存在");
+    if (!found) throw new DesktopRequestError("card_not_found", "角色卡不存在");
     return {
       card_id: found.card_id,
       state: found.state,
@@ -368,6 +412,9 @@ export class MockDesktopBackend implements DesktopBackend {
       card: mockCardPayload(found.name),
       read_only: false,
       avatar: this.cardAvatars.get(cardId) ?? null,
+      // 导入的卡沿用样例导入报告，其余卡没有兼容问题。
+      compat_report:
+        found.source === "tavern_import" ? this.sampleBaiImportPreview().report : EMPTY_COMPAT_REPORT,
     };
   }
 
@@ -448,7 +495,7 @@ export class MockDesktopBackend implements DesktopBackend {
     return { card_id: cardId };
   }
 
-  /* —— V0.3.5 角色卡导入导出/发布/头像 mock 实现 —— */
+  /* 角色卡导入导出、发布与头像。 */
 
   /** 白厄样例预览数据（来源：tests/fixtures/character_cards/白厄（3.4前）.json）。
       name=白厄（3.4前），spec_version=3.0，greeting_count=6（first_mes + 5 条 alternate_greetings），
@@ -480,7 +527,7 @@ export class MockDesktopBackend implements DesktopBackend {
       throw error;
     }
     if (path.toLowerCase().endsWith(".png")) {
-      // V0.3.7：真实后端按 PNG 签名分派（不信任扩展名）；mock 无文件可读，按扩展名模拟 PNG 分支。
+      // 真实后端按 PNG 签名分派；mock 无文件可读，按扩展名模拟 PNG 分支。
       return {
         preview: {
           ...this.sampleBaiImportPreview(),
@@ -557,7 +604,7 @@ export class MockDesktopBackend implements DesktopBackend {
       },
       ...this.cards,
     ];
-    // V0.3.7：PNG 字节即头像——mock 复用 card.set_avatar 的占位 PNG（真实后端入受管理资产目录）。
+    // PNG 字节即头像；mock 复用 card.set_avatar 的占位 PNG。
     this.cardSetAvatar({ card_id: cardId, path: "mock-import.png" });
     return { card_id: cardId, name, state: "imported", report: preview.report };
   }
@@ -588,7 +635,7 @@ export class MockDesktopBackend implements DesktopBackend {
     const card = this.cards.find((item) => item.card_id === cardId);
     if (!card) throw new Error("角色卡不存在");
     if (!card.has_avatar) {
-      // 契约冻结 §1.3：无头像卡导出 PNG 真实拒绝，不合成默认图。
+      // 无头像的卡导出 PNG 被拒绝，与真实后端一致。
       const error = new Error("卡未设置头像，请先设置头像后再导出 PNG");
       (error as Error & { code?: string }).code = CARD_EXPORT_FAILED;
       throw error;
@@ -666,10 +713,10 @@ export class MockDesktopBackend implements DesktopBackend {
     return { card_id: cardId, removed: true };
   }
 
-  /* —— V0.3.7 电源状态 mock 实现 —— */
+  /* 电源状态。 */
 
   private powerGetStatus(): PowerStatusPayload {
-    // 契约冻结 §1.5 的 Windows 成功形状（mock 恒定返回；at_risk 场景由事件模拟）。
+    // Windows 读取成功的形状；at_risk 场景由 emitPowerStatusChanged 模拟。
     return {
       supported: true,
       platform: "windows",
@@ -684,12 +731,12 @@ export class MockDesktopBackend implements DesktopBackend {
     };
   }
 
-  /** 模拟 --serve 电源监视线程的 power.status_changed（§2.1：payload 与 power.get_status 同形）。 */
+  /** 模拟 --serve 电源监视线程的 power.status_changed，载荷与 power.get_status 同形。 */
   emitPowerStatusChanged(payload: PowerStatusPayload): void {
     this.emit("power.status_changed", payload as unknown as Record<string, unknown>);
   }
 
-  /* —— V0.3.5 角色卡音色 mock 实现 —— */
+  /* 角色卡音色。 */
 
   private referenceMimeFromPath(path: string): string | null {
     const lower = path.toLowerCase();
@@ -782,7 +829,7 @@ export class MockDesktopBackend implements DesktopBackend {
     return { voice: { voice_id: profile.voice_id, state: profile.state } };
   }
 
-  /* —— V0.3.5 手机远程语音 mock 实现 —— */
+  /* 手机远程语音。 */
 
   private voiceMobilePttStart(params: Record<string, unknown>) {
     const conversationId = String(params.conversation_id ?? "");
@@ -836,26 +883,70 @@ export class MockDesktopBackend implements DesktopBackend {
     return { session_id: sessionId, transcript, conversation_id: conversationId };
   }
 
-  /* —— V0.3.5 审批仲裁 mock 实现 —— */
+  /* 审批仲裁：首个终态获胜，之后的裁决以 approval_already_resolved 拒绝，details 是已有终态。 */
 
   private resolveApproval(params: Record<string, unknown>) {
     const approvalId = String(params.approval_id ?? "");
-    const decision = String(params.decision ?? "approve");
+    const decision = String(params.decision ?? "") as ApprovalResolvedPayload["decision"];
     const existing = this.resolvedApprovals.get(approvalId);
     if (existing) {
-      const error = new Error(`已由 ${existing.resolved_by} ${existing.decision === "approve" ? "批准" : "拒绝"}`);
-      (error as Error & { code?: string }).code = APPROVAL_ALREADY_RESOLVED;
-      throw error;
+      throw new DesktopRequestError(
+        APPROVAL_ALREADY_RESOLVED,
+        "该审批已有裁决结果",
+        existing as unknown as Record<string, unknown>,
+      );
     }
-    const resolvedBy = "desktop";
-    this.resolvedApprovals.set(approvalId, { decision, resolved_by: resolvedBy });
-    this.emit("approval.resolved", { approval_id: approvalId, decision, resolved_by: resolvedBy });
-    return { accepted: true };
+    const pending = this.scenario.snapshot.approvals.find((item) => item.approval_id === approvalId);
+    if (!pending) throw new DesktopRequestError("approval_not_found", `审批不存在：${approvalId}`);
+    const outcome: ApprovalResolvedPayload = {
+      approval_id: approvalId,
+      conversation_id: pending.conversation_id,
+      task_id: pending.task_id ?? "",
+      decision,
+      resolved_by: "desktop",
+      actor: "user",
+      request_reason: pending.reason,
+      resolution_reason: null,
+      resolved_at: new Date().toISOString(),
+      error_code: null,
+    };
+    this.resolvedApprovals.set(approvalId, outcome);
+    this.emit("approval.resolved", outcome as unknown as Record<string, unknown>);
+    return { approval_id: approvalId, accepted: true, resolved_by: "desktop", decision };
   }
 
-  subscribe(listener: (event: DesktopEvent) => void): () => void {
+  /* 远程配对。 */
+
+  private remoteIssueCode(): RemoteIssueCodeResult {
+    this.pairingCode = String(100000 + this.sequence);
+    // mock 不以 --serve 监听，没有远程接入地址。
+    return { code: this.pairingCode, ttl_seconds: 300, serve_address: null };
+  }
+
+  private remotePair(params: Record<string, unknown>): { token: string } {
+    const code = String(params.code ?? "");
+    const deviceName = String(params.device_name ?? "").trim();
+    if (!code || !deviceName) {
+      throw new DesktopRequestError("invalid_params", "remote.pair 需要 code 与 device_name");
+    }
+    if (this.pairingCode === null || code !== this.pairingCode) {
+      throw new DesktopRequestError("pairing_invalid_code", "配对码无效");
+    }
+    this.pairingCode = null;
+    this.emit("remote.paired", { device_name: deviceName });
+    return { token: `mock-remote-token-${deviceName}` };
+  }
+
+  subscribe(listener: (event: DesktopStreamEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /** 模拟 Rust 宿主合成的连接事件，不带序号。 */
+  private emitHost(event: "connection.status" | "error.reported", payload: Record<string, unknown>): void {
+    for (const listener of this.listeners) {
+      listener({ kind: "event", event, stream_id: MOCK_STREAM_ID, payload });
+    }
   }
 
   emit(event: DesktopEvent["event"], payload: Record<string, unknown>): void {
@@ -863,6 +954,7 @@ export class MockDesktopBackend implements DesktopBackend {
       kind: "event",
       event,
       sequence: this.sequence + 1,
+      stream_id: MOCK_STREAM_ID,
       payload,
     };
     this.sequence += 1;
@@ -912,7 +1004,9 @@ export class MockDesktopBackend implements DesktopBackend {
     return this.snapshotResult<DesktopSnapshot>();
   }
 
-  private updateProjectSettings(params: Record<string, unknown>): { project: ProjectRecord } {
+  private updateProjectSettings(params: Record<string, unknown>): {
+    project: DesktopSnapshot["current_project"];
+  } {
     const projectId = String(params.project_id ?? this.scenario.snapshot.current_project_id);
     const projects = this.scenario.snapshot.projects.map((item) =>
       item.project_id === projectId
@@ -927,7 +1021,8 @@ export class MockDesktopBackend implements DesktopBackend {
         : item,
     );
     this.scenario.snapshot.projects = projects;
-    const project = projects.find((item) => item.project_id === projectId)!;
+    // 与真实后端一致，project.changed 与返回体只带项目字段。
+    const project = projectWithoutConversations(projects.find((item) => item.project_id === projectId)!);
     this.emit("project.changed", { project });
     return { project: this.clone(project) };
   }
@@ -955,8 +1050,7 @@ export class MockDesktopBackend implements DesktopBackend {
     return { conversation_id: conversationId, mode };
   }
 
-  /** V0.3.8 T6（契约冻结 §14.2）：result 顶层带 reused。mock 场景的会话
-      无角色卡绑定（不参与复用），reuse_active 始终新建。 */
+  /** 结果顶层带 reused。mock 场景的会话没有绑定角色卡，不参与复用，reuse_active 也总是新建。 */
   private createConversation(
     params: Record<string, unknown>,
   ): DesktopSnapshot & { reused: boolean } {
@@ -969,9 +1063,7 @@ export class MockDesktopBackend implements DesktopBackend {
     const selectedProject = this.scenario.snapshot.projects[projectIndex];
     const conversationId = `${projectId}-conversation-${selectedProject.conversations.length + 1}`;
     const pairId =
-      typeof params.pair_id === "string"
-        ? params.pair_id
-        : this.scenario.snapshot.pair?.pair_id ?? "phainon_ancient_machine";
+      typeof params.pair_id === "string" ? params.pair_id : this.scenario.snapshot.pair.pair_id;
     const newConversation = conversation(
       conversationId,
       projectId,
@@ -1003,16 +1095,7 @@ export class MockDesktopBackend implements DesktopBackend {
     return this.snapshotResult<DesktopSnapshot>();
   }
 
-  private openConversation(params: Record<string, unknown>): {
-    conversation: ConversationRecord;
-    project: ProjectRecord;
-    pair: PairRecord;
-    messages: Message[];
-    tool_runs: ToolRun[];
-    turns: Turn[];
-    queue_items: QueueItem[];
-    active_task: DesktopSnapshot["active_task"];
-  } {
+  private openConversation(params: Record<string, unknown>): ConversationOpenResult {
     const conversationId = String(params.conversation_id ?? "");
     const selectedProject = this.scenario.snapshot.projects.find((candidate) =>
       candidate.conversations.some((item) => item.conversation_id === conversationId),
@@ -1021,15 +1104,15 @@ export class MockDesktopBackend implements DesktopBackend {
       (item) => item.conversation_id === conversationId,
     );
     if (!selectedProject || !selectedConversation) {
-      throw new Error(`找不到聊天 ${conversationId}`);
+      throw new DesktopRequestError("conversation_not_found", `找不到聊天 ${conversationId}`);
     }
-    const selectedPair =
-      this.scenario.snapshot.pairs.find((item) => item.pair_id === selectedConversation.pair_id) ??
-      this.scenario.snapshot.pair;
-    const activeTasks = this.scenario.snapshot.active_tasks ?? [];
+    const selectedPair = this.scenario.snapshot.pairs.find(
+      (item) => item.pair_id === selectedConversation.pair_id,
+    )!;
+    const activeTasks = this.scenario.snapshot.active_tasks;
     return {
       conversation: this.clone(selectedConversation),
-      project: this.clone(selectedProject),
+      project: this.clone(projectWithoutConversations(selectedProject)),
       pair: this.clone(selectedPair),
       messages: this.clone(
         this.scenario.snapshot.messages.filter((item) => item.conversation_id === conversationId),
@@ -1046,6 +1129,8 @@ export class MockDesktopBackend implements DesktopBackend {
       active_task: this.clone(
         activeTasks.find((item) => item.conversation_id === conversationId) ?? null,
       ),
+      sequence: this.sequence,
+      stream_id: MOCK_STREAM_ID,
     };
   }
 
@@ -1053,7 +1138,7 @@ export class MockDesktopBackend implements DesktopBackend {
   private cancelTask(params: Record<string, unknown>): TaskCancelResult {
     const conversationId = String(params.conversation_id ?? "");
     const taskId = String(params.task_id ?? "");
-    const activeTasks = this.scenario.snapshot.active_tasks ?? [];
+    const activeTasks = this.scenario.snapshot.active_tasks;
     const active = activeTasks.find(
       (item) => item.conversation_id === conversationId && item.task_id === taskId,
     );
@@ -1089,21 +1174,28 @@ export class MockDesktopBackend implements DesktopBackend {
     return this.snapshotResult<DesktopSnapshot>();
   }
 
+  /** 与真实后端一致：快照的项目列表不含已归档会话；归档非当前会话时广播带完整记录的 conversation.changed。 */
   private archiveConversation(params: Record<string, unknown>): DesktopSnapshot {
     const conversationId = String(
       params.conversation_id ?? this.scenario.snapshot.current_conversation_id,
     );
+    const archived = this.scenario.snapshot.projects
+      .flatMap((item) => item.conversations)
+      .find((candidate) => candidate.conversation_id === conversationId);
+    if (!archived) {
+      throw new DesktopRequestError("conversation_not_found", `找不到聊天 ${conversationId}`);
+    }
     this.scenario.snapshot.projects = this.scenario.snapshot.projects.map((item) => ({
       ...item,
-      conversations: item.conversations.map((candidate) =>
-        candidate.conversation_id === conversationId ? { ...candidate, archived: true } : candidate,
+      conversations: item.conversations.filter(
+        (candidate) => candidate.conversation_id !== conversationId,
       ),
     }));
     if (conversationId === this.scenario.snapshot.current_conversation_id) {
-      const fallback = this.scenario.snapshot.projects
-        .flatMap((item) => item.conversations)
-        .find((candidate) => !candidate.archived);
-      this.scenario.snapshot.current_conversation_id = fallback?.conversation_id ?? "";
+      const next = this.scenario.snapshot.projects.flatMap((item) => item.conversations)[0];
+      this.scenario.snapshot.current_conversation_id = next?.conversation_id ?? "";
+    } else {
+      this.emit("conversation.changed", { conversation: { ...archived, archived: true } });
     }
     return this.snapshotResult<DesktopSnapshot>();
   }
@@ -1133,12 +1225,9 @@ export class MockDesktopBackend implements DesktopBackend {
       params.conversation_id ?? this.scenario.snapshot.current_conversation_id,
     );
     const target = params.target === "assistant" ? "assistant" : "character";
-    const hadUserMessage = this.scenario.snapshot.messages.some(
-      (item) => item.conversation_id === conversationId && item.source === "user",
-    );
     const text = String(params.text ?? "");
     const userMessageId = `mock-user-${this.sequence + 1}`;
-    // 快速接受：用户消息立即落库并返回真实 id
+    // 用户消息立即落库并返回 id。聊天标题由真实后端在首次完整回复后生成，mock 不改标题。
     const userMessage = message(
       userMessageId,
       conversationId,
@@ -1150,7 +1239,7 @@ export class MockDesktopBackend implements DesktopBackend {
     userMessage.origin = "user";
     userMessage.status = "received";
     this.emit("message.created", { message: userMessage });
-    // V0.2 M2：Turn 生命周期模拟——accepted → running → completed
+    // 回合生命周期：accepted、running、completed。
     const turnId = `mock-turn-${this.sequence + 1}`;
     const projectId = this.scenario.snapshot.projects.find((item) =>
       item.conversations.some((item) => item.conversation_id === conversationId),
@@ -1165,21 +1254,6 @@ export class MockDesktopBackend implements DesktopBackend {
     for (const event of events) this.emit(event.event, event.payload);
     this.emit("turn.started", { turn: turn("running") });
     this.emit("turn.status_changed", { turn: turn("completed") });
-    if (!hadUserMessage) {
-      const title = titleFromMessage(text);
-      this.scenario.snapshot.projects = this.scenario.snapshot.projects.map((item) => ({
-        ...item,
-        conversations: item.conversations.map((candidate) =>
-          candidate.conversation_id === conversationId && candidate.title === "新聊天"
-            ? { ...candidate, title, updated_at: new Date().toISOString() }
-            : candidate,
-        ),
-      }));
-      const conversation = this.scenario.snapshot.projects
-        .flatMap((item) => item.conversations)
-        .find((item) => item.conversation_id === conversationId);
-      if (conversation) this.emit("conversation.changed", { conversation });
-    }
     return {
       message_id: userMessageId,
       conversation_id: conversationId,
@@ -1196,11 +1270,21 @@ export class MockDesktopBackend implements DesktopBackend {
     };
   }
 
+  /* 账号命令，校验规则与真实后端一致。 */
+
   private accountRegister(params: Record<string, unknown>): {
     account: DesktopSnapshot["current_account"];
     accounts: DesktopSnapshot["accounts"];
   } {
-    const username = String(params.username ?? "mock-user");
+    const username = String(params.username ?? "").trim();
+    const password = String(params.password ?? "");
+    if (!username || !password) {
+      throw new DesktopRequestError("invalid_params", "注册需要 username 与 password");
+    }
+    if (password.length < 6) throw new DesktopRequestError("weak_password", "密码至少 6 位");
+    if (this.scenario.snapshot.accounts.some((item) => item.username === username)) {
+      throw new DesktopRequestError("username_taken", `用户名已存在：${username}`);
+    }
     const account = {
       account_id: `mock-account-${this.scenario.snapshot.accounts.length + 1}`,
       username,
@@ -1210,6 +1294,7 @@ export class MockDesktopBackend implements DesktopBackend {
       onboarding_complete: false,
       theme: "dark" as const,
     };
+    this.passwords.set(account.account_id, password);
     this.scenario.snapshot.accounts = [
       ...this.scenario.snapshot.accounts.map((item) => ({ ...item, is_last_login: false })),
       { ...account, is_last_login: true },
@@ -1230,10 +1315,53 @@ export class MockDesktopBackend implements DesktopBackend {
     account: DesktopSnapshot["current_account"];
     accounts: DesktopSnapshot["accounts"];
   } {
-    const accountId = String(params.account_id ?? "default-local");
-    const account = this.scenario.snapshot.accounts.find(
-      (item) => item.account_id === accountId,
-    ) ?? this.scenario.snapshot.accounts[0];
+    const accountId = String(params.account_id ?? "");
+    const password = String(params.password ?? "");
+    const account = this.scenario.snapshot.accounts.find((item) => item.account_id === accountId);
+    // 真实后端对不存在的账号与错误密码一样按密码错误拒绝。
+    if (!account || this.passwords.get(accountId) !== password) {
+      throw new DesktopRequestError("wrong_password", "密码错误");
+    }
+    return this.switchAccount(account);
+  }
+
+  private accountChangePassword(params: Record<string, unknown>): { changed: true } {
+    const oldPassword = String(params.old_password ?? "");
+    const newPassword = String(params.new_password ?? "");
+    if (newPassword.length < 6) throw new DesktopRequestError("weak_password", "新密码至少 6 位");
+    const accountId = this.scenario.snapshot.current_account_id;
+    if (this.passwords.get(accountId) !== oldPassword) {
+      throw new DesktopRequestError("wrong_password", "原密码错误");
+    }
+    this.passwords.set(accountId, newPassword);
+    return { changed: true };
+  }
+
+  /** 默认账号在真实库里始终存在；场景数据没有列出时补上。 */
+  private ensureDefaultAccount(): DesktopSnapshot["accounts"][number] {
+    const existing = this.scenario.snapshot.accounts.find(
+      (item) => item.account_id === "default-local",
+    );
+    if (existing) return existing;
+    const created = {
+      account_id: "default-local",
+      username: "default",
+      display_name: "默认账号",
+      avatar: "",
+      last_login_at: null,
+      onboarding_complete: false,
+      theme: "dark" as const,
+      is_last_login: false,
+    };
+    this.passwords.set(created.account_id, "");
+    this.scenario.snapshot.accounts = [...this.scenario.snapshot.accounts, created];
+    return created;
+  }
+
+  private switchAccount(account: DesktopSnapshot["accounts"][number]): {
+    account: DesktopSnapshot["current_account"];
+    accounts: DesktopSnapshot["accounts"];
+  } {
     const next: DesktopSnapshot["current_account"] = {
       account_id: account.account_id,
       username: account.username,
@@ -1257,7 +1385,6 @@ export class MockDesktopBackend implements DesktopBackend {
   }
 
   private accountCompleteOnboarding(): { account: DesktopSnapshot["current_account"] } {
-    // V0.2 M4：首次引导完成——置 onboarding_complete 并广播 account.changed
     const current = this.scenario.snapshot.current_account;
     const next = { ...current, onboarding_complete: true };
     this.scenario.snapshot.current_account = next;
@@ -1291,11 +1418,9 @@ export class MockDesktopBackend implements DesktopBackend {
 
   private configGet(): {
     engine: string;
-    // dialogue 里除字符串外还有 provider_supported(boolean) 与
-    // provider_unavailable(object|null)，与真实 config.get 载荷一致。
+    // dialogue 里除字符串外还有 provider_supported(boolean) 与 provider_unavailable(object|null)。
     dialogue: Record<string, unknown>;
     voice: Record<string, string>;
-    codex: Record<string, string | null>;
   } {
     return {
       engine: "deepseek",
@@ -1322,7 +1447,6 @@ export class MockDesktopBackend implements DesktopBackend {
         assistant_voice_name: "神秘的古代机械",
         vad_enabled: "false",
       },
-      codex: { status: "logged_in", account_label: "mock@openai" },
     };
   }
 
@@ -1396,7 +1520,7 @@ export class MockDesktopBackend implements DesktopBackend {
     snapshot.current_project = projectRecord
       ? projectWithoutConversations(projectRecord)
       : emptyProject();
-    snapshot.current_conversation = conversationRecord ?? emptyConversation();
+    snapshot.current_conversation = conversationRecord ?? emptyConversation(snapshot.pair.pair_id);
   }
 
   private applyEventToSnapshot(event: DesktopEvent): void {
@@ -1408,51 +1532,12 @@ export class MockDesktopBackend implements DesktopBackend {
         message,
       ];
     } else if (event.event === "message.delta") {
-      const payload = event.payload as {
-        message_id: string;
-        conversation_id: string;
-        source: Message["source"];
-        kind: Message["kind"];
-        delta?: string;
-        channel?: string;
-        started?: boolean;
-        completed?: boolean;
-        reasoning_streaming?: boolean;
-      };
+      const payload = event.payload as unknown as MessageDeltaPayload;
       const current = snapshot.messages.find((item) => item.message_id === payload.message_id);
-      const delta = String(payload.delta ?? "");
-      const reasoningDelta =
-        (payload.source === "character" && payload.channel === "reasoning") ||
-        (payload.source === "assistant" && payload.kind === "assistant.reasoning");
-      const messagePayload: Record<string, unknown> = { ...(current?.payload ?? {}) };
-      let text = current?.text ?? "";
-      if (payload.reasoning_streaming !== undefined) {
-        messagePayload.reasoning_streaming = payload.reasoning_streaming;
-      }
-      if (reasoningDelta) {
-        const reasoning = typeof messagePayload.reasoning === "string" ? messagePayload.reasoning : "";
-        messagePayload.reasoning = reasoning + delta;
-        if (payload.reasoning_streaming === undefined && (payload.started || payload.completed !== undefined)) {
-          messagePayload.reasoning_streaming = !payload.completed;
-        }
-      } else {
-        text += delta;
-      }
-      const nextMessage: Message = current
-        ? { ...current, text, payload: messagePayload, streaming: true }
-        : {
-            message_id: payload.message_id,
-            conversation_id: payload.conversation_id,
-            pair_id: snapshot.pair.pair_id,
-            engine_turn_id: null,
-            source: payload.source,
-            kind: payload.kind,
-            text,
-            payload: messagePayload,
-            tts_eligible: payload.source === "character" || payload.source === "assistant",
-            created_at: new Date().toISOString(),
-            streaming: true,
-          };
+      const nextMessage = applyMessageDelta(current, payload, {
+        pairId: snapshot.pair.pair_id,
+        createdAt: new Date().toISOString(),
+      });
       snapshot.messages = [
         ...snapshot.messages.filter((item) => item.message_id !== payload.message_id),
         nextMessage,
@@ -1474,17 +1559,13 @@ export class MockDesktopBackend implements DesktopBackend {
         toolRun,
       ];
     } else if (event.event === "conversation.changed") {
-      const conversation = event.payload.conversation as ConversationRecord | undefined;
-      if (conversation) {
-        snapshot.projects = snapshot.projects.map((item) => ({
-          ...item,
-          conversations: item.conversations.map((candidate) =>
-            candidate.conversation_id === conversation.conversation_id
-              ? conversation
-              : candidate,
-          ),
-        }));
-      }
+      const conversation = event.payload.conversation as ConversationRecord;
+      snapshot.projects = snapshot.projects.map((item) => ({
+        ...item,
+        conversations: item.conversations.map((candidate) =>
+          candidate.conversation_id === conversation.conversation_id ? conversation : candidate,
+        ),
+      }));
     } else if (event.event === "turn.started" || event.event === "turn.status_changed") {
       const turn = event.payload.turn as DesktopSnapshot["turns"][number];
       snapshot.turns = [
@@ -1493,14 +1574,8 @@ export class MockDesktopBackend implements DesktopBackend {
       ];
     } else if (event.event === "task.busy_changed") {
       snapshot.busy = Boolean(event.payload.busy);
-      snapshot.active_task = (event.payload.active_task as DesktopSnapshot["active_task"]) ?? null;
-      if (Array.isArray(event.payload.active_tasks)) {
-        snapshot.active_tasks = event.payload.active_tasks as DesktopSnapshot["active_tasks"];
-      } else if (snapshot.active_task) {
-        snapshot.active_tasks = [snapshot.active_task];
-      } else if (!snapshot.busy) {
-        snapshot.active_tasks = [];
-      }
+      snapshot.active_task = event.payload.active_task as DesktopSnapshot["active_task"];
+      snapshot.active_tasks = event.payload.active_tasks as DesktopSnapshot["active_tasks"];
     } else if (event.event === "approval.requested") {
       snapshot.approvals = [
         ...snapshot.approvals,
@@ -1514,8 +1589,7 @@ export class MockDesktopBackend implements DesktopBackend {
     } else if (event.event === "voice.asr_partial") {
       snapshot.voice = { ...snapshot.voice, asr_partial: String(event.payload.text ?? "") };
     } else if (event.event === "power.status_changed") {
-      // V0.3.7：DesktopSnapshot 无电源字段，mock 记录最新状态供开发与测试检查；
-      // 前端 store 订阅消费由接线阶段的电源切片处理。
+      // 快照没有电源字段，mock 记录最新状态供开发与测试检查。
       this.lastPowerStatus = event.payload as unknown as PowerStatusPayload;
     }
   }
@@ -1569,11 +1643,11 @@ function emptyProject(): DesktopSnapshot["current_project"] {
   };
 }
 
-function emptyConversation(): ConversationRecord {
+function emptyConversation(pairId: string): ConversationRecord {
   return {
     conversation_id: "",
     project_id: null,
-    pair_id: "phainon_ancient_machine",
+    pair_id: pairId,
     title: "",
     last_mode: "chat",
     archived: false,
@@ -1601,6 +1675,7 @@ function createSubmitEvents(
         source,
         kind,
         delta: target === "assistant" ? "我会先检查这个任务。" : "好，我们继续。",
+        timeline_order: nextTimelineOrder(),
       },
     },
     {
@@ -1612,22 +1687,7 @@ function createSubmitEvents(
   ];
 }
 
-function titleFromMessage(text: string): string {
-  const compact = text.replace(/\s+/g, " ").trim();
-  if (!compact) return "新聊天";
-  return `关于${compact.slice(0, 14)}`;
-}
-
 function folderNameFromPath(rootPath: string): string | null {
   const parts = rootPath.split(/[\\/]/).filter(Boolean);
   return parts.at(-1) ?? null;
-}
-
-export function isDesktopSnapshot(value: unknown): value is DesktopSnapshot {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    Array.isArray((value as DesktopSnapshot).projects) &&
-    typeof (value as DesktopSnapshot).current_conversation_id === "string"
-  );
 }

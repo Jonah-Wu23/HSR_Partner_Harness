@@ -31,15 +31,15 @@ interface SettingsCenterProps {
   account: AccountPageView;
   model: CharacterModelPageView;
   voice: VoicePageView;
-  /** V0.3.5：语音页「角色音色」区数据（卡列表 + 账号语音配置完备性）。 */
+  /** 语音页「角色音色」区数据。 */
   characterVoice?: CharacterCardVoicePageViewModel;
-  /** V0.3.5：从角色库直达语音页时预选的角色卡 id；null 表示无预选。 */
+  /** 从角色库直达语音页时预选的角色卡 id；null 表示无预选。 */
   voiceCardFocus?: string | null;
-  /** V0.3.5：可选 actions，用于角色音色流程。AppShell 需要传入。 */
+  /** 角色音色、长期记忆与远程页使用的 actions。 */
   actions?: HarnessActions;
-  /** V0.3.5：选择本地文件（参考音频等）。AppShell 需要传入 backend.pickFile 的包装。 */
+  /** 选择本地文件（参考音频等）。 */
   onPickFile?: (options?: { title?: string; filters?: FileFilter[] }) => Promise<string | null>;
-  /** V0.3.3：远程设备页数据源与回调（remote.* 命令）。 */
+  /** 远程设备页数据与回调（remote.* 命令）。 */
   remote: RemotePairingViewModel;
   onIssuePairingCode: () => void;
   onListRemoteDevices: () => void;
@@ -65,11 +65,11 @@ interface SettingsCenterProps {
     apiKey?: string;
   }) => void | Promise<void>;
   onPreviewVoice: (voiceId: string, voiceName: string) => void;
-  /** 当前窗口的 voice.provision 调用；未接入时保留真实错误，不伪造成功。 */
-  onProvisionVoices?: (
+  /** 生成专属音色（voice.provision）。 */
+  onProvisionVoices: (
     speakerIds: string[],
     replaceExisting?: boolean,
-  ) => void | Promise<VoiceProvisionResult>;
+  ) => Promise<VoiceProvisionResult>;
 }
 
 const NAV: Array<{ id: SettingsPage; label: string }> = [
@@ -102,8 +102,7 @@ function TestResultNote({ result, okClass, testingLabel }: TestResultNoteProps) 
 const FIXED_ASR_MODEL = "qwen-audio-3.0-asr-flash-streaming";
 const FIXED_TTS_MODEL = "qwen-audio-3.0-tts-flash";
 
-// V0.3.4：助手侧说话方一律不出现在声音复刻中（fourth_mirror 是
-// march7_fourth_mirror 配对的助手侧，服务端已冻结拒绝助手 TTS）。
+// 助手侧说话方不参与声音复刻（如 march7_fourth_mirror 配对的 fourth_mirror），服务端拒绝助手 TTS。
 const VOICE_SPEAKER_DEFINITIONS: Array<
   Pick<VoiceSpeakerStatus, "speakerId" | "name" | "method">
 > = [
@@ -338,8 +337,8 @@ function CharacterModelPage(props: SettingsCenterProps) {
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  // B-03：服务商是否可用以后端 config.get 的 provider_supported 为准，前端不自行
-  // 推断；只有「后端判定不可用 + 用户还没改选」才拦保存，改选后立即恢复。
+  // 服务商是否可用以 config.get 的 provider_supported 为准；只有后端判定不可用且用户
+  // 还没改选时才拦保存，改选后立即恢复。
   const providerBlocked = !props.model.providerSupported && form.provider === initialProvider;
   const unavailable = props.model.providerUnavailable;
   const dirty =
@@ -458,7 +457,7 @@ function CharacterModelPage(props: SettingsCenterProps) {
 function VoicePage(props: SettingsCenterProps) {
   const { voice } = props;
 
-  // V0.3.5：角色音色区「账号未配置」时跳转回 DashScope 账号配置区。
+  // 角色音色区「账号未配置」时跳转回 DashScope 账号配置区。
   const accountConfigRef = useRef<HTMLDivElement>(null);
 
   const [baseUrl, setBaseUrl] = useState(voice.baseUrl ?? "");
@@ -572,10 +571,6 @@ function VoicePage(props: SettingsCenterProps) {
     );
     if (pendingIds.length === 0) return;
     setProvisionError(null);
-    if (!props.onProvisionVoices) {
-      setProvisionError("当前窗口尚未接入 voice.provision 调用，未伪造生成结果。");
-      return;
-    }
     const generation = voiceGenerationRef.current;
     pendingIds.forEach((speakerId) => provisioningIdsRef.current.add(speakerId));
     setProvisioningIds(Array.from(provisioningIdsRef.current));
@@ -589,7 +584,7 @@ function VoicePage(props: SettingsCenterProps) {
     try {
       const result = await props.onProvisionVoices(pendingIds, replaceExisting);
       if (generation !== voiceGenerationRef.current) return;
-      if (result?.results) {
+      if (result.results) {
         setLocalSpeakers((current) => {
           const next = { ...current };
           result.results?.forEach((item) => {
@@ -702,7 +697,7 @@ function VoicePage(props: SettingsCenterProps) {
 
       <h3 className="settings-subhead">专属音色</h3>
       <p className="settings-hint">
-        当前账号将依次提交 {VOICE_SPEAKER_DEFINITIONS.length} 次声音复刻。生成请求使用当前百炼账号的额度；是否计费以该账号页面和真实响应为准。助手侧说话方不支持语音，不在生成列表中。
+        当前账号将依次提交 {VOICE_SPEAKER_DEFINITIONS.length} 次声音复刻，使用当前百炼账号的额度。助手侧说话方不支持语音，不在生成列表中。
       </p>
       {!hasConfig ? (
         <div className="settings-status-card" role="alert">
@@ -864,7 +859,7 @@ function RemotePage(props: SettingsCenterProps) {
         onTunnelStop={props.onTunnelStop ?? (props.actions ? () => props.actions!.tunnelStop() : undefined)}
         onQueryTunnelStatus={props.onQueryTunnelStatus ?? (props.actions ? () => props.actions!.queryTunnelStatus() : undefined)}
       />
-      {/* V0.3.7 V10：远程管理区常驻电源状态小节（只读；失败如实显示错误）。 */}
+      {/* 远程设备页常驻电源状态小节（只读，失败显示错误原文）。 */}
       <PowerStatusSection actions={props.actions} />
     </>
   );

@@ -13,13 +13,13 @@ interface PowerPromptProps {
 const selectPromptStatus = (state: DesktopState) => state.powerStatus;
 
 /**
- * V0.3.7 V10 桌面端电源提示（非打扰）：远程服务开启且电脑即将休眠时出现在右下角，
- * 展示 Sidecar 判定原文与 AC/DC 睡眠超时，提供「保持唤醒」指引。
- * 应用只提示与指引，永不代改电源设置（契约冻结 §2.1）。
+ * 桌面端电源提示（非打扰）：远程服务开启且电脑即将休眠时出现在右下角，
+ * 展示 Sidecar 判定原文与 AC/DC 睡眠超时，提供「保持唤醒」的设置路径。
+ * 应用只提示，电源设置由用户自己修改。
  *
  * supported=false、读取失败、用户关闭（本次 at_risk 持续期内）均不显示。
- * 数据经 store 电源切片（power.status_changed 事件 + 主动 powerGetStatus）；
- * contracts 视图模型已冻结，与 Composer 一致直接订阅 store。
+ * 数据来自 store 电源切片（power.status_changed 事件 + 主动 powerGetStatus），
+ * 与 Composer 一样直接订阅 store。
  */
 export function PowerPrompt({ actions }: PowerPromptProps) {
   usePowerStatusQuery(actions);
@@ -61,7 +61,6 @@ export function PowerPrompt({ actions }: PowerPromptProps) {
       <p className="power-prompt-guide">
         保持唤醒需在 Windows 设置中自行调整：打开「设置 → 系统 → 电源和电池（或电源和睡眠）
         → 屏幕和睡眠」，把接通电源时的睡眠时间调长或设为「从不」。
-        本应用只做提醒，不会代你修改电源设置。
       </p>
     </aside>
   );

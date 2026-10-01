@@ -10,7 +10,7 @@ interface MemoryPanelProps {
   actions?: HarnessActions;
 }
 
-/** 作用域五分量的展示顺序（契约 §1 冻结顺序：账号/项目/配对/角色/助手身份）。 */
+/** 作用域五分量的展示顺序：账号、项目、配对、角色、助手身份。 */
 const SCOPE_FIELDS: Array<{ key: keyof PairMemory["scope"]; label: string }> = [
   { key: "account_id", label: "账号" },
   { key: "project_id", label: "项目" },

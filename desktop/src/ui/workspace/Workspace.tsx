@@ -14,7 +14,7 @@ interface WorkspaceProps {
   onQuickTask?: (text: string) => void;
   /** 工作台头部收起按钮：等同切回聊天模式。 */
   onCloseWorkbench?: () => void;
-  /** V0.2 M4：委派卡取消回调（task.cancel）。 */
+  /** 委派卡取消回调（task.cancel）。 */
   onCancelDelegation?: () => void;
 }
 
@@ -22,9 +22,9 @@ const workbenchItemKey = (item: WorkspaceViewModel["assistant"]["items"][number]
   item.kind === "message" ? `message:${item.message.message_id}` : `tool:${item.run.tool_call_id}`;
 
 /**
- * 工作区：「一条会话，两条工作轨」。
- * 角色区常驻、永不卸载；工作台是可开合侧栏——聊天模式 = 收起（宽度 0，
- * DOM 与滚动位置保留），协作模式 = 打开。模式切换只是面板开合动画。
+ * 工作区：同一条会话分成角色区与助手工作台两栏。
+ * 角色区常驻、永不卸载；工作台是可开合侧栏，聊天模式下收起（宽度 0，
+ * DOM 与滚动位置保留），协作模式下打开。模式切换只是面板开合动画。
  */
 export function Workspace({
   workspace,
@@ -96,7 +96,6 @@ export function Workspace({
           emptyText={`和 ${pair.character.name} 聊聊吧`}
         />
         {workspace.delegation ? (
-          // V0.2 M4：委派卡——角色区与工作台之间的视觉桥梁
           <DelegationCard
             delegation={workspace.delegation}
             onCancel={onCancelDelegation ? () => onCancelDelegation() : undefined}

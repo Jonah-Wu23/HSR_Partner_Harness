@@ -1,9 +1,5 @@
-/* HSR Partner Harness - 角色创作页样式 (V0.3.3)
-   严格遵守约束：
-   - 严禁 #5e6ad2 蓝紫色系
-   - 零 emoji 图标
-   - OKLch 暖色系与语义设计令牌
-*/
+/* 角色创作页样式。
+   使用 OKLch 暖色系与语义设计令牌；禁止 #5e6ad2 蓝紫色系与 emoji 图标。 */
 
 .char-create-root {
   display: flex;
