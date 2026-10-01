@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from pair_harness.core.contracts import (
     ApprovalDecision,
+    ApprovalMode,
     CharacterTurn,
     DialogueEvent,
     DialogueRequest,
@@ -98,9 +99,8 @@ class ScriptedCodingEngine(CodingEngine):
         self.patch_path = patch_path
         self.reasoning = reasoning
         self.opened_sessions: list[tuple[ProjectRef, EngineSessionRef | None]] = []
-        # B1：记录 open_session 收到的策略映射，供测试断言（真实引擎联调
-        # 时按此写入 thread/start 的 approvalPolicy/sandbox/approvalsReviewer）
-        self.opened_policies: list[dict[str, str | None]] = []
+        # 记录 open_session 收到的审批模式，供测试断言
+        self.opened_approval_modes: list[ApprovalMode] = []
         self.requests: list[TaskRequest] = []
         self.cancelled: list[tuple[EngineSessionRef, str]] = []
         self.amendments: list[tuple[EngineSessionRef, str, TaskAmendment]] = []
@@ -111,19 +111,11 @@ class ScriptedCodingEngine(CodingEngine):
         project: ProjectRef,
         stored_ref: EngineSessionRef | None = None,
         *,
-        approval_policy: str | None = None,
-        sandbox: str | None = None,
-        approvals_reviewer: str | None = None,
+        approval_mode: ApprovalMode,
         developer_instructions: str | None = None,
     ) -> EngineSessionRef:
-        policy = {
-            "approvalPolicy": approval_policy,
-            "sandbox": sandbox,
-            "approvalsReviewer": approvals_reviewer,
-        }
-        if developer_instructions:
-            policy["developerInstructions"] = developer_instructions
-        self.opened_policies.append(policy)
+        del developer_instructions
+        self.opened_approval_modes.append(approval_mode)
         self.opened_sessions.append((project, stored_ref))
         return stored_ref or EngineSessionRef(
             engine_type="scripted",

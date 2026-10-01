@@ -29,8 +29,10 @@ import logging
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
+from pair_harness.adapters.codex.transport import JsonRpcError
 from pair_harness.core.contracts import (
     ApprovalDecision,
+    ApprovalMode,
     EngineEvent,
     EngineEventType,
     EngineSessionRef,
@@ -43,6 +45,13 @@ from pair_harness.core.ports import CodingEngine
 logger = logging.getLogger(__name__)
 
 NO_PROGRESS_ALERT_INTERVAL_S = 60.0
+
+# None 表示 tool_call_update 省略了 status 字段。
+_TOOL_CALL_STATUSES = (None, "pending", "in_progress", "completed", "failed")
+
+
+class AcpProtocolError(RuntimeError):
+    """Reasonix 发来的 ACP 消息不符合协议。"""
 
 
 class AcpCodingEngine(CodingEngine):
@@ -117,18 +126,21 @@ class AcpCodingEngine(CodingEngine):
         project: ProjectRef,
         stored_ref: EngineSessionRef | None = None,
         *,
-        approval_policy: str | None = None,
-        sandbox: str | None = None,
-        approvals_reviewer: str | None = None,
+        approval_mode: ApprovalMode,
         developer_instructions: str | None = None,
     ) -> EngineSessionRef:
-        """打开（或恢复）ACP 会话。工具审批映射到 ACP 的 tool_approval 配置。"""
-        del approvals_reviewer
+        """打开（或恢复）ACP 会话。
+
+        所有审批模式都把 Reasonix 的 tool_approval 设为 ask：每个工具先经
+        session/request_permission 交给编排器做沙箱检查和 ApprovalManager
+        裁决，FULL_AUTO 由 ApprovalManager 在沙箱检查通过后自动放行。
+        """
+        del approval_mode
         await self._ensure_initialized()
         if stored_ref is not None:
-            # ACP session/resume 恢复会话（不重放 transcript）。V0.3.2 M3：
-            # 恢复期间的会话事件用临时订阅器隔离并排空——历史以 SQLite 为
-            # 准，replay 不得写入消息历史，也不得流入通用通知队列。
+            # session/resume 恢复会话。恢复期间的会话事件用临时订阅器隔离并
+            # 排空：历史以 SQLite 为准，replay 不写入消息历史，也不流入通用
+            # 通知队列。
             acp_session_id = self._decode_ref(stored_ref)
             resume_subscription = self.transport.subscribe_session(acp_session_id)
             try:
@@ -147,6 +159,8 @@ class AcpCodingEngine(CodingEngine):
                         break
             finally:
                 resume_subscription.close()
+            # 恢复的会话可能带着旧版本设置的 yolo，这里重新设为 ask。
+            await self._require_tool_approval(acp_session_id)
             return self._encode_ref(acp_session_id)
         params: dict[str, Any] = {"cwd": project.root_path}
         if self.model:
@@ -157,18 +171,18 @@ class AcpCodingEngine(CodingEngine):
         session_id = result.get("sessionId") or result.get("session", {}).get("id")
         if not session_id:
             raise RuntimeError("session/new returned no session id")
-        # 工具审批策略：编排器按审批模式传入（untrusted/never）→ reasonix
-        # 的 ask/yolo（reasonix 不接受未知值，unknown 会按 ask 归一）
-        if approval_policy is not None:
-            await self.transport.request(
-                "session/set_config_option",
-                {
-                    "sessionId": session_id,
-                    "configId": "tool_approval",
-                    "value": "yolo" if approval_policy == "never" else "ask",
-                },
-            )
+        await self._require_tool_approval(str(session_id))
         return self._encode_ref(str(session_id))
+
+    async def _require_tool_approval(self, acp_session_id: str) -> None:
+        await self.transport.request(
+            "session/set_config_option",
+            {
+                "sessionId": acp_session_id,
+                "configId": "tool_approval",
+                "value": "ask",
+            },
+        )
 
     async def run_turn(
         self, session_ref: EngineSessionRef, request: TaskRequest
@@ -324,28 +338,43 @@ class AcpCodingEngine(CodingEngine):
                             notification_task.cancel()
                         await asyncio.gather(notification_task, return_exceptions=True)
                         notification_task = None
+            # session/prompt 的 JSON-RPC 错误在这里抛出，与传输断开、协议错误
+            # 走同一个 TURN_FAILED 分支。
+            stop = prompt_task.result()
         except GeneratorExit:
-            # V0.3.3：消费方 break（如编排器的 aclosing 关闭）抛出的
-            # GeneratorExit 必须直通——`except BaseException` 分支会把回合
-            # 改写成对外 yield 的 TURN_FAILED，导致 aclose() 抛
-            # RuntimeError 且订阅器无法归还；直通后由 finally 释放。
+            # 消费方 aclose() 抛出的 GeneratorExit 必须直通，订阅器由 finally
+            # 归还；这里 yield TURN_FAILED 会让 aclose() 抛 RuntimeError。
             raise
         except asyncio.CancelledError:
             if not prompt_task.done():
                 prompt_task.cancel()
             await asyncio.gather(prompt_task, return_exceptions=True)
             raise
-        except BaseException as exc:  # noqa: BLE001 - 传输断开按回合失败上报
+        except Exception as exc:  # noqa: BLE001 - 回合失败经 TURN_FAILED 上报原始错误
+            failure_payload: dict[str, Any] = {"error": f"{type(exc).__name__}: {exc}"}
+            if isinstance(exc, JsonRpcError):
+                failure_payload["code"] = exc.code
+                failure_payload["data"] = exc.data
             if not prompt_task.done():
+                # 本地出错时 Reasonix 仍在执行这一轮，通知它取消。
                 prompt_task.cancel()
+                try:
+                    await self.transport.notify(
+                        "session/cancel", {"sessionId": acp_session_id}
+                    )
+                except Exception as cancel_exc:  # noqa: BLE001 - 取消失败随回执上报
+                    failure_payload["cancel_error"] = (
+                        f"{type(cancel_exc).__name__}: {cancel_exc}"
+                    )
             await asyncio.gather(prompt_task, return_exceptions=True)
+            logger.warning("Reasonix turn failed: %s", failure_payload)
             yield EngineEvent(
                 conversation_id=request.conversation_id,
                 task_id=request.task_id,
                 engine_turn_id=binding["engine_turn_id"],
                 sequence=0,
                 type=EngineEventType.TURN_FAILED,
-                payload={"error": f"{type(exc).__name__}: {exc}"},
+                payload=failure_payload,
             )
             return
         finally:
@@ -359,24 +388,15 @@ class AcpCodingEngine(CodingEngine):
             if not prompt_task.done():
                 prompt_task.cancel()
                 await asyncio.gather(prompt_task, return_exceptions=True)
-        stop = await prompt_task
         stop_reason = str(stop.get("stopReason") or stop.get("stop_reason") or "")
         stop_error = (
             stop.get("error")
             or stop.get("errorMessage")
             or stop.get("error_message")
         )
-        # V0.3.9 §009：回合终态只以协议响应为准。旧实现按 error/fail/cancel
-        # 关键词猜测，并在「助手正文与工具均已成功」时把协议给出的失败终态
-        # 改写成 completed——工具执行成功不能反证引擎终态成功，该改写已删除。
-        # 协议依据：ACP v1 的 PromptResponse.stopReason 是必填字段
-        # （agent-client-protocol docs/protocol/v1/schema.mdx 标 required；
-        # prompt-turn.mdx §4「the Agent MUST respond ... with a StopReason」），
-        # Reasonix docs/ACP.md 亦声明只发 ACP v1 stop reason，供应商/工具/运行时
-        # 失败走 JSON-RPC -32603，不用成功结果里的非标准 stopReason 表达。
-        # 只返回 sessionId 的是 session/new，不是 session/prompt——旧注释混淆了
-        # 两者，据此产生的「缺省 stopReason 也算成功」分支已删除：缺失或空值
-        # 即协议违规，按失败上报。
+        # 回合终态只以协议响应为准。ACP v1 的 PromptResponse.stopReason 是必填
+        # 字段，供应商、工具和运行时失败走 JSON-RPC 错误；stopReason 缺失或为空
+        # 即协议违规，按失败上报。工具执行成功不能反证回合成功。
         normalized_reason = stop_reason.strip().lower()
         failure_reason: str | None = None
         if stop_error is not None:
@@ -571,48 +591,53 @@ class AcpCodec:
                 parts.append(str(value))
         return "\n".join(parts)
 
-    @staticmethod
-    def _op_fields(update: dict[str, Any]) -> dict[str, Any]:
-        """从 tool_call / request_permission 的 rawInput 提取门控字段。
+    # ACP ToolKind → PendingOperation.tool_kind。读取与搜索同样按路径做沙箱
+    # 校验；think、fetch、other 等没有文件目标的工具按 shell 交给审批裁决。
+    _TOOL_KINDS = {
+        "execute": "shell",
+        "edit": "file_write",
+        "move": "file_write",
+        "delete": "file_delete",
+        "read": "file_write",
+        "search": "file_write",
+    }
+    # Reasonix 内置工具里不产生 locations、参数却指向文件系统的字段，
+    # 取自各工具的参数 JSON schema。
+    _RAW_INPUT_PATH_FIELDS = {
+        "ls": ("path",),
+        "grep": ("path",),
+        "move_file": ("source_path", "destination_path"),
+    }
 
-        映射到编排器 PendingOperation 的有限枚举：execute→shell（命令），
-        edit→file_write，read/search→file_write（只读路径按写路径做沙箱
-        校验，越界读取照常拦截）。kind 缺省按 rawInput 字段启发。
+    @classmethod
+    def _op_fields(cls, tool_call: dict[str, Any]) -> dict[str, Any]:
+        """从 ACP ToolCall 提取沙箱与审批字段。
+
+        路径取协议字段 ``locations[].path``；Reasonix 写权限审批申请的目录在
+        ``_meta["reasonix.io"].directories``。工具名取 ``_meta`` 里的 tool，
+        tool_call 通知没有 ``_meta``，标题就是工具名。rawInput 只按上表的
+        工具参数补充路径，execute 类工具的命令取 shell 工具参数 ``command``。
         """
-        kind = str(update.get("kind") or "").lower()
-        raw = update.get("rawInput")
-        args: dict[str, Any] = {}
-        if isinstance(raw, dict):
-            args = raw
-        elif isinstance(raw, str) and raw.strip():
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, dict):
-                    args = parsed
-            except (ValueError, TypeError):
-                pass
-        if kind == "execute":
-            tool_kind = "shell"
-        elif kind == "edit":
-            tool_kind = "file_write"
-        elif kind in ("read", "search"):
-            tool_kind = "file_write"
-        elif "command" in args or "cmd" in args or "script" in args:
-            tool_kind = "shell"
-        elif "file_path" in args or "filePath" in args or "path" in args or "paths" in args:
-            tool_kind = "file_write"
-        else:
-            tool_kind = "shell"
-        command = args.get("command") or args.get("cmd") or args.get("script")
-        path = args.get("file_path") or args.get("filePath") or args.get("path")
-        paths = args.get("paths")
-        if not paths and path:
-            paths = [path]
+        kind = tool_call.get("kind")
+        meta = (tool_call.get("_meta") or {}).get("reasonix.io") or {}
+        tool_name = meta.get("tool") or tool_call.get("title")
+        raw_input = tool_call.get("rawInput")
+        if not isinstance(raw_input, dict):
+            raw_input = {}
+        paths = [str(location["path"]) for location in tool_call.get("locations") or ()]
+        paths.extend(str(directory) for directory in meta.get("directories") or ())
+        for field in cls._RAW_INPUT_PATH_FIELDS.get(str(tool_name), ()):
+            value = raw_input.get(field)
+            if isinstance(value, str) and value.strip():
+                paths.append(value)
+        command = raw_input.get("command") if kind == "execute" else None
+        if not isinstance(command, str):
+            command = None
         return {
-            "tool_kind": tool_kind,
-            "command": str(command) if isinstance(command, str) else None,
-            "paths": [str(p) for p in paths] if isinstance(paths, (list, tuple)) else [],
-            "summary": str(update.get("title") or "") or (str(command) if command else ""),
+            "tool_kind": cls._TOOL_KINDS.get(str(kind), "shell"),
+            "command": command,
+            "paths": paths,
+            "summary": str(tool_call.get("title") or "") or (command or ""),
         }
 
     def map_notification(self, notification: dict[str, Any], binding: dict[str, str]) -> EngineEvent | None:
@@ -699,15 +724,28 @@ class AcpCodec:
                     or update.get("id")
                     or ""
                 )
-                status = str(update.get("status") or update.get("state") or "completed").lower()
-                succeeded = status not in {"failed", "error", "denied", "rejected"}
+                # ACP ToolCallStatus：只有 completed/failed 结束工具；status
+                # 缺省表示本次更新只带内容，与 pending/in_progress 一样是进度。
+                status = update.get("status")
+                if status not in _TOOL_CALL_STATUSES:
+                    raise AcpProtocolError(
+                        f"tool_call_update status {status!r} 不是 ACP ToolCallStatus: {update!r}"
+                    )
                 text = self._tool_text(
                     update.get("content")
                     or update.get("result")
                     or update.get("output")
                 )
-                # 失败工具附上命令摘要（来自对应的 tool_call），诊断不再只有
-                # 退出码；工具结果里的 stderr/error 文本已被 _tool_text 并入。
+                if status not in ("completed", "failed"):
+                    return EngineEvent(
+                        sequence=self._next(), type=EngineEventType.TOOL_PROGRESS,
+                        tool_call_id=tool_call_id or None,
+                        payload={"summary": text} if text else {},
+                        **common,
+                    )
+                succeeded = status == "completed"
+                # 失败工具附上对应 tool_call 的命令摘要，工具结果里的
+                # stderr/error 文本已由 _tool_text 并入。
                 if succeeded:
                     details = text
                 else:

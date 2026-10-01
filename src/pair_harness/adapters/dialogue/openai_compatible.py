@@ -9,15 +9,13 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from httpx_sse import aconnect_sse
 
 from pair_harness.config.pairs import load_pair_config, load_prompt
 from pair_harness.adapters.dialogue.incremental_json import IncrementalJsonSpeechParser
 from pair_harness.config.providers import (
     deepseek_request_extras,
-    detect_provider,
     is_deepseek_host,
-    load_reasoning_preset,
-    normalize_effort,
 )
 from pair_harness.core.contracts import (
     CharacterProgressSummary,
@@ -55,6 +53,10 @@ class UnusableSpeechError(ValueError):
         self.category = category
 
 
+class DialogueStreamError(RuntimeError):
+    """Chat Completions 流式响应不符合协议，消息带原始数据块。"""
+
+
 class OpenAICompatibleDialogueModel(DialogueModel):
     """OpenAI 兼容流式对话客户端（角色适配器）。
 
@@ -82,8 +84,6 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         client: httpx.AsyncClient | None = None,
         timeout: httpx.Timeout | None = None,
         config_root: Path | None = None,
-        thinking: bool | None = None,
-        reasoning_effort: str | None = None,
         temperature: float | None = None,
         # V0.3.7：resolver 改为三参契约
         #   (conversation_id, recent_messages: tuple[Message, ...], turn_index: int)
@@ -101,11 +101,7 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         self._owns_client = client is None
         self._timeout = timeout or httpx.Timeout(30.0, connect=10.0)
         self._config_root = config_root
-        # B1：DeepSeek 推理请求形态（thinking 开关与 effort 档位）。
-        # None 表示采用供应商预设默认（DeepSeek 默认开启思考）。
-        self.thinking = thinking
-        self.reasoning_effort = reasoning_effort
-        # B1：采样温度；None 表示不写入请求体（服务端默认，DeepSeek 为 1）。
+        # 角色回合的采样温度；None 表示不写入请求体，使用服务端默认值。
         self.temperature = temperature
         # V0.3.5：按 conversation_id 解析对话绑定的自定义角色卡装配结果
         # （docs/plans/V0.3.5-契约冻结.md §4.2）。命中时角色侧 system 文本
@@ -585,30 +581,17 @@ class OpenAICompatibleDialogueModel(DialogueModel):
                 return parsed
         return None
 
-    def _request_extras(self, *, structured_dialogue: bool = False) -> dict[str, Any]:
-        """B1：按后端识别注入推理请求形态。
+    def _request_extras(self) -> dict[str, Any]:
+        """DeepSeek 端点的结构化角色回合请求形态，其他端点保持标准请求体。
 
-        只对 DeepSeek 端点写入 thinking/reasoning_effort 字段；
-        其余 OpenAI 兼容端点保持标准请求体（Reasonix 文档——
-        "the endpoint silently ignores reasoning_effort" 的后端不做无谓注入）。
-
-        DeepSeek 的结构化角色回合必须关闭 thinking。真实 ``deepseek-v4-flash``
-        联调表明，``thinking=enabled`` 与 ``response_format=json_object`` 组合在
-        带历史和项目上下文的回合里会返回 HTTP 200，但 content 只有空格；这不是
-        可解析的台词，也不能靠占位文本或重试伪装成成功。结构化委派仍由同一个
-        DeepSeek 模型生成，只调整这个已验证会失败的请求形态。
+        DeepSeek 角色回合使用 JSON Output 并关闭 thinking：真实
+        ``deepseek-v4-flash`` 在 ``thinking=enabled`` 与
+        ``response_format=json_object`` 组合下，带历史和项目上下文的回合会
+        返回 HTTP 200 但 content 只有空格。
         """
         if not is_deepseek_host(self.base_url):
             return {}
-        thinking = False if structured_dialogue else self.thinking
-        effort = None if structured_dialogue else self.reasoning_effort
-        extras = deepseek_request_extras(
-            thinking=thinking,
-            effort=effort,
-            model=self.model,
-        )
-        # DeepSeek JSON Output：与 system 中唯一的 JSON 协议配合；结构化角色
-        # 回合不启用 thinking，避免真实接口返回空白 content。
+        extras = deepseek_request_extras(thinking=False, model=self.model)
         extras["response_format"] = {"type": "json_object"}
         return extras
 
@@ -650,42 +633,33 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             ),
             "stream": True,
         }
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
         deepseek_structured = is_deepseek_host(self.base_url)
         if deepseek_structured:
-            # 结构化委派回合使用确定的采样参数；不改变供应商或模型，只避开
-            # deepseek-v4-flash 在 thinking + JSON Output 下的空白正文响应。
-            payload["temperature"] = 1.0
             payload["max_tokens"] = 8192
-        elif self.temperature is not None:
-            payload["temperature"] = self.temperature
-        payload.update(self._request_extras(structured_dialogue=deepseek_structured))
+        payload.update(self._request_extras())
         if deepseek_structured and _attempt > 0 and not _delegation_retry:
             # DeepSeek 偶发在带历史的 response_format=json_object 请求中返回
             # 空 content；重试时放宽供应商格式约束，仍由本地解析器和委派
             # 协议决定是否接受结果。
             payload.pop("response_format", None)
             payload["temperature"] = 1.2
-        # V0.2 M2（问题 10）：content 增量经 IncrementalJsonSpeechParser 只提取
-        # 干净 speech 上屏（不再闪烁 JSON 键名）；reasoning_content 走独立通道。
-        # 增量期间若字段尚未解析出来，界面显示“正在组织语言…”。
+        # content 增量经 IncrementalJsonSpeechParser 只提取 speech 上屏；
+        # reasoning_content 走独立通道。
         text_chunks: list[str] = []
         reasoning_chunks: list[str] = []
         parser = IncrementalJsonSpeechParser()
         speech_started = False
         reasoning_started = False
-        async with client.stream("POST", "/chat/completions", json=payload) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data = line[6:].strip()
-                if data == "[DONE]":
+        async with aconnect_sse(
+            client, "POST", "/chat/completions", json=payload
+        ) as event_source:
+            event_source.response.raise_for_status()
+            async for sse in event_source.aiter_sse():
+                if sse.data == "[DONE]":
                     break
-                try:
-                    chunk = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                delta_payload = chunk.get("choices", [{}])[0].get("delta", {})
+                delta_payload = _chunk_delta(sse.data)
                 content_delta = delta_payload.get("content", "")
                 reasoning_delta = delta_payload.get("reasoning_content", "")
                 if reasoning_delta:
@@ -833,8 +807,29 @@ def _output_source_label(attempt: int, delegation_retry: bool) -> str:
     return f"空输出重试第 {attempt} 次"
 
 
+def _chunk_delta(data: str) -> dict[str, Any]:
+    """解析一个 Chat Completions 流式数据块，返回首个 choice 的 delta。
+
+    OpenAI 协议允许 choices 为空的数据块（例如 usage 统计块），这类块
+    没有增量；不是 JSON、缺少 choices 或 delta 形状不符都按协议错误抛出。
+    """
+    try:
+        chunk = json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise DialogueStreamError(f"流式数据块不是合法 JSON：{data[:500]!r}") from exc
+    choices = chunk.get("choices") if isinstance(chunk, dict) else None
+    if not isinstance(choices, list):
+        raise DialogueStreamError(f"流式数据块缺少 choices：{data[:500]!r}")
+    if not choices:
+        return {}
+    delta = choices[0].get("delta") if isinstance(choices[0], dict) else None
+    if not isinstance(delta, dict):
+        raise DialogueStreamError(f"流式数据块的 delta 不是对象：{data[:500]!r}")
+    return delta
+
+
 def _is_placeholder_speech(speech: str) -> bool:
-    return not str(speech or "").strip(" \\t\\r\\n.…。!！?？")
+    return not str(speech or "").strip(" \t\r\n.…。!！?？")
 
 
 def _first_markdown_section(prompt: str) -> str:

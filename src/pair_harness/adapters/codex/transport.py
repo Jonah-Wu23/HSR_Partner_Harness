@@ -21,6 +21,23 @@ class TransportClosed(RuntimeError):
     pass
 
 
+class JsonRpcError(RuntimeError):
+    """服务端对请求返回的 JSON-RPC error 对象，保留 code、message、data 原值。"""
+
+    def __init__(self, code: int, message: str, data: Any = None) -> None:
+        self.code = code
+        self.message = message
+        self.data = data
+        text = f"JSON-RPC error {code}: {message}"
+        if data is not None:
+            text = f"{text} (data: {json.dumps(data, ensure_ascii=False)})"
+        super().__init__(text)
+
+
+class JsonlProtocolError(RuntimeError):
+    """子进程输出了无法解析的 JSONL 行，连接上的协议状态不再可信。"""
+
+
 class JsonLineConnection(Protocol):
     async def read_line(self) -> bytes: ...
 
@@ -98,10 +115,9 @@ class SubprocessJsonLineConnection:
             text = line.decode("utf-8", errors="replace").strip()
             if text:
                 self._stderr_tail.append(text[-500:])
-                # V0.3.8 T4：app-server stderr 是引擎诊断的第一手来源（如模型
-                # 供给误配的重试告警）。INFO 档可在 PAIR_HARNESS_LOG_LEVEL=INFO
-                # 下查看，默认 WARNING 不输出，不再无声排空。
-                logger.info("Codex app-server stderr: %s", text)
+                # 子进程 stderr 是引擎诊断的第一手来源，在
+                # PAIR_HARNESS_LOG_LEVEL=INFO 下可见。
+                logger.info("JSONL subprocess stderr: %s", text)
 
     def stderr_tail(self, limit: int = 6) -> str:
         """最近 stderr 行拼接（idle 超时等场景携带底层原因，不吞原文）。"""
@@ -123,7 +139,7 @@ class SubprocessJsonLineConnection:
             except asyncio.TimeoutError:
                 self._stderr_task.cancel()
                 await asyncio.gather(self._stderr_task, return_exceptions=True)
-        detail = f"Codex app-server exited (exit code {self.process.returncode})"
+        detail = f"JSONL subprocess exited (exit code {self.process.returncode})"
         if self._stderr_tail:
             stderr = " | ".join(self._stderr_tail)
             detail = f"{detail}: {stderr[-3000:]}"
@@ -136,12 +152,12 @@ class SubprocessJsonLineConnection:
 
     async def write_line(self, data: bytes) -> None:
         if self.process.stdin is None:
-            raise TransportClosed("app-server stdin is unavailable")
+            raise TransportClosed("JSONL subprocess stdin is unavailable")
         try:
             self.process.stdin.write(data)
             await self.process.stdin.drain()
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, ValueError) as exc:
-            raise TransportClosed("Codex app-server connection lost") from exc
+            raise TransportClosed("JSONL subprocess connection lost") from exc
 
     async def _terminate_tree(self) -> None:
         """强制结束整个子进程树。
@@ -179,7 +195,7 @@ class SubprocessJsonLineConnection:
         except asyncio.TimeoutError:
             # 普通 terminate 无效时进入强制结束；真实错误保留在日志里。
             logger.warning(
-                "Codex app-server 未在 2s 内退出，强制结束进程树 (pid=%s)",
+                "JSONL 子进程未在 2s 内退出，强制结束进程树 (pid=%s)",
                 self.process.pid,
             )
             await self._terminate_tree()
@@ -187,7 +203,7 @@ class SubprocessJsonLineConnection:
                 await asyncio.wait_for(self.process.wait(), timeout=2.0)
             except asyncio.TimeoutError:
                 logger.error(
-                    "Codex app-server 强制结束后仍未退出 (pid=%s)", self.process.pid
+                    "JSONL 子进程强制结束后仍未退出 (pid=%s)", self.process.pid
                 )
         if self._stderr_task is not None:
             await asyncio.gather(self._stderr_task, return_exceptions=True)
@@ -275,8 +291,6 @@ class JsonlProcessTransport:
         # 未路由/未知 session 的事件保留在诊断缓冲中，绝不投给任意任务。
         self._session_diagnostics: deque[str] = deque(maxlen=50)
         self._failure_broadcast = False
-        # 坏行容错计数（O1.3）：读循环跳过无法解析的行，不中断
-        self.bad_line_count = 0
 
     @property
     def is_running(self) -> bool:
@@ -328,7 +342,7 @@ class JsonlProcessTransport:
             if isinstance(exc, (TransportClosed, ConnectionError, ValueError)):
                 await self._close_connection()
                 if not isinstance(exc, TransportClosed):
-                    raise TransportClosed("Codex app-server connection lost") from exc
+                    raise TransportClosed("JSONL subprocess connection lost") from exc
             raise
         effective_timeout = self.request_timeout if timeout is None else timeout
         if effective_timeout is None:
@@ -416,7 +430,7 @@ class JsonlProcessTransport:
         except (TransportClosed, ConnectionError, ValueError) as exc:
             await self._close_connection()
             if not isinstance(exc, TransportClosed):
-                raise TransportClosed("Codex app-server connection lost") from exc
+                raise TransportClosed("JSONL subprocess connection lost") from exc
             raise
 
     async def respond(self, request_id: int, result: dict[str, Any]) -> None:
@@ -438,7 +452,6 @@ class JsonlProcessTransport:
         assert self._connection is not None
         generation = self._generation
         notifications = self._notifications
-        failure: BaseException = TransportClosed("Codex app-server exited")
         try:
             while True:
                 line = await self._connection.read_line()
@@ -446,21 +459,19 @@ class JsonlProcessTransport:
                     describe_exit = getattr(self._connection, "exit_description", None)
                     if callable(describe_exit):
                         raise TransportClosed(await describe_exit())
-                    raise failure
-                # 单行坏 JSON 只跳过并计数，不杀掉整个读循环（O1.3）；
-                # 只有连接关闭（空行）才终止循环。
+                    raise TransportClosed("JSONL subprocess exited")
+                # 坏行可能就是某个请求的响应，跳过会让该请求一直挂到超时；
+                # 这里直接结束读循环，由下方分支让所有在途请求和订阅器收到错误。
                 try:
                     message = json.loads(line.decode("utf-8"))
-                except (ValueError, UnicodeDecodeError):
-                    self.bad_line_count += 1
-                    logger.warning("忽略无法解析的 JSONL 行: %r", line[:200])
-                    continue
+                except (ValueError, UnicodeDecodeError) as exc:
+                    raise JsonlProtocolError(
+                        f"unparseable JSONL line from subprocess: {line[:500]!r}"
+                    ) from exc
                 if "id" in message and "method" in message:
-                    # O3.1：服务端发起的请求（如 item/commandExecution/requestApproval
-                    # 或 session/request_permission）带 JSON-RPC id 与方法名，
-                    # 与通知同队列消费，由调用方（run_turn 循环）经 respond()
-                    # 回复；不能当作客户端请求的响应。V0.3.2 M3：携带
-                    # sessionId 的会话请求先走 session 路由。
+                    # 服务端发起的请求（如 session/request_permission）带 id 与
+                    # method，与通知一起交给调用方，由调用方经 respond() 回复。
+                    # 携带 sessionId 的请求先走 session 路由。
                     if not self._route_session_message(message):
                         await notifications.put(message)
                 elif "id" in message:
@@ -472,7 +483,10 @@ class JsonlProcessTransport:
                     if future is None:
                         continue
                     if "error" in message:
-                        future.set_exception(RuntimeError(str(message["error"])))
+                        error = message["error"]
+                        future.set_exception(
+                            JsonRpcError(error["code"], error["message"], error.get("data"))
+                        )
                     else:
                         future.set_result(message.get("result", {}))
                 elif "method" in message:
@@ -481,7 +495,6 @@ class JsonlProcessTransport:
         except asyncio.CancelledError:
             return
         except BaseException as exc:
-            failure = exc
             for request_id, future in tuple(self._pending.items()):
                 if self._pending_generation.get(request_id) != generation:
                     continue
@@ -489,7 +502,7 @@ class JsonlProcessTransport:
                 self._pending.pop(request_id, None)
                 if not future.done():
                     future.set_exception(exc)
-            # V0.3.2 M3：断开对全部 session 订阅器广播同一真实异常。
+            # 所有 session 订阅器收到同一个真实异常。
             self._broadcast_failure_to_subscriptions(exc)
             # 旧 reader 的异常只放进自己代次的通知队列，不影响新队列。
             await notifications.put(exc)

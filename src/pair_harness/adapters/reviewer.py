@@ -66,32 +66,23 @@ class DialogueModelReviewer:
             user_message=synthetic,
         )
 
-        # V0.2 M2：适配器的 speech.delta 已是干净 speech（剥离 JSON 包裹），
-        # 裸裁决 JSON（无 speech 字段）只存在于 speech.completed.raw 与
-        # character.final 的二次加工里。按 原始输出 → delta 拼接 → final 台词
-        # 的顺序取裁决 JSON。delta 拼接仅用于演示/测试模型只发半截 delta 的
-        # 场景，不依赖真实适配器（真实适配器必发 speech.completed）。
-        chunks: list[str] = []
-        final_speech: str | None = None
+        # 裁决只取模型正文：speech.completed.raw 是完整的原始正文输出，
+        # 有界重试时以最后一次为准。格式不符直接抛错，由 ApprovalManager
+        # 发出 review.failed 并否决。
         raw_content: str | None = None
         async for event in self._model.stream_reply(request):
-            if event.type == "speech.delta":
-                chunks.append(event.delta)
-            elif event.type == "reasoning.delta":
-                chunks.append(event.delta)
-            elif event.type == "speech.completed" and event.raw:
+            if event.type == "speech.completed":
                 raw_content = event.raw
-            elif event.type == "character.final" and event.turn:
-                final_speech = event.turn.speech
-        data = self._parse_verdict_json(raw_content) if raw_content else None
+        if not raw_content:
+            raise ValueError("审查智能体没有返回正文输出")
+        data = self._parse_verdict_json(raw_content)
         if data is None:
-            data = self._parse_verdict_json("".join(chunks))
-        if data is None and final_speech:
-            data = self._parse_verdict_json(final_speech)
-        if data is None:
-            return ReviewerVerdict(allow=False, reason="审查智能体返回格式错误", suggestion="请重试")
+            raise ValueError(f"审查智能体返回格式错误：{raw_content[-500:]!r}")
+        allow = data.get("allow")
+        if not isinstance(allow, bool):
+            raise ValueError(f"审查智能体裁决的 allow 不是布尔值：{allow!r}")
         return ReviewerVerdict(
-            allow=bool(data.get("allow", False)),
+            allow=allow,
             reason=str(data.get("reason", "")),
             suggestion=str(data.get("suggestion", "")),
         )

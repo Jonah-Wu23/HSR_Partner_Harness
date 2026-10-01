@@ -34,29 +34,27 @@ from pair_harness.voice_models import VOICE_TTS_MODEL
 logger = logging.getLogger(__name__)
 
 TTS_SAMPLE_RATE = 24_000
-# V0.2 问题 2：合成前兜底过滤的“不可读”字符（空白与标点）。
+# 合成前过滤的“不可读”字符（空白与标点）。
 # 文本中若存在一个不在该集合内的字符，则视为包含可朗读内容。
 _TTS_SKIP_CHAR = re.compile(
     r"[\s，。！？；：、,.!?;:'\"“”‘’…—–~··`~@#$%^&*()\[\]{}<>《》【】（）—\-_|/\\+=]"
 )
 # 等待 complete 哨兵的超时（秒）；超过视为异常收尾
 _TAIL_TIMEOUT_S = 15.0
-# streaming_call 提交文本后的“取消窗口”（秒）：窗口内 aclose 置 closed
-# 可走 streaming_cancel；窗口过后立即发 finish request 等服务端 FINISHED
-_CANCEL_WINDOW_S = 0.1
-# streaming_complete 内部的等待上限（毫秒）：避免服务端异常时不回 FINISHED
-# 导致底层线程无限阻塞（asyncio 侧 _TAIL_TIMEOUT_S 会先超时）
+# 合成线程检查取消标志的间隔（秒）：发出 finish request 后到服务端 FINISHED
+# 之前，aclose 置 closed 都会改走 streaming_cancel
+_CANCEL_POLL_S = 0.02
+# SDK 后台等待服务端 FINISHED 的上限（毫秒）；asyncio 侧 _TAIL_TIMEOUT_S 会先超时
 _COMPLETE_TIMEOUT_MS = 20_000
 # aclose 不应把 VoiceRuntime 播放循环拖进 SDK 的完整收尾等待；超时后
 # 保留 executor 线程自行结束，播放状态先回到可继续处理的路径。
 _CLOSE_WAIT_S = 0.5
-# 被放弃等待的合成线程：超过该时间仍未结束才记 WARNING。0.5s 的关闭等待
-# 在正常收尾时几乎必然超时（SDK 在 streaming_complete 里还要走完 FINISHED
-# 与关连接），逐次告警只会淹没真实泄漏。
+# 被放弃等待的合成线程超过该时间仍未结束才记 WARNING（建连或取消收尾
+# 可能超过 _CLOSE_WAIT_S，只有长时间未结束才算泄漏）。
 _TTS_THREAD_REAP_WARN_S = 30.0
-# V0.3.9（V039-S4-012）：上行合成的起始节流。中继路径每条角色消息都会新建
-# 一个适配器实例，实例级节流对高频回合无效，因此节流状态按进程共享。
-# 该下限是保守工程取值，不是实测到的供应商限额；真实额度仍需真机复验。
+# 上行合成的起始节流。中继路径每条角色消息都会新建一个适配器实例，
+# 实例级节流对高频回合无效，因此节流状态按进程共享。该下限是保守的
+# 工程取值，供应商真实额度仍需真机复验。
 _TTS_MIN_START_INTERVAL_S = 1.0
 # 一次合成失败后，下一次起始额外等待的基础退避（连续失败逐次翻倍，上限
 # _TTS_MAX_START_INTERVAL_S，一次成功即复位）。用于避免限流期间逐条重试
@@ -243,13 +241,12 @@ class QwenSpeechSynthesizer(SpeechSynthesizer):
         loop: asyncio.AbstractEventLoop,
         closed: threading.Event,
     ) -> None:
-        """executor 线程：提交文本 → 发 finish request → 等 FINISHED → 收尾。
+        """executor 线程：提交文本 → 发 finish request → 等 FINISHED 或取消。
 
-        真实服务在收到 finish request（``streaming_complete``）前不会发
-        FINISHED 消息，因此不能在 ``streaming_call`` 后死等 on_complete
-        （会与服务端互相等待直到超时）。音频帧在合成过程中已随流式到达，
-        先留一个短的取消窗口让 aclose 有机会走 ``streaming_cancel``，
-        窗口过后立即 ``streaming_complete`` 等待服务端收尾。
+        服务端收到 finish request 后才会发 FINISHED，因此提交文本后立即用
+        ``async_streaming_complete`` 发出 finish request，由 SDK 后台线程等待
+        服务端收尾。本线程在拿到 complete/error 之前持续检查 ``closed``，
+        整个合成期间置 closed 都会调用 ``streaming_cancel`` 中止上游合成。
         """
         try:
             from dashscope.audio.tts_v2 import ResultCallback  # type: ignore
@@ -285,19 +282,14 @@ class QwenSpeechSynthesizer(SpeechSynthesizer):
         try:
             synthesizer = self._make_synthesizer(voice_id, _Callback())
             synthesizer.streaming_call(text)
-            # 取消窗口：提交后短暂等待，若 aclose 已置 closed 则走 cancel
-            deadline = time.monotonic() + _CANCEL_WINDOW_S
-            while (
-                not done.is_set()
-                and not closed.is_set()
-                and time.monotonic() < deadline
-            ):
-                done.wait(0.01)
-            if closed.is_set() and not done.is_set():
-                synthesizer.streaming_cancel()
-                return
-            # 发 finish request 并等待服务端 FINISHED；正常时音频帧已全部到达
-            synthesizer.streaming_complete(complete_timeout_millis=_COMPLETE_TIMEOUT_MS)
+            if not done.is_set() and not closed.is_set():
+                synthesizer.async_streaming_complete(
+                    complete_timeout_millis=_COMPLETE_TIMEOUT_MS
+                )
+            while not done.wait(_CANCEL_POLL_S):
+                if closed.is_set():
+                    synthesizer.streaming_cancel()
+                    return
         except Exception as exc:  # noqa: BLE001 - 第三方 SDK 异常类型不稳定
             if not closed.is_set():
                 _put(_TtsBridgeEvent(kind="error", message=f"TTS 合成失败: {exc}"))
@@ -401,8 +393,8 @@ class QwenSpeechSynthesizer(SpeechSynthesizer):
         finally:
             self._active.discard(record)
             # 中断或异常：通知底层线程尽快 cancel；正常收尾也只等待有限时间。
-            # streaming_complete 可能卡在 SDK 的 websocket 收尾，不能让
+            # 建连和 streaming_cancel 都可能卡在 SDK 的 websocket 收尾，不能让
             # VoiceRuntime 的播放循环跟着无限等待。超过等待的线程交给后台
-            # 收尾：正常完成只在真正卡死时才告警。
+            # 收尾：只在真正卡死时才告警。
             closed.set()
             await self._settle_thread_task(task)

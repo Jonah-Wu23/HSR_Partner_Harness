@@ -9,6 +9,7 @@ from typing import Any
 
 from pair_harness.core.contracts import (
     ApprovalDecision,
+    ApprovalMode,
     EngineEvent,
     EngineEventType,
     EngineSessionRef,
@@ -84,12 +85,17 @@ class CodexAppServerEngine(CodingEngine):
         project: ProjectRef,
         stored_ref: EngineSessionRef | None = None,
         *,
+        approval_mode: ApprovalMode | None = None,
         approval_policy: str | None = None,
         sandbox: str | None = None,
         approvals_reviewer: str | None = None,
         developer_instructions: str | None = None,
     ) -> EngineSessionRef:
         """打开（或恢复）app-server 线程。
+
+        编排器传入 ``approval_mode``：FULL_AUTO 映射为 ``never`` +
+        ``workspace-write``，其余模式映射为 ``untrusted`` + ``read-only``，
+        让写操作执行前挂起等待裁决。
 
         O3.1：``approval_policy``/``sandbox``/``approvals_reviewer`` 映射到
         thread/start 的 approvalPolicy / sandbox / approvalsReviewer 字段
@@ -98,6 +104,11 @@ class CodexAppServerEngine(CodingEngine):
         B1 联调时由编排器按审批模式（request_approval → "untrusted" 等）
         与沙箱配置传入真实参数。
         """
+        if approval_mode is not None:
+            full_auto = approval_mode == ApprovalMode.FULL_AUTO
+            approval_policy = "never" if full_auto else "untrusted"
+            sandbox = "workspace-write" if full_auto else "read-only"
+            approvals_reviewer = "user"
         was_running = self.transport.is_running
         await self.transport.start()
         # M1.3：transport 重连后连接代次变化，必须复位并重新 initialize。
