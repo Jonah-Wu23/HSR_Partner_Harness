@@ -128,21 +128,9 @@ The Windows x64 installer and Android arm64 package are published on [GitHub Rel
 
 The app includes a demo mode for the interface and interaction experience. Add model settings to run live models. Live coding uses the bundled DeepSeek-Reasonix runtime and reuses the endpoint you configured for dialogue.
 
-## Verification record
+## Current limits
 
-v0.4.0 release baseline, measured on 2026-09-13:
-
-| Check | Result |
-| --- | --- |
-| Python | `1202 passed, 4 skipped` |
-| Desktop Vitest | 47 suites, `503 passed` |
-| Mobile Vitest | 30 suites, `361 passed` |
-| TypeScript | `tsc --noEmit` clean |
-| Rust | `cargo fmt --check` no diffs, `cargo test` `28 passed` |
-| Real-device acceptance | 11 of 12 matrix items passed; the one failure (M10) was fixed and re-tested by simulation (see the [acceptance record](docs/plans/V0.4.0-真机验收记录.md), in Chinese) |
-| Release gates | All 14 items verified (same document, §7) |
-
-Known boundaries are written down in the [v0.4.0 release notes](docs/release-notes/v0.4.0-release-notes.md): iOS Safari/PWA untested (no device available), mobile weak-network and four-conversation load scenarios not executed, and system notifications on the phone limited to the Android shell.
+The [v0.4.0 release notes](docs/release-notes/v0.4.0-release-notes.md) list the current limits: iOS Safari and the PWA are untested, mobile weak-network and four-conversation load scenarios are untested, and phone browsers get no system notifications (local notifications work only in the Android shell).
 
 ## Live mode
 

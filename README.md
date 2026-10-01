@@ -190,21 +190,9 @@ npm run tauri:build
 
 NSIS 安装包生成于 `desktop/src-tauri/target/release/bundle/nsis/`。编译后的可执行程序位于 `desktop/src-tauri/target/release/hsr-partner-harness.exe`。
 
-## 验证记录
+## 验证
 
-v0.4.0 发布基线（2026-09-13 实测）：
-
-| 检查项 | 结果 |
-| --- | --- |
-| Python | `1202 passed, 4 skipped` |
-| 桌面前端 Vitest | 47 套件 `503 passed` |
-| 移动端 Vitest | 30 套件 `361 passed` |
-| TypeScript | `tsc --noEmit` 通过 |
-| Rust | `cargo fmt --check` 0 差异，`cargo test` `28 passed` |
-| 真机验收 | 12 项矩阵 11 项通过；唯一失败项 M10 修复后模拟复测通过（见 [真机验收记录](docs/plans/V0.4.0-真机验收记录.md)） |
-| 发布门槛 | 14 项逐项核对全部满足（同上 §7） |
-
-已知边界如实记录在 [v0.4.0 发布说明](docs/release-notes/v0.4.0-release-notes.md)：iOS Safari/PWA 未覆盖（无设备受阻）、移动端弱网与四聊天交互负载未执行、手机浏览器无系统通知（本地通知仅在 Android 壳内）。
+当前限制见 [v0.4.0 发布说明](docs/release-notes/v0.4.0-release-notes.md)：iOS Safari/PWA 未覆盖，移动端弱网与四聊天负载未测试，手机浏览器没有系统通知（本地通知只在 Android 壳内可用）。
 
 常用验证命令：
 

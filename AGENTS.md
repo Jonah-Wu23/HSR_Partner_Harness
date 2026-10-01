@@ -100,7 +100,7 @@ Python 包位于 `src/pair_harness/`。Sidecar 入口是 `pair_harness.desktop_b
 - `docs/README.md` — docs 总索引（完整入口）。
 - `docs/index.html` 与 `docs/assets/website/` — 项目官网，GitHub Pages 从 `docs/` 根目录发布，两者位置不可移动。
 - `docs/plans/` — 开发计划，现行路线图 `V0.3.3-V0.4.0-Plan.md`。
-- `docs/release-notes/` — 版本发布说明（v0.4.1 / v0.4.0 / v0.3.2 / v0.3.2-patch1 / v0.2.0），另有 v0.3.x 阶段验收文档。
+- `docs/release-notes/` — 版本发布说明（v0.4.1 / v0.4.0 / v0.3.2 / v0.3.2-patch1 / v0.2.0）。
 - `docs/character-card/` — 角色卡数据契约、字段映射、状态枚举与接入清单。
 - `docs/design/` — `research/` 外部调研（mufy、SillyTavern、DeepSeek-Reasonix）、`dashscope/` 千问语音 API 参考、`web-prototype/` V0.4.0 视觉原型、`旧版/` v0.2.0 时代文档。
 - `docs/website/` — 官网文案规则。
