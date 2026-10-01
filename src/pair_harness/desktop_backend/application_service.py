@@ -97,6 +97,7 @@ from pair_harness.core.contracts import (
 from pair_harness.storage.records import (
     ConversationSummary as StorageSummary,
     MemoryScope as StorageMemoryScope,
+    MemoryStatus,
     PairMemory as StorageMemory,
     TurnMetric,
     TurnMetricQuery,
@@ -1023,13 +1024,8 @@ class DesktopApplicationService:
         return text
 
     def _voice_customization_error(self, exc: Exception, api_key: str) -> str:
-        """音色定制失败的可见原因：带 HTTP 状态码（有则附上），Key 脱敏。"""
-        prefix = (
-            f"HTTP {exc.http_status} "
-            if isinstance(exc, VoiceCustomizationError) and exc.http_status is not None
-            else ""
-        )
-        return prefix + self._redact_voice_error(str(exc) or type(exc).__name__, api_key)
+        """音色定制失败的可见原因，Key 脱敏；客户端错误文本已带 HTTP 状态码。"""
+        return self._redact_voice_error(str(exc) or type(exc).__name__, api_key)
 
     # ------------------------------------------------------------------ 快照
 
@@ -2324,6 +2320,9 @@ class DesktopApplicationService:
                 )
             if outcome.receipt is not None:
                 terminal_status = outcome.receipt.status
+                if terminal_status == "failed":
+                    # 引擎上报失败时回合不抛异常，真实原因在回执的 errors 里。
+                    failure_reason = "\n".join(outcome.receipt.errors) or None
         except asyncio.CancelledError:
             terminal_status = "cancelled"
             # Sidecar 关闭（stdout 断开、进程退出）触发的任务取消属于传输关闭
@@ -2387,9 +2386,9 @@ class DesktopApplicationService:
         """把回合终态写为 TurnMetric（幂等：同 turn 重复终态以首次写入为准）。
 
         未观测或供应商不提供的字段为 null 且键仍存在，真实零值用 0；token
-        只接受服务端真实 usage，不估算。``failure_reason`` 是回合链捕获的
-        真实失败原因：调用方持有的消息对象不可变，失败原因只能由这里显式
-        接收。
+        只接受服务端真实 usage，不估算。``failure_reason`` 是回合链得到的
+        真实失败原因：回合抛出的异常，或引擎失败回执里的 errors；回执没有
+        错误明细时为 None。
 
         供应商与模型取实际生效的对话配置，engine_type 取当前编程助手引擎，
         reasoning_effort 只记账号保存的值（未配置为 null）。approval_count
@@ -4316,6 +4315,10 @@ class DesktopApplicationService:
                 # 手机端停止或新回复抢占后不再下发；已下发的分片不撤回。
                 if stream.stopped:
                     return
+                # 适配器以 final 空块标记合成结束，手机端的结束信号是
+                # voice.mobile_tts_end。
+                if chunk.final:
+                    continue
                 chunk_count += 1
                 self._publish_remote_only("voice.mobile_tts_chunk", stream.chunk(chunk.pcm))
             if stream.stopped:
@@ -4844,7 +4847,7 @@ class DesktopApplicationService:
                 "日常聊天（无项目）不读写长期记忆",
                 code=MEMORY_INVALID,
             )
-        # core 已校验五分量；存储层查询使用带 scope_key 的 storage 模型。
+        # core 已校验五分量，存储层查询使用 storage 模型。
         return StorageMemoryScope(
             account_id=scope.account_id,
             project_id=scope.project_id,
@@ -4942,47 +4945,17 @@ class DesktopApplicationService:
         )
         return stored
 
-    def _report_memory_not_stored(
-        self,
-        conversation_id: str,
-        drafts: tuple[MemoryDraft, ...],
-        reason: str,
-        *,
-        code: str,
-    ) -> None:
-        """本轮记忆未落库：写日志并广播 diagnostic.warning。"""
-        logger.warning(
-            "长期记忆未落库（conversation=%s，条数=%s）：%s",
-            conversation_id,
-            len(drafts),
-            reason,
-        )
-        self._emit_diagnostic_warning(
-            {
-                "source": "memory",
-                "conversation_id": conversation_id,
-                "count": len(drafts),
-                "message": f"本轮 {len(drafts)} 条长期记忆未落库：{reason}",
-                "code": code,
-            }
-        )
-
     def _persist_memory_drafts(
         self, conversation_id: str, drafts: tuple[MemoryDraft, ...]
     ) -> None:
-        """落库角色本轮声明的长期记忆条目。
+        """按会话作用域落库角色本轮声明的长期记忆条目。
 
-        运行时协议只在有项目（有记忆作用域）时提供 memory 字段，无项目会话
-        收到条目即协议越界：本轮消息与终态不受影响，记日志并广播
-        diagnostic.warning，让“模型写了却没落库”可见。
+        回合只在有项目的会话里运行（chat.submit 对无项目会话报
+        daily_chat_unavailable），作用域解析失败即回合失败。
         """
         if not drafts:
             return
-        try:
-            scope = self._conversation_scope(conversation_id)
-        except ServiceError as exc:
-            self._report_memory_not_stored(conversation_id, drafts, str(exc), code=exc.code)
-            return
+        scope = self._conversation_scope(conversation_id)
         for draft in drafts:
             self._store_memory(
                 conversation_id=conversation_id,
@@ -5000,11 +4973,10 @@ class DesktopApplicationService:
             if conversation_id
             else self._memory_scope_from_params(params)
         )
-        status = _optional_text(params, "status")
         limit = params.get("limit")
         memories = self.store.list_memories(
             scope,
-            status=status,
+            status=_optional_text(params, "status") or MemoryStatus.ACTIVE.value,
             limit=int(limit) if limit is not None else None,
         )
         return {
@@ -5033,7 +5005,7 @@ class DesktopApplicationService:
         if content is not None:
             if not isinstance(content, Mapping):
                 raise ServiceError("记忆内容必须是 JSON 对象", code=MEMORY_INVALID)
-            # 存储层 content 是 JSON 文本；协议侧由 memory_event_payload 解析回对象。
+            # 存储层 content 是 JSON 文本，协议载荷由 _memory_payload 解析回对象。
             fields["content"] = _json_text(dict(content))
         if status is not None:
             if status not in {"active", "deleted"}:

@@ -680,9 +680,9 @@ export interface MemoryScope { account_id: string; project_id: string; pair_id: 
 /**
  * memory.list 条目与 memory.updated / memory.deleted 事件载荷的真实线缆形状。
  *
- * 来源：`application_service._memory_payload`（写命令与事件共用）与
- * `core.memory.memory_event_payload`，两处都把五分量作用域作为**扁平字段**下发，
- * 线缆上没有嵌套 scope 对象。做会话解析（携带 conversation_id）时载荷再带该字段。
+ * 来源：`application_service._memory_payload`（读写命令与事件共用），五分量作用域
+ * 作为**扁平字段**下发，线缆上没有嵌套 scope 对象。做会话解析（携带 conversation_id）
+ * 时载荷再带该字段。
  */
 export interface MemoryWirePayload {
   memory_id: string;

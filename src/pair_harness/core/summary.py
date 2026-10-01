@@ -253,66 +253,6 @@ def require_summary_conversation(
         )
 
 
-def completed_summary(
-    *,
-    summary_id: str,
-    conversation_id: str,
-    covers_from_message_id: str,
-    covers_to_message_id: str,
-    covers_message_count: int,
-    content: Mapping[str, Any],
-    provider: str | None = None,
-    model: str | None = None,
-    now: datetime | None = None,
-) -> ConversationSummary:
-    """构造成功摘要记录（内容原样保存，不改写）。"""
-    timestamp = now or utc_now()
-    return ConversationSummary(
-        summary_id=summary_id,
-        conversation_id=conversation_id,
-        status="completed",
-        covers_from_message_id=covers_from_message_id,
-        covers_to_message_id=covers_to_message_id,
-        covers_message_count=covers_message_count,
-        content=content,
-        provider=provider,
-        model=model,
-        created_at=timestamp,
-        updated_at=timestamp,
-    )
-
-
-def failed_summary(
-    *,
-    summary_id: str,
-    conversation_id: str,
-    error_code: str,
-    error: str,
-    covers_from_message_id: str | None = None,
-    covers_to_message_id: str | None = None,
-    covers_message_count: int = 0,
-    provider: str | None = None,
-    model: str | None = None,
-    now: datetime | None = None,
-) -> ConversationSummary:
-    """构造失败摘要记录：保留原始错误，不生成空摘要内容。"""
-    timestamp = now or utc_now()
-    return ConversationSummary(
-        summary_id=summary_id,
-        conversation_id=conversation_id,
-        status="failed",
-        covers_from_message_id=covers_from_message_id,
-        covers_to_message_id=covers_to_message_id,
-        covers_message_count=covers_message_count,
-        provider=provider,
-        model=model,
-        error_code=error_code,
-        error=error,
-        created_at=timestamp,
-        updated_at=timestamp,
-    )
-
-
 def summary_event_payload(
     summary: ConversationSummary,
     *,

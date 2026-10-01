@@ -252,7 +252,7 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         """
         if not is_deepseek_host(self.base_url):
             return {}
-        extras = deepseek_request_extras(thinking=False, model=self.model)
+        extras = deepseek_request_extras(thinking=False)
         extras["response_format"] = {"type": "json_object"}
         return extras
 

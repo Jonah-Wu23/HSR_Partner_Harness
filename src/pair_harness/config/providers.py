@@ -43,17 +43,13 @@ def detect_provider(base_url: str) -> ProviderKind:
 
 @dataclass(frozen=True)
 class ReasoningPreset:
-    """某后端的推理请求形态预设（参考 Reasonix ``REASONING_PROVIDERS.zh-CN.md``）。
+    """某后端的推理档位预设（参考 Reasonix ``REASONING_PROVIDERS.zh-CN.md``）。
 
-    - ``thinking_control``：True 表示用 ``thinking.type`` 开关思考；
-    - ``effort_levels``：该后端支持的深度档位（不含开关类取值）；
-    - ``default_thinking``：默认是否开启思考（DeepSeek 默认开启）。
+    ``effort_levels`` 是该后端支持的深度档位。
     """
 
     kind: ProviderKind
-    thinking_control: bool
     effort_levels: tuple[str, ...]
-    default_thinking: bool = True
 
     def supports_effort(self, effort: str) -> bool:
         return effort in self.effort_levels
@@ -61,19 +57,15 @@ class ReasoningPreset:
 
 _DEEPSEEK_FLASH_PRESET = ReasoningPreset(
     kind=ProviderKind.DEEPSEEK,
-    thinking_control=True,
     effort_levels=("auto", "low", "high", "max"),
 )
 _DEEPSEEK_PRO_PRESET = ReasoningPreset(
     kind=ProviderKind.DEEPSEEK,
-    thinking_control=True,
     effort_levels=("auto", "high", "max"),
 )
 _OPENAI_COMPATIBLE_PRESET = ReasoningPreset(
     kind=ProviderKind.OPENAI_COMPATIBLE,
-    thinking_control=False,
     effort_levels=(),
-    default_thinking=False,
 )
 
 
@@ -121,26 +113,6 @@ def normalize_effort(effort: str, preset: ReasoningPreset) -> str | None:
     return None
 
 
-def deepseek_request_extras(
-    *,
-    thinking: bool | None = None,
-    effort: str | None = None,
-    model: str = "",
-) -> dict[str, Any]:
-    """DeepSeek 请求形态的扩展字段（参考 Reasonix think.go/effort.go）。
-
-    - ``thinking``：True/False → ``{"thinking": {"type": "enabled"|"disabled"}}``；
-      None 采用预设默认（开启）。
-    - ``effort``：经 :func:`normalize_effort` 归一化后写入
-      ``reasoning_effort``；非法档位忽略。
-    """
-    preset = load_reasoning_preset("https://api.deepseek.com", model=model)
-    thinking_on = preset.default_thinking if thinking is None else thinking
-    extras: dict[str, Any] = {}
-    if preset.thinking_control:
-        extras["thinking"] = {"type": "enabled" if thinking_on else "disabled"}
-    if effort:
-        normalized = normalize_effort(effort, preset)
-        if normalized is not None and normalized != "auto":
-            extras["reasoning_effort"] = normalized
-    return extras
+def deepseek_request_extras(*, thinking: bool) -> dict[str, Any]:
+    """DeepSeek 用 ``thinking.type`` 开关思考的请求字段（参考 Reasonix think.go）。"""
+    return {"thinking": {"type": "enabled" if thinking else "disabled"}}

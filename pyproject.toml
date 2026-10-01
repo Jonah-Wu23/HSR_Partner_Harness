@@ -35,6 +35,6 @@ testpaths = ["tests"]
 addopts = "-p no:pytest-qt"
 asyncio_mode = "auto"
 markers = [
-    "live: requires live credentials (DeepSeek dialogue + codex app-server)",
+    "live: requires live DeepSeek dialogue credentials and the bundled Reasonix assistant",
     "live_qwen: requires live DashScope credentials",
 ]

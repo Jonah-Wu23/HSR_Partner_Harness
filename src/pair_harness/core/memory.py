@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,7 +14,6 @@ from pydantic import Field, field_validator
 from .contracts import FrozenModel, utc_now
 
 # 记忆相关错误码。
-MEMORY_SCOPE_MISMATCH = "memory_scope_mismatch"
 MEMORY_NOT_FOUND = "memory_not_found"
 # 结构不合法（作用域或内容类型）。
 MEMORY_INVALID = "memory_invalid"
@@ -49,10 +47,6 @@ def character_ref_for(
             "内置角色 id 为空，无法解析 character_ref", code=MEMORY_INVALID
         )
     return f"{BUILTIN_CHARACTER_PREFIX}{builtin_id}"
-
-
-def is_card_character_ref(character_ref: str) -> bool:
-    return character_ref.startswith(CARD_CHARACTER_PREFIX)
 
 
 @dataclass(frozen=True)
@@ -100,26 +94,6 @@ class MemoryScope(FrozenModel):
                 return text
         raise ValueError(
             "character_ref 必须以 builtin: 或 card: 开头，得到：" + repr(text)
-        )
-
-    @property
-    def scope_key(self) -> str:
-        """唯一键的规范化文本（数据库唯一约束与查询过滤用）。
-
-        使用排序后的 JSON 对象，避免分隔符歧义；与协议载荷无关，
-        ``model_dump`` 不包含该属性。
-        """
-        return json.dumps(
-            {
-                "account_id": self.account_id,
-                "assistant_identity": self.assistant_identity,
-                "character_ref": self.character_ref,
-                "pair_id": self.pair_id,
-                "project_id": self.project_id,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
         )
 
 
@@ -176,41 +150,3 @@ class PairMemory(FrozenModel):
 def active_memories(memories: Iterable[PairMemory]) -> tuple[PairMemory, ...]:
     """只返回 active 记录（deleted 不参与装配，但保留在库中）。"""
     return tuple(memory for memory in memories if memory.status == "active")
-
-
-def require_same_scope(expected: MemoryScope, actual: MemoryScope) -> None:
-    """读写作用域必须与解析出的权威作用域一致。"""
-    if expected.scope_key != actual.scope_key:
-        raise PairMemoryError(
-            "记忆作用域不匹配："
-            f"期望 {expected.scope_key}，实际 {actual.scope_key}",
-            code=MEMORY_SCOPE_MISMATCH,
-        )
-
-
-def require_memory_found(memory: PairMemory | None, memory_id: str) -> PairMemory:
-    """按 id 取记忆时找不到即真实失败，不返回空记录。"""
-    if memory is None:
-        raise PairMemoryError(f"记忆不存在：{memory_id}", code=MEMORY_NOT_FOUND)
-    return memory
-
-
-def memory_event_payload(memory: PairMemory, *, conversation_id: str | None = None) -> dict:
-    """``memory.updated``/``memory.deleted`` 事件载荷。
-
-    事件携带 account/project/conversation/pair/character_ref/assistant_identity
-    与记录 id；不携带隐藏提示内容。
-    """
-    payload: dict = {
-        "memory_id": memory.memory_id,
-        "account_id": memory.scope.account_id,
-        "project_id": memory.scope.project_id,
-        "pair_id": memory.scope.pair_id,
-        "character_ref": memory.scope.character_ref,
-        "assistant_identity": memory.scope.assistant_identity,
-        "status": memory.status,
-        "updated_at": memory.updated_at,
-    }
-    if conversation_id is not None:
-        payload["conversation_id"] = conversation_id
-    return payload
