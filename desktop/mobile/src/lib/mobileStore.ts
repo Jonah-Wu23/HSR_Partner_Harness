@@ -148,10 +148,13 @@ export interface MobileState {
   projects: ProjectRecord[];
   conversationsById: Record<string, ConversationRecord>;
   activeConversationId: string | null;
+  /** 当前聊天的消息、工具记录与排队项；装载结果到达前可能是该聊天的缓存时间线。 */
   messages: Message[];
   toolRuns: ToolRun[];
   /** 当前聊天的待派发与派发失败排队项（queue.changed 与装载结果驱动）。 */
   queueItems: QueueItem[];
+  /** 当前聊天的 conversation.open 在途，时间线尚未由装载结果替换。 */
+  timelineLoading: boolean;
   approvals: PendingApproval[];
   /** 已决审批记录，界面据此展示双端仲裁结果。 */
   resolvedApprovals: MobileResolvedApproval[];
@@ -252,6 +255,29 @@ function visibleQueueItems(items: QueueItem[]): QueueItem[] {
   return items.filter((item) => item.status === "queued" || item.status === "failed");
 }
 
+/** 流式消息通常在末尾，从后往前找。 */
+function findMessageIndex(messages: Message[], messageId: string): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].message_id === messageId) return index;
+  }
+  return -1;
+}
+
+/** 暂存的 message.delta：一帧内的分片写入工作副本，提交时一次写入 store。 */
+interface DeltaBatch {
+  /** 当前聊天消息的工作副本；本批没有改动当前聊天时为 null。 */
+  messages: Message[] | null;
+  lastSequence: number;
+}
+
+/** 页面隐藏时 requestAnimationFrame 不触发，暂存的分片改由定时器提交。 */
+const HIDDEN_DELTA_FLUSH_MS = 100;
+
+/** 切走的聊天时间线保留最近几段，切回时先展示，装载结果到达后替换。 */
+const TIMELINE_CACHE_LIMIT = 4;
+
+type CachedTimeline = Pick<MobileState, "messages" | "toolRuns" | "queueItems" | "pair">;
+
 /** 局域网 HTTP 不是安全上下文，浏览器不提供 navigator.mediaDevices。 */
 function microphoneSupported(): boolean {
   return navigator.mediaDevices?.getUserMedia !== undefined;
@@ -272,6 +298,7 @@ type MobileSessionState = Pick<
   | "messages"
   | "toolRuns"
   | "queueItems"
+  | "timelineLoading"
   | "approvals"
   | "resolvedApprovals"
   | "pair"
@@ -298,6 +325,7 @@ function initialSessionState(availability: MobileVoiceAvailability): MobileSessi
     messages: [],
     toolRuns: [],
     queueItems: [],
+    timelineLoading: false,
     approvals: [],
     resolvedApprovals: [],
     pair: null,
@@ -380,20 +408,74 @@ const stoppedOrTerminalMessages = new Set<string>();
 /** 已收到 voice.mobile_tts_end 的朗读。 */
 const endedTtsMessages = new Set<string>();
 
-export const useMobileStore = create<MobileState>((set, get) => {
+export const useMobileStore = create<MobileState>((storeSet, get) => {
   let wired = false;
   let bootstrapping: Promise<void> | null = null;
   let bootstrapGeneration = 0;
   let releasingControl = false;
   let openConversationGeneration = 0;
   const eventCollectors = new Set<WireEvent[]>();
+  let deltaBatch: DeltaBatch | null = null;
+  let cancelDeltaFlush: (() => void) | null = null;
+  const timelineCache = new Map<string, CachedTimeline>();
+
+  /** 提交暂存的 delta。 */
+  const flushDeltas = (): void => {
+    const batch = deltaBatch;
+    if (!batch) return;
+    deltaBatch = null;
+    cancelDeltaFlush?.();
+    cancelDeltaFlush = null;
+    storeSet(
+      batch.messages
+        ? { messages: batch.messages, lastSequence: batch.lastSequence }
+        : { lastSequence: batch.lastSequence },
+    );
+  };
+
+  const scheduleDeltaFlush = (): void => {
+    if (cancelDeltaFlush) return;
+    if (document.visibilityState === "hidden") {
+      const timer = setTimeout(flushDeltas, HIDDEN_DELTA_FLUSH_MS);
+      cancelDeltaFlush = () => clearTimeout(timer);
+    } else {
+      const frame = requestAnimationFrame(flushDeltas);
+      cancelDeltaFlush = () => cancelAnimationFrame(frame);
+    }
+  };
+
+  /** 任何写入前先提交暂存的 delta，store 的变化顺序与事件到达顺序一致。 */
+  const set = (partial: Partial<MobileState>): void => {
+    flushDeltas();
+    storeSet(partial);
+  };
+
+  /** 记下切走的聊天时间线，超出上限时淘汰最久未打开的一段。 */
+  const rememberTimeline = (conversationId: string, state: MobileState): void => {
+    timelineCache.delete(conversationId);
+    timelineCache.set(conversationId, {
+      messages: state.messages,
+      toolRuns: state.toolRuns,
+      queueItems: state.queueItems,
+      pair: state.pair,
+    });
+    if (timelineCache.size > TIMELINE_CACHE_LIMIT) {
+      timelineCache.delete(timelineCache.keys().next().value as string);
+    }
+  };
 
   /** 桌面端新代次：会话级状态整体回到初值并采用新 stream_id，保留当前打开的聊天。 */
   const resetSession = (streamId: string | null): void => {
     openConversationGeneration += 1;
     stoppedOrTerminalMessages.clear();
     endedTtsMessages.clear();
-    set({ ...initialSessionState(get().voice.availability), streamId });
+    timelineCache.clear();
+    // 随后的同步会重新装载当前聊天，时间线在此之前按装载中展示。
+    set({
+      ...initialSessionState(get().voice.availability),
+      streamId,
+      timelineLoading: get().activeConversationId !== null,
+    });
   };
 
   /** 下一条仍有分片待播的朗读；没有时返回 otherwise。 */
@@ -501,7 +583,10 @@ export const useMobileStore = create<MobileState>((set, get) => {
     };
   };
 
-  /** 重放收集期间同一代次的带序号事件；只发给手机的事件不带序号，收到时已即时处理。 */
+  /**
+   * 重放收集期间同一代次的带序号事件；只发给手机的事件不带序号，收到时已即时处理。
+   * 重放的 delta 随即提交，装载与同步完成时时间线已追上。
+   */
   const replayEventsAfter = (events: WireEvent[], sequence: number, streamId: string | null): void => {
     events
       .filter(
@@ -512,6 +597,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
       )
       .sort((left, right) => left.sequence - right.sequence)
       .forEach((event) => handleEvent(event, true));
+    flushDeltas();
   };
 
   /** 后台触发的同步失败：错误已写入 syncError，这里保留日志。 */
@@ -529,6 +615,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
       messages: result.messages,
       toolRuns: result.tool_runs,
       queueItems: visibleQueueItems(result.queue_items),
+      timelineLoading: false,
       pair: result.pair,
       activeTask: result.active_task,
       activeTasks: result.active_task ? [...otherTasks, result.active_task] : otherTasks,
@@ -552,6 +639,8 @@ export const useMobileStore = create<MobileState>((set, get) => {
     if (generation !== bootstrapGeneration) return;
     // 鉴权请求已成功，连接确认可用后才开始心跳。
     client.startHeartbeat();
+    // applySnapshot 读取当前消息，先提交等待期间暂存的 delta。
+    flushDeltas();
     // app.bootstrap 是新连接的基线：重连后本地留着旧 streamId 也采纳响应代次。
     if (snapshot.stream_id !== get().streamId) resetSession(snapshot.stream_id);
     applySnapshot(set, snapshot, get);
@@ -578,6 +667,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
       if (generation === bootstrapGeneration) {
         set({
           bootstrapped: false,
+          timelineLoading: false,
           openError: {
             conversationId: activeConversationId,
             message: error instanceof Error ? error.message : String(error),
@@ -624,7 +714,43 @@ export const useMobileStore = create<MobileState>((set, get) => {
     return tracked;
   };
 
+  /**
+   * 暂存一条 message.delta 并推进序号，同一帧内的分片合并后一次写入 store。
+   * 只有当前聊天的分片写入消息工作副本，其余只推进序号。
+   */
+  const stageDelta = (payload: MessageDeltaPayload, sequence: number | undefined): void => {
+    const active = payload.conversation_id === get().activeConversationId;
+    if (
+      active &&
+      payload.source === "character" &&
+      !isReasoningDelta(payload) &&
+      findMessageIndex(deltaBatch?.messages ?? get().messages, payload.message_id) === -1
+    ) {
+      // 打断旧朗读会写入 store，暂存的分片随之先提交。
+      preemptPlayback(payload.message_id);
+    }
+    const state = get();
+    const batch = (deltaBatch ??= { messages: null, lastSequence: state.lastSequence });
+    if (sequence !== undefined) batch.lastSequence = sequence;
+    if (active) {
+      const messages = (batch.messages ??= state.messages.slice());
+      const index = findMessageIndex(messages, payload.message_id);
+      const message = applyMessageDelta(index === -1 ? undefined : messages[index], payload, {
+        // 同步完成前聊天记录可能还没到。流式占位消息的 pair_id 不参与展示，
+        // 定稿后 message.created 用完整记录替换它。
+        pairId: state.conversationsById[payload.conversation_id]?.pair_id ?? "",
+        createdAt: new Date().toISOString(),
+      });
+      if (index === -1) messages.push(message);
+      else messages[index] = message;
+    }
+    scheduleDeltaFlush();
+  };
+
   handleEvent = (event: WireEvent, replaying = false): void => {
+    const isDelta = event.event === "message.delta";
+    // 其他事件先提交暂存的分片，再按到达顺序处理。
+    if (!isDelta) flushDeltas();
     const streamId = get().streamId;
     if (streamId === null) {
       set({ streamId: event.stream_id });
@@ -644,8 +770,9 @@ export const useMobileStore = create<MobileState>((set, get) => {
 
     const current = get();
     if (typeof event.sequence === "number") {
-      if (event.sequence <= current.lastSequence) return;
-      if (event.sequence > current.lastSequence + 1 && current.bootstrapped) {
+      const lastSequence = deltaBatch?.lastSequence ?? current.lastSequence;
+      if (event.sequence <= lastSequence) return;
+      if (event.sequence > lastSequence + 1 && current.bootstrapped) {
         // 事件缺口：先建立收集器再保留触发事件，随后拉取权威快照。
         const pendingBootstrap = bootstrap();
         eventCollectors.forEach((events) => {
@@ -654,7 +781,11 @@ export const useMobileStore = create<MobileState>((set, get) => {
         void pendingBootstrap.catch(reportBootstrapFailure);
         return;
       }
-      set({ lastSequence: event.sequence });
+      if (!isDelta) set({ lastSequence: event.sequence });
+    }
+    if (isDelta) {
+      stageDelta(event.payload as unknown as MessageDeltaPayload, event.sequence);
+      return;
     }
     switch (event.event) {
       case "state.snapshot": {
@@ -760,28 +891,6 @@ export const useMobileStore = create<MobileState>((set, get) => {
         ) {
           preemptPlayback(message.message_id);
         }
-        set({
-          messages: upsertBy(
-            get().messages,
-            message,
-            (item) => item.message_id === message.message_id,
-          ),
-        });
-        break;
-      }
-      case "message.delta": {
-        const payload = event.payload as unknown as MessageDeltaPayload;
-        if (payload.conversation_id !== get().activeConversationId) break;
-        const existing = get().messages.find((item) => item.message_id === payload.message_id);
-        if (!existing && payload.source === "character" && !isReasoningDelta(payload)) {
-          preemptPlayback(payload.message_id);
-        }
-        const message = applyMessageDelta(existing, payload, {
-          // 同步完成前聊天记录可能还没到。流式占位消息的 pair_id 不参与展示，
-          // 定稿后 message.created 用完整记录替换它。
-          pairId: get().conversationsById[payload.conversation_id]?.pair_id ?? "",
-          createdAt: new Date().toISOString(),
-        });
         set({
           messages: upsertBy(
             get().messages,
@@ -1055,7 +1164,11 @@ export const useMobileStore = create<MobileState>((set, get) => {
       client.onEvent(handleEvent);
       // 回前台：connected 时重新 bootstrap 覆盖本地快照；unreachable 由客户端复位重连，连上后自会 bootstrap。
       document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState !== "visible") return;
+        // 转入后台时等待中的动画帧不会触发，暂存的分片立即提交。
+        if (document.visibilityState !== "visible") {
+          flushDeltas();
+          return;
+        }
         if (client.notifyAppForeground() === "resync") {
           void bootstrap().catch(reportBootstrapFailure);
         }
@@ -1093,16 +1206,27 @@ export const useMobileStore = create<MobileState>((set, get) => {
 
     async openConversation(conversationId) {
       const generation = ++openConversationGeneration;
+      flushDeltas();
+      const state = get();
       // 页面已切到目标聊天：装载失败也保持在这里，由 openError 提供重试。
-      set({
-        activeConversationId: conversationId,
-        openError: null,
-        messages: [],
-        toolRuns: [],
-        queueItems: [],
-        pair: null,
-        activeTask: null,
-      });
+      // 重新打开同一聊天时保留现有时间线；切到别的聊天时先展示它的缓存，装载结果到达后替换。
+      if (state.activeConversationId === conversationId) {
+        set({ openError: null, timelineLoading: true });
+      } else {
+        if (state.activeConversationId !== null) rememberTimeline(state.activeConversationId, state);
+        const cached = timelineCache.get(conversationId);
+        set({
+          activeConversationId: conversationId,
+          openError: null,
+          timelineLoading: true,
+          messages: cached?.messages ?? [],
+          toolRuns: cached?.toolRuns ?? [],
+          queueItems: cached?.queueItems ?? [],
+          pair: cached?.pair ?? null,
+          activeTask:
+            state.activeTasks.find((task) => task.conversation_id === conversationId) ?? null,
+        });
+      }
       // 页面刷新直接落在聊天页时，装载可能先于 WS 握手完成。
       client.connect();
       let collector: ReturnType<typeof collectEvents> | null = null;
@@ -1117,6 +1241,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
       } catch (error) {
         if (generation === openConversationGeneration) {
           set({
+            timelineLoading: false,
             openError: {
               conversationId,
               message: error instanceof Error ? error.message : String(error),
@@ -1242,6 +1367,7 @@ export const useMobileStore = create<MobileState>((set, get) => {
       clearCredentials();
       stoppedOrTerminalMessages.clear();
       endedTtsMessages.clear();
+      timelineCache.clear();
       set({
         connection: "disconnected",
         authFailureReason: null,

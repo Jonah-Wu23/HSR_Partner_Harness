@@ -15,6 +15,18 @@
   position: relative;
 }
 
+/* 软键盘占位时贴合可视视口（ChatPage 在动画帧里写入变量）。iOS Safari 会平移可视视口，
+   fixed 定位按 offsetTop 位移，让顶栏与输入区都留在可见区域；顶部安全区由容器自己留出。 */
+.mobile-chat-container[data-keyboard="open"] {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 30;
+  height: var(--chat-viewport-height);
+  max-height: none;
+  padding-top: var(--safe-top);
+  transform: translateY(var(--chat-viewport-top));
+}
+
 /* ========== 顶栏 ========== */
 
 .mobile-chat-header {
@@ -159,6 +171,28 @@
   padding: 12px;
   min-height: 0;
   position: relative;
+}
+
+/* 装载骨架：只做透明度动画，由合成器完成，不触发重绘。 */
+.mobile-chat-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.mobile-chat-skeleton-bubble {
+  width: 72%;
+  height: 56px;
+  border-radius: 14px;
+  background: var(--surface-2);
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+.mobile-chat-skeleton-bubble.is-user {
+  align-self: flex-end;
+  width: 48%;
+  height: 40px;
 }
 
 .mobile-chat-empty {
@@ -429,12 +463,14 @@
   min-width: 0;
 }
 
-/* 长文本自增高：JS 按内容设置 height，上限 --mobile-composer-textarea-max（默认 160px），
-   超过后内部滚动。font-size 16px 避免 iOS Safari 聚焦时自动放大页面。 */
+/* 长文本自增高：field-sizing 按内容撑高，不支持的引擎由 ChatComposer 在绘制前设置 height；
+   上限 160px（与 COMPOSER_MAX_TEXTAREA_HEIGHT_PX 一致），超过后内部滚动。
+   font-size 16px 避免 iOS Safari 聚焦时自动放大页面。 */
 .mobile-composer-textarea {
+  field-sizing: content;
   width: 100%;
   min-height: 44px;
-  max-height: var(--mobile-composer-textarea-max, 160px);
+  max-height: 160px;
   padding: 10px 12px;
   background: var(--surface-2);
   border: 1px solid var(--border);
@@ -444,7 +480,7 @@
   font-size: 16px;
   line-height: 1.4;
   resize: none;
-  overflow-y: hidden;
+  overflow-y: auto;
 }
 
 .mobile-composer-textarea:focus-visible {

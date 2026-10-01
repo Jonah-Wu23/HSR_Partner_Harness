@@ -1,7 +1,8 @@
 import {
   type FormEvent,
   type KeyboardEvent,
-  useEffect,
+  type RefObject,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -15,12 +16,13 @@ export interface ChatComposerProps {
   disabled?: boolean;
   /** 前置禁用原因（如对话模式下助手不可用），展示在输入区上方。 */
   disabledHint?: string | null;
-  /** 输入框聚焦回调（页面可借此把最新消息贴到底部，配合软键盘）。 */
-  onInputFocus?: () => void;
 }
 
-/** 输入框自增高上限，超过后内部滚动。 */
+/** 输入框自增高上限，超过后内部滚动；与 chat.css 的 max-height 一致。 */
 export const COMPOSER_MAX_TEXTAREA_HEIGHT_PX = 160;
+
+/** 支持 field-sizing 的引擎由 CSS 按内容自增高，输入时不需要脚本测量。 */
+const SUPPORTS_FIELD_SIZING = CSS.supports("field-sizing", "content");
 
 /**
  * 输入框高度：内容高度为 0（尚未布局）时返回 null，调用方跳过设置；
@@ -32,6 +34,36 @@ export function computeTextareaHeight(
 ): number | null {
   if (!Number.isFinite(scrollHeight) || scrollHeight <= 0) return null;
   return Math.min(scrollHeight, maxHeightPx);
+}
+
+/**
+ * 不支持 field-sizing 时按内容设置高度：在绘制前测量，只有高度变化才写入。
+ * 文本变长且仍放得下、或变短时仍是默认单行高度，都不测量；变短且已撑高时
+ * 先复位到 auto 才能量出更小的内容高度。
+ */
+function useTextareaAutoHeight(
+  textareaRef: RefObject<HTMLTextAreaElement | null>,
+  text: string,
+): void {
+  const previousLengthRef = useRef(0);
+  useLayoutEffect(() => {
+    if (SUPPORTS_FIELD_SIZING) return;
+    const node = textareaRef.current;
+    if (!node) return;
+    const shrinking = text.length < previousLengthRef.current;
+    previousLengthRef.current = text.length;
+    if (!text) {
+      if (node.style.height) node.style.height = "";
+      return;
+    }
+    if (shrinking ? !node.style.height : node.scrollHeight <= node.clientHeight) return;
+    const previousHeight = node.style.height;
+    if (shrinking) node.style.height = "auto";
+    const borderHeight = node.offsetHeight - node.clientHeight;
+    const next = computeTextareaHeight(node.scrollHeight + borderHeight);
+    const nextHeight = next === null ? previousHeight : `${next}px`;
+    if (node.style.height !== nextHeight) node.style.height = nextHeight;
+  }, [text, textareaRef]);
 }
 
 const TARGET_META: Record<
@@ -63,7 +95,6 @@ export function ChatComposer({
   onSubmit,
   disabled = false,
   disabledHint = null,
-  onInputFocus,
 }: ChatComposerProps) {
   const meta = TARGET_META[target];
   const [text, setText] = useState("");
@@ -71,22 +102,7 @@ export function ChatComposer({
   const [error, setError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // 长文本自增高：先复位 auto 再按内容高度设置，超过上限交给 CSS 内部滚动；清空输入时复位。
-  useEffect(() => {
-    const node = textareaRef.current;
-    if (!node) return;
-    if (!text) {
-      node.style.height = "";
-      node.style.overflowY = "";
-      return;
-    }
-    node.style.height = "auto";
-    const next = computeTextareaHeight(node.scrollHeight);
-    if (next === null) return;
-    node.style.height = `${next}px`;
-    node.style.overflowY =
-      node.scrollHeight > COMPOSER_MAX_TEXTAREA_HEIGHT_PX ? "auto" : "hidden";
-  }, [text]);
+  useTextareaAutoHeight(textareaRef, text);
 
   const handleSubmit = async (event?: FormEvent) => {
     event?.preventDefault();
@@ -144,7 +160,6 @@ export function ChatComposer({
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={handleKeyDown}
-            onFocus={onInputFocus}
             placeholder={meta.placeholder}
             disabled={disabled || submitting}
             rows={1}

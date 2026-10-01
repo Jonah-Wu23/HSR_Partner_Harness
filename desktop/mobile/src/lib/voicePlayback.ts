@@ -20,11 +20,6 @@ export const END_SIGNAL_TIMEOUT_MS = 5 * 60 * 1000;
 
 let sharedAudioContext: AudioContext | null = null;
 
-/** 复位共享 AudioContext 单例，供测试隔离用例间的模块级状态。 */
-export function resetSharedAudioContextForTests(): void {
-  sharedAudioContext = null;
-}
-
 function getSharedAudioContext(): AudioContext {
   // 使用设备输出采样率，PCM 的重采样交给 AudioBufferSourceNode。
   sharedAudioContext ??= new AudioContext();
@@ -235,12 +230,11 @@ export function createVoicePlaybackEngine(options: VoicePlaybackEngineOptions): 
   };
 }
 
-/** 订阅 store 中的朗读状态并驱动本地播放。 */
-export function useVoicePlayback(): {
-  playingMessageId: string | null;
-  playbackMessageId: string | null;
-  playbackError: string | null;
-} {
+/**
+ * 订阅 store 中的朗读状态与 TTS 分片并驱动本地播放。分片每次到达都会触发它，
+ * 调用方把它放在只负责播放的组件里，页面与时间线经各自的选择器读取播放状态。
+ */
+export function useVoicePlayback(): void {
   const playback = useMobileStore((state) => state.voice.playback);
   const ttsChunks = useMobileStore((state) => state.voice.ttsChunks);
   const stopVoicePlayback = useMobileStore((state) => state.stopVoicePlayback);
@@ -334,11 +328,4 @@ export function useVoicePlayback(): {
       }
     };
   }, [stopVoicePlayback]);
-
-  return {
-    // 失败不算播放中：朗读中标记退出，错误经 playbackError 展示。
-    playingMessageId: playback.state === "failed" ? null : playback.messageId,
-    playbackMessageId: playback.messageId,
-    playbackError: playback.state === "failed" ? playback.error : null,
-  };
 }

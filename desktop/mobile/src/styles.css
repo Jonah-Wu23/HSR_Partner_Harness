@@ -25,6 +25,22 @@ body,
   height: 100%;
 }
 
+/* 页面本身不滚动：关闭下拉刷新与越界回弹，滚动只发生在列表与聊天容器内。 */
+html,
+body {
+  overscroll-behavior: none;
+}
+
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
 body {
   margin: 0;
   background: var(--bg);

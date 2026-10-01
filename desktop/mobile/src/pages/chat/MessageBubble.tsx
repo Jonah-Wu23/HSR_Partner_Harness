@@ -1,17 +1,16 @@
+import { memo } from "react";
 import type { Message, MessageSource } from "@shared/contracts/protocol";
 import type { ConversationItemState } from "@shared/ui/conversation/ConversationList";
 import { ReasoningRibbon } from "../../components/cards/ReasoningRibbon";
 
 export interface MessageBubbleProps {
   message: Message;
-  pairNames?: {
-    character?: string;
-    assistant?: string;
-  };
+  characterName?: string;
+  assistantName?: string;
   /** 当前正在朗读的消息 ID。 */
   playingMessageId?: string | null;
-  /** 停止当前朗读。 */
-  onStopPlayback?: () => void;
+  /** 停止这条消息的朗读。 */
+  onStopPlayback?: (messageId: string) => void;
   /** 本条消息朗读失败的错误原文（store playback.error）。 */
   playbackError?: string | null;
   itemState?: ConversationItemState;
@@ -23,9 +22,9 @@ const SOURCE_LABELS: Record<Exclude<MessageSource, "character" | "assistant">, s
   tool: "工具",
 };
 
-function sourceBadge(source: MessageSource, pairNames?: { character?: string; assistant?: string }): string {
-  if (source === "character") return pairNames?.character || "角色";
-  if (source === "assistant") return pairNames?.assistant || "助手";
+function sourceBadge(source: MessageSource, characterName?: string, assistantName?: string): string {
+  if (source === "character") return characterName || "角色";
+  if (source === "assistant") return assistantName || "助手";
   return SOURCE_LABELS[source];
 }
 
@@ -34,16 +33,18 @@ function sourceBadge(source: MessageSource, pairNames?: { character?: string; as
  * 来源标记用角色与助手各自的名字；失败与取消状态连同服务端原因一起展示；
  * 思考段默认折叠，点击展开；流式更新展示光标；
  * 角色自然语言回复支持朗读，其余来源保持静音。
+ * 属性都是原始值或稳定引用，流式更新时只有变化的那条消息重新渲染。
  */
-export function MessageBubble({
+export const MessageBubble = memo(function MessageBubble({
   message,
-  pairNames,
+  characterName,
+  assistantName,
   playingMessageId,
   onStopPlayback,
   playbackError,
   itemState,
 }: MessageBubbleProps) {
-  const badge = sourceBadge(message.source, pairNames);
+  const badge = sourceBadge(message.source, characterName, assistantName);
   // 朗读入口以服务端 tts_ready 为准：账号专属音色未生成或凭据缺失时服务端无法合成，
   // 不展示入口；没有 tts_ready 字段的消息同样不可朗读。
   const isTtsReadable =
@@ -123,7 +124,7 @@ export function MessageBubble({
             className={`mobile-msg-tts-badge${isPlaying ? " mobile-msg-tts-badge-playing" : ""}`}
             data-testid="msg-tts-badge"
             disabled={!isPlaying}
-            onClick={isPlaying ? onStopPlayback : undefined}
+            onClick={isPlaying ? () => onStopPlayback?.(message.message_id) : undefined}
             aria-label={isPlaying ? "停止朗读" : "可朗读"}
           >
             <span
@@ -141,4 +142,4 @@ export function MessageBubble({
       </div>
     </div>
   );
-}
+});
