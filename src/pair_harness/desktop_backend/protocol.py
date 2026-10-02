@@ -7,11 +7,18 @@ from .commands import CommandValidationError, DesktopCommand
 
 
 class ProtocolError(ValueError):
-    """一行 JSONL 无法解析或不是请求对象。"""
+    """一行 JSONL 无法解析或不是合法请求；能识别请求 id 时随错误携带。"""
 
-    def __init__(self, message: str, *, code: str = "invalid_json") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "invalid_json",
+        request_id: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.request_id = request_id
 
 
 def encode_message(message: Mapping[str, Any]) -> str:
@@ -31,12 +38,16 @@ def parse_request(line: str) -> DesktopCommand:
         raise ProtocolError(f"JSON 解析失败：{exc.msg}") from exc
     if not isinstance(payload, Mapping):
         raise ProtocolError("协议消息必须是 JSON 对象", code="invalid_message")
+    candidate = payload.get("id")
+    request_id = candidate if isinstance(candidate, str) and candidate else None
     if payload.get("kind") != "request":
-        raise ProtocolError("协议消息 kind 必须为 request", code="invalid_kind")
+        raise ProtocolError(
+            "协议消息 kind 必须为 request", code="invalid_kind", request_id=request_id
+        )
     try:
         return DesktopCommand.from_payload(payload)
     except CommandValidationError as exc:
-        raise ProtocolError(str(exc), code=exc.code) from exc
+        raise ProtocolError(str(exc), code=exc.code, request_id=request_id) from exc
 
 
 def response_ok(request_id: str, result: Any) -> dict[str, Any]:
@@ -52,7 +63,7 @@ def response_error(
 ) -> dict[str, Any]:
     error: dict[str, Any] = {"code": code, "message": message}
     if details:
-        # V0.3.5：结构化附加字段（如审批 already_resolved 的真实结果）。
+        # 结构化附加字段，例如审批 already_resolved 时的真实结果。
         error["details"] = details
     return {
         "kind": "response",

@@ -2,53 +2,68 @@ import { describe, expect, it } from "vitest";
 
 import { adaptMetricsQueryResult, adaptPromptAssembly } from "../types";
 
-describe("诊断适配层（V0.3.9 V03）", () => {
-  it("prompt_assembly 缺 modules 时抛真实错误并列出实际字段", () => {
-    expect(() => adaptPromptAssembly({ conversation_id: "c1" })).toThrowError(
+describe("诊断结果协议校验", () => {
+  it.each([
+    [
+      "prompt_assembly 缺 modules 数组",
+      () => adaptPromptAssembly({ conversation_id: "c1" }),
       /缺少 modules 数组（实际字段：conversation_id）/,
-    );
-  });
-
-  it("prompt_assembly 模块缺 name 时抛错，不静默跳过", () => {
-    expect(() => adaptPromptAssembly({ modules: [{ hash: "abc" }] })).toThrowError(
+    ],
+    [
+      "装配模块缺 name",
+      () => adaptPromptAssembly({ modules: [{ hash: "abc" }] }),
       /modules\[0\]\.name 缺失或不是非空字符串/,
-    );
+    ],
+    [
+      "装配模块的字符范围不是数字",
+      () => adaptPromptAssembly({ modules: [{ name: "character_frame", char_start: "0" }] }),
+      /modules\[0\]\.char_start：期望数字或 null，实际收到 string/,
+    ],
+    [
+      "metrics 记录缺协议字段",
+      () => adaptMetricsQueryResult({ metrics: [{ metric_id: "tm-1", conversation_id: "c1" }] }),
+      /缺少协议字段：.*tool_rounds/,
+    ],
+  ])("%s时抛出带实际内容的错误，不静默跳过", (_name, adapt, message) => {
+    expect(adapt).toThrowError(message);
   });
 
-  it("prompt_assembly 字段缺失保持 null，0 保持 0", () => {
+  it("prompt_assembly 保留 null 与真实零值的区别", () => {
+    // Sidecar 的装配结果：hash 与 summary 恒为 null，未请求原文时 hidden_content 为 null。
     const view = adaptPromptAssembly({
       conversation_id: "c1",
-      generated_at: "2026-01-01T00:00:00Z",
-      diagnostics: ["ok"],
+      source: "card",
+      reason: null,
+      generated_at: "2026-01-01T00:00:00+00:00",
+      diagnostics: ["unexpanded_macros: 无"],
       modules: [
-        { name: "character_frame", char_start: 0, char_end: 512, hash: "abc", summary: "角色框架" },
-        { name: "pair_memory", memory_injected: true },
+        {
+          name: "character_frame",
+          char_start: 0,
+          char_end: 512,
+          hash: null,
+          summary: null,
+          memory_injected: false,
+          hidden_content: null,
+        },
       ],
     });
 
-    expect(view.modules[0]).toMatchObject({
-      char_start: 0,
-      char_end: 512,
-      memory_injected: null,
-      hidden_content: null,
-    });
-    expect(view.modules[1]).toMatchObject({
-      char_start: null,
-      char_end: null,
-      hash: null,
-      summary: null,
-      memory_injected: true,
-    });
-    expect(view.diagnostics).toEqual(["ok"]);
+    expect(view.modules).toEqual([
+      {
+        name: "character_frame",
+        char_start: 0,
+        char_end: 512,
+        hash: null,
+        summary: null,
+        memory_injected: false,
+        hidden_content: null,
+      },
+    ]);
+    expect(view.diagnostics).toEqual(["unexpanded_macros: 无"]);
   });
 
-  it("metrics 缺契约字段时抛错（键必须存在）", () => {
-    expect(() =>
-      adaptMetricsQueryResult({ metrics: [{ metric_id: "tm-1", conversation_id: "c1" }] }),
-    ).toThrowError(/缺少契约字段：.*tool_rounds/);
-  });
-
-  it("metrics 结果正常适配并保留 null 与 0", () => {
+  it("metrics 结果保留 null 与 0，并带回下一页游标", () => {
     const metric = {
       metric_id: "tm-1",
       account_id: "acct-1",

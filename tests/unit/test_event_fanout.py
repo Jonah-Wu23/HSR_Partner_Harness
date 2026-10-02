@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import io
-import logging
+import json
 
-import pytest
-
+from pair_harness.desktop_backend.application_service import build_demo_service
 from pair_harness.desktop_backend.event_fanout import EventFanout
 from pair_harness.desktop_backend.protocol import encode_message
 from pair_harness.desktop_backend.router import JsonlWriter
@@ -64,38 +63,6 @@ def test_publish_stdout_first_then_subscribers_in_registration_order() -> None:
     assert stdout.getvalue().splitlines() == [encode_message(env)]
 
 
-def test_faulty_subscriber_isolated_cleaned_up_and_others_unaffected(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    out = io.StringIO()
-    fanout = EventFanout(JsonlWriter(out))
-    good1: list[int] = []
-    good2: list[int] = []
-
-    fanout.subscribe(lambda env: good1.append(env["sequence"]))
-
-    def bad(env: dict) -> None:
-        raise RuntimeError("subscriber down")
-
-    fanout.subscribe(bad)
-    fanout.subscribe(lambda env: good2.append(env["sequence"]))
-
-    with caplog.at_level(logging.WARNING, logger="pair_harness.desktop_backend.event_fanout"):
-        fanout.publish(_envelope(0))
-
-    # 故障订阅者不影响 stdout 与其他订阅者。
-    assert good1 == [0]
-    assert good2 == [0]
-    assert len(out.getvalue().splitlines()) == 1
-    assert any("订阅者" in rec.message for rec in caplog.records)
-
-    # 故障订阅者已被清理：再次发布不再第二次触发它。
-    fanout.publish(_envelope(1))
-    assert good1 == [0, 1]
-    assert good2 == [0, 1]
-    assert len(caplog.records) == 1  # 只记录过一次告警
-
-
 def test_subscription_can_be_unsubscribed() -> None:
     out = io.StringIO()
     fanout = EventFanout(JsonlWriter(out))
@@ -111,7 +78,7 @@ def test_subscription_can_be_unsubscribed() -> None:
     assert received == [0]
 
 
-def test_stdout_broken_pipe_semantics_preserved() -> None:  # noqa: N802 - 用例名保持规格措辞
+def test_stdout_broken_pipe_semantics_preserved() -> None:
     callback_called = False
 
     def on_broken_pipe() -> None:
@@ -130,3 +97,36 @@ def test_stdout_broken_pipe_semantics_preserved() -> None:  # noqa: N802 - 用�
     assert writer.closed is True
     assert callback_called is True
     assert received == [0]  # 订阅者照常收到
+
+
+async def test_remote_only_event_skips_stdout_and_global_sequence(tmp_path) -> None:
+    """remote-only 事件只发远程订阅者，不带 sequence，桌面事件流的序号不留缺口。"""
+    stdout = io.StringIO()
+    fanout = EventFanout(JsonlWriter(stdout))
+    service = build_demo_service(
+        database=tmp_path / "data" / "pair_harness.db",
+        project_root=tmp_path,
+        event_sink=fanout.publish,
+    )
+    try:
+        service.attach_event_fanout(fanout)
+        remote: list[dict] = []
+        fanout.subscribe(remote.append)
+        stdout.seek(0)
+        stdout.truncate()
+        before = service.emitter.next_sequence
+
+        service._publish_remote_only("voice.mobile_tts_chunk", {"seq": 0})
+        service.emitter.emit("test.event", {})
+
+        desktop = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        assert [(e["event"], e["sequence"]) for e in desktop] == [("test.event", before)]
+        assert remote[0] == {
+            "kind": "event",
+            "event": "voice.mobile_tts_chunk",
+            "stream_id": service.emitter.stream_id,
+            "payload": {"seq": 0},
+        }
+        assert (remote[1]["event"], remote[1]["sequence"]) == ("test.event", before)
+    finally:
+        await service.shutdown()

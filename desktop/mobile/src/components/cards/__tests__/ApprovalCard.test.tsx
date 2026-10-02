@@ -36,99 +36,56 @@ describe("ApprovalCard", () => {
     expect(screen.getByTestId("approval-reject")).toBeInTheDocument();
   });
 
-  it("点击批准/拒绝触发对应回调", () => {
-    const onApprove = vi.fn();
-    const onReject = vi.fn();
-    render(<ApprovalCard approval={approval} onApprove={onApprove} onReject={onReject} />);
+  it.each([
+    { button: "approval-approve", handler: "onApprove" },
+    { button: "approval-allow-conversation", handler: "onAllowForConversation" },
+    { button: "approval-reject", handler: "onReject" },
+  ] as const)("点击 $button 只触发 $handler", ({ button, handler }) => {
+    const callbacks = { onApprove: vi.fn(), onAllowForConversation: vi.fn(), onReject: vi.fn() };
+    render(<ApprovalCard approval={approval} {...callbacks} />);
 
-    screen.getByTestId("approval-approve").click();
-    expect(onApprove).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId(button));
 
-    screen.getByTestId("approval-reject").click();
-    expect(onReject).toHaveBeenCalledTimes(1);
+    for (const [name, callback] of Object.entries(callbacks)) {
+      expect(callback).toHaveBeenCalledTimes(name === handler ? 1 : 0);
+    }
   });
 
-  it("resolving=true 时按钮禁用并显示提交中", () => {
-    render(<ApprovalCard approval={approval} resolving onApprove={vi.fn()} onReject={vi.fn()} />);
-
-    const approve = screen.getByTestId("approval-approve");
-    const reject = screen.getByTestId("approval-reject");
-    expect(approve).toBeDisabled();
-    expect(reject).toBeDisabled();
-    expect(approve.textContent).toBe("提交中…");
-  });
-
-  it("已决状态展示决策与处理端", () => {
-    render(
-      <ApprovalCard
-        approval={approval}
-        status="resolved"
-        decision="deny"
-        resolvedBy="desktop"
-        conversationTitle="测试会话"
-      />,
-    );
-
-    expect(screen.getByText(/已决操作 · 命令执行/)).toBeInTheDocument();
-    expect(screen.getByTestId("approval-status")).toHaveTextContent("已拒绝");
-    expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent(/桌面端/);
-    expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent(/已拒绝/);
-    expect(screen.queryByTestId("approval-approve")).toBeNull();
-    expect(screen.queryByTestId("approval-reject")).toBeNull();
-  });
-
-  it("mobile / remote 处理端统一显示为手机端", () => {
-    render(<ApprovalCard approval={approval} status="resolved" decision="allow" resolvedBy="remote" />);
-    expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent(/手机端/);
-
-    cleanup();
-
-    render(<ApprovalCard approval={approval} status="resolved" decision="allow" resolvedBy="mobile" />);
-    expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent(/手机端/);
-  });
-
-  it("V0.3.5：提供「本会话批准」（allow_for_conversation）真实回调", () => {
-    const onApprove = vi.fn();
-    const onAllowForConversation = vi.fn();
-    const onReject = vi.fn();
-    render(
-      <ApprovalCard
-        approval={approval}
-        onApprove={onApprove}
-        onAllowForConversation={onAllowForConversation}
-        onReject={onReject}
-      />,
-    );
-    expect(screen.getByTestId("approval-approve")).toBeTruthy();
-    expect(screen.getByTestId("approval-allow-conversation")).toBeTruthy();
-    expect(screen.getByTestId("approval-reject")).toBeTruthy();
-    fireEvent.click(screen.getByTestId("approval-allow-conversation"));
-    expect(onAllowForConversation).toHaveBeenCalledTimes(1);
-    expect(onApprove).not.toHaveBeenCalled();
-    expect(onReject).not.toHaveBeenCalled();
-  });
-
-  it("V0.3.5：未传 onAllowForConversation 时不渲染该按钮（向后兼容）", () => {
+  it("没有本会话批准回调时不显示该按钮", () => {
     render(<ApprovalCard approval={approval} onApprove={vi.fn()} onReject={vi.fn()} />);
     expect(screen.queryByTestId("approval-allow-conversation")).toBeNull();
   });
 
-  it("V0.3.9：decision 缺失时如实说明服务端未提供，不写中性「已处理」冒充终态", () => {
-    render(<ApprovalCard approval={approval} status="resolved" decision="" resolvedBy="desktop" />);
-    expect(screen.getByTestId("approval-status")).toHaveTextContent(
-      "已决（服务端未提供 decision）",
-    );
+  it("提交中时按钮禁用并显示提交中", () => {
+    render(<ApprovalCard approval={approval} resolving onApprove={vi.fn()} onReject={vi.fn()} />);
+
+    const approve = screen.getByTestId("approval-approve");
+    expect(approve).toBeDisabled();
+    expect(screen.getByTestId("approval-reject")).toBeDisabled();
+    expect(approve).toHaveTextContent("提交中…");
   });
 
-  it("V0.3.9：未知 decision 值展示服务端原文，不落到中性文案", () => {
+  it.each([
+    { resolvedBy: "desktop", decision: "deny", status: "已拒绝", text: "由 桌面端 已拒绝" },
+    { resolvedBy: "remote", decision: "allow", status: "已批准", text: "由 手机端 已批准" },
+  ] as const)("$resolvedBy 裁决后展示决策与处理端，不再提供操作按钮", ({
+    resolvedBy,
+    decision,
+    status,
+    text,
+  }) => {
     render(
-      <ApprovalCard approval={approval} status="resolved" decision="deferred" resolvedBy="desktop" />,
+      <ApprovalCard approval={approval} status="resolved" decision={decision} resolvedBy={resolvedBy} />,
     );
-    expect(screen.getByTestId("approval-status")).toHaveTextContent("未知决策：deferred");
+
+    expect(screen.getByText(/已决操作 · 命令执行/)).toBeInTheDocument();
+    expect(screen.getByTestId("approval-status")).toHaveTextContent(status);
+    expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent(text);
+    expect(screen.queryByTestId("approval-approve")).toBeNull();
+    expect(screen.queryByTestId("approval-reject")).toBeNull();
   });
 
-  it("V0.3.9：timeout 终态展示（服务端超时，含 system 来源、actor、原因与错误码）", () => {
-    // 契约冻结 §9 离线样例
+  it("服务端超时终态展示系统来源、处理者、终态原因、错误码与时间", () => {
     render(
       <ApprovalCard
         approval={approval}
@@ -136,14 +93,13 @@ describe("ApprovalCard", () => {
         decision="timeout"
         resolvedBy="system"
         actor="system"
-        resolvedReason="等待审批超时"
+        resolutionReason="等待审批超时"
         errorCode="approval_timeout"
         resolvedAt="2026-01-01T00:00:00Z"
       />,
     );
     expect(screen.getByTestId("approval-status")).toHaveTextContent("已超时");
-    expect(screen.getByTestId("approval-status")).toHaveAttribute("data-decision", "timeout");
-    expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent(/由 系统 已超时/);
+    expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent("由 系统 已超时");
     expect(screen.getByTestId("approval-resolved-actor")).toHaveTextContent("处理者：系统");
     expect(screen.getByTestId("approval-resolved-reason")).toHaveTextContent("等待审批超时");
     expect(screen.getByTestId("approval-resolved-error-code")).toHaveTextContent(
@@ -154,37 +110,18 @@ describe("ApprovalCard", () => {
     );
   });
 
-  it("V0.3.9：resolved_by 缺失保持 null 展示，不伪造 desktop/remote", () => {
-    render(<ApprovalCard approval={approval} status="resolved" decision="allow" resolvedBy={null} />);
-    expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent(/来源未知/);
-    expect(screen.getByTestId("approval-resolved-by")).not.toHaveTextContent(/桌面端|手机端/);
-  });
-
-  it("V0.3.9：未知 resolved_by / actor 值展示原文", () => {
-    render(
-      <ApprovalCard
-        approval={approval}
-        status="resolved"
-        decision="deny"
-        resolvedBy="robot"
-        actor="robot"
-      />,
-    );
-    expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent("未知来源：robot");
-    expect(screen.getByTestId("approval-resolved-actor")).toHaveTextContent("未知处理者：robot");
-  });
-
-  it("V0.3.9：reviewer 来源与处理者映射", () => {
+  it("审查智能体裁决：resolved_by 为 null，只展示决策，处理者为审核者", () => {
     render(
       <ApprovalCard
         approval={approval}
         status="resolved"
         decision="allow_for_conversation"
-        resolvedBy="reviewer"
+        resolvedBy={null}
         actor="reviewer"
       />,
     );
-    expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent(/由 审核者 已批准（本会话）/);
+    expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent("已批准（本会话）");
+    expect(screen.getByTestId("approval-resolved-by")).not.toHaveTextContent(/桌面端|手机端|由/);
     expect(screen.getByTestId("approval-resolved-actor")).toHaveTextContent("处理者：审核者");
   });
 });

@@ -18,25 +18,33 @@ interface AdvancedEditorPanelProps {
   onReturnToQuick: () => void;
 }
 
+type SectionId =
+  | "sys"
+  | "post"
+  | "altgreet"
+  | "groupgreet"
+  | "mesexample"
+  | "worldbook"
+  | "mufy"
+  | "voice"
+  | "raw";
+
 interface TreeSection {
-  id: string;
+  id: SectionId;
   name: string;
   group: string;
-  description: string;
-  targetVersion: string;
-  editable: boolean;
 }
 
 const ADVANCED_SECTIONS: TreeSection[] = [
-  { id: "sys", name: "系统提示", group: "基础组", description: "最高优先级注入，约束整个会话的行为边界。", targetVersion: "V0.3.5", editable: true },
-  { id: "post", name: "历史后指令", group: "基础组", description: "插在历史消息与用户输入之间，引导即时语气。", targetVersion: "V0.3.5", editable: true },
-  { id: "altgreet", name: "备选问候", group: "基础组", description: "多条开场白轮换，支持场景随机选用。", targetVersion: "V0.3.5", editable: true },
-  { id: "groupgreet", name: "群组问候", group: "基础组", description: "多角色会话首次发言时使用。", targetVersion: "V0.3.5", editable: true },
-  { id: "mesexample", name: "示例对话", group: "基础组", description: "含 <START> 分隔的示例对话，帮助模型把握语气与格式。", targetVersion: "V0.3.5", editable: true },
-  { id: "worldbook", name: "世界书", group: "世界书", description: "条目增删改与书级设置：决定这条设定什么时候进入角色的脑子。", targetVersion: "V0.3.7", editable: true },
-  { id: "mufy", name: "mufy 高级设定", group: "mufy 高级", description: "世界架构、身份外貌、语言方式、行为状态、心理核心、用户关系、关系阶段、时间线、叙事规则与声明式面板，按 mufy 模板分块编辑。", targetVersion: "V0.3.7", editable: true },
-  { id: "voice", name: "声音感官", group: "扩展组", description: "语气提示词与音色绑定信息。", targetVersion: "V0.3.5", editable: false },
-  { id: "raw", name: "原始数据", group: "扩展组", description: "完整 v3 JSON 契约结构核对视图。", targetVersion: "V0.3.5", editable: false },
+  { id: "sys", name: "系统提示", group: "基础组" },
+  { id: "post", name: "历史后指令", group: "基础组" },
+  { id: "altgreet", name: "备选问候", group: "基础组" },
+  { id: "groupgreet", name: "群组问候", group: "基础组" },
+  { id: "mesexample", name: "示例对话", group: "基础组" },
+  { id: "worldbook", name: "世界书", group: "世界书" },
+  { id: "mufy", name: "mufy 高级设定", group: "mufy 高级" },
+  { id: "voice", name: "声音感官", group: "扩展组" },
+  { id: "raw", name: "原始数据", group: "扩展组" },
 ];
 
 export function AdvancedEditorPanel({
@@ -48,12 +56,11 @@ export function AdvancedEditorPanel({
   onHsrChange,
   onReturnToQuick,
 }: AdvancedEditorPanelProps) {
-  const [selectedSectionId, setSelectedSectionId] = useState("sys");
+  const [selectedSectionId, setSelectedSectionId] = useState<SectionId>("sys");
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [editingGreetingIndex, setEditingGreetingIndex] = useState<number | null>(null);
   const [editingGreetingText, setEditingGreetingText] = useState("");
 
-  const selectedSection = ADVANCED_SECTIONS.find((s) => s.id === selectedSectionId) ?? ADVANCED_SECTIONS[0];
   const groups = Array.from(new Set(ADVANCED_SECTIONS.map((s) => s.group)));
 
   // 世界书与 mufy 编辑器的数据都从整卡 JSON 草稿中取出；结构异常时交给子编辑器如实呈现。
@@ -127,7 +134,7 @@ export function AdvancedEditorPanel({
   };
 
   const renderEditor = () => {
-    switch (selectedSection.id) {
+    switch (selectedSectionId) {
       case "sys":
         return (
           <div className="char-create-advanced-pane">
@@ -393,18 +400,6 @@ export function AdvancedEditorPanel({
             </pre>
           </div>
         );
-      default:
-        return (
-          <div className="char-create-advanced-pane">
-            <div className="char-create-section-head">
-              <h2 className="char-create-section-title">{selectedSection.name}</h2>
-            </div>
-            <div className="char-create-notice-box" role="note">
-              <InfoIcon width="16" height="16" />
-              <div>该分区暂未提供编辑入口。</div>
-            </div>
-          </div>
-        );
     }
   };
 
@@ -441,20 +436,11 @@ export function AdvancedEditorPanel({
                     <button
                       key={section.id}
                       type="button"
-                      className={`char-create-tree-item ${selectedSection.id === section.id ? "active" : ""}`}
+                      className={`char-create-tree-item ${selectedSectionId === section.id ? "active" : ""}`}
                       onClick={() => setSelectedSectionId(section.id)}
                       data-testid={`tree-item-${section.id}`}
                     >
                       <span>{section.name}</span>
-                      <span
-                        className="char-create-meta"
-                        style={{
-                          fontSize: "10px",
-                          color: section.editable ? "var(--gold, #B08D57)" : undefined,
-                        }}
-                      >
-                        {section.targetVersion}
-                      </span>
                     </button>
                   ))}
                 </div>

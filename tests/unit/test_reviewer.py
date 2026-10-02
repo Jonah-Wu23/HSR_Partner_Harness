@@ -1,253 +1,55 @@
 import json
-from collections.abc import AsyncIterator
 
 import pytest
+from httpx import AsyncClient, MockTransport, Request, Response
 
-from pair_harness.adapters.reviewer import DialogueModelReviewer, ScriptedReviewer
-from pair_harness.core.contracts import (
-    CharacterTurn,
-    DialogueEvent,
-    DialogueRequest,
-    Message,
-    MessageKind,
-    MessageSource,
-    PendingOperation,
-    ReviewerVerdict,
+from pair_harness.adapters.dialogue.openai_compatible import (
+    DialogueProtocolError,
+    OpenAICompatibleDialogueModel,
 )
-from pair_harness.core.risk_rules import default_risk_rules
-from pair_harness.core.ports import DialogueModel
+from pair_harness.adapters.reviewer import DialogueModelReviewer
+from pair_harness.core.contracts import Message, MessageKind, MessageSource, PendingOperation
+
+DELETE_OP = PendingOperation(tool_kind="shell", command="rm x", summary="删除文件")
 
 
-class DeltaAndFinalModel(DialogueModel):
-    """模拟真实对话适配器：增量 delta 片段 + 全量 final 台词（O1.1 回归）。"""
+def make_reviewer(content: str, bodies: list[dict] | None = None) -> DialogueModelReviewer:
+    """审查模型的 Chat Completions 端点以 content 作为回复正文，请求体记入 bodies。"""
 
-    def __init__(self, final_speech: str) -> None:
-        self._final_speech = final_speech
-
-    async def stream_reply(
-        self, request: DialogueRequest
-    ) -> AsyncIterator[DialogueEvent]:
-        yield DialogueEvent(type="speech.delta", delta='{"allow": tru')
-        yield DialogueEvent(
-            type="character.final", turn=CharacterTurn(speech=self._final_speech)
+    def handler(request: Request) -> Response:
+        if bodies is not None:
+            bodies.append(json.loads(request.content))
+        return Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": content}}]},
         )
 
-
-@pytest.mark.asyncio
-async def test_scripted_reviewer_returns_verdicts_in_order() -> None:
-    reviewer = ScriptedReviewer(
-        [
-            ReviewerVerdict(allow=True),
-            ReviewerVerdict(allow=False, reason="危险", suggestion="换个方式"),
-        ]
+    client = AsyncClient(base_url="http://test", transport=MockTransport(handler))
+    return DialogueModelReviewer(
+        OpenAICompatibleDialogueModel(
+            base_url="http://test", api_key="k", model="m", client=client
+        )
     )
-    op = PendingOperation(tool_kind="shell", command="rm -rf /", summary="删除")
-    v1 = await reviewer.review(op, [])
-    assert v1.allow is True
-    v2 = await reviewer.review(op, [])
-    assert v2.allow is False
-    assert v2.reason == "危险"
-    assert v2.suggestion == "换个方式"
-
-
-@pytest.mark.asyncio
-async def test_default_reviewer_allows_when_no_verdicts_configured() -> None:
-    reviewer = ScriptedReviewer()
-    op = PendingOperation(tool_kind="shell", command="ls", summary="列出")
-    verdict = await reviewer.review(op, [])
-    assert verdict.allow is True
-
-
-@pytest.mark.asyncio
-async def test_deny_verdict_requires_reason_and_suggestion() -> None:
-    default_risk_rules()
-    reviewer = ScriptedReviewer([ReviewerVerdict(allow=False, reason="", suggestion="")])
-    op = PendingOperation(tool_kind="shell", command="rm x", summary="删除")
-    with pytest.raises(AssertionError):
-        await reviewer.review(op, [])
-
-
-@pytest.mark.asyncio
-async def test_dialogue_reviewer_uses_final_only_when_delta_present() -> None:
-    """O1.1/B1：delta 片段不完整时回退 final 全量解析，不拼接重复。"""
-    verdict_json = json.dumps(
-        {"allow": False, "reason": "命令会删除文件", "suggestion": "改用移动操作"}
-    )
-    model = DeltaAndFinalModel(verdict_json)
-    reviewer = DialogueModelReviewer(model)
-    op = PendingOperation(tool_kind="shell", command="rm x", summary="删除文件")
-    verdict = await reviewer.review(op, [])
-    assert verdict.allow is False
-    assert verdict.reason == "命令会删除文件"
-    assert verdict.suggestion == "改用移动操作"
-
-
-@pytest.mark.asyncio
-async def test_dialogue_reviewer_parses_full_delta_stream() -> None:
-    """B1 联调加固：审查模型直接输出纯 JSON（无 speech 包裹）时，角色适配器
-    的 character.final 会把它降级成“……”；审查方必须拼接 speech.delta
-    原始流解析，而不是依赖 final。"""
-    verdict_json = json.dumps({"allow": False, "reason": "删除操作", "suggestion": "改用移动"})
-
-    class FullDeltaModel(DialogueModel):
-        async def stream_reply(
-            self, request: DialogueRequest
-        ) -> AsyncIterator[DialogueEvent]:
-            # 模拟 OpenAI 适配器：delta 是完整 content 的增量流，
-            # final 是对整体文本二次加工的结果（纯 JSON → 降级“……”）
-            for i in range(0, len(verdict_json), 10):
-                yield DialogueEvent(type="speech.delta", delta=verdict_json[i : i + 10])
-            yield DialogueEvent(type="character.final", turn=CharacterTurn(speech="……"))
-
-    reviewer = DialogueModelReviewer(FullDeltaModel())
-    op = PendingOperation(tool_kind="shell", command="rm x", summary="删除文件")
-    verdict = await reviewer.review(op, [])
-    assert verdict.allow is False
-    assert verdict.reason == "删除操作"
-    assert verdict.suggestion == "改用移动"
-
-
-@pytest.mark.asyncio
-async def test_dialogue_reviewer_parses_role_protocol_wrapper() -> None:
-    verdict = {"allow": True, "reason": "", "suggestion": ""}
-    wrapped = json.dumps({"speech": json.dumps(verdict), "delegation": None})
-
-    class WrappedModel(DialogueModel):
-        async def stream_reply(
-            self, request: DialogueRequest
-        ) -> AsyncIterator[DialogueEvent]:
-            yield DialogueEvent(type="speech.delta", delta=wrapped)
-
-    reviewer = DialogueModelReviewer(WrappedModel())
-    result = await reviewer.review(
-        PendingOperation(tool_kind="shell", command="pytest", summary="运行测试"),
-        [],
-    )
-
-    assert result.allow is True
-
-
-@pytest.mark.asyncio
-async def test_dialogue_reviewer_prefers_raw_from_speech_completed() -> None:
-    """V0.2 M2：真实适配器下 speech.delta 是干净台词（裸裁决 JSON 无 speech
-    字段时不产生 delta），审查 JSON 只存在于 speech.completed.raw——
-    必须优先取 raw，而不是依赖 delta 拼接。"""
-    verdict = {"allow": False, "reason": "删除操作", "suggestion": "改用移动"}
-
-    class RealAdapterModel(DialogueModel):
-        async def stream_reply(
-            self, request: DialogueRequest
-        ) -> AsyncIterator[DialogueEvent]:
-            # 模拟真实适配器：裸裁决 JSON 无 speech 字段 → 无 speech.delta；
-            # speech.completed 携带完整原始输出
-            yield DialogueEvent(type="speech.completed", raw=json.dumps(verdict))
-            yield DialogueEvent(
-                type="character.final",
-                turn=CharacterTurn(
-                    speech="……", delegation=None
-                ),
-            )
-
-    reviewer = DialogueModelReviewer(RealAdapterModel())
-    op = PendingOperation(tool_kind="shell", command="rm x", summary="删除文件")
-    verdict_result = await reviewer.review(op, [])
-    assert verdict_result.allow is False
-    assert verdict_result.reason == "删除操作"
-    assert verdict_result.suggestion == "改用移动"
-
-
-@pytest.mark.asyncio
-async def test_dialogue_reviewer_parses_clean_speech_delta_stream() -> None:
-    """V0.2 M2：审查模型按角色协议输出（speech 内嵌裁决 JSON）时，
-    适配器 speech.delta 是内嵌 JSON 的干净分片，拼接即可解析。"""
-    verdict = {"allow": True, "reason": "", "suggestion": ""}
-    inner = json.dumps(verdict)
-    wrapped = json.dumps({"speech": inner, "delegation": None})
-
-    class CleanDeltaModel(DialogueModel):
-        async def stream_reply(
-            self, request: DialogueRequest
-        ) -> AsyncIterator[DialogueEvent]:
-            yield DialogueEvent(type="speech.started")
-            yield DialogueEvent(type="speech.delta", delta=inner[:8])
-            yield DialogueEvent(type="speech.delta", delta=inner[8:])
-            yield DialogueEvent(type="speech.completed", raw=wrapped)
-            yield DialogueEvent(
-                type="character.final",
-                turn=CharacterTurn(speech=inner, delegation=None),
-            )
-
-    reviewer = DialogueModelReviewer(CleanDeltaModel())
-    result = await reviewer.review(
-        PendingOperation(tool_kind="shell", command="pytest", summary="运行测试"),
-        [],
-    )
-    assert result.allow is True
 
 
 @pytest.mark.asyncio
 async def test_dialogue_reviewer_fails_closed_on_invalid_json() -> None:
-    """O1.1：非法 JSON 输出保持 fail-closed 否决并给出固定理由。"""
-    model = DeltaAndFinalModel("这不是 JSON")
-    reviewer = DialogueModelReviewer(model)
-    op = PendingOperation(tool_kind="shell", command="rm x", summary="删除文件")
-    verdict = await reviewer.review(op, [])
-    assert verdict.allow is False
-    assert verdict.reason == "审查智能体返回格式错误"
-    assert verdict.suggestion == "请重试"
+    """非 JSON 裁决直接抛错，由 ApprovalManager 的 review.failed 分支否决。"""
+    with pytest.raises(DialogueProtocolError, match="不是 JSON"):
+        await make_reviewer("这不是 JSON").review(DELETE_OP, [])
 
 
 @pytest.mark.asyncio
-async def test_dialogue_reviewer_tolerates_markdown_fence() -> None:
-    """B1 联调加固：真实模型输出可能包 markdown 代码块，仍能解析。"""
-    verdict_json = json.dumps(
-        {"allow": False, "reason": "删除操作", "suggestion": "改用移动"}
-    )
-    model = DeltaAndFinalModel(f"```json\n{verdict_json}\n```")
-    reviewer = DialogueModelReviewer(model)
-    op = PendingOperation(tool_kind="shell", command="rm x", summary="删除文件")
-    verdict = await reviewer.review(op, [])
-    assert verdict.allow is False
-    assert verdict.reason == "删除操作"
-    assert verdict.suggestion == "改用移动"
-
-
-@pytest.mark.asyncio
-async def test_dialogue_reviewer_tolerates_surrounding_text() -> None:
-    """B1 联调加固：JSON 前后带解释文字时提取对象解析。"""
-    verdict_json = json.dumps({"allow": True, "reason": "", "suggestion": ""})
-    model = DeltaAndFinalModel(f"审查结论如下：{verdict_json}（以上为结论）")
-    reviewer = DialogueModelReviewer(model)
-    op = PendingOperation(tool_kind="shell", command="ls", summary="列出文件")
-    verdict = await reviewer.review(op, [])
-    assert verdict.allow is True
-
-
-@pytest.mark.asyncio
-async def test_dialogue_reviewer_fails_closed_on_fallback_speech() -> None:
-    """B1 联调加固：适配器降级台词（“……”）按格式错误否决，不误判。"""
-    model = DeltaAndFinalModel("……")
-    reviewer = DialogueModelReviewer(model)
-    op = PendingOperation(tool_kind="shell", command="rm x", summary="删除文件")
-    verdict = await reviewer.review(op, [])
-    assert verdict.allow is False
-    assert verdict.reason == "审查智能体返回格式错误"
+async def test_dialogue_reviewer_rejects_non_boolean_allow() -> None:
+    reviewer = make_reviewer('{"allow": "false", "reason": "", "suggestion": ""}')
+    with pytest.raises(ValueError, match="allow 不是布尔值"):
+        await reviewer.review(DELETE_OP, [])
 
 
 @pytest.mark.asyncio
 async def test_dialogue_reviewer_uses_only_latest_three_user_messages() -> None:
-    captured: list[DialogueRequest] = []
-
-    class CapturingModel(DialogueModel):
-        async def stream_reply(
-            self, request: DialogueRequest
-        ) -> AsyncIterator[DialogueEvent]:
-            captured.append(request)
-            raw = '{"allow": true, "reason": "", "suggestion": ""}'
-            yield DialogueEvent(type="speech.delta", delta=raw)
-            yield DialogueEvent(
-                type="character.final", turn=CharacterTurn(speech=raw)
-            )
+    bodies: list[dict] = []
+    reviewer = make_reviewer('{"allow": true, "reason": "", "suggestion": ""}', bodies)
 
     context: list[Message] = []
     for i in range(5):
@@ -269,15 +71,15 @@ async def test_dialogue_reviewer_uses_only_latest_three_user_messages() -> None:
                 text=f"角色消息{i}",
             )
         )
-    reviewer = DialogueModelReviewer(CapturingModel())
     verdict = await reviewer.review(
         PendingOperation(tool_kind="shell", command="pytest", summary="运行测试"),
         context,
     )
 
     assert verdict.allow is True
-    prompt = captured[0].user_message.text
+    system, prompt = (message["content"] for message in bodies[0]["messages"])
     assert "用户消息0" not in prompt and "用户消息1" not in prompt
     assert all(f"用户消息{i}" in prompt for i in range(2, 5))
     assert "角色消息" not in prompt
-    assert "是否直接要求或明确批准" in prompt
+    assert "是否直接要求或明确批准" in system
+    assert bodies[0]["max_tokens"] == 512

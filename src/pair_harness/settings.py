@@ -1,55 +1,42 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from collections.abc import Mapping
+from dataclasses import dataclass
 from urllib.parse import urlsplit
-
-from pair_harness.voice_models import VOICE_ASR_MODEL, VOICE_TTS_MODEL
 
 
 @dataclass(frozen=True)
 class Settings:
-    """应用配置，全部来自环境变量（B1/B2：密钥只经环境变量进入进程）。
+    """应用配置，默认值来自环境变量，密钥只经环境变量或账号配置进入进程。
 
-    - 对话 API（B1）：PAIR_HARNESS_DIALOGUE_BASE_URL / _API_KEY / _MODEL
-    - DashScope 语音（B2）：DASHSCOPE_API_KEY 及可选的 HOST/WS_URL/HTTP_URL 覆盖
+    - 对话 API：PAIR_HARNESS_DIALOGUE_BASE_URL / _API_KEY / _MODEL
+    - DashScope 语音：DASHSCOPE_API_KEY 及可选的 HOST/WS_URL/HTTP_URL 覆盖
 
-    B-03：Codex 可执行文件配置（PAIR_HARNESS_CODEX_BIN /
-    PAIR_HARNESS_BUNDLED_CODEX_BIN / codex.bin）已随 Codex 引擎一并移除：
-    产品只支持 OpenAI Chat Completions 兼容端点，编程助手固定使用
-    Reasonix ACP，不再接受任何 codex 可执行文件来源。
-
-    V0.3.2 M6（计划 5.17 节）：ASR/TTS 模型是产品不可变常量
-    ``VOICE_ASR_MODEL`` / ``VOICE_TTS_MODEL``，不再读取用户可控的
-    ``PAIR_HARNESS_QWEN_ASR_MODEL`` / ``PAIR_HARNESS_QWEN_TTS_MODEL``，
-    也不从账号配置读取语音模型。字段保留只为既有调用点的只读便捷。
+    ASR 与 TTS 模型是 ``pair_harness.voice_models`` 中的产品常量，不从
+    环境变量或账号配置读取。
     """
 
     dialogue_base_url: str | None = None
     dialogue_api_key: str | None = None
     dialogue_model: str | None = None
 
-    # —— B2 新增：DashScope 语音配置 ——
+    # DashScope 语音配置
     dashscope_api_key: str | None = None          # DASHSCOPE_API_KEY
     dashscope_host: str = "dashscope.aliyuncs.com"
     dashscope_ws_url: str | None = None           # 覆盖项；默认由 host 推导
     dashscope_http_url: str | None = None         # 覆盖项；默认由 host 推导
+
     @classmethod
     def overlay(cls, base: "Settings", account_config: Mapping[str, str]) -> "Settings":
-        """V0.2 M3：用账号级配置覆盖环境默认（账号配置优先）。
+        """用账号级配置覆盖环境默认（账号配置优先）。
 
         键名与 config.set 的扁平键一致：dialogue.base_url / dialogue.api_key /
-        dialogue.model / voice.base_url / voice.api_key / engine。
-        未提供的键保留环境值。
-
-        V0.3.2 M6：账号已保存 voice.api_key 时账号配置优先于 .env 的
-        DASHSCOPE_API_KEY（开发机兼容入口）；语音模型不接受账号级覆盖。
+        dialogue.model / voice.base_url / voice.api_key。未提供的键保留环境值；
+        账号已保存 voice.api_key 时优先于 .env 的 DASHSCOPE_API_KEY。
         """
-        # ``None`` means the account has never configured the key/address and
-        # may use the development environment fallback.  An empty string is a
-        # deliberate clear and must not silently recover the old environment
-        # credential.
+        # 键不存在表示账号从未配置，可沿用开发环境的值；空字符串是用户
+        # 主动清空，不得恢复环境里的旧凭据。
         voice_api_key = (
             account_config["voice.api_key"]
             if "voice.api_key" in account_config
@@ -77,16 +64,6 @@ class Settings:
             dashscope_http_url=voice_http_url,
         )
 
-    @property
-    def qwen_asr_model(self) -> str:
-        """兼容旧调用点；ASR 模型不是可配置字段。"""
-        return VOICE_ASR_MODEL
-
-    @property
-    def qwen_tts_model(self) -> str:
-        """兼容旧调用点；TTS 模型不是可配置字段。"""
-        return VOICE_TTS_MODEL
-
     @staticmethod
     def _host_from_url(url: str | None) -> str | None:
         if not url:
@@ -96,7 +73,7 @@ class Settings:
 
     @property
     def resolved_ws_url(self) -> str:
-        """WebSocket 地址：默认按专属端点推导（B2 联调验证点 R5）。
+        """WebSocket 地址：默认按专属端点推导。
 
         推导规则与 docs/design/dashscope/千问语音识别文档.md 一致：北京/新加坡
         Key 与地址必须同地域，ws 地址由 HTTP 服务地址的 host 推导
@@ -131,6 +108,4 @@ class Settings:
             dashscope_host=configured_host or "dashscope.aliyuncs.com",
             dashscope_ws_url=os.getenv("PAIR_HARNESS_DASHSCOPE_WS_URL"),
             dashscope_http_url=os.getenv("PAIR_HARNESS_DASHSCOPE_HTTP_URL"),
-            # V0.3.2 M6：不读取 PAIR_HARNESS_QWEN_ASR_MODEL /
-            # PAIR_HARNESS_QWEN_TTS_MODEL；模型固定为产品常量。
         )

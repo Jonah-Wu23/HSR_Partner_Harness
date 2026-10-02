@@ -1,4 +1,4 @@
-/* V0.3.3 手机端卡片视觉样式（OKLch 暖色暗色体系，触控目标 ≥44px，零 emoji，无 #5e6ad2） */
+/* 手机端卡片样式：OKLch 暖色暗色体系，触控目标 ≥44px。 */
 
 @keyframes mobile-spin {
   from {
@@ -426,7 +426,7 @@
   text-align: right;
 }
 
-/* V0.3.9：已决终态的补充事实（处理者 / 服务端说明 / error_code / 终态时间）。 */
+/* 已决卡片的补充信息：处理者、服务端说明、error_code、终态时间。 */
 .mobile-approval-resolved-block {
   display: flex;
   flex-direction: column;

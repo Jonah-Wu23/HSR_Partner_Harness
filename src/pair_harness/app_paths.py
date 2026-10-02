@@ -19,7 +19,7 @@ class AppPaths:
 
     @property
     def character_assets(self) -> Path:
-        """角色卡受管理资产目录（头像、参考音频等），见 V0.3.5 契约 §2.5/§2.6。"""
+        """角色卡受管理资产目录（头像、参考音频等）。"""
         return self.data_dir / "character_assets"
 
     def ensure(self) -> "AppPaths":

@@ -14,13 +14,17 @@ from pair_harness.core.contracts import (
 )
 from pair_harness.core.orchestrator import ConversationOrchestrator
 from pair_harness.desktop_backend.application_service import build_demo_service
-from pair_harness.desktop_backend.commands import DesktopCommand
 from pair_harness.storage.sqlite_store import SQLiteStore
-from tests.fakes import FixedDialogueModel
+from tests.fakes import FixedDialogueModel, make_context, unexpected_approval
+from tests.service_helpers import command
 
 
-def _desktop_command(request_id: str, method: str, **params) -> DesktopCommand:
-    return DesktopCommand(request_id=request_id, method=method, params=params)
+def _context(tmp_path: Path):
+    return make_context(
+        ProjectRef(project_id="p", name="Repo", root_path=str(tmp_path)),
+        conversation_id="c",
+        approval_mode=ApprovalMode.FULL_AUTO,
+    )
 
 
 @pytest.mark.asyncio
@@ -35,23 +39,23 @@ async def test_completed_demo_conversation_restores_after_reopen(tmp_path: Path)
         conversation_id="c",
     )
     orchestrator = ConversationOrchestrator(
-        pair_id="phainon_ancient_machine",
-        project=ProjectRef(project_id="p", name="Repo", root_path=str(tmp_path)),
         dialogue_model=ScriptedDialogueModel(),
         coding_engine=ScriptedCodingEngine(),
         store=store,
-        approval_mode=ApprovalMode.FULL_AUTO,
+        approval_callback=unexpected_approval,
     )
     outcome = await orchestrator.handle_character_input(
-        conversation_id="c", text="请让古代机械创建 hello.txt"
+        conversation_id="c",
+        text="请让古代机械创建 hello.txt",
+        context=_context(tmp_path),
     )
     store.close()
 
     reopened = SQLiteStore(database)
     snapshot = reopened.load_conversation("c")
-    assert snapshot["messages"] == outcome.messages
-    assert snapshot["tool_runs"] == outcome.tool_runs
-    assert snapshot["engine_session"].engine_type == "scripted"
+    assert snapshot.messages == outcome.messages
+    assert snapshot.tool_runs == outcome.tool_runs
+    assert snapshot.engine_session.engine_type == "scripted"
     reopened.close()
 
 
@@ -59,10 +63,10 @@ async def test_completed_demo_conversation_restores_after_reopen(tmp_path: Path)
 async def test_restored_orchestrator_backfills_history_and_session_ref(
     tmp_path: Path,
 ) -> None:
-    """O2.2：restore_conversation 回填消息历史与 EngineSessionRef。
+    """restore_conversation 回填消息历史与引擎会话引用。
 
-    恢复后再发消息：角色模型收到的近期上下文包含历史消息；
-    再次委派执行时 open_session 收到已保存的 stored_ref（可 thread/resume）。
+    恢复后角色请求的近期上下文包含历史消息；再次委派时 open_session
+    收到已保存的会话引用，引擎据此恢复会话。
     """
     database = tmp_path / "data" / "pair_harness.db"
     store = SQLiteStore(database)
@@ -74,20 +78,22 @@ async def test_restored_orchestrator_backfills_history_and_session_ref(
         conversation_id="c",
     )
     first = ConversationOrchestrator(
-        pair_id="phainon_ancient_machine",
-        project=ProjectRef(project_id="p", name="Repo", root_path=str(tmp_path)),
         dialogue_model=ScriptedDialogueModel(),
         coding_engine=ScriptedCodingEngine(),
         store=store,
-        approval_mode=ApprovalMode.FULL_AUTO,
+        approval_callback=unexpected_approval,
     )
-    await first.handle_character_input(conversation_id="c", text="请让古代机械创建 hello.txt")
+    await first.handle_character_input(
+        conversation_id="c",
+        text="请让古代机械创建 hello.txt",
+        context=_context(tmp_path),
+    )
     store.close()
 
     # 重建 orchestrator 并恢复旧聊天
     reopened = SQLiteStore(database)
     snapshot = reopened.load_conversation("c")
-    assert snapshot["engine_session"] is not None
+    assert snapshot.engine_session is not None
     engine = ScriptedCodingEngine()
     model = FixedDialogueModel(
         CharacterTurn(speech="我在，慢慢说。", delegation=None),
@@ -98,22 +104,22 @@ async def test_restored_orchestrator_backfills_history_and_session_ref(
         CharacterTurn(speech="完成了。", delegation=None),
     )
     orchestrator = ConversationOrchestrator(
-        pair_id="phainon_ancient_machine",
-        project=ProjectRef(project_id="p", name="Repo", root_path=str(tmp_path)),
         dialogue_model=model,
         coding_engine=engine,
         store=reopened,
-        approval_mode=ApprovalMode.FULL_AUTO,
+        approval_callback=unexpected_approval,
     )
     orchestrator.restore_conversation(snapshot)
 
     # 纯聊天轮：近期上下文包含全部历史角色对话（USER/CHARACTER，排除
     # 助手、系统消息与委派镜像卡），角色不失忆
-    await orchestrator.handle_character_input(conversation_id="c", text="还记得刚才的事吗")
+    await orchestrator.handle_character_input(
+        conversation_id="c", text="还记得刚才的事吗", context=_context(tmp_path)
+    )
     request = model.requests[0]
     historical = [
         m
-        for m in snapshot["messages"]
+        for m in snapshot.messages
         if m.source in (MessageSource.USER, MessageSource.CHARACTER)
         and m.origin != MessageOrigin.CHARACTER_DELEGATION
     ]
@@ -123,13 +129,13 @@ async def test_restored_orchestrator_backfills_history_and_session_ref(
 
     # 委派轮：open_session 收到已保存的 stored_ref
     outcome = await orchestrator.handle_character_input(
-        conversation_id="c", text="再跑一次"
+        conversation_id="c", text="再跑一次", context=_context(tmp_path)
     )
     assert outcome.receipt is not None
     assert outcome.receipt.status == "completed"
     _, stored_ref = engine.opened_sessions[-1]
     assert stored_ref is not None
-    assert stored_ref == snapshot["engine_session"]
+    assert stored_ref == snapshot.engine_session
     reopened.close()
 
 
@@ -147,12 +153,10 @@ def test_restore_drops_session_from_a_different_engine(tmp_path: Path) -> None:
         EngineSessionRef(engine_type="codex-app-server", opaque_ref="private"),
     )
     orchestrator = ConversationOrchestrator(
-        pair_id="phainon_ancient_machine",
-        project=ProjectRef(project_id="p", name="Repo", root_path=str(tmp_path)),
         dialogue_model=ScriptedDialogueModel(),
         coding_engine=ScriptedCodingEngine(),
         store=store,
-        approval_mode=ApprovalMode.FULL_AUTO,
+        approval_callback=unexpected_approval,
     )
 
     orchestrator.restore_conversation(store.load_conversation("c"))
@@ -170,7 +174,7 @@ async def test_desktop_service_restores_each_conversation_pair_without_crossing(
     try:
         project_id = service.current_project_id
         firefly = await service.handle_command(
-            _desktop_command(
+            command(
                 "create-firefly",
                 "conversation.create",
                 project_id=project_id,
@@ -179,7 +183,7 @@ async def test_desktop_service_restores_each_conversation_pair_without_crossing(
         )
         firefly_id = firefly["current_conversation_id"]
         march = await service.handle_command(
-            _desktop_command(
+            command(
                 "create-march",
                 "conversation.create",
                 project_id=project_id,
@@ -193,7 +197,7 @@ async def test_desktop_service_restores_each_conversation_pair_without_crossing(
     restored = build_demo_service(database=database, project_root=tmp_path)
     try:
         firefly_after_restart = await restored.handle_command(
-            _desktop_command(
+            command(
                 "select-firefly",
                 "conversation.select",
                 conversation_id=firefly_id,
@@ -204,7 +208,7 @@ async def test_desktop_service_restores_each_conversation_pair_without_crossing(
         assert firefly_after_restart["pair"]["assistant"]["name"] == "萨姆"
 
         march_after_restart = await restored.handle_command(
-            _desktop_command(
+            command(
                 "select-march",
                 "conversation.select",
                 conversation_id=march_id,

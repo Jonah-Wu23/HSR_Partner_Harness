@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { HarnessActions } from "../../contracts/actions";
 import type { ApprovalMode, ReasoningEffort } from "../../contracts/protocol";
 import type { ComposerViewModel, VoiceViewModel } from "../../contracts/view-models";
@@ -40,10 +40,8 @@ function voiceStatusText(voice: VoiceViewModel): string {
       case "listening":
         return "VAD 聆听中";
       case "speech_started":
-      case "start":
         return "VAD 识别中";
       case "speech_ended":
-      case "end":
         return "VAD 已结束";
       case "false_trigger":
         return "VAD 未识别到语音";
@@ -63,10 +61,8 @@ function voiceStatusTone(voice: VoiceViewModel): string {
     case "listening":
       return "listening";
     case "speech_started":
-    case "start":
       return "speaking";
     case "speech_ended":
-    case "end":
     case "false_trigger":
       return "ended";
     case "playing":
@@ -90,14 +86,14 @@ interface ComposerProps {
   voice: VoiceViewModel;
   mode: "chat" | "collaboration";
   actions: HarnessActions;
-  /** V0.2 M4：语音迷你播放条视图；tts 播放/合成/失败时非空。 */
+  /** 语音迷你播放条视图；tts 播放/合成/失败时非空。 */
   voiceMiniPlayer?: VoiceMiniPlayerView | null;
-  /** V0.2 M4：QueueStrip「编辑」拉回的草稿（nonce 变化时写入输入区）。 */
+  /** QueueStrip「编辑」拉回的草稿（nonce 变化时写入输入区）。 */
   draftSeed?: { text: string; nonce: number } | null;
 }
 
 /** 输入区：目标切换、自动增高文本框、审批/推理档位、语音控制条。 */
-export function Composer({
+export const Composer = memo(function Composer({
   composer,
   voice,
   mode,
@@ -105,7 +101,7 @@ export function Composer({
   voiceMiniPlayer,
   draftSeed,
 }: ComposerProps) {
-  // M4.4：store 是 composer target 的唯一来源，不再在组件内保存一次性副本。
+  // composer target 只从 store 读取，组件内不另存副本。
   const target = composer.target;
   const [draft, setDraft] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
@@ -114,7 +110,7 @@ export function Composer({
   const lastSeedNonce = useRef<number | null>(null);
   const pttToggleActive = useRef(false);
   const pttRequestVersion = useRef(0);
-  // V0.2 M4：QueueStrip「编辑」拉回的草稿——nonce 变化时写入输入区
+  // nonce 变化时把 QueueStrip「编辑」拉回的草稿写入输入区。
   useEffect(() => {
     if (draftSeed && draftSeed.nonce !== lastSeedNonce.current) {
       lastSeedNonce.current = draftSeed.nonce;
@@ -179,11 +175,19 @@ export function Composer({
     };
   }, [composer.enabled, requestPtt, togglePtt, voice.canPushToTalk, voice.enabled, voice.supported]);
 
-  useEffect(() => {
-    const node = inputRef.current;
-    if (!node) return;
-    node.style.height = "auto";
-    node.style.height = `${Math.min(node.scrollHeight, 160)}px`;
+  // 输入框高度由 CSS field-sizing: content 决定；不支持该属性的 WebView 在布局阶段按
+  // scrollHeight 写入高度，只在高度变化时写，上限由 CSS max-height 约束。
+  const lastDraftLengthRef = useRef(0);
+  useLayoutEffect(() => {
+    const node = inputRef.current!;
+    if ("fieldSizing" in node.style) return;
+    const shrinking = draft.length < lastDraftLengthRef.current;
+    lastDraftLengthRef.current = draft.length;
+    const written = node.style.height;
+    // 内容变短时先复位才能量出更小的 scrollHeight。
+    if (shrinking) node.style.height = "auto";
+    const next = `${node.scrollHeight}px`;
+    if (shrinking || next !== written) node.style.height = next;
   }, [draft]);
 
   const canSend = composer.enabled && draft.trim().length > 0;
@@ -193,10 +197,9 @@ export function Composer({
     if (!composer.enabled || !text) return;
     setSendError(null);
     try {
-      // M5.3：只在后端明确接受（快速接受 status=received）或入队（queued）
-      // 后才清空草稿；失败时原文字和 target 都保留。
+      // 只在后端接受（status=received）或入队（queued）后才清空草稿；失败时原文字和 target 都保留。
       const result = await actions.submitMessage(text, target);
-      if (result?.queued || result?.status === "received" || result?.status === "accepted") {
+      if (result.queued || result.status === "received") {
         setDraft("");
       } else {
         setSendError("消息未确认发送，请重试");
@@ -215,7 +218,7 @@ export function Composer({
   return (
     <div className={`composer${composer.enabled ? "" : " is-disabled"}`} data-testid="composer">
       {voiceMiniPlayer ? (
-        // V0.2 M4：语音迷你播放条——停止/关闭走 tts_stop，跳下一条走 tts_skip
+        // 语音迷你播放条：停止和关闭走 tts_stop，跳下一条走 tts_skip
         <VoiceMiniPlayer
           view={voiceMiniPlayer}
           onStop={() => void actions.stopSpeech()}
@@ -308,8 +311,7 @@ export function Composer({
           selectedId={composer.reasoningEffort}
           trigger={() => (
             <button type="button" className="select-chip" aria-label="推理档位">
-              {EFFORT_LABEL[(composer.reasoningEffort as ReasoningEffort) ?? "medium"] ??
-                `推理 · ${composer.reasoningEffort}`}
+              {EFFORT_LABEL[composer.reasoningEffort]}
               <CollapseIcon style={COLLAPSE_ROTATED_STYLE} />
             </button>
           )}
@@ -366,4 +368,4 @@ export function Composer({
       </div>
     </div>
   );
-}
+});

@@ -10,7 +10,7 @@ interface AccountGateProps {
   busy: boolean;
   onLogin: (accountId: string, password: string) => void;
   onRegister: (displayName: string, password: string) => void;
-  /** 切换登录/注册表单时清理上一轮操作的错误（错误属于那一次操作，不属于新表单）。 */
+  /** 切换登录/注册表单时清理上一轮操作的错误。 */
   onClearError?: () => void;
 }
 
@@ -19,7 +19,7 @@ interface AccountGateProps {
  * 登录 = 账号单选卡点选后输密码；注册 = 同卡片内表单切换，不换页。
  *
  * 密码是否为空由后端校验判定：种子默认账号（password_hash 为空）以空密码登录，
- * 前端不猜哪天账号没密码、也不为任何账号放宽校验——输错就是后端的「密码错误」。
+ * 前端对所有账号一视同仁，输错时显示后端返回的「密码错误」。
  */
 export function AccountGate({ accounts, error, busy, onLogin, onRegister, onClearError }: AccountGateProps) {
   const [mode, setMode] = useState<"login" | "register">("login");
@@ -40,7 +40,7 @@ export function AccountGate({ accounts, error, busy, onLogin, onRegister, onClea
       </div>
 
       <div className="account-gate-card">
-        {/* V039-S4-002：首次运行若 Sidecar 自报演示模式，账号门上就要看见 */}
+        {/* 首次运行时 Sidecar 若自报演示模式，账号门上也显示标识 */}
         <DemoModeNotice />
         <h1>{mode === "login" ? "欢迎回来" : "注册新账号"}</h1>
 

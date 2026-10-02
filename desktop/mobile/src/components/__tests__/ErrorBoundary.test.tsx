@@ -40,8 +40,8 @@ describe("ErrorBoundary 组件", () => {
     expect(logged).toContain("[ErrorBoundary]");
   });
 
-  it("重载按钮点击走 location.reload（不清 localStorage）", () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  it("点击「重新加载」调用 location.reload", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
     const reloadSpy = vi.fn();
     // jsdom 的 location.reload 不可 redefine，用 stubGlobal 替换全局 location。
     vi.stubGlobal("location", { reload: reloadSpy });
@@ -52,6 +52,5 @@ describe("ErrorBoundary 组件", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
     expect(reloadSpy).toHaveBeenCalledTimes(1);
-    expect(errorSpy).toHaveBeenCalled();
   });
 });

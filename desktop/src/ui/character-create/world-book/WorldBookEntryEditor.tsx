@@ -9,10 +9,12 @@ import {
   ROLES,
   SELECTIVE_LOGICS,
   SUPPORTED_POSITIONS,
+  ST_POSITION_VALUES,
   POSITION_LABELS,
   asStringList,
   collectEntryNotRunFields,
   displayPositionRaw,
+  entryPosition,
   entryRegexWarnings,
   entryUnknownExtensionKeys,
   entryUnknownKeys,
@@ -20,6 +22,7 @@ import {
   normalizePosition,
   readDepth,
   readRole,
+  type SupportedPosition,
 } from "./worldBookSchema";
 
 export interface WorldBookEntryEditorProps {
@@ -88,8 +91,14 @@ export function WorldBookEntryEditor({ entry, testIdPrefix, readOnly = false, on
   const logicValid = SELECTIVE_LOGICS.some((logic) => logic.value === rawLogic);
   const logicChoice = logicValid ? String(rawLogic) : "0";
 
-  const rawPosition = entry.position;
+  const rawPosition = entryPosition(entry);
   const normalizedPosition = normalizePosition(rawPosition);
+  // 顶层 position 是编辑入口；条目带有 ST 的 extensions.position 时同步写入数值，保持运行时一致。
+  const setPosition = (next: SupportedPosition) => {
+    const updated: Record<string, unknown> = { ...entry, position: next };
+    if (ext && "position" in ext) updated.extensions = { ...ext, position: ST_POSITION_VALUES[next] };
+    onChange(updated);
+  };
   const positionAbsent = rawPosition === undefined;
   const positionChoice = normalizedPosition ?? (positionAbsent ? "before_char" : "__unsupported__");
 
@@ -246,7 +255,7 @@ export function WorldBookEntryEditor({ entry, testIdPrefix, readOnly = false, on
           value={positionChoice}
           onChange={(event) => {
             const next = event.target.value;
-            if ((SUPPORTED_POSITIONS as readonly string[]).includes(next)) setKey("position", next);
+            if ((SUPPORTED_POSITIONS as readonly string[]).includes(next)) setPosition(next as SupportedPosition);
           }}
           disabled={readOnly}
           aria-label="插入位置"

@@ -7,19 +7,18 @@ export interface RemotePairingPanelProps {
   onIssuePairingCode: () => void;
   onListRemoteDevices: () => void;
   onRevokeRemoteDevice: (deviceName: string) => void;
-  onTunnelStart?: () => void | Promise<void>;
-  onTunnelStop?: () => void | Promise<void>;
-  onQueryTunnelStatus?: () => void | Promise<void>;
+  onTunnelStart: () => void;
+  onTunnelStop: () => void;
+  onQueryTunnelStatus: () => void;
 }
 
 /**
  * 组装手机端接入地址 URL（PWA 静态伺服与 /ws 同端口）。
  *
- * 支持动态协议（V0.4.0）：
- * - 如果 host 传入完整 URL（如公网隧道 https://xxx.trycloudflare.com），按其协议动态适配（https -> wss / http -> ws）
- * - 如果以 wss:// 或 ws:// 开头，自动解析对应页面与 ws 协议
- * - 如果指定 tls=true，采用 https:// 与 wss://
- * - 默认局域网/回环使用 http:// 与 ws://
+ * - host 是完整 http(s) URL（如公网隧道 https://xxx.trycloudflare.com）时按其协议选择 ws 或 wss
+ * - host 以 ws:// 或 wss:// 开头时换算对应的页面协议
+ * - tls=true 时采用 https:// 与 wss://
+ * - 其余局域网与回环地址使用 http:// 与 ws://
  *
  * 形如 http://<局域网地址>:8765/?ws=ws://<局域网地址>:8765/ws&code=<配对码>
  * 或 https://<公网隧道>/?ws=wss://<公网隧道>/ws&code=<配对码>
@@ -61,11 +60,8 @@ export function buildPairingUrl(
 }
 
 /**
- * V039-S4-004：二维码不可用时的真实原因。
- *
- * 只复述后端实际下发的事实：启动失败报文 / 已监听端口但无局域网地址（含原因码）/
- * 尚未收到上报。不再断言「Sidecar --serve 未启动或启动失败」——serve 已监听时
- * 那句话与事实相反。
+ * 二维码不可用的原因，只复述后端下发的事实：启动失败报文、已监听端口但无局域网地址
+ * （含原因码），或尚未收到上报。
  */
 export function serveUnavailableMessage(vm: RemotePairingViewModel): string {
   if (vm.serveFailure) {
@@ -83,7 +79,7 @@ export function serveUnavailableMessage(vm: RemotePairingViewModel): string {
   return "尚未收到 Sidecar 上报的远程服务地址，二维码暂不可用。若 Sidecar 未以 --serve 启动，手机端无法通过局域网连接。";
 }
 
-/** 协议原因码 → 人话；未知原因码原样展示，不猜含义。 */
+/** 协议原因码转界面文案；未知原因码原样展示。 */
 function serveUnavailableReasonLabel(reason: string): string {
   if (reason === "no_lan_address") return "未探测到局域网地址";
   return reason;
@@ -116,9 +112,8 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
     listDevicesRef.current();
   }, []);
 
-  // R1-001：手机配对成功（remote.paired）经 store 推进 devicesRevision；
-  // revision 变化时重拉设备列表。挂载时的首次拉取由上方 effect 负责，
-  // 这里只响应变化，不重复拉取。
+  // 手机配对成功（remote.paired）后 store 推进 devicesRevision，变化时重拉设备列表；
+  // 挂载时的首次拉取由上方 effect 负责。
   const seenDevicesRevisionRef = useRef(vm.devicesRevision ?? 0);
   useEffect(() => {
     const revision = vm.devicesRevision ?? 0;
@@ -131,7 +126,7 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
   const queryTunnelStatusRef = useRef(onQueryTunnelStatus);
   queryTunnelStatusRef.current = onQueryTunnelStatus;
   useEffect(() => {
-    queryTunnelStatusRef.current?.();
+    queryTunnelStatusRef.current();
   }, []);
 
   // 驱动配对码倒计时
@@ -144,19 +139,12 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
     return () => clearInterval(timer);
   }, [vm.issuedAtEpochMs, vm.code]);
 
-  const ttlSeconds = vm.ttlSeconds ?? 300;
   const elapsedSeconds =
     vm.issuedAtEpochMs !== null ? Math.floor((now - vm.issuedAtEpochMs) / 1000) : 0;
-  const remainingSeconds = Math.max(0, ttlSeconds - elapsedSeconds);
+  const remainingSeconds = Math.max(0, vm.ttlSeconds - elapsedSeconds);
   const isExpired = vm.issuedAtEpochMs !== null && remainingSeconds <= 0;
 
-  // 隧道五态
-  const tunnel = vm.tunnel ?? {
-    state: "off",
-    publicUrl: null,
-    hostname: null,
-    error: null,
-  };
+  const tunnel = vm.tunnel;
   const isTunnelReady = tunnel.state === "ready" && Boolean(tunnel.publicUrl);
 
   // 局域网暴露警示：后端处于 --lan 模式且未开公网隧道时常驻提示
@@ -320,6 +308,11 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
           ) : (
             <p className="settings-hint">未开启公网接入，仅可通过本地局域网或回环连接。</p>
           )}
+          {tunnel.requestError ? (
+            <p className="field-error" role="alert" data-testid="tunnel-request-error">
+              公网隧道请求失败：{tunnel.requestError}
+            </p>
+          ) : null}
         </div>
       </div>
 
@@ -475,9 +468,9 @@ export function RemotePairingPanel(props: RemotePairingPanelProps) {
                   )}
                 </div>
                 <div className="settings-hint" style={{ fontSize: "12px", display: "flex", gap: "12px", flexWrap: "wrap" }}>
-                  <span>配对时间：{device.issuedAt || "未知"}</span>
-                  <span>最近使用：{device.lastUsedAt || "未知"}</span>
-                  <span>到期时间：{device.expiresAt || "未知"}</span>
+                  <span>配对时间：{device.issuedAt}</span>
+                  <span>最近使用：{device.lastUsedAt}</span>
+                  <span>到期时间：{device.expiresAt}</span>
                 </div>
               </div>
 

@@ -1,101 +1,75 @@
-import type { Message, MessageSource, ToolRun } from "@shared/contracts/protocol";
+import { memo } from "react";
+import type { Message, MessageSource } from "@shared/contracts/protocol";
 import type { ConversationItemState } from "@shared/ui/conversation/ConversationList";
 import { ReasoningRibbon } from "../../components/cards/ReasoningRibbon";
-import { ToolCard } from "../../components/cards/ToolCard";
 
 export interface MessageBubbleProps {
   message: Message;
-  pairNames?: {
-    character?: string;
-    assistant?: string;
-  };
-  /** V0.3.5：当前正在播放 TTS 的消息 ID。 */
+  characterName?: string;
+  assistantName?: string;
+  /** 当前正在朗读的消息 ID。 */
   playingMessageId?: string | null;
-  /** V0.3.5：停止当前朗读。 */
-  onStopPlayback?: () => void;
-  /** V0.3.8：本条消息朗读失败的真实错误（store playback.error 透传）。 */
+  /** 停止这条消息的朗读。 */
+  onStopPlayback?: (messageId: string) => void;
+  /** 本条消息朗读失败的错误原文（store playback.error）。 */
   playbackError?: string | null;
   itemState?: ConversationItemState;
 }
 
-function sourceBadge(source: MessageSource, pairNames?: { character?: string; assistant?: string }): string | null {
-  if (source === "user") return "你";
-  if (source === "character") return pairNames?.character || "角色";
-  if (source === "assistant") return pairNames?.assistant || "助手";
-  if (source === "system") return "系统";
-  if (source === "tool") return "工具";
-  return null;
+const SOURCE_LABELS: Record<Exclude<MessageSource, "character" | "assistant">, string> = {
+  user: "你",
+  system: "系统",
+  tool: "工具",
+};
+
+function sourceBadge(source: MessageSource, characterName?: string, assistantName?: string): string {
+  if (source === "character") return characterName || "角色";
+  if (source === "assistant") return assistantName || "助手";
+  return SOURCE_LABELS[source];
 }
 
 /**
- * V0.3.5 手机端单条消息气泡：
- * 消息来源标记（角色/助手/用户/工具/思考/系统事件）清晰可区分；
+ * 手机端单条消息气泡：
+ * 来源标记用角色与助手各自的名字；失败与取消状态连同服务端原因一起展示；
  * 思考段默认折叠，点击展开；流式更新展示光标；
  * 角色自然语言回复支持朗读，其余来源保持静音。
+ * 属性都是原始值或稳定引用，流式更新时只有变化的那条消息重新渲染。
  */
-export function MessageBubble({
+export const MessageBubble = memo(function MessageBubble({
   message,
-  pairNames,
+  characterName,
+  assistantName,
   playingMessageId,
   onStopPlayback,
   playbackError,
   itemState,
 }: MessageBubbleProps) {
-  const badge = sourceBadge(message.source, pairNames);
-  const isTtsEligible = message.source === "character" && message.tts_eligible === true;
-  // V0.3.7：朗读入口以服务端 tts_ready 为唯一权威——账号专属音色未生成
-  // 或凭据缺失时服务端无法真实合成，不展示「可朗读」假入口（点了没声音
-  // 是缺陷）。旧消息/快照无 tts_ready 字段按不可朗读保守处理。
-  const isTtsReadable = isTtsEligible && message.tts_ready === true;
+  const badge = sourceBadge(message.source, characterName, assistantName);
+  // 朗读入口以服务端 tts_ready 为准：账号专属音色未生成或凭据缺失时服务端无法合成，
+  // 不展示入口；没有 tts_ready 字段的消息同样不可朗读。
+  const isTtsReadable =
+    message.source === "character" && message.tts_eligible && message.tts_ready === true;
   const isPlaying = isTtsReadable && message.message_id === playingMessageId;
   const reasoning =
-    typeof message.payload?.reasoning === "string"
-      ? message.payload.reasoning
-      : message.kind === "assistant.reasoning"
-        ? message.text
-        : null;
-  const reasoningStreaming =
-    message.payload?.reasoning_streaming === true ||
-    (message.streaming === true && message.kind === "assistant.reasoning");
+    typeof message.payload.reasoning === "string" ? message.payload.reasoning : null;
+  // 思考是否仍在流式只看 reasoning_streaming：正文开始或 message.finalized 时它变为 false。
+  const reasoningStreaming = message.payload.reasoning_streaming === true;
   const reasoningSeconds =
-    typeof message.payload?.reasoning_seconds === "number"
+    typeof message.payload.reasoning_seconds === "number"
       ? message.payload.reasoning_seconds
       : undefined;
-
-  // 工具记录特殊渲染为 ToolCard
-  if (message.source === "tool" || message.kind === "tool.record") {
-    const run: ToolRun = {
-      tool_call_id: (message.payload?.tool_call_id as string) || message.message_id,
-      conversation_id: message.conversation_id,
-      task_id: (message.payload?.task_id as string) || message.task_id || "",
-      engine_turn_id: message.engine_turn_id || "",
-      sequence: Number(message.payload?.sequence || 0),
-      status: (message.payload?.status as ToolRun["status"]) || "succeeded",
-      title: (message.payload?.title as string) || message.text || "工具执行",
-      summary: (message.payload?.summary as string) || "",
-      details: (message.payload?.details as string) || "",
-    };
-    return (
-      <div
-        className="mobile-msg-row mobile-msg-row-tool"
-        data-testid="message-bubble"
-        data-message-source="tool"
-        data-message-id={message.message_id}
-        >
-        <div className="mobile-msg-tool-wrap">
-          <ToolCard
-            run={run}
-            expanded={itemState?.isExpanded(`tool:${run.tool_call_id}`)}
-            onExpandedChange={(expanded) => itemState?.setExpanded(`tool:${run.tool_call_id}`, expanded)}
-          />
-        </div>
-      </div>
-    );
-  }
 
   const displayText =
     message.text ||
     (message.streaming && !reasoning ? "..." : "");
+  // 失败与取消的原因由服务端写在 payload.error / payload.cancelled_reason。
+  const isFailed = message.status === "failed";
+  const isCancelled = message.status === "cancelled";
+  const statusDetail = isFailed
+    ? message.payload.error
+    : isCancelled
+      ? message.payload.cancelled_reason
+      : null;
 
   return (
     <div
@@ -103,6 +77,7 @@ export function MessageBubble({
       data-testid="message-bubble"
       data-message-source={message.source}
       data-message-id={message.message_id}
+      data-message-status={message.status}
     >
       <div className={`mobile-msg-bubble mobile-msg-bubble-${message.source}`}>
         {/* 思考段折叠组件 */}
@@ -117,11 +92,9 @@ export function MessageBubble({
         ) : null}
 
         {/* 来源标记 */}
-        {badge ? (
-          <span className="mobile-msg-badge" data-testid="msg-source-badge">
-            {badge}
-          </span>
-        ) : null}
+        <span className="mobile-msg-badge" data-testid="msg-source-badge">
+          {badge}
+        </span>
 
         {/* 正文 */}
         {displayText ? (
@@ -133,16 +106,25 @@ export function MessageBubble({
           </div>
         ) : null}
 
-        {/* V0.3.5：角色自然语言回复的朗读入口 / 朗读中标记。
-            V0.3.7：仅服务端确认可合成（tts_ready=true）才渲染入口。
-            V0.3.8：播放异常（resume 失败/结束信号超时等）如实呈现原始错误。 */}
+        {isFailed || isCancelled ? (
+          <p
+            className={`mobile-msg-status mobile-msg-status-${message.status}`}
+            role={isFailed ? "alert" : undefined}
+            data-testid="msg-status"
+          >
+            {isFailed ? "失败" : "已取消"}
+            {typeof statusDetail === "string" && statusDetail ? `：${statusDetail}` : null}
+          </p>
+        ) : null}
+
+        {/* 角色自然语言回复的朗读入口与朗读中标记；播放失败时展示错误原文。 */}
         {isTtsReadable ? (
           <button
             type="button"
             className={`mobile-msg-tts-badge${isPlaying ? " mobile-msg-tts-badge-playing" : ""}`}
             data-testid="msg-tts-badge"
             disabled={!isPlaying}
-            onClick={isPlaying ? onStopPlayback : undefined}
+            onClick={isPlaying ? () => onStopPlayback?.(message.message_id) : undefined}
             aria-label={isPlaying ? "停止朗读" : "可朗读"}
           >
             <span
@@ -160,4 +142,4 @@ export function MessageBubble({
       </div>
     </div>
   );
-}
+});

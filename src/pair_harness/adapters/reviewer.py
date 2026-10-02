@@ -1,46 +1,35 @@
 from __future__ import annotations
 
-import json
-
 from pair_harness.core.contracts import (
-    DialogueEvent,
-    DialogueRequest,
     Message,
-    MessageKind,
     MessageSource,
     PendingOperation,
     ReviewerVerdict,
 )
-from pair_harness.core.ports import DialogueModel, Reviewer
+from pair_harness.core.ports import DialogueModel
 
 
-class ScriptedReviewer:
-    """计划 A 的测试实现：按预先给定的 ReviewerVerdict 列表依次返回。"""
-
-    def __init__(self, verdicts: list[ReviewerVerdict] | None = None) -> None:
-        self._verdicts = list(verdicts or [])
-        self._index = 0
-        self.requests: list[tuple[PendingOperation, list[Message]]] = []
-
-    async def review(
-        self, op: PendingOperation, context: list[Message]
-    ) -> ReviewerVerdict:
-        self.requests.append((op, context))
-        if self._index >= len(self._verdicts):
-            return ReviewerVerdict(allow=True)
-        verdict = self._verdicts[self._index]
-        self._index += 1
-        if not verdict.allow:
-            assert verdict.reason, "否决时必须提供理由"
-            assert verdict.suggestion, "否决时必须提供调整建议"
-        return verdict
+_REVIEW_SYSTEM_PROMPT = "\n".join(
+    [
+        "你是一名安全审查智能体，只允许输出 JSON。",
+        "输入包含一条待审批操作和用户最近发送的最多 3 条消息。",
+        "请判断该操作是否允许执行。",
+        "先检查这些用户消息里是否直接要求或明确批准了当前这项操作。",
+        "用户的明确要求或批准是裁决依据，但不代表可以忽略操作本身的风险。",
+        "涉及凭据外传、明显越界或重大不可逆损害时，仍应否决并说明原因。",
+        "",
+        "只输出一个 JSON 对象，无其他文字：",
+        '{"allow": true 或 false, "reason": "否决时必填的简短理由，放行时为空字符串",'
+        ' "suggestion": "否决时必填的调整建议，放行时为空字符串"}',
+    ]
+)
 
 
 class DialogueModelReviewer:
-    """计划 B 的真实实现：复用当前 DialogueModel 适配器。
+    """用 DialogueModel.complete_json 裁决待审批操作。
 
-    提示词要求模型只输出 JSON：{"allow": bool, "reason": str, "suggestion": str}。
-    输入只包含 PendingOperation 摘要和最近 3 条消息，不给任何工具。
+    输入只有 PendingOperation 摘要和用户最近 3 条消息，不给任何工具。裁决
+    格式不符直接抛错，由 ApprovalManager 发出 review.failed 并否决。
     """
 
     def __init__(self, model: DialogueModel) -> None:
@@ -52,110 +41,23 @@ class DialogueModelReviewer:
         recent_user_messages = [
             message for message in context if message.source == MessageSource.USER
         ][-3:]
-        prompt = self._build_prompt(op, recent_user_messages)
-        synthetic = Message(
-            conversation_id="reviewer",
-            pair_id="reviewer",
-            source=MessageSource.SYSTEM,
-            kind=MessageKind.SYSTEM_STATUS,
-            text=prompt,
+        data = await self._model.complete_json(
+            system=_REVIEW_SYSTEM_PROMPT,
+            user=self._build_input(op, recent_user_messages),
+            max_tokens=512,
         )
-        request = DialogueRequest(
-            pair_id="reviewer",
-            conversation_id="reviewer",
-            user_message=synthetic,
-        )
-
-        # V0.2 M2：适配器的 speech.delta 已是干净 speech（剥离 JSON 包裹），
-        # 裸裁决 JSON（无 speech 字段）只存在于 speech.completed.raw 与
-        # character.final 的二次加工里。按 原始输出 → delta 拼接 → final 台词
-        # 的顺序取裁决 JSON。delta 拼接仅用于演示/测试模型只发半截 delta 的
-        # 场景，不依赖真实适配器（真实适配器必发 speech.completed）。
-        chunks: list[str] = []
-        final_speech: str | None = None
-        raw_content: str | None = None
-        async for event in self._model.stream_reply(request):
-            if event.type == "speech.delta":
-                chunks.append(event.delta)
-            elif event.type == "reasoning.delta":
-                chunks.append(event.delta)
-            elif event.type == "speech.completed" and event.raw:
-                raw_content = event.raw
-            elif event.type == "character.final" and event.turn:
-                final_speech = event.turn.speech
-        data = self._parse_verdict_json(raw_content) if raw_content else None
-        if data is None:
-            data = self._parse_verdict_json("".join(chunks))
-        if data is None and final_speech:
-            data = self._parse_verdict_json(final_speech)
-        if data is None:
-            return ReviewerVerdict(allow=False, reason="审查智能体返回格式错误", suggestion="请重试")
+        allow = data.get("allow")
+        if not isinstance(allow, bool):
+            raise ValueError(f"审查智能体裁决的 allow 不是布尔值：{data!r}")
         return ReviewerVerdict(
-            allow=bool(data.get("allow", False)),
-            reason=str(data.get("reason", "")),
-            suggestion=str(data.get("suggestion", "")),
+            allow=allow,
+            reason=data.get("reason", ""),
+            suggestion=data.get("suggestion", ""),
         )
 
     @staticmethod
-    def _parse_verdict_json(speech: str) -> dict | None:
-        """从审查智能体台词中解析裁决 JSON。
-
-        B1 联调加固：真实模型输出不稳定——可能包 markdown 代码块、前后
-        带解释文字，或适配器降级台词（“……”）。逐级剥离后取首个
-        ``{`` 到末个 ``}`` 的子串解析，全部失败返回 None。
-        """
-        import re
-
-        text = speech.strip()
-        if not text or text == "……":
-            return None
-        # 剥离 markdown 代码块围栏
-        fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
-        if fenced:
-            text = fenced.group(1).strip()
-        try:
-            obj = json.loads(text)
-            return DialogueModelReviewer._coerce_verdict(obj)
-        except (ValueError, TypeError):
-            pass
-        start = text.find("{")
-        end = text.rfind("}")
-        if start == -1 or end <= start:
-            return None
-        try:
-            obj = json.loads(text[start : end + 1])
-            return DialogueModelReviewer._coerce_verdict(obj)
-        except (ValueError, TypeError):
-            return None
-
-    @staticmethod
-    def _coerce_verdict(obj: object) -> dict | None:
-        """兼容裸裁决 JSON 与角色协议的 ``speech`` 包装。"""
-        if not isinstance(obj, dict):
-            return None
-        if "allow" in obj:
-            return obj
-        wrapped = obj.get("speech")
-        if not isinstance(wrapped, str):
-            return None
-        try:
-            verdict = json.loads(wrapped)
-        except (ValueError, TypeError):
-            return None
-        return verdict if isinstance(verdict, dict) and "allow" in verdict else None
-
-    def _build_prompt(self, op: PendingOperation, context: list[Message]) -> str:
+    def _build_input(op: PendingOperation, context: list[Message]) -> str:
         lines = [
-            "你是一名安全审查智能体，只允许输出 JSON。",
-            "输入包含一条待审批操作和用户最近发送的最多 3 条消息。",
-            "请判断该操作是否允许执行。",
-            "先检查这些用户消息里是否直接要求或明确批准了当前这项操作。",
-            "用户的明确要求或批准是裁决依据，但不代表可以忽略操作本身的风险。",
-            "涉及凭据外传、明显越界或重大不可逆损害时，仍应否决并说明原因。",
-            "",
-            "输出格式（仅一个 JSON 对象，无其他文字）：",
-            '{"speech": "{\\"allow\\": true|false, \\"reason\\": \\"否决时必填的简短理由\\", \\"suggestion\\": \\"否决时必填的调整建议\\"}", "delegation": null}',
-            "",
             f"待审批操作摘要：{op.summary}",
             f"操作类型：{op.tool_kind}",
         ]

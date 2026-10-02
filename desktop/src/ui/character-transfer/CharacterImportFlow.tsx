@@ -15,7 +15,7 @@ import {
 import "./character-transfer.css";
 
 interface CharacterImportFlowProps {
-  backend?: DesktopBackend;
+  backend: DesktopBackend;
   actions: HarnessActions;
   onClose: () => void;
   onSuccess?: () => void;
@@ -65,13 +65,7 @@ export function resolveDroppedCardPath(
 }
 
 function isTauriRuntime(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-}
-
-/** §1.1：新后端 JSON/PNG 两分支恒返回 format；缺省 json 是协议推导
-    （支持 peek_import 但不回 format 的旧后端只能解析 JSON，PNG 会在 peek 报错）。 */
-function resolveFormat(preview: CardImportPreviewPayload): ImportFormat {
-  return preview.format ?? "json";
+  return "__TAURI_INTERNALS__" in window;
 }
 
 export function CharacterImportFlow({
@@ -119,7 +113,7 @@ export function CharacterImportFlow({
             kind: "preview",
             path,
             preview: result.preview,
-            format: resolveFormat(result.preview),
+            format: result.preview.format,
           });
         }
       } catch (error) {
@@ -130,14 +124,6 @@ export function CharacterImportFlow({
   );
 
   const handlePickFile = useCallback(async () => {
-    if (!backend) {
-      handleError(
-        new Error("当前环境未提供桌面后端，无法打开文件对话框。请在 Tauri 桌面端重试。"),
-        null,
-        "环境不可用",
-      );
-      return;
-    }
     let path: string | null;
     try {
       path = await backend.pickFile({ title: "选择角色卡文件", filters: CARD_FILE_FILTERS });
@@ -197,8 +183,8 @@ export function CharacterImportFlow({
     (e: React.DragEvent) => {
       e.preventDefault();
       setDragOver(false);
-      // 浏览器 File 对象没有绝对路径，契约只接收 path；Tauri 桌面端拖拽
-      // 走下方 onDragDropEvent 订阅（携带绝对路径），这里只兜浏览器开发模式。
+      // 浏览器 File 对象没有绝对路径，导入命令只接收 path；Tauri 桌面端拖拽
+      // 走下方 onDragDropEvent 订阅（携带绝对路径），这里只处理浏览器开发模式。
       if (e.dataTransfer.files.length > 0) {
         handleError(
           new Error("浏览器环境无法从拖放文件获取绝对路径，请使用「选择文件」按钮；桌面端可直接拖入文件。"),

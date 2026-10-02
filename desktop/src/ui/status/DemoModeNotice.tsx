@@ -1,17 +1,15 @@
 import { useDesktopStore } from "../../stores/desktopStore";
 
 /**
- * V039-S4-002 演示模式标识。
+ * 演示模式标识。
  *
  * Sidecar 通过 backend.ready 自报运行模式：{ pid, demo: boolean|null, mode_source }。
- * 只有自报 demo=true 时才标注「演示模式」——未上报（null）不等于真实模式，
- * 真实模式（false）也不需要常驻标识，界面不得替 Sidecar 下结论。
+ * 只有自报 demo=true 时才标注「演示模式」；未上报（null）和真实模式（false）都不显示，
+ * 界面不替 Sidecar 下结论。
  *
- * 标识与连接状态药丸并列而不是合并：连通性与运行模式是两件事，
- * 「已连接」只说明链路在，不说明有没有调用真实模型。
+ * 标识与连接药丸并列显示：「已连接」只说明链路在，是否调用真实模型由这里单独标注。
  *
- * 直接订阅 store 的 backendInfo（与 DiagnosticsDrawerHost 同法），
- * 字段口径来自 store 的 BackendInfo，不改动 contracts / presenters 所属字段。
+ * 直接订阅 store 的 backendInfo，做法与 DiagnosticsDrawerHost 相同。
  */
 export function DemoModeNotice({ variant = "badge" }: { variant?: "badge" | "detail" }) {
   const backendInfo = useDesktopStore((state) => state.backendInfo);

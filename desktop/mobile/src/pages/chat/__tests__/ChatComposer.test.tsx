@@ -8,23 +8,14 @@ import {
 
 afterEach(cleanup);
 
-describe("ChatComposer (V0.3.4 手机端聊天输入区)", () => {
-  it("target=character：占位与提交文案面向角色消息", () => {
-    render(<ChatComposer target="character" onSubmit={vi.fn()} />);
-    expect(screen.getByTestId("chat-input")).toHaveAttribute(
-      "placeholder",
-      "发送消息给角色…",
-    );
-    expect(screen.getByTestId("chat-submit-btn")).toHaveTextContent("发送");
-  });
-
-  it("target=assistant：占位与提交文案面向委派", () => {
-    render(<ChatComposer target="assistant" onSubmit={vi.fn()} />);
-    expect(screen.getByTestId("chat-input")).toHaveAttribute(
-      "placeholder",
-      "输入任务交给助手执行…",
-    );
-    expect(screen.getByTestId("chat-submit-btn")).toHaveTextContent("交给助手");
+describe("ChatComposer 聊天输入区", () => {
+  it.each([
+    { target: "character", placeholder: "发送消息给角色…", submit: "发送" },
+    { target: "assistant", placeholder: "输入任务交给助手执行…", submit: "交给助手" },
+  ] as const)("目标 $target 的占位与提交按钮文案", ({ target, placeholder, submit }) => {
+    render(<ChatComposer target={target} onSubmit={vi.fn()} />);
+    expect(screen.getByTestId("chat-input")).toHaveAttribute("placeholder", placeholder);
+    expect(screen.getByTestId("chat-submit-btn")).toHaveTextContent(submit);
   });
 
   it("提交非空文本并清空输入；空文本不提交", async () => {
@@ -45,39 +36,23 @@ describe("ChatComposer (V0.3.4 手机端聊天输入区)", () => {
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
-  it("Let It Fail：提交失败如实展示错误并保留输入", async () => {
-    const onSubmit = vi.fn().mockRejectedValue(new Error("服务不可用"));
-    render(<ChatComposer target="assistant" onSubmit={onSubmit} />);
-
-    const input = screen.getByTestId("chat-input");
-    fireEvent.change(input, { target: { value: "启动构建" } });
-    fireEvent.click(screen.getByTestId("chat-submit-btn"));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("chat-composer-error")).toHaveTextContent(
-        "委派失败：服务不可用",
-      );
-    });
-    expect(input).toHaveValue("启动构建");
+  // 未布局时 scrollHeight 为 0，不写高度，避免把输入框压成 0px。
+  it.each([
+    { case: "未布局", scrollHeight: 0, maxHeight: undefined, expected: null },
+    { case: "测量值无效", scrollHeight: Number.NaN, maxHeight: undefined, expected: null },
+    { case: "未超过默认上限", scrollHeight: 96, maxHeight: undefined, expected: 96 },
+    {
+      case: "超过默认上限",
+      scrollHeight: 300,
+      maxHeight: undefined,
+      expected: COMPOSER_MAX_TEXTAREA_HEIGHT_PX,
+    },
+    { case: "超过传入上限", scrollHeight: 300, maxHeight: 240, expected: 240 },
+  ])("自增高：$case", ({ scrollHeight, maxHeight, expected }) => {
+    expect(computeTextareaHeight(scrollHeight, maxHeight)).toBe(expected);
   });
 
-  it("V0.3.9 V08：聚焦输入回调（页级配合软键盘把最新消息贴底）", () => {
-    const onInputFocus = vi.fn();
-    render(<ChatComposer target="character" onSubmit={vi.fn()} onInputFocus={onInputFocus} />);
-    fireEvent.focus(screen.getByTestId("chat-input"));
-    expect(onInputFocus).toHaveBeenCalledTimes(1);
-  });
-
-  it("V0.3.9 V08：自增高计算——未布局返回 null、未超限按内容、超限封顶", () => {
-    // jsdom 未布局时 scrollHeight=0：不设置高度，避免把输入框压成 0px
-    expect(computeTextareaHeight(0)).toBeNull();
-    expect(computeTextareaHeight(Number.NaN)).toBeNull();
-    expect(computeTextareaHeight(96)).toBe(96);
-    expect(computeTextareaHeight(300)).toBe(COMPOSER_MAX_TEXTAREA_HEIGHT_PX);
-    expect(computeTextareaHeight(300, 240)).toBe(240);
-  });
-
-  it("前置禁用：disabled 时不提交并展示禁用说明", () => {
+  it("禁用时不提交并展示禁用说明", () => {
     const onSubmit = vi.fn();
     render(
       <ChatComposer

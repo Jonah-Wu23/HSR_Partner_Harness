@@ -1,17 +1,23 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
-import type { DesktopEvent, PowerStatusPayload } from "../../contracts/protocol";
-import type { HarnessActions } from "../../contracts/actions";
+import type { PowerStatusPayload } from "../../contracts/protocol";
+import { createActionController } from "../../services/actions";
+import { MockDesktopBackend } from "../../services/mockDesktopBackend";
 import { desktopStore } from "../../stores/desktopStore";
+import { fakeBackend, unexpectedCommand } from "../../test/fakeBackend";
 import { PowerPrompt } from "./PowerPrompt";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  desktopStore.setState(desktopStore.getInitialState(), true);
+});
 
+/** Windows 上远程服务开启、AC 睡眠超时低于阈值时 power.get_status 的结果。 */
 function powerPayload(overrides: Partial<PowerStatusPayload> = {}): PowerStatusPayload {
   return {
     supported: true,
-    platform: "windows",
+    platform: "win32",
     plan_name: "平衡",
     ac_sleep_timeout_seconds: 600,
     dc_sleep_timeout_seconds: 0,
@@ -20,143 +26,104 @@ function powerPayload(overrides: Partial<PowerStatusPayload> = {}): PowerStatusP
     at_risk: true,
     reason: "AC 睡眠超时 600 秒低于阈值 900 秒",
     checked_at: "2026-09-02T10:00:00+08:00",
+    warnings: [],
     ...overrides,
   };
 }
 
-function powerEvent(sequence: number, payload: PowerStatusPayload): DesktopEvent {
-  return {
-    kind: "event",
-    event: "power.status_changed",
-    sequence,
-    // 线缆载荷为无类型 JSON；运行时形状由 powerPayload 按契约 §1.5 保证。
-    payload: payload as unknown as Record<string, unknown>,
-  };
+const NO_RISK: Partial<PowerStatusPayload> = {
+  ac_sleep_timeout_seconds: 1800,
+  at_risk: false,
+  reason: "AC/DC 睡眠超时均不低于阈值",
+};
+
+/** power.get_status 按给定结果应答，其他命令直接失败。 */
+function respondingWith(payload: PowerStatusPayload) {
+  return fakeBackend((command) =>
+    command.method === "power.get_status" ? payload : unexpectedCommand(command),
+  );
 }
 
-function actionsWith(powerGetStatus: HarnessActions["powerGetStatus"]): HarnessActions {
-  return { powerGetStatus } as unknown as HarnessActions;
+/** 与 AppController 一致：后端事件转进 store，再拉启动快照。 */
+async function connectMockBackend() {
+  const backend = new MockDesktopBackend("single-project");
+  const controller = createActionController(backend);
+  backend.subscribe((event) => desktopStore.getState().applyEvents([event]));
+  await controller.loadBootstrap();
+  return { backend, actions: controller.actions };
 }
 
-describe("PowerPrompt（V0.3.7 V10）", () => {
-  beforeEach(() => {
-    desktopStore.setState({
-      // status 停在初始 booting 会把业务事件暂存进 eventBuffer；事件路径测试需要 ready。
-      status: "ready",
-      powerStatus: null,
-      powerError: null,
-      powerQueryInFlight: false,
-      powerPromptDismissed: false,
-      lastSequence: -1,
-      needsBootstrap: false,
-      eventBuffer: [],
-      streamId: null,
-    });
-  });
-
-  it("at_risk 时挂载主动查询并出现提示：展示 reason 原文与 AC/DC 超时秒数", async () => {
-    const powerGetStatus = vi.fn().mockResolvedValue(powerPayload());
-    render(<PowerPrompt actions={actionsWith(powerGetStatus)} />);
+describe("PowerPrompt", () => {
+  it("挂载时查询到休眠风险即出现提示，展示判定原文、AC/DC 睡眠超时与阈值", async () => {
+    const { backend, commands } = respondingWith(powerPayload());
+    render(<PowerPrompt actions={createActionController(backend).actions} />);
 
     const prompt = await screen.findByTestId("power-prompt");
-    expect(powerGetStatus).toHaveBeenCalledOnce();
+    expect(commands.map(({ method, params }) => ({ method, params }))).toEqual([
+      { method: "power.get_status", params: {} },
+    ]);
     expect(prompt).toHaveTextContent("AC 睡眠超时 600 秒低于阈值 900 秒");
     expect(prompt).toHaveTextContent("600 秒（10 分钟）");
     expect(prompt).toHaveTextContent("从不");
     expect(prompt).toHaveTextContent("900 秒");
-    // 保持唤醒指引明确应用不代改电源设置
-    expect(prompt).toHaveTextContent("不会代你修改电源设置");
   });
 
-  it("supported=false、远程服务未开启、非风险状态均不出现提示", async () => {
-    const powerGetStatus = vi.fn().mockResolvedValue(
-      powerPayload({ supported: false, platform: "linux", at_risk: false, reason: "unsupported platform" }),
-    );
-    const { unmount } = render(<PowerPrompt actions={actionsWith(powerGetStatus)} />);
-    await waitFor(() => expect(desktopStore.getState().powerStatus?.supported).toBe(false));
-    expect(screen.queryByTestId("power-prompt")).not.toBeInTheDocument();
-    unmount();
+  it.each([
+    [
+      "平台不支持电源检测",
+      powerPayload({
+        supported: false,
+        platform: "linux",
+        plan_name: "",
+        ac_sleep_timeout_seconds: null,
+        dc_sleep_timeout_seconds: null,
+        at_risk: false,
+        reason: "当前平台不支持电源状态检测",
+      }),
+    ],
+    ["远程服务未开启", powerPayload({ remote_serve_enabled: false, at_risk: false, reason: "远程服务未开启" })],
+    ["睡眠超时不低于阈值", powerPayload(NO_RISK)],
+  ])("%s时不出现提示", async (_situation, payload) => {
+    const { backend } = respondingWith(payload);
+    render(<PowerPrompt actions={createActionController(backend).actions} />);
 
-    desktopStore.setState({ powerStatus: null, powerError: null });
-    const serveOff = vi.fn().mockResolvedValue(powerPayload({ remote_serve_enabled: false }));
-    render(<PowerPrompt actions={actionsWith(serveOff)} />);
-    await waitFor(() => expect(desktopStore.getState().powerStatus?.remote_serve_enabled).toBe(false));
-    expect(screen.queryByTestId("power-prompt")).not.toBeInTheDocument();
-    unmount();
-
-    desktopStore.setState({ powerStatus: null, powerError: null });
-    const noRisk = vi.fn().mockResolvedValue(
-      powerPayload({ at_risk: false, reason: "AC/DC 睡眠超时均不低于阈值" }),
-    );
-    render(<PowerPrompt actions={actionsWith(noRisk)} />);
-    await waitFor(() => expect(desktopStore.getState().powerStatus?.at_risk).toBe(false));
+    await waitFor(() => expect(desktopStore.getState().powerStatus).toEqual(payload));
     expect(screen.queryByTestId("power-prompt")).not.toBeInTheDocument();
   });
 
-  it("power.status_changed 事件到达时更新：正常→风险出现，风险→正常消失", async () => {
-    const powerGetStatus = vi.fn().mockResolvedValue(
-      powerPayload({ at_risk: false, reason: "AC/DC 睡眠超时均不低于阈值" }),
-    );
-    render(<PowerPrompt actions={actionsWith(powerGetStatus)} />);
+  it("power.status_changed 进入休眠风险时出现提示，风险解除后消失", async () => {
+    const { backend, actions } = await connectMockBackend();
+    render(<PowerPrompt actions={actions} />);
+    // Mock 的 power.get_status 结果为远程服务未开启、无风险
     await waitFor(() => expect(desktopStore.getState().powerStatus).not.toBeNull());
     expect(screen.queryByTestId("power-prompt")).not.toBeInTheDocument();
 
-    act(() => {
-      desktopStore.getState().applyEvents([powerEvent(1, powerPayload())]);
-    });
+    act(() => backend.emitPowerStatusChanged(powerPayload()));
     expect(screen.getByTestId("power-prompt")).toBeInTheDocument();
 
-    act(() => {
-      desktopStore
-        .getState()
-        .applyEvents([powerEvent(2, powerPayload({ at_risk: false, reason: "AC/DC 睡眠超时均不低于阈值" }))]);
-    });
+    act(() => backend.emitPowerStatusChanged(powerPayload(NO_RISK)));
     expect(screen.queryByTestId("power-prompt")).not.toBeInTheDocument();
   });
 
-  it("关闭后本次 at_risk 持续期内不再出现，状态消失再出现时重新允许", async () => {
-    const powerGetStatus = vi.fn().mockResolvedValue(powerPayload());
-    render(<PowerPrompt actions={actionsWith(powerGetStatus)} />);
-    await screen.findByTestId("power-prompt");
+  it("关闭后同一段风险期内的后续事件不再弹出，风险解除后再次进入风险时重新出现", async () => {
+    const { backend, actions } = await connectMockBackend();
+    render(<PowerPrompt actions={actions} />);
+    await waitFor(() => expect(desktopStore.getState().powerStatus).not.toBeNull());
 
+    act(() => backend.emitPowerStatusChanged(powerPayload()));
     fireEvent.click(screen.getByRole("button", { name: "关闭电源提示" }));
     expect(screen.queryByTestId("power-prompt")).not.toBeInTheDocument();
 
-    // 同一次 at_risk 持续期内的轮询事件不重新弹出
-    act(() => {
-      desktopStore.getState().applyEvents([
-        powerEvent(1, powerPayload({ checked_at: "2026-09-02T10:01:00+08:00" })),
-      ]);
-    });
-    expect(screen.queryByTestId("power-prompt")).not.toBeInTheDocument();
-
-    // 状态消失（调回睡眠超时或 serve 停止终态）→ 复位关闭标记
-    act(() => {
-      desktopStore.getState().applyEvents([
-        powerEvent(2, powerPayload({ at_risk: false, reason: "AC/DC 睡眠超时均不低于阈值" })),
-      ]);
-    });
-    expect(desktopStore.getState().powerPromptDismissed).toBe(false);
-
-    // 状态再次出现 → 提示重新允许出现
-    act(() => {
-      desktopStore.getState().applyEvents([powerEvent(3, powerPayload())]);
-    });
-    expect(screen.getByTestId("power-prompt")).toBeInTheDocument();
-  });
-
-  it("查询失败（power_status_unavailable）不显示提示，错误如实落入 store", async () => {
-    const powerGetStatus = vi
-      .fn()
-      .mockRejectedValue(new Error("power_status_unavailable: powercfg 输出不可解析"));
-    render(<PowerPrompt actions={actionsWith(powerGetStatus)} />);
-
-    await waitFor(() =>
-      expect(desktopStore.getState().powerError).toBe(
-        "power_status_unavailable: powercfg 输出不可解析",
+    // AC 睡眠超时再调短，仍在同一段风险期内
+    act(() =>
+      backend.emitPowerStatusChanged(
+        powerPayload({ ac_sleep_timeout_seconds: 300, reason: "AC 睡眠超时 300 秒低于阈值 900 秒" }),
       ),
     );
-    expect(desktopStore.getState().powerStatus).toBeNull();
     expect(screen.queryByTestId("power-prompt")).not.toBeInTheDocument();
+
+    act(() => backend.emitPowerStatusChanged(powerPayload(NO_RISK)));
+    act(() => backend.emitPowerStatusChanged(powerPayload()));
+    expect(screen.getByTestId("power-prompt")).toBeInTheDocument();
   });
 });

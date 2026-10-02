@@ -1,9 +1,3 @@
-"""O4.3：changed_files 去重 —— 同一文件多次 patch 只记一次。
-
-回执的 changed_files 与角色结果摘要的 user_visible_changes 都应保持
-首次出现顺序并去重；不同文件不受影响。
-"""
-
 from collections.abc import AsyncIterator
 
 import pytest
@@ -19,7 +13,12 @@ from pair_harness.core.contracts import (
     TaskRequest,
 )
 from pair_harness.core.orchestrator import ConversationOrchestrator
-from tests.fakes import FixedDialogueModel
+from tests.fakes import (
+    FixedDialogueModel,
+    direct_input,
+    make_context,
+    unexpected_approval,
+)
 
 
 class _DupPatchEngine(ScriptedCodingEngine):
@@ -67,16 +66,20 @@ async def test_changed_files_deduped_in_receipt_and_result_summary() -> None:
     dialogue = FixedDialogueModel(CharacterTurn(speech="改好了。"))
     engine = _DupPatchEngine()
     orchestrator = ConversationOrchestrator(
-        pair_id="phainon_ancient_machine",
-        project=ProjectRef(project_id="p", name="p", root_path="C:\\project"),
         dialogue_model=dialogue,
         coding_engine=engine,
         store=None,
-        approval_mode=ApprovalMode.FULL_AUTO,
+        approval_callback=unexpected_approval,
     )
+    project = ProjectRef(project_id="p", name="p", root_path="C:\\project")
 
-    outcome = await orchestrator.handle_direct_input(
-        conversation_id="c", text="改文件"
+    outcome = await direct_input(
+        orchestrator,
+        conversation_id="c",
+        text="改文件",
+        context=make_context(
+            project, conversation_id="c", approval_mode=ApprovalMode.FULL_AUTO
+        ),
     )
 
     # 回执：同文件多次 patch 只记一次，顺序为首次出现顺序

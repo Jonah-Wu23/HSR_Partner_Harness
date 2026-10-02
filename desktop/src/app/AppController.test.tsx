@@ -19,6 +19,8 @@ describe("AppController", () => {
         backend={backend}
         actions={controller.actions}
         loadBootstrap={controller.loadBootstrap}
+        conversationOpen={controller.conversationOpen}
+        initialConversationId={null}
       />,
     );
     await waitFor(() => expect(screen.getByRole("navigation", { name: "项目轨道" })).toBeInTheDocument());

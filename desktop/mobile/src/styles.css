@@ -1,4 +1,4 @@
-/* V0.3.3 手机端设计基调：OKLch 暖色暗色，与桌面端原型一致；禁用 #5e6ad2、零 emoji。 */
+/* 手机端设计基调：OKLch 暖色暗色，与桌面端一致。 */
 :root {
   --bg: oklch(0.14 0.008 60);
   --surface: oklch(0.18 0.008 60);
@@ -23,6 +23,22 @@ html,
 body,
 #root {
   height: 100%;
+}
+
+/* 页面本身不滚动：关闭下拉刷新与越界回弹，滚动只发生在列表与聊天容器内。 */
+html,
+body {
+  overscroll-behavior: none;
+}
+
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
 }
 
 body {
@@ -85,10 +101,7 @@ button:focus-visible {
   outline-offset: 1px;
 }
 
-/* V0.3.9 V08：safe-area 单一来源。
-   顶部内边距留在 app-shell（状态栏/刘海）；底部内边距只由滚动容器 .page 负责，
-   避免 app-shell 与页面自身两处叠加。聊天页（.mobile-chat-container）不是 .page，
-   其底部安全区由输入区自己处理（chat.css 的 .mobile-composer），因此这里不会重复。 */
+/* safe-area 各处只留一次：顶部内边距在 app-shell（状态栏、刘海），底部内边距由滚动容器 .page 负责。 */
 .app-shell {
   display: flex;
   flex-direction: column;
@@ -103,7 +116,7 @@ button:focus-visible {
   padding-bottom: calc(16px + var(--safe-bottom));
 }
 
-/* V0.3.9 V08：窄屏（≤360px）全局收敛。 */
+/* 窄屏（≤360px）全局收紧间距与字号。 */
 @media (max-width: 360px) {
   body {
     font-size: 14px;

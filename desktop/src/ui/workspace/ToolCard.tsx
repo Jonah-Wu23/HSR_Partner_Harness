@@ -1,4 +1,3 @@
-import { useState } from "react";
 import type { ToolRun, ToolRunStatus } from "../../contracts/protocol";
 import { CheckIcon, CollapseIcon, ErrorIcon, RefreshIcon, WarningIcon } from "../../assets/icons/icons";
 
@@ -18,33 +17,27 @@ function StatusIcon({ status }: { status: ToolRunStatus }) {
 
 interface ToolCardProps {
   run: ToolRun;
-  expanded?: boolean;
-  onExpandedChange?: (expanded: boolean) => void;
+  /** 展开状态由时间线按条目保存，行被虚拟列表回收后再出现时保持原状。 */
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
 }
 
 /** 工具卡片：状态色条 + mono 标题 + 可展开明细，全程静音、不进入 TTS。 */
-export function ToolCard({ run, expanded: controlledExpanded, onExpandedChange }: ToolCardProps) {
-  const [localExpanded, setLocalExpanded] = useState(false);
-  const expanded = controlledExpanded ?? localExpanded;
-  const setExpanded = (next: boolean) => {
-    setLocalExpanded(next);
-    onExpandedChange?.(next);
-  };
+export function ToolCard({ run, expanded, onExpandedChange }: ToolCardProps) {
   const hasCommand = Boolean(run.title || run.details);
-  const displayTitle = "工具调用";
 
   return (
     <div className={`tool-card tool-card-status-${run.status}`} data-tool-status={run.status}>
       <button
         type="button"
         className="tool-card-head"
-        onClick={() => setExpanded(!expanded)}
+        onClick={() => onExpandedChange(!expanded)}
         aria-expanded={expanded}
       >
         <span className={`tool-status-icon tool-status-${run.status}`}>
           <StatusIcon status={run.status} />
         </span>
-        <span className="tool-title">{displayTitle}</span>
+        <span className="tool-title">工具调用</span>
         <span className={`tool-status-text tool-status-${run.status}`}>
           {STATUS_TEXT[run.status]}
         </span>

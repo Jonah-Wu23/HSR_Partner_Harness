@@ -1,8 +1,7 @@
 import { isPlainObject } from "../mufy/mufyValues";
 
 /**
- * 世界书（character_book）编辑器的契约常量与纯函数。
- * 语义对齐 docs/plans/V0.3.7-契约冻结.md §3（激活语义）与 §3.11（存而不运行清单）。
+ * 世界书（character_book）编辑器的常量与纯函数。
  * 这里只做数据形态判断与展示，不做任何语义猜测；未触及字段一律通过 spread 原样保留。
  */
 
@@ -107,6 +106,19 @@ export function getExtensions(entry: Record<string, unknown>): Record<string, un
   return isPlainObject(entry.extensions) ? entry.extensions : null;
 }
 
+/** SillyTavern 位置数值枚举中受支持的三档，编辑位置时写入 extensions.position。 */
+export const ST_POSITION_VALUES: Record<SupportedPosition, number> = {
+  before_char: 0,
+  after_char: 1,
+  atDepth: 4,
+};
+
+/** 条目生效位置：与 ST 导入及运行时一致，extensions.position 存在时优先于顶层 position。 */
+export function entryPosition(entry: Record<string, unknown>): unknown {
+  const ext = getExtensions(entry);
+  return ext?.position ?? entry.position;
+}
+
 function roleFromValue(raw: unknown): string | null {
   if (typeof raw === "string" && (ROLES as readonly string[]).includes(raw)) return raw;
   if (raw === 0) return "system";
@@ -126,11 +138,12 @@ export function readRole(ext: Record<string, unknown>): string | null {
 }
 
 export function positionSummary(entry: Record<string, unknown>): string {
-  const normalized = normalizePosition(entry.position);
+  const position = entryPosition(entry);
+  const normalized = normalizePosition(position);
   if (normalized === null) {
-    return entry.position === undefined
+    return position === undefined
       ? "角色定义前（缺省）"
-      : `不支持的位置 ${displayPositionRaw(entry.position)}（不注入）`;
+      : `不支持的位置 ${displayPositionRaw(position)}（不注入）`;
   }
   if (normalized === "atDepth") {
     const ext = getExtensions(entry) ?? {};
@@ -142,7 +155,7 @@ export function positionSummary(entry: Record<string, unknown>): string {
 const REGEX_FORM = /^\/(.*)\/([gimsuy]*)$/;
 
 /**
- * 关键字正则合法性检查（对齐契约 §3.3）：
+ * 关键字正则合法性检查：
  * `/pattern/flags` 形态编译失败、或 use_regex 开启时裸关键字编译失败 → 警告。
  * 只警告不阻断，不改写任何关键字。
  */
@@ -177,7 +190,7 @@ export function entryRegexWarnings(entry: Record<string, unknown>): string[] {
   return warnings;
 }
 
-/** 条目内「保留但不运行」清单（契约 §3.11）。 */
+/** 条目内「保留但不运行」的字段清单。 */
 export function collectEntryNotRunFields(entry: Record<string, unknown>): NotRunField[] {
   const fields: NotRunField[] = [];
   const add = (id: string, label: string, where: string, value: unknown) =>
@@ -209,7 +222,7 @@ export function collectEntryNotRunFields(entry: Record<string, unknown>): NotRun
     if ("role" in ext && roleFromValue(ext.role) === null) {
       add("ext-role-invalid", "extensions.role 不是 system/user/assistant（运行时按 system 处理）", "extensions", ext.role);
     }
-    if (normalizePosition(entry.position) !== "atDepth" && ("depth" in ext || "role" in ext)) {
+    if (normalizePosition(entryPosition(entry)) !== "atDepth" && ("depth" in ext || "role" in ext)) {
       add("ext-depth-role-dormant", "depth / role（仅 atDepth 位置生效，当前不生效）", "extensions", {
         depth: ext.depth,
         role: ext.role,
@@ -221,20 +234,20 @@ export function collectEntryNotRunFields(entry: Record<string, unknown>): NotRun
     add("content-decorator", "@@activate / @@dont_activate 装饰器（content 前缀）", "content", entry.content);
   }
 
-  const normalized = normalizePosition(entry.position);
-  if (normalized === null && entry.position !== undefined) {
+  const position = entryPosition(entry);
+  if (normalizePosition(position) === null && position !== undefined) {
     add(
       "position",
-      `position=${displayPositionRaw(entry.position)}（不支持的位置，不注入、不静默改写）`,
+      `position=${displayPositionRaw(position)}（不支持的位置，不注入、不静默改写）`,
       "位置",
-      entry.position,
+      position,
     );
   }
 
   return fields;
 }
 
-/** 书级「保留但不运行」清单（契约 §3.11：recursive_scanning、extensions.world）。 */
+/** 书级「保留但不运行」的字段清单：recursive_scanning、extensions.world。 */
 export function collectBookNotRunFields(book: Record<string, unknown>): NotRunField[] {
   const fields: NotRunField[] = [];
   if ("recursive_scanning" in book) {
@@ -276,6 +289,7 @@ const KNOWN_ENTRY_KEYS = new Set([
 
 const KNOWN_EXTENSION_KEYS = new Set([
   "selectiveLogic",
+  "position",
   "depth",
   "role",
   ...EXTENSIONS_NOT_RUN_KEYS.map(([key]) => key),

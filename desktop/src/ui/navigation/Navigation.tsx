@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useCallback, useState } from "react";
 import type { HarnessActions } from "../../contracts/actions";
 import type { NavigationViewModel } from "../../contracts/view-models";
 import { CollapseIcon } from "../../assets/icons/icons";
@@ -13,9 +13,10 @@ interface NavigationProps {
 }
 
 /** 双层导航：56px 项目轨道 + 224px 聊天栏，聊天栏可整体收起。 */
-export function Navigation({ navigation, theme, actions }: NavigationProps) {
+export const Navigation = memo(function Navigation({ navigation, theme, actions }: NavigationProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [taskOverviewOpen, setTaskOverviewOpen] = useState(false);
+  const collapseChatColumn = useCallback(() => setCollapsed(true), []);
 
   return (
     <nav className="app-nav">
@@ -29,7 +30,7 @@ export function Navigation({ navigation, theme, actions }: NavigationProps) {
           navigation={navigation}
           theme={theme}
           actions={actions}
-          onCollapse={() => setCollapsed(true)}
+          onCollapse={collapseChatColumn}
         />
       </div>
       {collapsed ? (
@@ -52,4 +53,4 @@ export function Navigation({ navigation, theme, actions }: NavigationProps) {
       />
     </nav>
   );
-}
+});

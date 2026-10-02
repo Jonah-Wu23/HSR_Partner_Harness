@@ -1,45 +1,40 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
 import type {
   DesktopCommand,
-  DesktopEvent,
   DesktopResponse,
+  DesktopStreamEvent,
 } from "../contracts/protocol";
 import type { DesktopBackend, FileFilter } from "./backend";
-import { unwrapResponse } from "./backend";
+import { DEFAULT_REQUEST_TIMEOUT_SECS, unwrapResponse } from "./backend";
 
 export class TauriDesktopBackend implements DesktopBackend {
-  private readonly listeners = new Set<(event: DesktopEvent) => void>();
-  private readonly unlisten: Promise<UnlistenFn>;
+  private readonly listeners = new Set<(event: DesktopStreamEvent) => void>();
 
   constructor() {
-    this.unlisten = listen<DesktopEvent>("sidecar://event", (event) => {
-      const payload = event.payload as unknown as {
-        kind?: string;
-        sequence?: unknown;
-      };
-      // M6.3：sequence 是 stream_id 代次内的整数序号，始终处于 JS 安全
-      // 整数范围；用 Number.isSafeInteger 对齐新协议，而不是宽松的 isFinite。
-      if (payload.kind !== "event" || !Number.isSafeInteger(payload.sequence)) return;
+    // sidecar://event 也会转发 Sidecar 输出的其他非响应行，只把 kind=event 交给订阅方。
+    // 后端实例与窗口同生命周期，监听不需要注销。
+    void listen<DesktopStreamEvent>("sidecar://event", (event) => {
+      if (event.payload.kind !== "event") return;
       for (const listener of this.listeners) listener(event.payload);
     });
   }
 
-  async request<T>(command: DesktopCommand): Promise<T> {
+  async request<T>(
+    command: DesktopCommand,
+    timeoutSecs: number | null = DEFAULT_REQUEST_TIMEOUT_SECS,
+  ): Promise<T> {
     const response = await invoke<DesktopResponse<T>>("desktop_request", {
       request: command,
+      timeout_secs: timeoutSecs,
     });
     return unwrapResponse(response);
   }
 
-  async openChatWindow(conversationId: string, projectId: string, title: string): Promise<string> {
-    return invoke<string>("open_chat_window", {
-      conversation_id: conversationId,
-      project_id: projectId,
-      title,
-    });
+  async openChatWindow(conversationId: string, title: string): Promise<string> {
+    return invoke<string>("open_chat_window", { conversation_id: conversationId, title });
   }
 
   async pickFolder(title = "选择项目文件夹"): Promise<string | null> {
@@ -67,18 +62,11 @@ export class TauriDesktopBackend implements DesktopBackend {
   }
 
   async reconnectSidecar(): Promise<void> {
-    // Sidecar 可能已断开，不能经 desktop_request 转发，直接调用 Rust 命令
     await invoke<{ reconnected: boolean }>("sidecar_reconnect");
   }
 
-  subscribe(listener: (event: DesktopEvent) => void): () => void {
+  subscribe(listener: (event: DesktopStreamEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
-  }
-
-  async dispose(): Promise<void> {
-    const unlisten = await this.unlisten;
-    unlisten();
-    this.listeners.clear();
   }
 }

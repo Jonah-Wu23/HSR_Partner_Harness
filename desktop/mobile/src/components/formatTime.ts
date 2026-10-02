@@ -1,16 +1,27 @@
+const DATE_TIME_OPTIONS: Intl.DateTimeFormatOptions = {
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+};
+
+const FORMATTERS = {
+  minute: new Intl.DateTimeFormat("zh-CN", DATE_TIME_OPTIONS),
+  second: new Intl.DateTimeFormat("zh-CN", { ...DATE_TIME_OPTIONS, second: "2-digit" }),
+};
+
 /**
- * V0.3.9 V06/V08：时间戳本地化展示（租约到期、设备时间）。
- *
- * 只做展示格式转换：空值返回 null（由调用方决定如何呈现「无值」），
- * 无法解析时原样返回输入字符串——不猜测、不替换为当前时间。
+ * ISO 时间戳按本地时区展示（如 2026/09/09 18:00:00）。空值返回 null，
+ * 由调用方决定如何呈现；无法解析时原样返回服务端给出的字符串。
  */
-export function formatLocalDateTime(value: string | null | undefined): string | null {
-  if (value === null || value === undefined || value === "") return null;
+export function formatLocalDateTime(
+  value: string | null,
+  precision: keyof typeof FORMATTERS = "second",
+): string | null {
+  if (!value) return null;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  const pad = (n: number): string => String(n).padStart(2, "0");
-  return (
-    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
-    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
-  );
+  return FORMATTERS[precision].format(date);
 }

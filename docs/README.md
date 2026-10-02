@@ -4,21 +4,12 @@
 
 ## 顶层文件（不可移动）
 
-- `index.html` — 项目官网营销落地页。GitHub Pages 从 `docs/` 根目录发布，此文件是站点入口。
-- `assets/website/` — 官网使用的角色立绘（`index.html` 引用），与入口文件配套，同样不可移动。
+- `index.html`：项目官网首页。GitHub Pages 从 `docs/` 根目录发布，此文件是站点入口。
+- `assets/website/`：官网使用的角色立绘（`index.html` 引用），与入口文件配套，同样不可移动。
 
-## 顶层文件（V0.3.3 阶段文档）
+## 顶层文件（用户指引）
 
-- `v0.3.3-logic-ai-acceptance.md` — 强逻辑轨道验收记录（角色卡底座、语音边界冻结、手机远程 P0 服务端）。
-- `v0.3.3-visual-ai-acceptance.md` — 强视觉轨道验收记录（桌面角色库/创作页/设置中心、手机端 PWA）与真机验收发现。
-- `v0.3.3-wrap-up.md` — V0.3.3 收尾：真机验收结论、缺陷清单（全部归 V0.3.4）与合并说明。V0.3.4 修复工作的输入清单。
-- `release-notes/v0.3.4-acceptance.md` — V0.3.4 验收结论、复审修复、V0.3.5 最小准备与验证门禁。
-- `手机远程语音说明.md` — 手机语音用户指引（V0.4.0 及以后）：Cloudflare Tunnel 接入、配对安全须知、麦克风权限、语音静音边界与故障排查。V0.3.5—V0.3.9 的 Tailscale 接入方式已不再适用。
-
-## 顶层文件（V0.3.5 阶段文档）
-
-- `v0.3.5-visual-ai-acceptance.md` — 强视觉轨道验收记录：V1-V14 实现、复查结果与反伪造修复、视觉验收截图清单、真机/真实联调未执行的如实记录。
-- `plans/V0.3.5-双轨实施计划.md` 与 `plans/V0.3.5-契约冻结.md` — 双轨执行级计划与冻结契约，详见 `plans/README.md`。
+- `手机远程语音说明.md`：手机语音用户指引（V0.4.0 及以后），包括 Cloudflare Tunnel 接入、配对安全须知、麦克风权限、语音静音边界与故障排查。
 
 ## 子目录
 
@@ -28,7 +19,7 @@
 | `release-notes/` | 历次版本发布说明：v0.4.1（当前基线）、v0.4.0、v0.3.2-patch1、v0.3.2、v0.2.0。 | `release-notes/README.md` |
 | `character-card/` | 角色卡数据契约（hsr schema 1.0）、酒馆字段映射、状态枚举与接入清单。`src/pair_harness/character_cards/` 注释引用此处路径，移动文件需同步代码。 | `character-card/README.md` |
 | `design/` | 设计调研与参考：`research/`（mufy、SillyTavern、DeepSeek-Reasonix 外部调研）、`dashscope/`（千问语音 API 参考，`src/` 多处注释引用其路径）、`web-prototype/`（V0.4.0 视觉原型交付包）、`旧版/`（v0.2.0 时代文档）。 | `design/README.md` |
-| `website/` | 官网相关文档：`官网文案规则.md`（官网与宣发文案的写作方法论）。 | — |
+| `website/` | 官网相关文档：`官网文案规则.md`（官网与宣发文案的写作方法论）。 | 无 |
 | `promo/` | 宣发工作目录：B 站视频大纲、口播稿、宣发计划、素材/成品视频/抽帧/BGM。本地目录，Git 忽略，不入库。 | `promo/README.md` |
 
 ## 维护约定

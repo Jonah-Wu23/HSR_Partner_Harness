@@ -8,16 +8,12 @@ class SandboxViolation(RuntimeError):
 
 
 class ProjectSandbox:
-    """目录级沙箱：限制文件与命令操作在项目根目录之内。
+    """路径级沙箱：校验工具上报的目标路径都在项目根目录之内。
 
-    设计偏差说明（O4.6）：本类只是“路径约束”，不是执行沙箱——
-    - 对 shell 命令只能锁定工作目录（enforce_cwd），无法阻止命令
-      访问 cwd 之外的文件（如读取绝对路径、访问系统目录）；
-    - 真正的执行边界在引擎侧策略：Codex app-server 的 workspace-write
-      策略（设计 §6.3 修订），演示引擎路径下也只是兜底目录拦截；
-    - 容器隔离不进入 MVP（设计 §6.4 附录）。
-    不要依据本类判断“命令已被安全隔离”；后续扩展防护时应在引擎策略
-    层（而非此处）加强。
+    编排器在引擎申请工具权限（approval.requested）和工具开始
+    （tool.started）时，用事件里的路径调用 :meth:`resolve_write_path`，
+    越界即否决。它只检查引擎上报的路径，不隔离 shell 命令运行时实际
+    访问的文件；命令的工作目录是 Reasonix 会话打开时传入的项目目录。
     """
 
     def __init__(self, root: Path) -> None:
@@ -45,9 +41,3 @@ class ProjectSandbox:
         except ValueError as exc:
             raise SandboxViolation(f"路径越界: {path}") from exc
         return resolved
-
-    def enforce_cwd(self, cwd: str | Path | None) -> Path:
-        """校验命令执行工作目录。``None`` 返回项目根目录。"""
-        if cwd is None:
-            return self.root
-        return self.resolve_write_path(cwd)

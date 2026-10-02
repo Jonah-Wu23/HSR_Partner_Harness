@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { ToastItem } from "./types";
 
 interface ToastStackProps {
@@ -8,7 +9,7 @@ interface ToastStackProps {
 }
 
 /** 右上角 Toast 队列：错误与结果通知，同一错误只出现一次由 store 保证。 */
-export function ToastStack({ toasts, onDismiss, onOpenDetails }: ToastStackProps) {
+export const ToastStack = memo(function ToastStack({ toasts, onDismiss, onOpenDetails }: ToastStackProps) {
   if (toasts.length === 0) return null;
   return (
     <div className="toast-stack" role="status" aria-live="polite">
@@ -36,4 +37,4 @@ export function ToastStack({ toasts, onDismiss, onOpenDetails }: ToastStackProps
       ))}
     </div>
   );
-}
+});

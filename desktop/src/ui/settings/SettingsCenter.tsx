@@ -13,7 +13,6 @@ import {
   DIALOGUE_PROVIDERS,
   DIALOGUE_PROVIDER_IDS,
   isSupportedDialogueProvider,
-  normalizeDialogueProvider,
 } from "./dialogueProviders";
 import type { CharacterCardVoicePageViewModel, RemotePairingViewModel } from "../../contracts/view-models";
 import type { FileFilter } from "../../services/backend";
@@ -32,44 +31,42 @@ interface SettingsCenterProps {
   account: AccountPageView;
   model: CharacterModelPageView;
   voice: VoicePageView;
-  /** V0.3.5：语音页「角色音色」区数据（卡列表 + 账号语音配置完备性）。 */
+  /** 语音页「角色音色」区数据。 */
   characterVoice?: CharacterCardVoicePageViewModel;
-  /** V0.3.5：从角色库直达语音页时预选的角色卡 id；null 表示无预选。 */
+  /** 从角色库直达语音页时预选的角色卡 id；null 表示无预选。 */
   voiceCardFocus?: string | null;
-  /** V0.3.5：可选 actions，用于角色音色流程。AppShell 需要传入。 */
-  actions?: HarnessActions;
-  /** V0.3.5：选择本地文件（参考音频等）。AppShell 需要传入 backend.pickFile 的包装。 */
-  onPickFile?: (options?: { title?: string; filters?: FileFilter[] }) => Promise<string | null>;
-  /** V0.3.3：远程设备页数据源与回调（remote.* 命令）。 */
+  /** 角色音色、长期记忆与远程页使用的 actions。 */
+  actions: HarnessActions;
+  /** 选择本地文件（参考音频等）。 */
+  onPickFile: (options?: { title?: string; filters?: FileFilter[] }) => Promise<string | null>;
+  /** 远程设备页数据与回调（remote.* 命令）；公网隧道操作直接调用 actions。 */
   remote: RemotePairingViewModel;
   onIssuePairingCode: () => void;
   onListRemoteDevices: () => void;
   onRevokeRemoteDevice: (deviceName: string) => void;
-  onTunnelStart?: () => void | Promise<void>;
-  onTunnelStop?: () => void | Promise<void>;
-  onQueryTunnelStatus?: () => void | Promise<void>;
   modelTest: TestResult;
   voicePreview: TestResult;
-  onSaveProfile: (displayName: string) => void;
-  onChangePassword: (oldPassword: string, newPassword: string) => void;
+  /** 保存资料与修改密码：页面 await 后就地显示结果。 */
+  onSaveProfile: (displayName: string) => Promise<void>;
+  onChangePassword: (oldPassword: string, newPassword: string) => Promise<void>;
   onLogout: () => void;
   onSaveModel: (config: CharacterModelPageView & { apiKey?: string }) => void | Promise<void>;
   onTestModel: () => void;
-  /** 保存当前本地账号的语音配置与开关偏好。 */
+  /** 保存当前本地账号的语音配置与开关偏好；只携带本次变化的字段。 */
   onSaveVoice: (config: {
-    enabled: boolean;
-    assistantVoiceEnabled: boolean;
-    vadEnabled: boolean;
+    enabled?: boolean;
+    assistantVoiceEnabled?: boolean;
+    vadEnabled?: boolean;
     baseUrl?: string;
     /** 只接受当前输入框的新 Key；已保存 Key 不会从 view 回传。 */
     apiKey?: string;
   }) => void | Promise<void>;
   onPreviewVoice: (voiceId: string, voiceName: string) => void;
-  /** 当前窗口的 voice.provision 调用；未接入时保留真实错误，不伪造成功。 */
-  onProvisionVoices?: (
+  /** 生成专属音色（voice.provision）。 */
+  onProvisionVoices: (
     speakerIds: string[],
     replaceExisting?: boolean,
-  ) => void | Promise<VoiceProvisionResult>;
+  ) => Promise<VoiceProvisionResult>;
 }
 
 const NAV: Array<{ id: SettingsPage; label: string }> = [
@@ -102,8 +99,7 @@ function TestResultNote({ result, okClass, testingLabel }: TestResultNoteProps) 
 const FIXED_ASR_MODEL = "qwen-audio-3.0-asr-flash-streaming";
 const FIXED_TTS_MODEL = "qwen-audio-3.0-tts-flash";
 
-// V0.3.4：助手侧说话方一律不出现在声音复刻中（fourth_mirror 是
-// march7_fourth_mirror 配对的助手侧，服务端已冻结拒绝助手 TTS）。
+// 助手侧说话方不参与声音复刻（如 march7_fourth_mirror 配对的 fourth_mirror），服务端拒绝助手 TTS。
 const VOICE_SPEAKER_DEFINITIONS: Array<
   Pick<VoiceSpeakerStatus, "speakerId" | "name" | "method">
 > = [
@@ -209,11 +205,55 @@ export function SettingsCenter(props: SettingsCenterProps) {
   );
 }
 
+/** 表单提交的就地结果：成功提示或失败原文。 */
+type FormOutcome = { ok: boolean; text: string } | null;
+
+function FormOutcomeNote({ outcome }: { outcome: FormOutcome }) {
+  if (!outcome) return null;
+  return (
+    <p className={outcome.ok ? "field-ok" : "field-error"} role={outcome.ok ? "status" : "alert"}>
+      {outcome.text}
+    </p>
+  );
+}
+
 function AccountPage(props: SettingsCenterProps) {
   const [name, setName] = useState(props.account.displayName);
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirming, setConfirming] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileOutcome, setProfileOutcome] = useState<FormOutcome>(null);
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [passwordOutcome, setPasswordOutcome] = useState<FormOutcome>(null);
+
+  const saveProfile = async () => {
+    setProfileSaving(true);
+    setProfileOutcome(null);
+    try {
+      await props.onSaveProfile(name.trim());
+      setProfileOutcome({ ok: true, text: "资料已保存" });
+    } catch (error) {
+      setProfileOutcome({ ok: false, text: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+  const changePassword = async () => {
+    setPasswordSaving(true);
+    setPasswordOutcome(null);
+    try {
+      await props.onChangePassword(oldPassword, newPassword);
+      setOldPassword("");
+      setNewPassword("");
+      setPasswordOutcome({ ok: true, text: "密码已修改" });
+    } catch (error) {
+      setPasswordOutcome({ ok: false, text: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setPasswordSaving(false);
+    }
+  };
 
   return (
     <section className="settings-page">
@@ -221,12 +261,13 @@ function AccountPage(props: SettingsCenterProps) {
         <span className="field-label">显示名称</span>
         <input value={name} onChange={(event) => setName(event.target.value)} />
       </label>
+      <FormOutcomeNote outcome={profileOutcome} />
       <div className="settings-row">
         <button
           type="button"
           className="btn btn-secondary"
-          disabled={!name.trim() || name === props.account.displayName}
-          onClick={() => props.onSaveProfile(name.trim())}
+          disabled={profileSaving || !name.trim() || name === props.account.displayName}
+          onClick={() => void saveProfile()}
         >
           保存资料
         </button>
@@ -241,12 +282,13 @@ function AccountPage(props: SettingsCenterProps) {
         <span className="field-label">新密码（至少 6 位）</span>
         <input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
       </label>
+      <FormOutcomeNote outcome={passwordOutcome} />
       <div className="settings-row">
         <button
           type="button"
           className="btn btn-secondary"
-          disabled={!oldPassword || newPassword.length < 6}
-          onClick={() => props.onChangePassword(oldPassword, newPassword)}
+          disabled={passwordSaving || !oldPassword || newPassword.length < 6}
+          onClick={() => void changePassword()}
         >
           修改密码
         </button>
@@ -286,16 +328,14 @@ function CodingAssistantPage() {
 }
 
 function CharacterModelPage(props: SettingsCenterProps) {
-  const [form, setForm] = useState({
-    ...props.model,
-    provider: normalizeDialogueProvider(props.model.provider),
-  });
-  const initialProvider = normalizeDialogueProvider(props.model.provider);
+  // config.get 的 dialogue.provider 是后端规范化后的服务商 id，直接作为选项值。
+  const [form, setForm] = useState({ ...props.model });
+  const initialProvider = props.model.provider;
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  // B-03：服务商是否可用以后端 config.get 的 provider_supported 为准，前端不自行
-  // 推断；只有「后端判定不可用 + 用户还没改选」才拦保存，改选后立即恢复。
+  // 服务商是否可用以 config.get 的 provider_supported 为准；只有后端判定不可用且用户
+  // 还没改选时才拦保存，改选后立即恢复。
   const providerBlocked = !props.model.providerSupported && form.provider === initialProvider;
   const unavailable = props.model.providerUnavailable;
   const dirty =
@@ -414,7 +454,7 @@ function CharacterModelPage(props: SettingsCenterProps) {
 function VoicePage(props: SettingsCenterProps) {
   const { voice } = props;
 
-  // V0.3.5：角色音色区「账号未配置」时跳转回 DashScope 账号配置区。
+  // 角色音色区「账号未配置」时跳转回 DashScope 账号配置区。
   const accountConfigRef = useRef<HTMLDivElement>(null);
 
   const [baseUrl, setBaseUrl] = useState(voice.baseUrl ?? "");
@@ -484,6 +524,7 @@ function VoicePage(props: SettingsCenterProps) {
   const completedCount = speakers.filter((speaker) => speaker.state === "completed").length;
   const provisioning = provisioningIds.length > 0;
 
+  // 开关只提交变化的那一项：带上服务地址会让后端重建语音运行时并打断正在进行的朗读。
   const savePreferences = async (config: {
     enabled?: boolean;
     assistantVoiceEnabled?: boolean;
@@ -491,12 +532,7 @@ function VoicePage(props: SettingsCenterProps) {
   }) => {
     setSaveError(null);
     try {
-      await props.onSaveVoice({
-        enabled: config.enabled ?? voice.enabled,
-        assistantVoiceEnabled: config.assistantVoiceEnabled ?? voice.assistantVoiceEnabled,
-        vadEnabled: config.vadEnabled ?? voice.vadEnabled,
-        baseUrl: baseUrl.trim() || undefined,
-      });
+      await props.onSaveVoice(config);
     } catch (error: unknown) {
       setSaveError(error instanceof Error ? error.message : String(error));
     }
@@ -514,9 +550,6 @@ function VoicePage(props: SettingsCenterProps) {
     setSaveNotice(null);
     try {
       await props.onSaveVoice({
-        enabled: voice.enabled,
-        assistantVoiceEnabled: voice.assistantVoiceEnabled,
-        vadEnabled: voice.vadEnabled,
         baseUrl: nextBaseUrl,
         ...(nextApiKey ? { apiKey: nextApiKey } : {}),
       });
@@ -535,10 +568,6 @@ function VoicePage(props: SettingsCenterProps) {
     );
     if (pendingIds.length === 0) return;
     setProvisionError(null);
-    if (!props.onProvisionVoices) {
-      setProvisionError("当前窗口尚未接入 voice.provision 调用，未伪造生成结果。");
-      return;
-    }
     const generation = voiceGenerationRef.current;
     pendingIds.forEach((speakerId) => provisioningIdsRef.current.add(speakerId));
     setProvisioningIds(Array.from(provisioningIdsRef.current));
@@ -552,7 +581,7 @@ function VoicePage(props: SettingsCenterProps) {
     try {
       const result = await props.onProvisionVoices(pendingIds, replaceExisting);
       if (generation !== voiceGenerationRef.current) return;
-      if (result?.results) {
+      if (result.results) {
         setLocalSpeakers((current) => {
           const next = { ...current };
           result.results?.forEach((item) => {
@@ -665,7 +694,7 @@ function VoicePage(props: SettingsCenterProps) {
 
       <h3 className="settings-subhead">专属音色</h3>
       <p className="settings-hint">
-        当前账号将依次提交 {VOICE_SPEAKER_DEFINITIONS.length} 次声音复刻。生成请求使用当前百炼账号的额度；是否计费以该账号页面和真实响应为准。助手侧说话方不支持语音，不在生成列表中。
+        当前账号将依次提交 {VOICE_SPEAKER_DEFINITIONS.length} 次声音复刻，使用当前百炼账号的额度。助手侧说话方不支持语音，不在生成列表中。
       </p>
       {!hasConfig ? (
         <div className="settings-status-card" role="alert">
@@ -823,11 +852,11 @@ function RemotePage(props: SettingsCenterProps) {
         onIssuePairingCode={props.onIssuePairingCode}
         onListRemoteDevices={props.onListRemoteDevices}
         onRevokeRemoteDevice={props.onRevokeRemoteDevice}
-        onTunnelStart={props.onTunnelStart ?? (props.actions ? () => props.actions!.tunnelStart() : undefined)}
-        onTunnelStop={props.onTunnelStop ?? (props.actions ? () => props.actions!.tunnelStop() : undefined)}
-        onQueryTunnelStatus={props.onQueryTunnelStatus ?? (props.actions ? () => props.actions!.queryTunnelStatus() : undefined)}
+        onTunnelStart={() => void props.actions.tunnelStart()}
+        onTunnelStop={() => void props.actions.tunnelStop()}
+        onQueryTunnelStatus={() => void props.actions.queryTunnelStatus()}
       />
-      {/* V0.3.7 V10：远程管理区常驻电源状态小节（只读；失败如实显示错误）。 */}
+      {/* 远程设备页常驻电源状态小节（只读，失败显示错误原文）。 */}
       <PowerStatusSection actions={props.actions} />
     </>
   );

@@ -1,55 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type {
+  ConversationOpenResult,
   ConversationRecord,
   Message,
+  PairRecord,
   PendingApproval,
+  ProjectRecord,
   ToolRun,
 } from "@shared/contracts/protocol";
 import {
   mobileWsClient,
+  TTS_MAX_BUFFERED_PCM_BYTES,
   useMobileStore,
-  type MobileState,
 } from "../../../lib/mobileStore";
 import { navigate } from "../../../lib/router";
+import { installFakeWebSocket, latestSocket } from "../../../test/fakeWebSocket";
 import { ChatPage } from "../ChatPage";
-
-class FakeWebSocket {
-  static instances: FakeWebSocket[] = [];
-  static readonly CONNECTING = 0;
-  static readonly OPEN = 1;
-
-  readyState = FakeWebSocket.CONNECTING;
-  readonly url: string;
-  readonly sent: string[] = [];
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { data: string }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-
-  constructor(url: string) {
-    this.url = url;
-    FakeWebSocket.instances.push(this);
-  }
-
-  open(): void {
-    this.readyState = FakeWebSocket.OPEN;
-    this.onopen?.();
-  }
-
-  close(): void {
-    this.readyState = 3;
-    this.onclose?.();
-  }
-
-  send(data: string): void {
-    this.sent.push(data);
-  }
-
-  emit(frame: unknown): void {
-    this.onmessage?.({ data: JSON.stringify(frame) });
-  }
-}
 
 const CONVERSATION: ConversationRecord = {
   conversation_id: "c1",
@@ -60,6 +27,33 @@ const CONVERSATION: ConversationRecord = {
   archived: false,
   created_at: "2026-08-20T00:00:00Z",
   updated_at: "2026-08-20T00:00:00Z",
+};
+
+const PROJECT: Omit<ProjectRecord, "conversations"> = {
+  project_id: "p1",
+  name: "桌面端",
+  root_path: "D:/work/desktop",
+  approval_mode: "request_approval",
+  reasoning_effort: "medium",
+  archived: false,
+  created_at: "2026-08-20T00:00:00Z",
+  last_opened_at: "2026-08-20T00:00:00Z",
+  path_available: true,
+};
+
+const PAIR: PairRecord = {
+  pair_id: "pair-1",
+  character: { id: "phainon", name: "白厄", voice_id: "" },
+  assistant: { id: "fourth_mirror", name: "第四面镜", voice_id: "" },
+  theme: {
+    character_text: "#3b2a14",
+    character_primary: "#c8922a",
+    character_deep: "#7a5418",
+    character_active: "#e0a93c",
+    assistant_primary: "#3d7bd8",
+    assistant_bright: "#6aa0ef",
+    assistant_shadow: "#1f3f73",
+  },
 };
 
 const SAMPLE_MESSAGE: Message = {
@@ -73,6 +67,7 @@ const SAMPLE_MESSAGE: Message = {
   payload: {},
   tts_eligible: true,
   created_at: "2026-08-20T00:01:00Z",
+  timeline_order: 1,
 };
 
 const SAMPLE_TOOL_RUN: ToolRun = {
@@ -85,6 +80,7 @@ const SAMPLE_TOOL_RUN: ToolRun = {
   title: "cargo build",
   summary: "编译桌面端",
   details: "Finished release [optimized] target(s) in 4.2s",
+  timeline_order: 2,
 };
 
 const SAMPLE_APPROVAL: PendingApproval = {
@@ -101,57 +97,81 @@ const SAMPLE_APPROVAL: PendingApproval = {
   task_id: "task-1",
 };
 
-function lastInstance(): FakeWebSocket {
-  const instance = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
-  if (!instance) throw new Error("没有 FakeWebSocket 实例");
-  return instance;
+/** approval.resolved 载荷中与裁决结果无关的字段。 */
+const RESOLVED_BASE = {
+  approval_id: "app-1",
+  conversation_id: "c1",
+  task_id: "task-1",
+  actor: "user",
+  request_reason: "需要确认写入配置",
+  resolution_reason: null,
+  resolved_at: "2026-08-20T00:03:00Z",
+  error_code: null,
+} as const;
+
+function openResult(overrides: Partial<ConversationOpenResult> = {}): ConversationOpenResult {
+  return {
+    conversation: CONVERSATION,
+    project: PROJECT,
+    pair: PAIR,
+    messages: [],
+    tool_runs: [],
+    turns: [],
+    queue_items: [],
+    active_task: null,
+    sequence: 10,
+    stream_id: "stream-current",
+    ...overrides,
+  };
 }
 
-function lastSentFrame(): Record<string, unknown> {
-  const ws = lastInstance();
-  const raw = ws.sent[ws.sent.length - 1];
-  if (!raw) throw new Error("客户端尚未发出任何帧");
-  return JSON.parse(raw) as Record<string, unknown>;
+/** 渲染聊天页并回放 conversation.open 的响应；装载结果的序号是 10，之后的事件从 11 起。 */
+async function renderOpenedChat(result: ConversationOpenResult = openResult()): Promise<void> {
+  render(<ChatPage conversationId="c1" />);
+  const socket = latestSocket();
+  await vi.waitFor(() => socket.lastFrame("conversation.open"));
+  socket.respond(socket.lastFrame("conversation.open"), result);
+  await waitFor(() => expect(useMobileStore.getState().timelineLoading).toBe(false));
 }
 
-describe("ChatPage 移动端聊天页集成测试", () => {
-  beforeEach(() => {
-    vi.stubGlobal("WebSocket", FakeWebSocket);
-    mobileWsClient.disconnect();
-    FakeWebSocket.instances = [];
+function emitEvent(event: string, sequence: number, payload: unknown): void {
+  latestSocket().emit({ kind: "event", event, sequence, payload });
+}
+
+/** 已打开的聊天收到一条待审批请求。 */
+async function renderChatWithPendingApproval(): Promise<void> {
+  await renderOpenedChat();
+  emitEvent("approval.requested", 11, SAMPLE_APPROVAL);
+  await screen.findByTestId("approval-card");
+}
+
+/** 点击批准，返回发出的 approval.resolve 请求帧。 */
+async function clickApprove() {
+  fireEvent.click(screen.getByTestId("approval-approve"));
+  const socket = latestSocket();
+  await vi.waitFor(() => socket.lastFrame("approval.resolve"));
+  return socket.lastFrame("approval.resolve");
+}
+
+/** 在输入框填入文本并提交，返回发出的 chat.submit 请求帧。 */
+async function submitText(text: string) {
+  fireEvent.change(screen.getByTestId("chat-input"), { target: { value: text } });
+  fireEvent.click(screen.getByTestId("chat-submit-btn"));
+  const socket = latestSocket();
+  await vi.waitFor(() => socket.lastFrame("chat.submit"));
+  return socket.lastFrame("chat.submit");
+}
+
+describe("ChatPage 聊天页", () => {
+  beforeEach(async () => {
+    installFakeWebSocket();
     window.localStorage.clear();
-
-    useMobileStore.setState({
-      connection: "connected",
-      deviceName: "测试设备",
-      projects: [],
-      conversationsById: { c1: CONVERSATION },
-      activeConversationId: null,
-      messages: [],
-      toolRuns: [],
-      approvals: [],
-      resolvedApprovals: [],
-      pair: null,
-      activeTask: null,
-      lastSequence: 10,
-      bootstrapped: true,
-      voice: {
-        capture: { state: "idle", sessionId: null, error: null },
-        transcript: null,
-        playback: { messageId: null, state: "idle", error: null },
-        availability: {
-          secureContext: typeof window !== "undefined" ? window.isSecureContext : false,
-          micPermission: "unknown",
-          supported: typeof navigator !== "undefined" && Boolean(navigator.mediaDevices?.getUserMedia),
-        },
-        ttsChunks: {},
-        ttsDroppedChunks: {},
-      },
-    } as unknown as Partial<MobileState>);
-
+    // disconnect 把会话级状态复位到初值；会话记录在生产中由 app.bootstrap 快照写入，这里作为前置条件。
+    await useMobileStore.getState().disconnect();
+    useMobileStore.setState({ conversationsById: { c1: CONVERSATION } });
     useMobileStore.getState().start();
     mobileWsClient.connect();
-    lastInstance().open();
+    latestSocket().open();
   });
 
   afterEach(() => {
@@ -160,33 +180,12 @@ describe("ChatPage 移动端聊天页集成测试", () => {
     window.localStorage.clear();
   });
 
-  it("挂载时调用 conversation.open 装载消息并渲染", async () => {
-    render(<ChatPage conversationId="c1" />);
+  it("挂载时发出 conversation.open，装载结果中的消息与工具卡进入时间线", async () => {
+    await renderOpenedChat(openResult({ messages: [SAMPLE_MESSAGE], tool_runs: [SAMPLE_TOOL_RUN] }));
 
-    // 检查 openConversation 帧发出
-    await vi.waitFor(() => {
-      expect(lastSentFrame().method).toBe("conversation.open");
+    expect(latestSocket().lastFrame("conversation.open").params).toMatchObject({
+      conversation_id: "c1",
     });
-    const openFrame = lastSentFrame();
-    expect(openFrame.params).toMatchObject({ conversation_id: "c1" });
-
-    // 模拟服务端响应消息与工具调用
-    lastInstance().emit({
-      kind: "response",
-      id: openFrame.id,
-      ok: true,
-      result: {
-        conversation: CONVERSATION,
-        project: null,
-        pair: null,
-        messages: [SAMPLE_MESSAGE],
-        tool_runs: [SAMPLE_TOOL_RUN],
-        turns: [],
-        queue_items: [],
-        active_task: null,
-      },
-    });
-
     await waitFor(() => {
       expect(screen.getByText("开发架构重构")).toBeInTheDocument();
       expect(screen.getByText("协作模式")).toBeInTheDocument();
@@ -196,246 +195,124 @@ describe("ChatPage 移动端聊天页集成测试", () => {
     });
   });
 
-  it("V0.3.5：审批卡片可操作；点击批准发送 approval.resolve", async () => {
-    useMobileStore.setState({
-      approvals: [SAMPLE_APPROVAL],
-    });
-
+  it("装载失败时展示原始错误，点击重试重新发出 conversation.open", async () => {
     render(<ChatPage conversationId="c1" />);
+    const socket = latestSocket();
+    await vi.waitFor(() => socket.lastFrame("conversation.open"));
+    socket.respondError(socket.lastFrame("conversation.open"), "conversation_not_found", "会话不存在：c1");
 
-    // 验证审批卡片渲染
-    expect(screen.getByTestId("approval-card")).toBeInTheDocument();
+    expect(await screen.findByTestId("chat-open-error")).toHaveTextContent(
+      "会话装载失败：会话不存在：c1",
+    );
+    fireEvent.click(screen.getByTestId("chat-open-retry"));
+    await vi.waitFor(() => expect(socket.sentFrames("conversation.open")).toHaveLength(2));
+  });
+
+  it("批准待审批操作发出 approval.resolve，approval.resolved 到达后卡片显示终态", async () => {
+    await renderChatWithPendingApproval();
     expect(screen.getByText("更新项目配置文件")).toBeInTheDocument();
-    expect(screen.getByText("src/config.json")).toBeInTheDocument();
 
-    // V0.3.5 P1：手机端展示审批按钮且可用。
-    const approveButton = screen.getByTestId("approval-approve");
-    const rejectButton = screen.getByTestId("approval-reject");
-    expect(approveButton).toBeInTheDocument();
-    expect(rejectButton).toBeInTheDocument();
-    expect(approveButton).not.toBeDisabled();
-    expect(rejectButton).not.toBeDisabled();
-
-    // 点击批准后发出 approval.resolve 帧
-    fireEvent.click(approveButton);
-    await vi.waitFor(() => {
-      const resolveFrame = lastInstance()
-        .sent.map((raw) => JSON.parse(raw))
-        .find((frame) => frame.method === "approval.resolve");
-      expect(resolveFrame).toBeDefined();
-      expect(resolveFrame.params).toMatchObject({
-        approval_id: "app-1",
-        // 后端 ApprovalDecision 枚举只认 allow / allow_for_conversation / deny
-        decision: "allow",
-      });
+    const frame = await clickApprove();
+    expect(frame.params).toEqual({ approval_id: "app-1", decision: "allow" });
+    latestSocket().respond(frame, {
+      approval_id: "app-1",
+      accepted: true,
+      resolved_by: "remote",
+      decision: "allow",
     });
-    const resolveFrame = lastInstance()
-      .sent.map((raw) => JSON.parse(raw))
-      .find((frame) => frame.method === "approval.resolve");
-    lastInstance().emit({ kind: "response", id: resolveFrame.id, ok: true, result: {} });
-
-    // 服务端返回 resolved 事件后，卡片进入已决状态
-    lastInstance().emit({
-      kind: "event",
-      event: "approval.resolved",
-      sequence: 11,
-      payload: { approval_id: "app-1", decision: "allow", resolved_by: "mobile", conversation_id: "c1" },
-    });
+    emitEvent("approval.resolved", 12, { ...RESOLVED_BASE, decision: "allow", resolved_by: "remote" });
 
     await waitFor(() => {
       expect(screen.getByTestId("approval-status")).toHaveTextContent("已批准");
-      expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent(/手机端/);
+      expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent("由 手机端 已批准");
     });
+    expect(screen.queryByTestId("approval-approve")).toBeNull();
   });
 
-  it("「交给助手」委派提交，验证 chat.submit 协议帧", async () => {
-    render(<ChatPage conversationId="c1" />);
-
-    // 先响应 openConversation
-    await vi.waitFor(() => {
-      expect(lastSentFrame().method).toBe("conversation.open");
-    });
-    const openFrame = lastSentFrame();
-    lastInstance().emit({
-      kind: "response",
-      id: openFrame.id,
-      ok: true,
-      result: {
-        conversation: CONVERSATION,
-        project: null,
-        pair: null,
-        messages: [],
-        tool_runs: [],
-        turns: [],
-        queue_items: [],
-        active_task: null,
-      },
-    });
+  it("审批提交失败时在页内展示错误码与原文，不显示终态", async () => {
+    await renderChatWithPendingApproval();
+    latestSocket().respondError(
+      await clickApprove(),
+      "approval_not_found",
+      "审批请求不存在或已经完成：app-1",
+    );
 
     await waitFor(() => {
-      expect(useMobileStore.getState().activeConversationId).toBe("c1");
+      expect(screen.getByTestId("approval-resolve-error")).toHaveTextContent(
+        "审批提交失败：approval_not_found：审批请求不存在或已经完成：app-1",
+      );
     });
-
-    // V0.3.4：切到「交给助手」目标（协作模式下可用）
-    fireEvent.click(screen.getByTestId("target-btn-assistant"));
-    const input = screen.getByTestId("chat-input");
-    const submitBtn = screen.getByTestId("chat-submit-btn");
-
-    fireEvent.change(input, { target: { value: "把所有单元测试运行一遍" } });
-    fireEvent.click(submitBtn);
-
-    // 断言 chat.submit 帧
-    await vi.waitFor(() => {
-      expect(lastSentFrame().method).toBe("chat.submit");
-    });
-    const submitFrame = lastSentFrame();
-    expect(submitFrame.params).toMatchObject({
-      conversation_id: "c1",
-      target: "assistant",
-      mode: "collaboration",
-      text: "把所有单元测试运行一遍",
-    });
-
-    // 响应成功
-    lastInstance().emit({
-      kind: "response",
-      id: submitFrame.id,
-      ok: true,
-      result: {},
-    });
-
-    await waitFor(() => {
-      expect(input).toHaveValue("");
-    });
+    expect(screen.queryByTestId("approval-status")).toBeNull();
   });
 
-  it("委派提交失败时如实展示错误", async () => {
-    render(<ChatPage conversationId="c1" />);
-
-    await vi.waitFor(() => {
-      expect(lastSentFrame().method).toBe("conversation.open");
-    });
-    const openFrame = lastSentFrame();
-    lastInstance().emit({
+  it("审批已被另一端裁决时按错误 details 中的终态收敛并展示服务端原文", async () => {
+    await renderChatWithPendingApproval();
+    const frame = await clickApprove();
+    latestSocket().emit({
       kind: "response",
-      id: openFrame.id,
-      ok: true,
-      result: {
-        conversation: CONVERSATION,
-        project: null,
-        pair: null,
-        messages: [],
-        tool_runs: [],
-        turns: [],
-        queue_items: [],
-        active_task: null,
-      },
-    });
-
-    await waitFor(() => {
-      expect(useMobileStore.getState().activeConversationId).toBe("c1");
-    });
-
-    fireEvent.click(screen.getByTestId("target-btn-assistant"));
-    const input = screen.getByTestId("chat-input");
-    const submitBtn = screen.getByTestId("chat-submit-btn");
-
-    fireEvent.change(input, { target: { value: "启动构建" } });
-    fireEvent.click(submitBtn);
-
-    await vi.waitFor(() => {
-      expect(lastSentFrame().method).toBe("chat.submit");
-    });
-    const submitFrame = lastSentFrame();
-
-    // 模拟服务端返回错误
-    lastInstance().emit({
-      kind: "response",
-      id: submitFrame.id,
+      id: frame.id,
       ok: false,
-      error: { code: "service_busy", message: "桌面端正在执行其他任务" },
-    });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("chat-composer-error")).toBeInTheDocument();
-      expect(screen.getByText(/桌面端正在执行其他任务/)).toBeInTheDocument();
-    });
-  });
-
-  it("V0.3.4 缺陷 3：「发给角色」提交 target=character 的 chat.submit", async () => {
-    render(<ChatPage conversationId="c1" />);
-
-    await vi.waitFor(() => {
-      expect(lastSentFrame().method).toBe("conversation.open");
-    });
-    const openFrame = lastSentFrame();
-    lastInstance().emit({
-      kind: "response",
-      id: openFrame.id,
-      ok: true,
-      result: {
-        conversation: CONVERSATION,
-        project: null,
-        pair: null,
-        messages: [],
-        tool_runs: [],
-        turns: [],
-        queue_items: [],
-        active_task: null,
+      error: {
+        code: "approval_already_resolved",
+        message: "审批已由 desktop 应答（deny），不能重复应答",
+        details: { ...RESOLVED_BASE, decision: "deny", resolved_by: "desktop" },
       },
     });
 
     await waitFor(() => {
-      expect(useMobileStore.getState().activeConversationId).toBe("c1");
+      expect(screen.getByTestId("approval-resolve-notice")).toHaveTextContent(
+        "审批已由服务端终态收敛：审批已由 desktop 应答（deny），不能重复应答",
+      );
     });
+    expect(screen.queryByTestId("approval-resolve-error")).toBeNull();
+    expect(screen.getByTestId("approval-status")).toHaveTextContent("已拒绝");
+    expect(screen.getByTestId("approval-resolved-by")).toHaveTextContent("由 桌面端 已拒绝");
+  });
 
-    // 默认目标即「发给角色」
-    const input = screen.getByTestId("chat-input");
-    fireEvent.change(input, { target: { value: "今天好累，陪我聊聊" } });
-    fireEvent.click(screen.getByTestId("chat-submit-btn"));
+  it.each([
+    { button: "target-btn-character", target: "character", text: "今天好累，陪我聊聊" },
+    { button: "target-btn-assistant", target: "assistant", text: "把所有单元测试运行一遍" },
+  ])("目标 $target 提交 chat.submit 且不带 mode，成功后清空输入", async ({ button, target, text }) => {
+    await renderOpenedChat();
+    fireEvent.click(screen.getByTestId(button));
 
-    await vi.waitFor(() => {
-      expect(lastSentFrame().method).toBe("chat.submit");
-    });
-    const submitFrame = lastSentFrame();
-    expect(submitFrame.params).toMatchObject({
+    const frame = await submitText(text);
+    // 模式以服务端会话记录为准，提交不带 mode。
+    expect(frame.params).toEqual({ conversation_id: "c1", target, text });
+    latestSocket().respond(frame, {
+      message_id: "m-user-1",
       conversation_id: "c1",
-      target: "character",
-      text: "今天好累，陪我聊聊",
+      status: "received",
+      target,
+      turn_id: "turn-1",
     });
-    expect(submitFrame.params).not.toHaveProperty("mode");
+
+    await waitFor(() => expect(screen.getByTestId("chat-input")).toHaveValue(""));
   });
 
-  it("V0.3.4 缺陷 4：对话模式下助手输入前置禁用，切换模式发 conversation.set_mode", async () => {
-    useMobileStore.setState({
-      conversationsById: { c1: { ...CONVERSATION, last_mode: "chat" } },
-    });
-    render(<ChatPage conversationId="c1" />);
+  it("委派被服务端拒绝时如实展示错误并保留输入", async () => {
+    await renderOpenedChat();
+    fireEvent.click(screen.getByTestId("target-btn-assistant"));
 
-    await vi.waitFor(() => {
-      expect(lastSentFrame().method).toBe("conversation.open");
-    });
-    const openFrame = lastSentFrame();
-    lastInstance().emit({
-      kind: "response",
-      id: openFrame.id,
-      ok: true,
-      result: {
-        conversation: { ...CONVERSATION, last_mode: "chat" },
-        project: null,
-        pair: null,
-        messages: [],
-        tool_runs: [],
-        turns: [],
-        queue_items: [],
-        active_task: null,
-      },
-    });
+    latestSocket().respondError(
+      await submitText("启动构建"),
+      "assistant_not_allowed_in_chat_mode",
+      "聊天模式不能直接交给助手，请先切换到协作模式",
+    );
+
     await waitFor(() => {
-      expect(useMobileStore.getState().activeConversationId).toBe("c1");
+      expect(screen.getByTestId("chat-composer-error")).toHaveTextContent(
+        "委派失败：聊天模式不能直接交给助手，请先切换到协作模式",
+      );
     });
+    expect(screen.getByTestId("chat-input")).toHaveValue("启动构建");
+  });
 
-    // 对话模式：切到助手目标后前置禁用并说明
+  it("对话模式下交给助手被前置禁用；切到协作模式发 conversation.set_mode，conversation.changed 到达后解锁", async () => {
+    const chatModeConversation = { ...CONVERSATION, last_mode: "chat" };
+    useMobileStore.setState({ conversationsById: { c1: chatModeConversation } });
+    await renderOpenedChat(openResult({ conversation: chatModeConversation }));
+
     fireEvent.click(screen.getByTestId("target-btn-assistant"));
     expect(screen.getByTestId("chat-input")).toBeDisabled();
     expect(screen.getByTestId("chat-submit-btn")).toBeDisabled();
@@ -443,198 +320,95 @@ describe("ChatPage 移动端聊天页集成测试", () => {
       /对话模式下助手不接收委派/,
     );
 
-    // 切换到协作模式：发出 conversation.set_mode
     fireEvent.click(screen.getByTestId("mode-btn-collaboration"));
-    await vi.waitFor(() => {
-      expect(lastSentFrame().method).toBe("conversation.set_mode");
-    });
-    const modeFrame = lastSentFrame();
-    expect(modeFrame.params).toMatchObject({
-      conversation_id: "c1",
-      mode: "collaboration",
-    });
+    const socket = latestSocket();
+    await vi.waitFor(() => socket.lastFrame("conversation.set_mode"));
+    const modeFrame = socket.lastFrame("conversation.set_mode");
+    expect(modeFrame.params).toEqual({ conversation_id: "c1", mode: "collaboration" });
+    socket.respond(modeFrame, { conversation_id: "c1", mode: "collaboration" });
 
-    // conversation.changed 到达前 UI 仍是禁用（不乐观更新）
+    // 响应回来后仍按旧模式禁用：模式以 conversation.changed 为准，不做乐观更新。
+    await waitFor(() => expect(screen.getByTestId("mode-btn-collaboration")).toBeEnabled());
     expect(screen.getByTestId("chat-input")).toBeDisabled();
 
-    lastInstance().emit({
-      kind: "response",
-      id: modeFrame.id,
-      ok: true,
-      result: { conversation_id: "c1", mode: "collaboration" },
-    });
-    lastInstance().emit({
-      kind: "event",
-      event: "conversation.changed",
-      sequence: 11,
-      payload: { conversation: CONVERSATION },
-    });
+    emitEvent("conversation.changed", 11, { conversation: CONVERSATION });
 
-    // 协作模式生效后助手输入解锁
-    await waitFor(() => {
-      expect(screen.getByTestId("chat-input")).not.toBeDisabled();
-    });
+    await waitFor(() => expect(screen.getByTestId("chat-input")).toBeEnabled());
     expect(screen.getByText("协作模式")).toBeInTheDocument();
   });
 
-  it("接收实时 message.delta 与 message.finalized 事件并增量渲染", async () => {
-    render(<ChatPage conversationId="c1" />);
+  it("message.delta 增量拼进同一个气泡，message.finalized 后正文保持完整", async () => {
+    await renderOpenedChat();
+    const segment = {
+      message_id: "m-stream-1",
+      conversation_id: "c1",
+      source: "assistant",
+      kind: "assistant.natural_language",
+      task_id: "task-1",
+      segment_index: 0,
+      timeline_order: 1,
+      reasoning_streaming: false,
+    };
 
-    // 初始打开返回空消息
-    await vi.waitFor(() => {
-      expect(lastSentFrame().method).toBe("conversation.open");
-    });
-    const openFrame = lastSentFrame();
-    lastInstance().emit({
-      kind: "response",
-      id: openFrame.id,
-      ok: true,
-      result: {
-        conversation: CONVERSATION,
-        project: null,
-        pair: null,
-        messages: [],
-        tool_runs: [],
-        turns: [],
-        queue_items: [],
-        active_task: null,
-      },
-    });
+    emitEvent("message.delta", 11, { ...segment, delta: "正在解析配置..." });
+    expect(await screen.findByText("正在解析配置...")).toBeInTheDocument();
 
-    await waitFor(() => {
-      expect(useMobileStore.getState().activeConversationId).toBe("c1");
-    });
+    emitEvent("message.delta", 12, { ...segment, delta: "解析成功，一切正常。" });
+    expect(await screen.findByText("正在解析配置...解析成功，一切正常。")).toBeInTheDocument();
 
-    // 推送 delta 事件
-    lastInstance().emit({
-      kind: "event",
-      event: "message.delta",
-      sequence: 11,
-      payload: {
-        message_id: "m-stream-1",
-        conversation_id: "c1",
-        source: "assistant",
-        kind: "assistant.natural_language",
-        delta: "正在解析配置...",
-      },
+    emitEvent("message.finalized", 13, {
+      conversation_id: "c1",
+      task_id: "task-1",
+      message_id: "m-stream-1",
     });
-
-    await waitFor(() => {
-      expect(screen.getByText("正在解析配置...")).toBeInTheDocument();
-    });
-
-    // 推送第二个 delta
-    lastInstance().emit({
-      kind: "event",
-      event: "message.delta",
-      sequence: 12,
-      payload: {
-        message_id: "m-stream-1",
-        conversation_id: "c1",
-        source: "assistant",
-        kind: "assistant.natural_language",
-        delta: "解析成功，一切正常。",
-      },
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText("正在解析配置...解析成功，一切正常。")).toBeInTheDocument();
-    });
-
-    // 推送 finalized
-    lastInstance().emit({
-      kind: "event",
-      event: "message.finalized",
-      sequence: 13,
-      payload: {
-        message_id: "m-stream-1",
-        conversation_id: "c1",
-        text: "正在解析配置...解析成功，一切正常。",
-      },
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText("正在解析配置...解析成功，一切正常。")).toBeInTheDocument();
-    });
+    await waitFor(() => expect(useMobileStore.getState().messages[0]?.streaming).toBe(false));
+    expect(screen.getAllByTestId("message-bubble")).toHaveLength(1);
+    expect(screen.getByText("正在解析配置...解析成功，一切正常。")).toBeInTheDocument();
   });
 
-  it("V0.3.4 缺陷 8：角色思考流（character.speech + channel=reasoning）进折叠思考段，不混入正文", async () => {
-    render(<ChatPage conversationId="c1" />);
+  it("角色 reasoning 通道的增量进入折叠思考段，正文增量单独成文", async () => {
+    await renderOpenedChat();
+    const speech = {
+      message_id: "speech:c1:msg-user-1",
+      conversation_id: "c1",
+      pair_id: "pair-1",
+      source: "character",
+      kind: "character.speech",
+      timeline_order: 2,
+    };
 
-    await vi.waitFor(() => {
-      expect(lastSentFrame().method).toBe("conversation.open");
-    });
-    const openFrame = lastSentFrame();
-    lastInstance().emit({
-      kind: "response",
-      id: openFrame.id,
-      ok: true,
-      result: {
-        conversation: CONVERSATION,
-        project: null,
-        pair: null,
-        messages: [],
-        tool_runs: [],
-        turns: [],
-        queue_items: [],
-        active_task: null,
-      },
+    emitEvent("message.delta", 11, {
+      ...speech,
+      channel: "reasoning",
+      reasoning_streaming: true,
+      started: true,
+      delta: "他今天似乎很累，我先关心一下。",
     });
     await waitFor(() => {
-      expect(useMobileStore.getState().activeConversationId).toBe("c1");
-    });
-
-    // 角色思考增量：kind=character.speech + channel=reasoning
-    lastInstance().emit({
-      kind: "event",
-      event: "message.delta",
-      sequence: 11,
-      payload: {
-        message_id: "m-char-think",
-        conversation_id: "c1",
-        source: "character",
-        kind: "character.speech",
-        channel: "reasoning",
-        delta: "他今天似乎很累，我先关心一下。",
-      },
-    });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("reasoning-ribbon")).toBeInTheDocument();
       expect(screen.getByTestId("reasoning-body")).toHaveTextContent(
         "他今天似乎很累，我先关心一下。",
       );
     });
-    // 思考文本不得拼进正文气泡（.mobile-msg-text）
-    const bodyTexts = Array.from(document.querySelectorAll(".mobile-msg-text"));
-    expect(
-      bodyTexts.some((el) => el.textContent?.includes("他今天似乎很累")),
-    ).toBe(false);
 
-    // 同消息的正文增量与思考分开
-    lastInstance().emit({
-      kind: "event",
-      event: "message.delta",
-      sequence: 12,
-      payload: {
-        message_id: "m-char-think",
-        conversation_id: "c1",
-        source: "character",
-        kind: "character.speech",
-        delta: "辛苦了，今天想聊些什么？",
-      },
+    emitEvent("message.delta", 12, {
+      ...speech,
+      channel: "reasoning",
+      reasoning_streaming: false,
+      completed: true,
+      delta: "",
     });
+    emitEvent("message.delta", 13, { ...speech, delta: "辛苦了，今天想聊些什么？" });
 
-    await waitFor(() => {
-      expect(screen.getByText("辛苦了，今天想聊些什么？")).toBeInTheDocument();
-    });
-    // 思考段仍然独立存在
-    expect(screen.getByTestId("reasoning-body")).toHaveTextContent(
+    // 正文按原文精确匹配：思考文本没有拼进正文。
+    expect(await screen.findByText("辛苦了，今天想聊些什么？")).toBeInTheDocument();
+    const ribbon = screen.getByTestId("reasoning-ribbon");
+    fireEvent.click(within(ribbon).getByRole("button"));
+    expect(within(ribbon).getByTestId("reasoning-body")).toHaveTextContent(
       "他今天似乎很累，我先关心一下。",
     );
   });
 
-  it("V0.3.4 缺陷 2：角色委派消息渲染为「来自 <角色名> 的委派」卡片而非用户气泡", async () => {
+  it("角色发起的委派渲染为「来自 <角色名> 的委派」卡片，不显示成用户气泡", async () => {
     const delegationMessage: Message = {
       message_id: "msg-del-1",
       conversation_id: "c1",
@@ -646,51 +420,22 @@ describe("ChatPage 移动端聊天页集成测试", () => {
       payload: {},
       tts_eligible: false,
       created_at: "2026-08-20T00:02:00Z",
+      timeline_order: 3,
       origin: "character_delegation",
       delegation_id: "task-del-1",
       status: "processing",
     };
-    const pairRecord = {
-      pair_id: "pair-1",
-      character: { id: "phainon", name: "白厄", voice_id: "" },
-      assistant: { id: "fourth_mirror", name: "第四面镜", voice_id: "" },
-      theme: { id: "ancient_machine", name: "古代机械" },
-    };
 
-    render(<ChatPage conversationId="c1" />);
+    await renderOpenedChat(openResult({ messages: [SAMPLE_MESSAGE, delegationMessage] }));
 
-    await vi.waitFor(() => {
-      expect(lastSentFrame().method).toBe("conversation.open");
-    });
-    const openFrame = lastSentFrame();
-    lastInstance().emit({
-      kind: "response",
-      id: openFrame.id,
-      ok: true,
-      result: {
-        conversation: CONVERSATION,
-        project: null,
-        pair: pairRecord,
-        messages: [SAMPLE_MESSAGE, delegationMessage],
-        tool_runs: [],
-        turns: [],
-        queue_items: [],
-        active_task: null,
-      },
-    });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("delegation-card")).toBeInTheDocument();
-    });
-    const card = screen.getByTestId("delegation-card");
-    // 来自角色（白厄）的委派，运行中（status=processing），而非「你」的用户气泡
+    const card = await screen.findByTestId("delegation-card");
     expect(card).toHaveTextContent("来自 白厄 的委派");
     expect(card).toHaveTextContent("查看项目目录结构");
-    expect(card).toHaveAttribute("data-delegation-status", "running");
+    expect(card).toHaveTextContent("运行中");
     expect(screen.queryByText("你")).toBeNull();
   });
 
-  it("V0.3.7 V9 收尾：从列表进入聊天后点返回，回退历史条目不压新历史", async () => {
+  it("从列表进入聊天后点返回，回退既有历史条目，不压入新条目", async () => {
     // 模拟真实进入路径：列表 →（应用内压栈）→ 聊天
     window.location.hash = "#/list";
     navigate({ name: "chat", conversationId: "c1" });
@@ -705,7 +450,7 @@ describe("ChatPage 移动端聊天页集成测试", () => {
     expect(window.history.length).toBe(lengthBeforeBack);
   });
 
-  it("V0.3.7 V9 收尾：深链直接落在聊天页时点返回，replace 到列表不新增条目", () => {
+  it("深链直接落在聊天页时点返回，替换为列表页，不新增历史条目", () => {
     window.location.hash = "#/chat/c1";
     const lengthBeforeBack = window.history.length;
 
@@ -716,255 +461,67 @@ describe("ChatPage 移动端聊天页集成测试", () => {
     expect(window.history.length).toBe(lengthBeforeBack);
   });
 
-  /* ---------- V0.3.9 V02 / V07 / V08 ---------- */
+  it("voice.mobile_tts_failed 的供应商错误原文进入页级错误条，事件没有错误码时不显示错误码", async () => {
+    await renderOpenedChat();
 
-  async function openConversationOnce() {
-    render(<ChatPage conversationId="c1" />);
-    await vi.waitFor(() => {
-      expect(lastSentFrame().method).toBe("conversation.open");
-    });
-    const openFrame = lastSentFrame();
-    lastInstance().emit({
-      kind: "response",
-      id: openFrame.id,
-      ok: true,
-      result: {
-        conversation: CONVERSATION,
-        project: null,
-        pair: null,
-        messages: [],
-        tool_runs: [],
-        turns: [],
-        queue_items: [],
-        active_task: null,
-      },
-    });
-    await waitFor(() => {
-      expect(useMobileStore.getState().activeConversationId).toBe("c1");
-    });
-  }
-
-  function lastFrameOf(method: string): Record<string, unknown> {
-    const frames = lastInstance()
-      .sent.map((raw) => JSON.parse(raw) as Record<string, unknown>);
-    return frames.reverse().find((frame) => frame.method === method) as Record<string, unknown>;
-  }
-
-  it("V0.3.9 V02：store 未接线 summary/memory 时不渲染状态条，不显示伪造状态", async () => {
-    await openConversationOnce();
-    expect(screen.queryByTestId("context-status-strip")).toBeNull();
-  });
-
-  it("V0.3.9 V02：接入摘要记录后渲染压缩状态条，失败可展开原始错误", async () => {
-    useMobileStore.setState({
-      summaryByConversationId: {
-        c1: {
-          summary_id: "s1",
-          conversation_id: "c1",
-          status: "failed",
-          covers_from_message_id: "m1",
-          covers_to_message_id: "m80",
-          covers_message_count: 80,
-          content: null,
-          provider: "deepseek",
-          model: "deepseek-v4.1-flash",
-          error_code: "summary_timeout",
-          error: "provider timeout",
-          created_at: "2026-01-01T00:00:00Z",
-          updated_at: "2026-01-01T00:00:00Z",
-        },
-      },
-    } as unknown as Partial<MobileState>);
-
-    await openConversationOnce();
-
-    expect(screen.getByTestId("summary-status-text")).toHaveTextContent("压缩失败");
-    fireEvent.click(screen.getByTestId("summary-error-toggle"));
-    expect(screen.getByTestId("summary-error-code")).toHaveTextContent("summary_timeout");
-    expect(screen.getByTestId("summary-error-text")).toHaveTextContent("provider timeout");
-  });
-
-  it("V0.3.9 V02：记忆零条是真实零值，与无数据区分", async () => {
-    useMobileStore.setState({
-      memoriesByConversationId: { c1: [] },
-    } as unknown as Partial<MobileState>);
-
-    await openConversationOnce();
-
-    expect(screen.getByTestId("context-status-strip")).toHaveAttribute("data-memory-count", "0");
-    expect(screen.getByTestId("memory-status-text")).toHaveTextContent("长期记忆暂无记录");
-  });
-
-  it("V0.3.9 V02：恢复失败如实展示原始错误（不合成成功）", async () => {
-    const regenerateSummary = vi
-      .fn()
-      .mockRejectedValue(new Error("summary_provider_error：provider 不可用"));
-    useMobileStore.setState({
-      summaryByConversationId: {
-        c1: {
-          summary_id: "s1",
-          conversation_id: "c1",
-          status: "failed",
-          covers_from_message_id: "m1",
-          covers_to_message_id: "m80",
-          covers_message_count: 80,
-          content: null,
-          provider: null,
-          model: null,
-          error_code: "summary_provider_error",
-          error: "provider 不可用",
-          created_at: "2026-01-01T00:00:00Z",
-          updated_at: "2026-01-01T00:00:00Z",
-        },
-      },
-      regenerateSummary,
-    } as unknown as Partial<MobileState>);
-
-    await openConversationOnce();
-    fireEvent.click(screen.getByTestId("summary-regenerate"));
-
-    await waitFor(() => {
-      expect(regenerateSummary).toHaveBeenCalledWith("s1");
-      expect(screen.getByTestId("summary-regenerate-error")).toHaveTextContent(
-        "summary_provider_error：provider 不可用",
-      );
-    });
-  });
-
-  it("V0.3.9 V07：审批 resolve 真实错误在页内展示（不再静默吞掉）", async () => {
-    useMobileStore.setState({ approvals: [SAMPLE_APPROVAL] });
-    render(<ChatPage conversationId="c1" />);
-
-    fireEvent.click(screen.getByTestId("approval-approve"));
-    await vi.waitFor(() => {
-      expect(lastFrameOf("approval.resolve")).toBeDefined();
-    });
-    const resolveFrame = lastFrameOf("approval.resolve");
-    lastInstance().emit({
-      kind: "response",
-      id: resolveFrame.id,
-      ok: false,
-      error: { code: "approval_conflict", message: "审批已被其他设备处理" },
-    });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("approval-resolve-error")).toHaveTextContent(
-        "审批提交失败：approval_conflict：审批已被其他设备处理",
-      );
-    });
-    // 真实终态未知时不伪造已决卡片
-    expect(screen.queryByTestId("approval-status")).toBeNull();
-  });
-
-  it("V0.3.9 V07：approval_already_resolved 展示服务端真实终态原文", async () => {
-    useMobileStore.setState({ activeConversationId: "c1", approvals: [SAMPLE_APPROVAL] });
-    render(<ChatPage conversationId="c1" />);
-
-    fireEvent.click(screen.getByTestId("approval-approve"));
-    await vi.waitFor(() => {
-      expect(lastFrameOf("approval.resolve")).toBeDefined();
-    });
-    const resolveFrame = lastFrameOf("approval.resolve");
-    lastInstance().emit({
-      kind: "response",
-      id: resolveFrame.id,
-      ok: false,
-      error: {
-        code: "approval_already_resolved",
-        message: "审批已由 desktop 应答（deny）",
-        details: { decision: "deny", resolved_by: "desktop" },
-      },
-    });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("approval-resolve-notice")).toHaveTextContent(
-        "审批已由服务端终态收敛：审批已由 desktop 应答（deny）",
-      );
-    });
-    expect(screen.queryByTestId("approval-resolve-error")).toBeNull();
-    expect(screen.getByTestId("approval-status")).toHaveTextContent("已拒绝");
-  });
-
-  it("V0.3.9 V07：朗读失败在页级可见并展示原始错误原文", async () => {
-    await openConversationOnce();
-
-    lastInstance().emit({
+    // 只发给手机的语音事件不带序号。
+    latestSocket().emit({
       kind: "event",
       event: "voice.mobile_tts_failed",
-      sequence: 20,
       payload: {
         conversation_id: "c1",
         message_id: "m-tts-failed-1",
-        error_code: "pcm_overflow",
-        error: "播放待播队列超过内存上限：14400001 > 14400000 字节",
+        error: "InvalidParameter: voice not found",
       },
     });
 
     await waitFor(() => {
       expect(screen.getByTestId("playback-error-bar")).toHaveTextContent(
-        "播放待播队列超过内存上限：14400001 > 14400000 字节",
+        "InvalidParameter: voice not found",
       );
     });
-    // 事件载荷的 error_code 由 store 如实保留，页级错误条展示真实错误码。
-    expect(screen.getByTestId("playback-error-code")).toHaveTextContent("pcm_overflow");
+    expect(screen.queryByTestId("playback-error-code")).toBeNull();
   });
 
-  it("V0.3.9 V07：store 提供 errorCode 后页级错误条展示真实错误码", async () => {
-    await openConversationOnce();
-    const voice = useMobileStore.getState().voice;
+  it("播放失败带错误码时页级错误条一并展示错误码", async () => {
+    // 与 store 处理 PCM 缓冲超限时写入的播放状态同形。
+    const error = `播放缓冲超过上限（${TTS_MAX_BUFFERED_PCM_BYTES} 字节，约 300 秒音频），已中止播放`;
     useMobileStore.setState({
       voice: {
-        ...voice,
-        playback: {
-          messageId: "m-tts-failed-2",
-          state: "failed",
-          error: "播放待播队列超过内存上限",
-          errorCode: "pcm_overflow",
-        } as typeof voice.playback & { errorCode: string },
+        ...useMobileStore.getState().voice,
+        playback: { messageId: "m-tts-overflow", state: "failed", error, errorCode: "pcm_overflow" },
       },
     });
+    await renderOpenedChat();
 
-    await waitFor(() => {
-      expect(screen.getByTestId("playback-error-code")).toHaveTextContent("pcm_overflow");
-    });
-    expect(screen.getByTestId("playback-error-text")).toHaveTextContent(
-      "播放待播队列超过内存上限",
-    );
+    expect(screen.getByTestId("playback-error-code")).toHaveTextContent("pcm_overflow");
+    expect(screen.getByTestId("playback-error-text")).toHaveTextContent(error);
   });
 
-  it("V0.3.9 V07：voice.playback_interrupted 落地前展示抢占提示", async () => {
-    await openConversationOnce();
-    const voice = useMobileStore.getState().voice;
-    useMobileStore.setState({
-      voice: {
-        ...voice,
-        lastInterruption: {
-          message_id: "m-old",
-          reason: "新角色回复开始播放",
-          interrupted_at: "2026-01-01T00:00:00Z",
-        },
-      } as unknown as MobileState["voice"],
+  it("voice.playback_interrupted 到达后展示打断提示与服务端原因", async () => {
+    await renderOpenedChat();
+    expect(screen.queryByTestId("playback-interrupted")).toBeNull();
+
+    emitEvent("voice.playback_interrupted", 11, {
+      conversation_id: "c1",
+      message_id: "m-old",
+      reason: "new_message",
     });
 
     await waitFor(() => {
       expect(screen.getByTestId("playback-interrupted")).toHaveTextContent(
         "已被新回复打断 / 已停止",
       );
-      expect(screen.getByTestId("playback-interrupted-reason")).toHaveTextContent(
-        "新角色回复开始播放",
-      );
+      expect(screen.getByTestId("playback-interrupted-reason")).toHaveTextContent("new_message");
     });
   });
 
-  it("V0.3.9 V07：没有抢占事件时不显示提示（不伪造已停止）", async () => {
-    await openConversationOnce();
-    expect(screen.queryByTestId("playback-interrupted")).toBeNull();
-  });
-
-  it("V0.3.9 V08：visualViewport 键盘占位时把聊天容器压到可视高度", async () => {
+  it("软键盘占位时聊天容器高度贴合 visualViewport，收起后交回 CSS", async () => {
     const listeners: Array<() => void> = [];
     const viewport = {
       height: 800,
+      offsetTop: 0,
+      scale: 1,
       addEventListener: (_type: string, cb: () => void) => {
         listeners.push(cb);
       },
@@ -981,20 +538,23 @@ describe("ChatPage 移动端聊天页集成测试", () => {
 
     try {
       render(<ChatPage conversationId="c1" />);
-      expect(screen.getByTestId("chat-page").style.height).toBe("");
+      const page = screen.getByTestId("chat-page");
+      expect(page).not.toHaveAttribute("data-keyboard");
 
-      // 键盘弹出：可视高度明显小于布局视口
+      // 键盘弹出：可视高度明显小于布局视口，容器高度经 CSS 变量贴合可视视口
       viewport.height = 400;
       listeners.forEach((cb) => cb());
       await waitFor(() => {
-        expect(screen.getByTestId("chat-page").style.height).toBe("400px");
+        expect(page).toHaveAttribute("data-keyboard", "open");
+        expect(page.style.getPropertyValue("--chat-viewport-height")).toBe("400px");
       });
 
       // 键盘收起：交回 CSS 的 dvh / vh 回退
       viewport.height = 800;
       listeners.forEach((cb) => cb());
       await waitFor(() => {
-        expect(screen.getByTestId("chat-page").style.height).toBe("");
+        expect(page).not.toHaveAttribute("data-keyboard");
+        expect(page.style.getPropertyValue("--chat-viewport-height")).toBe("");
       });
     } finally {
       delete (window as unknown as { visualViewport?: unknown }).visualViewport;

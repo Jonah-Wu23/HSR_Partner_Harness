@@ -1,51 +1,38 @@
-import { useMemo, useState } from "react";
+import { memo, useState } from "react";
 
 import type { HarnessActions } from "../../contracts/actions";
 import { useDesktopStore } from "../../stores/desktopStore";
 import { DiagnosticsDrawer } from "./DiagnosticsDrawer";
 import type { DiagnosticsLoadState } from "./MetricsPanel";
-import { adaptPromptAssembly, type PromptAssemblyView } from "./types";
 
 interface DiagnosticsDrawerHostProps {
   open: boolean;
   onClose: () => void;
-  /** 诊断查询与控制走 actions（metrics.query / diagnostics.prompt_assembly）。 */
-  actions?: HarnessActions;
+  /** 诊断查询走 metrics.query 与 diagnostics.prompt_assembly。 */
+  actions: HarnessActions;
 }
 
 /**
- * V0.3.9 V03 诊断抽屉接线层：把 store 的指标/装配诊断状态适配为视觉组件 props。
+ * 诊断抽屉接线层：把 store 的指标与装配诊断状态交给视觉组件。
  *
- * 查询状态语义（契约 §5）：
- * - metrics=null 表示「尚未读取」，[] 才是服务端返回真实零条；
- * - 查询失败把 store 中的错误原文交给抽屉展示，不吞异常、不合成成功；
- * - prompt_assembly 原始结果经视觉适配层校验结构；结构不符时把真实错误
- *   交给抽屉展示，绝不合成空数据冒充成功。
+ * metrics 为 null 表示尚未读取，[] 是服务端返回的零条；查询失败把错误原文交给抽屉。
+ * 装配结果在 actions 层已按协议校验，结构不符时同样以错误原文呈现。
  */
-export function DiagnosticsDrawerHost({ open, onClose, actions }: DiagnosticsDrawerHostProps) {
+export const DiagnosticsDrawerHost = memo(function DiagnosticsDrawerHost({
+  open,
+  onClose,
+  actions,
+}: DiagnosticsDrawerHostProps) {
   const metrics = useDesktopStore((state) => state.turnMetrics);
   const metricsLoading = useDesktopStore((state) => state.metricsLoading);
   const metricsError = useDesktopStore((state) => state.metricsError);
   const metricsCursor = useDesktopStore((state) => state.metricsCursor);
-  const assemblyRaw = useDesktopStore((state) => state.promptAssembly);
+  const assembly = useDesktopStore((state) => state.promptAssembly);
   const assemblyLoading = useDesktopStore((state) => state.promptAssemblyLoading);
   const assemblyError = useDesktopStore((state) => state.promptAssemblyError);
-  // 查询是否已发起：未发起时指标传 null（未读取），查询完成（含零条）后传数组。
+  // 未发起查询时指标传 null，查询完成（含零条）后传数组。
   const [metricsQueried, setMetricsQueried] = useState(false);
   const [assemblyQueried, setAssemblyQueried] = useState(false);
-
-  const adapted = useMemo((): { assembly: PromptAssemblyView | null; error: string | null } => {
-    if (!assemblyRaw) return { assembly: null, error: null };
-    try {
-      return { assembly: adaptPromptAssembly(assemblyRaw), error: null };
-    } catch (error) {
-      // Let It Fail：结构校验失败是真实错误，原文交给抽屉，不合成空数据。
-      return {
-        assembly: null,
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
-  }, [assemblyRaw]);
 
   const metricsState: DiagnosticsLoadState = metricsLoading
     ? "loading"
@@ -56,7 +43,7 @@ export function DiagnosticsDrawerHost({ open, onClose, actions }: DiagnosticsDra
         : "idle";
   const assemblyState: DiagnosticsLoadState = assemblyLoading
     ? "loading"
-    : adapted.error ?? assemblyError
+    : assemblyError
       ? "failed"
       : assemblyQueried
         ? "loaded"
@@ -64,22 +51,23 @@ export function DiagnosticsDrawerHost({ open, onClose, actions }: DiagnosticsDra
 
   const onLoadMetrics = () => {
     setMetricsQueried(true);
-    void actions?.queryMetrics?.();
+    void actions.queryMetrics();
   };
   const onLoadMoreMetrics = () => {
-    void actions?.queryMetrics?.({ cursor: metricsCursor ?? undefined });
+    void actions.queryMetrics({ cursor: metricsCursor ?? undefined });
   };
   const onLoadAssembly = () => {
     setAssemblyQueried(true);
-    void actions?.queryPromptAssembly?.();
+    void actions.queryPromptAssembly();
   };
   const onRequestHiddenContent = async (moduleName: string): Promise<string> => {
-    if (!actions?.queryPromptAssembly) {
-      throw new Error("当前环境未提供装配诊断查询能力（diagnostics.prompt_assembly）");
-    }
     const view = await actions.queryPromptAssembly({ includeHidden: true });
-    const module = view?.modules.find((item) => item.name === moduleName);
-    return module?.hidden_content ?? "";
+    const module = view.modules.find((item) => item.name === moduleName);
+    if (!module) throw new Error(`装配结果中没有模块「${moduleName}」`);
+    if (module.hidden_content === null) {
+      throw new Error(`服务端没有返回模块「${moduleName}」的隐藏原文`);
+    }
+    return module.hidden_content;
   };
 
   return (
@@ -92,11 +80,11 @@ export function DiagnosticsDrawerHost({ open, onClose, actions }: DiagnosticsDra
       metricsNextCursor={metricsCursor}
       onLoadMetrics={onLoadMetrics}
       onLoadMoreMetrics={onLoadMoreMetrics}
-      assembly={adapted.assembly}
+      assembly={assembly}
       assemblyState={assemblyState}
-      assemblyError={assemblyError ?? adapted.error}
+      assemblyError={assemblyError}
       onLoadAssembly={onLoadAssembly}
       onRequestHiddenContent={onRequestHiddenContent}
     />
   );
-}
+});

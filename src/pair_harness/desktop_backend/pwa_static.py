@@ -28,7 +28,7 @@ def add_static_routes(app: web.Application, static_root: Path | None) -> None:
         index_file = root / "index.html"
         if index_file.is_file():
             return web.FileResponse(index_file)
-        return _not_found(request)
+        raise web.HTTPNotFound()
 
     app.router.add_get("/", index)
     app.router.add_static("/", root, show_index=False)

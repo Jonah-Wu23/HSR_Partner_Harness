@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { ConnectionTestResult } from "../../contracts/actions";
 import {
   DIALOGUE_PROVIDERS,
   DIALOGUE_PROVIDER_IDS,
@@ -8,14 +9,15 @@ import {
 interface OnboardingProps {
   /** 选文件夹并创建第一个项目；返回 false 表示用户取消。 */
   onCreateProject: () => Promise<boolean>;
-  /** 保存角色模型配置并测试连接；返回人话结果。 */
+  /** 保存角色模型配置并测试连接；ok 为服务端连通结论。 */
   onSaveModelConfig: (config: {
     provider: DialogueProviderId;
     apiKey: string;
     baseUrl?: string;
     model?: string;
-  }) => Promise<string>;
-  onFinish: () => void;
+  }) => Promise<ConnectionTestResult>;
+  /** 标记引导完成；失败时在完成页就地显示原因。 */
+  onFinish: () => Promise<void>;
 }
 
 /** 首次引导三步：建项目 → 配模型 → 完成。任何一步可跳过。 */
@@ -27,8 +29,10 @@ export function Onboarding({ onCreateProject, onSaveModelConfig, onFinish }: Onb
   const [baseUrl, setBaseUrl] = useState(DIALOGUE_PROVIDERS.openai_compatible.baseUrl);
   const [model, setModel] = useState(DIALOGUE_PROVIDERS.openai_compatible.model);
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
   const [projectError, setProjectError] = useState<string | null>(null);
+  const [finishing, setFinishing] = useState(false);
+  const [finishError, setFinishError] = useState<string | null>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -69,12 +73,25 @@ export function Onboarding({ onCreateProject, onSaveModelConfig, onFinish }: Onb
       });
       if (!mountedRef.current) return;
       setTestResult(result);
-      if (result.startsWith("连接正常")) setStep(2);
+      if (result.ok) setStep(2);
     } catch (error) {
       if (!mountedRef.current) return;
-      setTestResult(error instanceof Error ? error.message : String(error));
+      setTestResult({ ok: false, message: error instanceof Error ? error.message : String(error) });
     } finally {
       if (mountedRef.current) setTesting(false);
+    }
+  };
+
+  const finish = async () => {
+    setFinishError(null);
+    setFinishing(true);
+    try {
+      await onFinish();
+    } catch (error) {
+      if (!mountedRef.current) return;
+      setFinishError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (mountedRef.current) setFinishing(false);
     }
   };
 
@@ -157,11 +174,8 @@ export function Onboarding({ onCreateProject, onSaveModelConfig, onFinish }: Onb
             />
           </label>
           {testResult ? (
-            <p
-              className={testResult.startsWith("连接正常") ? "field-ok" : "field-error"}
-              role="status"
-            >
-              {testResult}
+            <p className={testResult.ok ? "field-ok" : "field-error"} role="status">
+              {testResult.message}
             </p>
           ) : null}
           <div className="onboarding-actions">
@@ -191,8 +205,18 @@ export function Onboarding({ onCreateProject, onSaveModelConfig, onFinish }: Onb
           <p className="onboarding-hint">
             角色随时陪你聊天；切到协作模式，助手就能读写你的项目。
           </p>
+          {finishError ? (
+            <p className="field-error" role="alert">
+              {finishError}
+            </p>
+          ) : null}
           <div className="onboarding-actions">
-            <button type="button" className="btn btn-primary" onClick={onFinish}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={finishing}
+              onClick={() => void finish()}
+            >
               开始使用
             </button>
           </div>

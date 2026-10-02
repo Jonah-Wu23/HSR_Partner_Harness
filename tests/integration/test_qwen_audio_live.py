@@ -1,22 +1,8 @@
-"""B2 真实联调：Qwen 流式 ASR / TTS（live_qwen marker，默认跳过）。
-
-双重门槛：``live_qwen`` marker 选中本文件，``RUN_LIVE_QWEN=1`` 且
-``DASHSCOPE_API_KEY`` 存在才真正执行::
-
-  RUN_LIVE_QWEN=1 PYTHONIOENCODING=utf-8 \\
-    .venv/Scripts/python.exe -m pytest -q -m live_qwen \\
-    tests/integration/test_qwen_audio_live.py
-
-覆盖设计文档 §6.2：
-- ASR：白厄参考语音（48 kHz WAV）numpy 线性插值重采样为 16 kHz PCM，
-  按 100 ms / 3200 B 节奏推入 ``QwenStreamingRecognizer.stream_transcribe``，
-  断言最终合并文本包含素材中的连续关键词（“回头见”）；对应验证点 R3/R5。
-- TTS：用 pair 配置（或 ``PAIR_HARNESS_TEST_VOICE_ID``）的 voice_id 合成
-  “你好，我是白厄。”，断言产出 PCM 总时长 > 0.5 s（24 kHz），并写入
-  ``.tmp/`` 供人工试听；对应验证点 R3。
-
-真实 voice_id 写回 pair YAML 前（B2.8 adopt），TTS 用例自动跳过。
-"""
+# 真实 DashScope 联调：Qwen 流式 ASR 与 TTS。命令行设置 RUN_LIVE_QWEN=1 且能取得
+# DASHSCOPE_API_KEY（进程环境或项目 .env）才运行，否则跳过：
+#   RUN_LIVE_QWEN=1 PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe -m pytest -q -m live_qwen \
+#     tests/integration/test_qwen_audio_live.py
+# TTS 合成结果写入 .tmp/ 供人工试听。
 
 from __future__ import annotations
 
@@ -28,19 +14,20 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from dotenv import load_dotenv
 
 from pair_harness.adapters.audio.qwen_asr import QwenStreamingRecognizer
 from pair_harness.adapters.audio.qwen_tts import QwenSpeechSynthesizer, TTS_SAMPLE_RATE
-from pair_harness.cli import load_dotenv
 from pair_harness.config.pairs import load_pair_config
 from pair_harness.core.contracts import AsrEvent, SpeechRequest
 from pair_harness.settings import Settings
 
 pytestmark = pytest.mark.live_qwen
 
+ROOT = Path(__file__).resolve().parents[2]
 PAIR_ID = "phainon_ancient_machine"
-REFERENCE_DIR = Path(__file__).resolve().parents[2] / "assets" / "reference_voices" / "白厄"
-OUTPUT_DIR = Path(__file__).resolve().parents[2] / ".tmp"
+REFERENCE_DIR = ROOT / "assets" / "reference_voices" / "白厄"
+OUTPUT_DIR = ROOT / ".tmp"
 ASR_CHUNK_BYTES = 3200  # 100 ms @ 16 kHz / 16 bit 单声道
 ASR_PACE_S = 0.1
 ASR_KEYWORD = "回头见"
@@ -48,19 +35,8 @@ TTS_TEXT = "你好，我是白厄。"
 COLLECT_TIMEOUT_S = 180.0
 
 
-def _reference_wav() -> Path:
-    """选择包含“回头见”素材的参考语音（9.67 s 段）。"""
-    matches = [p for p in sorted(REFERENCE_DIR.glob("*.wav")) if "回头见" in p.name]
-    if not matches:
-        raise FileNotFoundError(f"参考语音目录中未找到含“回头见”的 WAV: {REFERENCE_DIR}")
-    return matches[0]
-
-
 def resample_to_16k_pcm(path: Path) -> bytes:
-    """读取 16 bit PCM WAV，线性插值重采样为 16 kHz 单声道 int16 字节。
-
-    不引入额外解码依赖（numpy 线性插值，设计 §6.2）。
-    """
+    """读取 16 bit PCM WAV，线性插值重采样为 16 kHz 单声道 int16 字节。"""
     with wave.open(str(path), "rb") as w:
         channels = w.getnchannels()
         sampwidth = w.getsampwidth()
@@ -102,10 +78,11 @@ async def collect(agen, timeout: float = COLLECT_TIMEOUT_S):
 
 @pytest.fixture(scope="module")
 def live_qwen_env() -> Settings:
-    """双重门槛：RUN_LIVE_QWEN=1 且 DASHSCOPE_API_KEY 存在，否则跳过。"""
-    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+    """RUN_LIVE_QWEN=1 时才读取项目 .env，没有 DASHSCOPE_API_KEY 则跳过。"""
     if os.getenv("RUN_LIVE_QWEN") != "1":
-        pytest.skip("未设置 RUN_LIVE_QWEN=1（live_qwen 双重门槛）")
+        pytest.skip("未设置 RUN_LIVE_QWEN=1")
+    # 确定要联调后才加载 .env，其他用例的进程环境不受影响
+    load_dotenv(ROOT / ".env")
     settings = Settings.from_environment()
     if not settings.dashscope_api_key:
         pytest.skip("缺少 DASHSCOPE_API_KEY 环境变量")
@@ -128,7 +105,6 @@ def live_voice_id(live_qwen_env: Settings) -> str:
     return voice_id
 
 
-@pytest.mark.asyncio
 async def test_live_asr_transcribes_reference_clip(
     live_qwen_env: Settings, live_voice_id: str
 ) -> None:
@@ -143,7 +119,6 @@ async def test_live_asr_transcribes_reference_clip(
         synthesizer = QwenSpeechSynthesizer(
             api_key=live_qwen_env.dashscope_api_key,
             ws_url=live_qwen_env.resolved_ws_url,
-            model=live_qwen_env.qwen_tts_model,
         )
         fallback_text = "今天辛苦了，回头见。我们下次继续聊，回头见。" * 2
         chunks = await _collect_tts(
@@ -159,13 +134,11 @@ async def test_live_asr_transcribes_reference_clip(
             source,
         )
         pcm = data.astype("<i2").tobytes()
-    # 严格下限：参考素材或 TTS 合成音频都必须足够长（原恒真 OR 断言已删除）
     assert len(pcm) / 2 / 16_000 > 0.5, "ASR 冒烟音频过短，无法验证流式识别"
 
     recognizer = QwenStreamingRecognizer(
         api_key=live_qwen_env.dashscope_api_key,
         ws_url=live_qwen_env.resolved_ws_url,
-        model=live_qwen_env.qwen_asr_model,
     )
     events = await collect(recognizer.stream_transcribe(chunked_audio(pcm)))
 
@@ -181,7 +154,6 @@ async def test_live_asr_transcribes_reference_clip(
     )
 
 
-@pytest.mark.asyncio
 async def test_live_tts_synthesizes_phainon_line(
     live_qwen_env: Settings, live_voice_id: str
 ) -> None:
@@ -189,7 +161,6 @@ async def test_live_tts_synthesizes_phainon_line(
     synthesizer = QwenSpeechSynthesizer(
         api_key=live_qwen_env.dashscope_api_key,
         ws_url=live_qwen_env.resolved_ws_url,
-        model=live_qwen_env.qwen_tts_model,
     )
     request = SpeechRequest(text=TTS_TEXT, voice_id=live_voice_id, message_id="live-tts")
 

@@ -40,11 +40,7 @@ export function filterCharacterCards(
     if (filters.source === "user_created" && card.source !== "user_created") {
       return false;
     }
-    if (
-      filters.source === "imported" &&
-      card.source !== "imported_json" &&
-      card.source !== "imported_png"
-    ) {
+    if (filters.source === "imported" && card.source !== "tavern_import") {
       return false;
     }
     if (filters.source === "draft" && card.state !== "draft") {

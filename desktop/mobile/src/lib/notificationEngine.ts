@@ -1,25 +1,16 @@
 /**
- * V0.3.7 L13 本地通知规则引擎（冻结契约 §2.3）。
+ * Android 壳内的本地通知规则引擎，直接订阅 mobileWsClient 的事件流：
+ * - 任务完成：turn.status_changed，turn.target=character 且进入终态；
+ * - 委派结果：turn.status_changed，turn.target=assistant 且进入终态；
+ * - 审批请求：approval.requested，正文取 operation.summary 或申请理由。
  *
- * 事件源 = 既有 WS 事件流（mobileWsClient.onEvent 多播，不经 store）：
- * - 任务完成 = turn.status_changed（turn.target=character，status 进入终态）；
- * - 委派结果 = turn.status_changed（turn.target=assistant，status 进入终态）；
- * - 审批请求 = approval.requested（payload 自带 operation.summary / reason 摘要）。
- * message.finalized 不带角色与文本，无法区分任务完成/委派，不作为触发源。
- *
- * 规则全部在壳内本地处理（§2.3：通知只承载状态摘要，不是事件来源）：
- * - 仅应用在后台（document.visibilityState=hidden）时发送，前台不打扰；
- * - 发送前现读 localStorage 偏好（phm.notificationPreferences.v1），enabled=false
- *   或静默档跳过；偏好读取失败按默认值，不阻塞通知链路；
- * - 通知权限未授权时不发送（NotificationPreferences UI 已如实呈现授权状态）；
- * - 点击通知进壳由「回前台时导航到最后一条通知的会话」近似——官方插件无
- *   点击回调，回前台后按既有 sequence 对齐机制（bootstrap）自动补增量，
- *   不合成离线期间的事件。
- *
- * Let It Fail 边界：插件调用失败保留原始错误日志并跳过该条通知，不改写为成功，
- * 不重试不伪造送达。
+ * 只在应用处于后台时发送；发送前读取 localStorage 的通知偏好，关闭的类型跳过；
+ * 未授权通知权限时不发送。插件没有点击回调，回到前台时若停在列表页，
+ * 就打开最后一条通知所属的聊天；回前台的重新同步补齐离线期间的状态。
+ * 插件调用失败记日志并跳过该条通知。
  */
 
+import type { PendingApproval, Turn } from "@shared/contracts/protocol";
 import { mobileWsClient, useMobileStore } from "./mobileStore";
 import type { WireEvent } from "./wsClient";
 import {
@@ -49,22 +40,11 @@ const NOTIFICATION_CHANNEL_IDS: Record<NotificationTypeKey, string> = {
   approvalRequested: "phm_approval_requested",
 };
 
-interface TurnPayload {
-  turn?: {
-    conversation_id?: string;
-    target?: string;
-    status?: string;
-  };
-}
-
-interface ApprovalRequestedPayload {
-  approval_id?: string;
-  conversation_id?: string;
-  operation?: { summary?: string };
-  reason?: string;
-}
-
-const TERMINAL_TURN_STATUSES = new Set(["completed", "failed", "cancelled"]);
+const TERMINAL_TURN_STATUS_TEXT: Partial<Record<Turn["status"], string>> = {
+  completed: "已完成",
+  failed: "失败",
+  cancelled: "已取消",
+};
 
 function notificationChannelId(
   type: NotificationTypeKey,
@@ -92,7 +72,7 @@ interface PendingNotification {
   type: NotificationTypeKey;
   title: string;
   body: string;
-  conversationId: string | null;
+  conversationId: string;
 }
 
 let started = false;
@@ -103,93 +83,52 @@ let engineReady = false;
 let lastNotifiedConversationId: string | null = null;
 let channelsEnsured = false;
 
-/** 激活点壳判定：订阅回调到达时环境已确定，直接读当前值。 */
-function isAndroidShellAtActivate(): boolean {
-  return detectShellEnvironment() === "android_shell";
+/** 会话标题取自 store 的会话记录，与列表页一样把空标题显示为「新聊天」。 */
+function storeConversationTitle(conversationId: string): string {
+  return useMobileStore.getState().conversationsById[conversationId]?.title || "新聊天";
 }
 
-function conversationTitleFallback(conversationId: string | null): string {
-  if (!conversationId) return "新聊天";
-  return "新聊天";
-}
-
-/** 测试注入点：会话标题解析（生产从 store 读取），传 null 恢复兜底。 */
-let titleResolver: ((conversationId: string) => string) | null = null;
-
-export function setNotificationTitleResolver(
-  resolver: ((conversationId: string) => string) | null,
-): void {
-  titleResolver = resolver;
-}
-
-function resolveTitle(conversationId: string | null): string {
-  if (!conversationId) return "新聊天";
-  return titleResolver?.(conversationId) ?? conversationTitleFallback(conversationId);
-}
-
-function handleTurnStatusChanged(payload: unknown): PendingNotification | null {
-  const turn = (payload as TurnPayload | undefined)?.turn;
-  if (!turn || typeof turn.conversation_id !== "string") return null;
-  if (typeof turn.status !== "string" || !TERMINAL_TURN_STATUSES.has(turn.status)) {
-    return null;
-  }
+function handleTurnStatusChanged({ turn }: { turn: Turn }): PendingNotification | null {
+  const statusText = TERMINAL_TURN_STATUS_TEXT[turn.status];
+  if (!statusText) return null;
   const isDelegation = turn.target === "assistant";
-  const type: NotificationTypeKey = isDelegation ? "delegationResult" : "taskCompleted";
-  const statusText =
-    turn.status === "completed" ? "已完成" : turn.status === "failed" ? "失败" : "已取消";
-  const title = isDelegation ? "委派结果" : "任务完成";
   return {
-    type,
-    title,
-    body: `「${resolveTitle(turn.conversation_id)}」${statusText}`,
+    type: isDelegation ? "delegationResult" : "taskCompleted",
+    title: isDelegation ? "委派结果" : "任务完成",
+    body: `「${storeConversationTitle(turn.conversation_id)}」${statusText}`,
     conversationId: turn.conversation_id,
   };
 }
 
-function handleApprovalRequested(payload: unknown): PendingNotification | null {
-  const data = (payload ?? {}) as ApprovalRequestedPayload;
-  if (typeof data.approval_id !== "string") return null;
-  const conversationId =
-    typeof data.conversation_id === "string" ? data.conversation_id : null;
-  const summary =
-    typeof data.operation?.summary === "string" && data.operation.summary.length > 0
-      ? data.operation.summary
-      : typeof data.reason === "string"
-        ? data.reason
-        : "需要你在手机上批准或拒绝";
+function handleApprovalRequested(approval: PendingApproval): PendingNotification {
   return {
     type: "approvalRequested",
     title: "审批请求",
-    body: `「${resolveTitle(conversationId)}」${summary}`,
-    conversationId,
+    body: `「${storeConversationTitle(approval.conversation_id)}」${approval.operation.summary || approval.reason}`,
+    conversationId: approval.conversation_id,
   };
 }
 
 function dispatchNotification(pending: PendingNotification): void {
   if (!engineReady || !permissionGranted) return;
   if (document.visibilityState !== "hidden") return;
-  const preferences = loadNotificationPreferences();
-  const preference = preferences[pending.type];
+  const preference = loadNotificationPreferences()[pending.type];
   if (!preference.enabled) return;
   sendLocalNotification({
     title: pending.title,
     body: pending.body,
     channelId: notificationChannelId(pending.type, preference.importance),
   });
-  if (pending.conversationId) {
-    lastNotifiedConversationId = pending.conversationId;
-  }
+  lastNotifiedConversationId = pending.conversationId;
 }
 
 function handleEngineEvent(event: WireEvent): void {
-  if (event.kind !== "event") return;
-  let pending: PendingNotification | null = null;
   if (event.event === "turn.status_changed") {
-    pending = handleTurnStatusChanged(event.payload);
+    const pending = handleTurnStatusChanged(event.payload as unknown as { turn: Turn });
+    if (pending) dispatchNotification(pending);
   } else if (event.event === "approval.requested") {
-    pending = handleApprovalRequested(event.payload);
+    dispatchNotification(handleApprovalRequested(event.payload as unknown as PendingApproval));
   }
-  if (pending) dispatchNotification(pending);
 }
 
 function refreshPermissionCache(): void {
@@ -210,7 +149,7 @@ function ensureChannels(): void {
       importanceLevels.map((importance) => ({
         id: notificationChannelId(key, importance),
         name: notificationChannelName(key, importance),
-        description: "角色/助手事件提醒（V0.3.7 本地通知）",
+        description: "角色与助手的事件提醒",
         importance: NOTIFICATION_CHANNEL_IMPORTANCE[importance],
       })),
     ),
@@ -219,11 +158,9 @@ function ensureChannels(): void {
 
 function handleVisibilityChange(): void {
   if (document.visibilityState !== "visible") return;
-  // 回前台即刷新权限缓存：用户可能去系统设置授权后返回（P2-5），
-  // 否则同一会话内引擎将一直按旧缓存跳过通知。
+  // 用户可能去系统设置授权后返回，回前台即刷新权限缓存。
   refreshPermissionCache();
-  // 回前台：近似「点击通知进入对应会话」。仅在列表页时跳转——
-  // 用户正停在别的会话时不打断；路由守卫会在未配对时接管。
+  // 代替通知点击：只在列表页时打开最后一条通知的聊天，停在别的聊天时不打断。
   if (!lastNotifiedConversationId) return;
   if (parseHash(window.location.hash).name !== "list") return;
   const target = lastNotifiedConversationId;
@@ -232,28 +169,16 @@ function handleVisibilityChange(): void {
 }
 
 /**
- * 幂等启动通知引擎。非 Android 壳（PWA / 桌面壳）不启动，但会**等待壳就绪**：
- * 首帧时 `__TAURI_INTERNALS__` 注入可能晚于本调用（真机实证竞态），一次性
- * isAndroidShell() 判定会把引擎永久关在门外——改为订阅壳环境变化，环境变为
- * android_shell 后再激活。返回 dispose 供测试与卸载清理。
+ * 幂等启动通知引擎，只在 Android 壳内激活。`__TAURI_INTERNALS__` 可能晚于本调用注入，
+ * 因此订阅壳环境变化，环境变为 android_shell 时再激活。返回 dispose 供卸载清理。
  */
 export function startNotificationEngine(): () => void {
   if (started) return () => undefined;
   started = true;
 
   const activate = (): void => {
-    if (engineReady || !isAndroidShellAtActivate()) return;
+    if (engineReady || detectShellEnvironment() !== "android_shell") return;
     engineReady = true;
-
-    // 会话标题来自 store 快照（与列表页同源兜底）；事件 payload 不带标题，不合成。
-    // 测试可先 setNotificationTitleResolver 注入替身——注入优先，不覆盖。
-    if (titleResolver === null) {
-      titleResolver = (conversationId: string): string => {
-        const record = useMobileStore.getState().conversationsById[conversationId];
-        return record?.title && record.title.length > 0 ? record.title : "新聊天";
-      };
-    }
-
     refreshPermissionCache();
     unsubscribeEvents = mobileWsClient.onEvent(handleEngineEvent);
   };
@@ -277,6 +202,5 @@ export function startNotificationEngine(): () => void {
     unsubscribeEvents?.();
     unsubscribeEvents = null;
     document.removeEventListener("visibilitychange", handleVisibilityChange);
-    titleResolver = null;
   };
 }

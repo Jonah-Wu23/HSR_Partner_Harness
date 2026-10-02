@@ -1,128 +1,169 @@
-import { cleanup, fireEvent, render, screen, within, act, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HarnessActions } from "../../../contracts/actions";
-import type { CharacterCreateViewModel } from "../../../contracts/view-models";
+import type { CardGetResult, DesktopCommand } from "../../../contracts/protocol";
+import { createActionController } from "../../../services/actions";
+import { DesktopRequestError, type DesktopBackend } from "../../../services/backend";
+import { MockDesktopBackend, type MockDesktopBackendOptions } from "../../../services/mockDesktopBackend";
+import { desktopStore, useDesktopStore } from "../../../stores/desktopStore";
+import { fakeBackend, type FakeBackendOptions, unexpectedCommand } from "../../../test/fakeBackend";
 import { CharacterCreatePage } from "../CharacterCreatePage";
 
-function createMockActions(overrides: Partial<HarnessActions> = {}): HarnessActions {
+/** mock 后端已有 4 张用户卡，新建草稿编号为 card-mock-5。 */
+const NEW_DRAFT_ID = "card-mock-5";
+
+/** 与 AppShell 一致：创作页视图模型取自 store，头像经后端文件对话框选择。 */
+function CreateHost({ actions, backend }: { actions: HarnessActions; backend: DesktopBackend }) {
+  const vm = useDesktopStore((state) => state.characterCreate);
+  return <CharacterCreatePage vm={vm} actions={actions} onPickFile={(options) => backend.pickFile(options)} />;
+}
+
+/** 经 openCharacterCreate 打开创作页（传 cardId 时读取该卡）后渲染。 */
+async function renderCreatePage(backend: DesktopBackend, cardId?: string): Promise<void> {
+  const { actions } = createActionController(backend);
+  await actions.openCharacterCreate(cardId);
+  render(<CreateHost actions={actions} backend={backend} />);
+}
+
+function paramsOf(commands: readonly DesktopCommand[], method: string): Record<string, unknown>[] {
+  return commands.filter((command) => command.method === method).map((command) => command.params);
+}
+
+async function click(element: HTMLElement): Promise<void> {
+  await act(async () => {
+    fireEvent.click(element);
+  });
+}
+
+/** 推进假时钟并在 act 内等待由此触发的保存请求完成。 */
+async function advance(ms: number): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
+
+/** method 命令回放为错误帧，其余命令交给 MockDesktopBackend。 */
+function mockWithErrorFrame(
+  method: string,
+  error: DesktopRequestError,
+  options: MockDesktopBackendOptions & FakeBackendOptions = {},
+) {
+  const mock = new MockDesktopBackend("single-project", options);
+  return fakeBackend((command) => {
+    if (command.method === method) throw error;
+    return mock.request(command);
+  }, options);
+}
+
+const EMPTY_REPORT: CardGetResult["compat_report"] = {
+  applied: [],
+  preserved: [],
+  not_executed: [],
+  normalized_from_root: [],
+  warnings: [],
+  errors: [],
+};
+
+/** 带世界书条目与 extensions.hsr（含未识别键）的已存卡。 */
+const WIRED_CARD: Record<string, unknown> = {
+  spec: "chara_card_v3",
+  spec_version: "3.0",
+  data: {
+    name: "临海角色",
+    description: "",
+    tags: ["港口"],
+    personality: "",
+    scenario: "",
+    first_mes: "",
+    mes_example: "",
+    character_book: {
+      name: "临海世界书",
+      entries: [
+        {
+          keys: ["临海"],
+          content: "临海是一座永远下雨的港口城市。",
+          comment: "世界观总纲",
+          enabled: true,
+          insertion_order: 100,
+          constant: false,
+          selective: false,
+          position: "before_char",
+        },
+      ],
+    },
+    extensions: {
+      hsr: {
+        world_architecture: {
+          world_foundation: { one_line_pitch: "一座永远下雨的港口城市。" },
+        },
+        legacy_note: "旧版字段",
+      },
+    },
+  },
+};
+
+function cardGetResult(overrides: Partial<CardGetResult> = {}): CardGetResult {
   return {
-    createProject: vi.fn().mockResolvedValue(true),
-    renameProject: vi.fn().mockResolvedValue(undefined),
-    repairProjectPath: vi.fn().mockResolvedValue(undefined),
-    selectProject: vi.fn().mockResolvedValue(undefined),
-    archiveProject: vi.fn().mockResolvedValue(undefined),
-    createConversation: vi.fn().mockResolvedValue(undefined),
-    selectConversation: vi.fn().mockResolvedValue(undefined),
-    openConversationTab: vi.fn().mockResolvedValue(undefined),
-    closeConversationTab: vi.fn(),
-    openConversationWindow: vi.fn().mockResolvedValue(undefined),
-    renameConversation: vi.fn().mockResolvedValue(undefined),
-    archiveConversation: vi.fn().mockResolvedValue(undefined),
-    switchMode: vi.fn().mockResolvedValue(undefined),
-    switchTheme: vi.fn(),
-    submitMessage: vi.fn().mockResolvedValue({}),
-    editQueueItem: vi.fn().mockResolvedValue(undefined),
-    withdrawQueueItem: vi.fn().mockResolvedValue(undefined),
-    prioritizeQueueItem: vi.fn().mockResolvedValue(undefined),
-    editQueueFromStrip: vi.fn().mockResolvedValue(null),
-    cancelTask: vi.fn().mockResolvedValue(undefined),
-    resolveApproval: vi.fn().mockResolvedValue(undefined),
-    setApprovalMode: vi.fn().mockResolvedValue(undefined),
-    setReasoningEffort: vi.fn().mockResolvedValue(undefined),
-    setVadEnabled: vi.fn().mockResolvedValue(undefined),
-    startPushToTalk: vi.fn().mockResolvedValue(undefined),
-    stopPushToTalk: vi.fn().mockResolvedValue(undefined),
-    stopSpeech: vi.fn().mockResolvedValue(undefined),
-    skipSpeech: vi.fn().mockResolvedValue(undefined),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    listAccounts: vi.fn().mockResolvedValue(undefined),
-    registerAccount: vi.fn().mockResolvedValue(undefined),
-    loginAccount: vi.fn().mockResolvedValue(undefined),
-    logoutAccount: vi.fn().mockResolvedValue(undefined),
-    updateAccountProfile: vi.fn().mockResolvedValue(undefined),
-    changePassword: vi.fn().mockResolvedValue(undefined),
-    completeOnboarding: vi.fn().mockResolvedValue(undefined),
-    getConfig: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn().mockResolvedValue(undefined),
-    testConnection: vi.fn().mockResolvedValue("ok"),
-    dismissToast: vi.fn(),
-    voicePreview: vi.fn().mockResolvedValue(undefined),
-    provisionVoices: vi.fn().mockResolvedValue({}),
-    listCards: vi.fn().mockResolvedValue(undefined),
-    openCharacterLibrary: vi.fn().mockResolvedValue(undefined),
-    openCharacterCreate: vi.fn().mockResolvedValue(undefined),
-    openChat: vi.fn(),
-    createCardDraft: vi.fn().mockResolvedValue("draft-123"),
-    updateCard: vi.fn().mockResolvedValue(undefined),
-    duplicateCard: vi.fn().mockResolvedValue(undefined),
-    archiveCard: vi.fn().mockResolvedValue(undefined),
-    deleteCard: vi.fn().mockResolvedValue(undefined),
-    selectActiveCard: vi.fn().mockResolvedValue(undefined),
-    cardGet: vi.fn().mockResolvedValue({
-      card_id: "draft-123",
-      state: "draft",
-      source: "user_created",
-      created_at: "",
-      updated_at: "",
-      card: {},
-      read_only: false,
-      avatar: null,
-    }),
-    cardPeekImportJson: vi.fn().mockResolvedValue({ preview: {} as never }),
-    cardPeekImport: vi.fn().mockResolvedValue({ preview: {} as never }),
-    cardImportJson: vi.fn().mockResolvedValue({ card_id: "", name: "", state: "imported", report: {} as never }),
-    cardImportPng: vi.fn().mockResolvedValue({ card_id: "", name: "", state: "imported", report: {} as never }),
-    cardExportJson: vi.fn().mockResolvedValue({ exported: true, path: "", avatar_saved: false }),
-    cardExportPng: vi.fn().mockResolvedValue({ exported: true, path: "", name: "", spec_version: "3.0", greeting_count: 0, world_book_entries: 0, extensions: [] }),
-    cardPublish: vi.fn().mockResolvedValue({ card_id: "draft-123", state: "saved" }),
-    cardSetAvatar: vi.fn().mockResolvedValue({ card_id: "draft-123", asset_id: "avatar-1", mime_type: "image/png" }),
-    cardRemoveAvatar: vi.fn().mockResolvedValue({ card_id: "draft-123", removed: true }),
-    powerGetStatus: vi.fn().mockResolvedValue({
-      supported: false,
-      platform: "windows",
-      plan_name: "",
-      ac_sleep_timeout_seconds: null,
-      dc_sleep_timeout_seconds: null,
-      remote_serve_enabled: false,
-      threshold_seconds: 900,
-      at_risk: false,
-      reason: "",
-      checked_at: "",
-    }),
-    voiceCardBindReference: vi.fn().mockResolvedValue({ card_id: "", asset_id: "", duration_seconds: 0, size_bytes: 0, mime_type: "" }),
-    voiceCardCreate: vi.fn().mockResolvedValue({ card_id: "", state: "voice_ready", voice_id: "" }),
-    voiceCardUnbind: vi.fn().mockResolvedValue({ card_id: "", state: "voice_unconfigured" }),
-    voiceCardPreview: vi.fn().mockResolvedValue(undefined),
-    voiceMobilePttStart: vi.fn().mockResolvedValue({ session_id: "" }),
-    voiceMobileAudioChunk: vi.fn().mockResolvedValue(undefined),
-    voiceMobilePttStop: vi.fn().mockResolvedValue({ session_id: "", transcript: "", conversation_id: "" }),
-    voiceMobileTtsStop: vi.fn().mockResolvedValue(undefined),
-    issuePairingCode: vi.fn().mockResolvedValue(undefined),
-    listRemoteDevices: vi.fn().mockResolvedValue(undefined),
-    revokeRemoteDevice: vi.fn().mockResolvedValue(undefined),
-    tunnelStart: vi.fn().mockResolvedValue(undefined),
-    tunnelStop: vi.fn().mockResolvedValue(undefined),
-    queryTunnelStatus: vi.fn().mockResolvedValue(undefined),
+    card_id: "card-001",
+    state: "saved",
+    source: "user_created",
+    created_at: "2026-08-18T21:40:00+00:00",
+    updated_at: "2026-08-18T21:40:00+00:00",
+    card: WIRED_CARD,
+    read_only: false,
+    avatar: null,
+    compat_report: EMPTY_REPORT,
     ...overrides,
   };
 }
 
-const defaultVm: CharacterCreateViewModel = {
-  cardId: null,
-  card: null,
-  readOnly: false,
-  loading: false,
-  error: null,
-};
+/** 回放已存卡：card.get 返回 result，card.update 按协议回执。 */
+function storedCardBackend(result: CardGetResult = cardGetResult()) {
+  return fakeBackend((command) => {
+    switch (command.method) {
+      case "card.get":
+        return result;
+      case "card.update":
+        return { card_id: command.params.card_id, updated_at: "2026-10-01T08:00:00+00:00" };
+      default:
+        return unexpectedCommand(command);
+    }
+  });
+}
+
+/** 回放新卡从建草稿到发布：card.publish 由 publish 决定成败，发布后 card.get 返回 saved。 */
+function draftPublishBackend(publish: () => unknown) {
+  let state: "draft" | "saved" = "draft";
+  return fakeBackend((command) => {
+    switch (command.method) {
+      case "card.create_draft":
+        return { card_id: "card-new-1", state: "draft" };
+      case "card.update":
+        return { card_id: "card-new-1", updated_at: "2026-10-01T08:00:00+00:00" };
+      case "card.get":
+        return cardGetResult({ card_id: "card-new-1", state, card: { spec: "chara_card_v3", data: {} } });
+      case "card.publish": {
+        const result = publish();
+        state = "saved";
+        return result;
+      }
+      case "card.list":
+        return { cards: [] };
+      default:
+        return unexpectedCommand(command);
+    }
+  });
+}
 
 describe("CharacterCreatePage", () => {
   let originalCreateObjectURL: typeof URL.createObjectURL | undefined;
   let originalRevokeObjectURL: typeof URL.revokeObjectURL | undefined;
 
+  // jsdom 没有实现 URL.createObjectURL：头像 data URI 转 object URL 需要这个平台桩。
   beforeEach(() => {
     originalCreateObjectURL = URL.createObjectURL;
     originalRevokeObjectURL = URL.revokeObjectURL;
-    URL.createObjectURL = vi.fn(() => "blob:mock-preview-url") as unknown as typeof URL.createObjectURL;
+    URL.createObjectURL = vi.fn(() => "blob:avatar-preview") as unknown as typeof URL.createObjectURL;
     URL.revokeObjectURL = vi.fn() as unknown as typeof URL.revokeObjectURL;
   });
 
@@ -131,44 +172,23 @@ describe("CharacterCreatePage", () => {
     vi.restoreAllMocks();
     if (originalCreateObjectURL) URL.createObjectURL = originalCreateObjectURL;
     if (originalRevokeObjectURL) URL.revokeObjectURL = originalRevokeObjectURL;
+    desktopStore.setState(desktopStore.getInitialState(), true);
   });
 
-  it("基础渲染：渲染标题、输入项、操作按钮与实时预览", () => {
-    const actions = createMockActions();
-    render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
+  describe("名称必填", () => {
+    it("空名称点击完成创建时不发请求，名称字段标红并提示", async () => {
+      const backend = new MockDesktopBackend();
+      await renderCreatePage(backend);
 
-    expect(screen.getByTestId("character-create-page")).toBeInTheDocument();
-    expect(screen.getByLabelText(/名称/)).toBeInTheDocument();
-    expect(screen.getByLabelText(/标签/)).toBeInTheDocument();
-    expect(screen.getByLabelText(/简介/)).toBeInTheDocument();
-    expect(screen.getByLabelText(/性格/)).toBeInTheDocument();
-    expect(screen.getByLabelText(/对话场景/)).toBeInTheDocument();
-    expect(screen.getByLabelText(/第一条消息/)).toBeInTheDocument();
-    expect(screen.getByLabelText(/示例对话/)).toBeInTheDocument();
-    expect(screen.getByTestId("btn-draft")).toBeInTheDocument();
-    expect(screen.getByTestId("btn-submit")).toBeInTheDocument();
-    expect(screen.getByTestId("live-preview")).toBeInTheDocument();
-  });
+      fireEvent.click(screen.getByTestId("btn-submit"));
 
-  describe("名称必填校验 (Name validation)", () => {
-    it("空名称点击保存草稿或完成创建时阻止保存并显示字段级错误", async () => {
-      const actions = createMockActions();
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
-
-      const submitBtn = screen.getByTestId("btn-submit");
-      fireEvent.click(submitBtn);
-
-      expect(actions.createCardDraft).not.toHaveBeenCalled();
-      expect(actions.updateCard).not.toHaveBeenCalled();
-      expect(
-        screen.getByText("名称为必填项，填写后才能完成创建"),
-      ).toBeInTheDocument();
+      expect(screen.getByText("名称为必填项，填写后才能完成创建")).toBeInTheDocument();
       expect(screen.getByLabelText(/名称/)).toHaveAttribute("aria-invalid", "true");
+      expect(backend.recordedRequests).toEqual([]);
     });
 
     it("输入名称后错误信息自动清除", async () => {
-      const actions = createMockActions();
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
+      await renderCreatePage(new MockDesktopBackend());
 
       fireEvent.click(screen.getByTestId("btn-submit"));
       expect(screen.getByText("名称为必填项，填写后才能完成创建")).toBeInTheDocument();
@@ -181,10 +201,9 @@ describe("CharacterCreatePage", () => {
     });
   });
 
-  describe("标签增删 (Tags management)", () => {
-    it("输入标签按回车添加，并在表单与预览区同步展示", () => {
-      const actions = createMockActions();
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
+  describe("标签", () => {
+    it("输入标签按回车添加，并在表单与预览区同步展示", async () => {
+      await renderCreatePage(new MockDesktopBackend());
 
       const tagInput = screen.getByLabelText("添加标签");
       fireEvent.change(tagInput, { target: { value: "星核猎手" } });
@@ -203,9 +222,8 @@ describe("CharacterCreatePage", () => {
       expect(screen.getByTestId("preview-tags")).toHaveTextContent("冷静");
     });
 
-    it("点击删除按钮移除标签", () => {
-      const actions = createMockActions();
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
+    it("点击删除按钮移除标签", async () => {
+      await renderCreatePage(new MockDesktopBackend());
 
       const tagInput = screen.getByLabelText("添加标签");
       fireEvent.change(tagInput, { target: { value: "待删除标签" } });
@@ -221,9 +239,8 @@ describe("CharacterCreatePage", () => {
       expect(screen.getByTestId("preview-tags")).toHaveTextContent("未添加标签");
     });
 
-    it("空标签或重复标签不重复添加", () => {
-      const actions = createMockActions();
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
+    it("空标签或重复标签不重复添加", async () => {
+      await renderCreatePage(new MockDesktopBackend());
 
       const tagInput = screen.getByLabelText("添加标签");
       fireEvent.change(tagInput, { target: { value: "   " } });
@@ -242,243 +259,143 @@ describe("CharacterCreatePage", () => {
     });
   });
 
-  describe("字数计数与上限 (Character counters & limits)", () => {
-    it("人格设定四个字段实时显示字数统计并限制 2000 字上限", () => {
-      const actions = createMockActions();
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
+  describe("字数统计", () => {
+    it.each([
+      [/性格/, "count-personality", "温和冷静，运筹帷幄", "9 / 2000 字"],
+      [/对话场景/, "count-scenario", "空间站黑塔", "5 / 2000 字"],
+      [/第一条消息/, "count-first-msg", "好久不见。", "5 / 2000 字"],
+      [/示例对话/, "count-example", "<START>", "7 / 2000 字"],
+    ])("%s 实时显示字数并限制 2000 字", async (label, countTestId, value, countText) => {
+      await renderCreatePage(new MockDesktopBackend());
 
-      const personalityInput = screen.getByLabelText(/性格/);
-      fireEvent.change(personalityInput, { target: { value: "温和冷静，运筹帷幄" } });
-      expect(screen.getByTestId("count-personality")).toHaveTextContent("9 / 2000 字");
-      expect(personalityInput).toHaveAttribute("maxLength", "2000");
+      const input = screen.getByLabelText(label);
+      fireEvent.change(input, { target: { value } });
 
-      const scenarioInput = screen.getByLabelText(/对话场景/);
-      fireEvent.change(scenarioInput, { target: { value: "空间站黑塔" } });
-      expect(screen.getByTestId("count-scenario")).toHaveTextContent("5 / 2000 字");
-      expect(scenarioInput).toHaveAttribute("maxLength", "2000");
-
-      const firstMsgInput = screen.getByLabelText(/第一条消息/);
-      fireEvent.change(firstMsgInput, { target: { value: "好久不见。" } });
-      expect(screen.getByTestId("count-first-msg")).toHaveTextContent("5 / 2000 字");
-      expect(firstMsgInput).toHaveAttribute("maxLength", "2000");
-
-      const exampleInput = screen.getByLabelText(/示例对话/);
-      fireEvent.change(exampleInput, { target: { value: "<START>" } });
-      expect(screen.getByTestId("count-example")).toHaveTextContent("7 / 2000 字");
-      expect(exampleInput).toHaveAttribute("maxLength", "2000");
+      expect(screen.getByTestId(countTestId)).toHaveTextContent(countText);
+      expect(input).toHaveAttribute("maxLength", "2000");
     });
   });
 
-  describe("头像体验 (Avatar)", () => {
-    it("未设置头像时使用名称首字符占位", () => {
-      const actions = createMockActions();
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
+  describe("头像", () => {
+    it("未设置头像时使用名称首字符占位", async () => {
+      await renderCreatePage(new MockDesktopBackend());
 
       expect(screen.getByTestId("avatar-preview")).toHaveTextContent("?");
 
-      const nameInput = screen.getByLabelText(/名称/);
-      fireEvent.change(nameInput, { target: { value: "流萤" } });
+      fireEvent.change(screen.getByLabelText(/名称/), { target: { value: "流萤" } });
 
       expect(screen.getByTestId("avatar-preview")).toHaveTextContent("流");
     });
 
-    it("有 cardId 时选择头像调用 cardSetAvatar 并刷新预览", async () => {
-      const actions = createMockActions({
-        cardGet: vi.fn().mockResolvedValue({
-          card_id: "draft-123",
-          state: "draft",
-          source: "user_created",
-          created_at: "",
-          updated_at: "",
-          card: {},
-          read_only: false,
-          avatar: { mime_type: "image/png", data_base64: "iVBORw0KGgo=" },
-        }),
-      });
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
+    it("保存前选的头像在建草稿后经 card.set_avatar 上传，移除后回到首字占位", async () => {
+      const backend = new MockDesktopBackend("single-project", { pickFileResult: "C:/avatars/avatar.png" });
+      await renderCreatePage(backend);
+      fireEvent.change(screen.getByLabelText(/名称/), { target: { value: "头像测试" } });
 
-      const nameInput = screen.getByLabelText(/名称/);
-      fireEvent.change(nameInput, { target: { value: "头像测试" } });
+      await click(screen.getByTestId("btn-set-avatar"));
+      expect(screen.getByText("已选择头像，保存后上传")).toBeInTheDocument();
+      expect(paramsOf(backend.recordedRequests, "card.set_avatar")).toEqual([]);
 
-      await act(async () => {
-        fireEvent.click(screen.getByTestId("btn-draft"));
-      });
+      fireEvent.click(screen.getByTestId("btn-draft"));
 
-      expect(actions.createCardDraft).toHaveBeenCalledWith("头像测试");
+      expect(await screen.findByTestId("btn-remove-avatar")).toBeInTheDocument();
+      expect(screen.getByTestId("btn-set-avatar")).toHaveTextContent("替换头像");
+      expect(paramsOf(backend.recordedRequests, "card.set_avatar")).toEqual([
+        { card_id: NEW_DRAFT_ID, path: "C:/avatars/avatar.png" },
+      ]);
 
-      const fileInput = screen.getByTestId("avatar-file-input");
-      const file = new File(["png"], "avatar.png", { type: "image/png" });
+      fireEvent.click(screen.getByTestId("btn-remove-avatar"));
 
-      await act(async () => {
-        fireEvent.change(fileInput, { target: { files: [file] } });
-      });
-
-      await waitFor(() => {
-        expect(actions.cardSetAvatar).toHaveBeenCalledWith("draft-123", "avatar.png");
-        expect(actions.cardGet).toHaveBeenCalledWith("draft-123");
-      });
+      await waitFor(() => expect(screen.getByTestId("avatar-preview")).toHaveTextContent("头"));
+      expect(screen.queryByTestId("btn-remove-avatar")).not.toBeInTheDocument();
+      expect(paramsOf(backend.recordedRequests, "card.remove_avatar")).toEqual([{ card_id: NEW_DRAFT_ID }]);
     });
 
-    it("不支持的图片格式显示真实错误", async () => {
-      const actions = createMockActions();
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
+    it("后端拒绝头像时在头像区显示原文", async () => {
+      const { backend } = mockWithErrorFrame(
+        "card.set_avatar",
+        new DesktopRequestError("card_avatar_unsupported", "头像仅支持 PNG / JPEG / WebP 图片"),
+        { pickFileResult: "C:/avatars/avatar.gif" },
+      );
+      await renderCreatePage(backend);
+      fireEvent.change(screen.getByLabelText(/名称/), { target: { value: "格式测试" } });
+      fireEvent.click(screen.getByTestId("btn-draft"));
+      await screen.findByTestId("save-status-saved");
 
-      const nameInput = screen.getByLabelText(/名称/);
-      fireEvent.change(nameInput, { target: { value: "格式测试" } });
+      fireEvent.click(screen.getByTestId("btn-set-avatar"));
 
-      await act(async () => {
-        fireEvent.click(screen.getByTestId("btn-draft"));
-      });
-
-      const fileInput = screen.getByTestId("avatar-file-input");
-      const file = new File(["gif"], "avatar.gif", { type: "image/gif" });
-
-      await act(async () => {
-        fireEvent.change(fileInput, { target: { files: [file] } });
-      });
-
-      expect(screen.getByTestId("avatar-error")).toHaveTextContent("不支持该图片格式");
-      expect(actions.cardSetAvatar).not.toHaveBeenCalled();
-    });
-
-    it("移除头像调用 cardRemoveAvatar", async () => {
-      const actions = createMockActions({
-        cardGet: vi.fn().mockResolvedValue({
-          card_id: "draft-123",
-          state: "draft",
-          source: "user_created",
-          created_at: "",
-          updated_at: "",
-          card: {},
-          read_only: false,
-          avatar: { mime_type: "image/png", data_base64: "iVBORw0KGgo=" },
-        }),
-      });
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
-
-      const nameInput = screen.getByLabelText(/名称/);
-      fireEvent.change(nameInput, { target: { value: "移除测试" } });
-
-      await act(async () => {
-        fireEvent.click(screen.getByTestId("btn-draft"));
-      });
-
-      await waitFor(() => {
-        expect(screen.getByTestId("btn-remove-avatar")).toBeInTheDocument();
-      });
-
-      await act(async () => {
-        fireEvent.click(screen.getByTestId("btn-remove-avatar"));
-      });
-
-      await waitFor(() => {
-        expect(actions.cardRemoveAvatar).toHaveBeenCalledWith("draft-123");
-      });
+      expect(await screen.findByTestId("avatar-error")).toHaveTextContent("头像仅支持 PNG / JPEG / WebP 图片");
     });
   });
 
-  describe("保存态机流转 (Save state machine)", () => {
+  describe("保存", () => {
+    // 防抖计时由测试推进。RTL 的 findBy/waitFor 依赖真实 setTimeout，这一组改用 act 等待保存链完成。
     beforeEach(() => {
-      vi.useFakeTimers();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     });
 
     afterEach(() => {
       vi.useRealTimers();
     });
 
-    it("防抖自动保存态机：未保存更改 → 保存中… → 已保存 HH:MM:SS", async () => {
-      const actions = createMockActions();
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
+    it("编辑后标为未保存，停止输入 1 秒后自动建草稿并整卡保存", async () => {
+      const backend = new MockDesktopBackend();
+      await renderCreatePage(backend);
 
-      const nameInput = screen.getByLabelText(/名称/);
-      fireEvent.change(nameInput, { target: { value: "银狼" } });
-
-      // 刚改动时处于未保存状态
+      fireEvent.change(screen.getByLabelText(/名称/), { target: { value: "银狼" } });
       expect(screen.getByTestId("save-status-unsaved")).toHaveTextContent("未保存更改");
 
-      // 快进防抖计时器
-      await act(async () => {
-        vi.advanceTimersByTime(1000);
-      });
+      await advance(999);
+      expect(backend.recordedRequests).toEqual([]);
 
-      expect(actions.createCardDraft).toHaveBeenCalledWith("银狼");
-      expect(actions.updateCard).toHaveBeenCalledWith(
-        "draft-123",
-        expect.objectContaining({
-          data: expect.objectContaining({ name: "银狼" }),
-        }),
-      );
+      await advance(1);
 
       expect(screen.getByTestId("save-status-saved")).toHaveTextContent(/已保存 \d{2}:\d{2}:\d{2}/);
+      expect(paramsOf(backend.recordedRequests, "card.create_draft")).toEqual([{ name: "银狼" }]);
+      expect(paramsOf(backend.recordedRequests, "card.update")).toEqual([
+        { card_id: NEW_DRAFT_ID, card: expect.objectContaining({ data: expect.objectContaining({ name: "银狼" }) }) },
+      ]);
     });
 
-    it("首次保存调用 createCardDraft 拿 cardId，后续保存直接 updateCard", async () => {
-      const actions = createMockActions();
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
+    it("首次保存建草稿，之后的保存只整卡更新同一张卡", async () => {
+      const backend = new MockDesktopBackend();
+      await renderCreatePage(backend);
 
-      const nameInput = screen.getByLabelText(/名称/);
-      fireEvent.change(nameInput, { target: { value: "砂金" } });
+      fireEvent.change(screen.getByLabelText(/名称/), { target: { value: "砂金" } });
+      await click(screen.getByTestId("btn-draft"));
+      expect(screen.getByTestId("save-status-saved")).toBeInTheDocument();
 
-      // 手动触发第一次保存
-      await act(async () => {
-        fireEvent.click(screen.getByTestId("btn-draft"));
-      });
+      fireEvent.change(screen.getByLabelText(/简介/), { target: { value: "战略投资部高级干部" } });
+      await click(screen.getByTestId("btn-draft"));
+      expect(screen.getByTestId("save-status-saved")).toBeInTheDocument();
 
-      expect(actions.createCardDraft).toHaveBeenCalledTimes(1);
-      expect(actions.createCardDraft).toHaveBeenCalledWith("砂金");
-      expect(actions.updateCard).toHaveBeenCalledWith(
-        "draft-123",
-        expect.objectContaining({
-          data: expect.objectContaining({ name: "砂金" }),
+      expect(paramsOf(backend.recordedRequests, "card.create_draft")).toEqual([{ name: "砂金" }]);
+      expect(paramsOf(backend.recordedRequests, "card.update")).toHaveLength(2);
+      expect(paramsOf(backend.recordedRequests, "card.update")[1]).toEqual({
+        card_id: NEW_DRAFT_ID,
+        card: expect.objectContaining({
+          data: expect.objectContaining({ name: "砂金", description: "战略投资部高级干部" }),
         }),
-      );
-
-      // 修改简介再次保存
-      const descInput = screen.getByLabelText(/简介/);
-      fireEvent.change(descInput, { target: { value: "战略投资部高级干部" } });
-
-      await act(async () => {
-        fireEvent.click(screen.getByTestId("btn-draft"));
       });
-
-      // 不再重复调用 createCardDraft，继续调用 updateCard
-      expect(actions.createCardDraft).toHaveBeenCalledTimes(1);
-      expect(actions.updateCard).toHaveBeenCalledTimes(2);
-      expect(actions.updateCard).toHaveBeenLastCalledWith(
-        "draft-123",
-        expect.objectContaining({
-          data: expect.objectContaining({
-            name: "砂金",
-            description: "战略投资部高级干部",
-          }),
-        }),
-      );
     });
-  });
 
-  describe("保存失败保留输入 (Let It Fail)", () => {
-    it("保存抛出异常时展示真实错误信息，表单与预览数据绝对不丢失", async () => {
-      const actions = createMockActions({
-        createCardDraft: vi.fn().mockRejectedValue(new Error("Sidecar SQLite 磁盘写入失败: 0x80070070")),
-      });
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
+    it("保存失败时显示原始错误，表单与预览内容保留", async () => {
+      const { backend } = mockWithErrorFrame(
+        "card.create_draft",
+        new DesktopRequestError("internal_error", "database or disk is full"),
+      );
+      await renderCreatePage(backend);
 
       const nameInput = screen.getByLabelText(/名称/);
       const descInput = screen.getByLabelText(/简介/);
       fireEvent.change(nameInput, { target: { value: "测试角色" } });
       fireEvent.change(descInput, { target: { value: "重要草稿不可丢" } });
+      await click(screen.getByTestId("btn-draft"));
 
-      await act(async () => {
-        fireEvent.click(screen.getByTestId("btn-draft"));
-      });
-
-      // 真实错误暴露在界面
       expect(screen.getByTestId("save-error-banner")).toHaveTextContent(
-        "保存失败：Sidecar SQLite 磁盘写入失败: 0x80070070",
+        "保存失败：database or disk is full",
       );
       expect(screen.getByTestId("save-status-error")).toBeInTheDocument();
-
-      // 用户输入内容完全保留
       expect(nameInput).toHaveValue("测试角色");
       expect(descInput).toHaveValue("重要草稿不可丢");
       expect(screen.getByTestId("preview-name")).toHaveTextContent("测试角色");
@@ -486,111 +403,65 @@ describe("CharacterCreatePage", () => {
     });
   });
 
-  describe("发布与开始对话 (Publish & Start Chat)", () => {
-    it("完成创建按钮保存并发布草稿", async () => {
-      const actions = createMockActions({
-        // 发布后刷新 card.get 应返回 saved 状态，使按钮切换为「开始对话」。
-        cardGet: vi.fn().mockResolvedValue({
-          card_id: "draft-123",
-          state: "saved",
-          source: "user_created",
-          created_at: "",
-          updated_at: "",
-          card: {},
-          read_only: false,
-          avatar: null,
-        }),
-      });
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
+  describe("发布与开始对话", () => {
+    it("完成创建先保存再发布，发布后按钮变为开始对话", async () => {
+      const { backend, commands } = draftPublishBackend(() => ({ card_id: "card-new-1", state: "saved" }));
+      await renderCreatePage(backend);
 
       fireEvent.change(screen.getByLabelText(/名称/), { target: { value: "发布角色" } });
       fireEvent.change(screen.getByLabelText(/第一条消息/), { target: { value: "你好。" } });
+      fireEvent.click(screen.getByTestId("btn-submit"));
 
-      await act(async () => {
-        fireEvent.click(screen.getByTestId("btn-submit"));
-      });
-
-      expect(actions.createCardDraft).toHaveBeenCalledWith("发布角色");
-      expect(actions.updateCard).toHaveBeenCalledWith(
-        "draft-123",
-        expect.objectContaining({
-          data: expect.objectContaining({ name: "发布角色", first_mes: "你好。" }),
-        }),
-      );
-      expect(actions.cardPublish).toHaveBeenCalledWith("draft-123");
-      expect(actions.cardGet).toHaveBeenCalledWith("draft-123");
-      expect(screen.getAllByTestId("btn-start-chat").length).toBeGreaterThanOrEqual(1);
+      expect(await screen.findAllByTestId("btn-start-chat")).toHaveLength(2);
+      expect(paramsOf(commands, "card.create_draft")).toEqual([{ name: "发布角色" }]);
+      expect(paramsOf(commands, "card.update")).toEqual([
+        {
+          card_id: "card-new-1",
+          card: expect.objectContaining({
+            data: expect.objectContaining({ name: "发布角色", first_mes: "你好。" }),
+          }),
+        },
+      ]);
+      expect(paramsOf(commands, "card.publish")).toEqual([{ card_id: "card-new-1" }]);
     });
 
-    it("发布校验错误如实呈现缺什么", async () => {
-      const actions = createMockActions({
-        cardPublish: vi.fn().mockRejectedValue(new Error("card_publish_invalid：缺少 first_mes")),
+    it("发布被后端拒绝时显示缺少的字段，按钮保持完成创建", async () => {
+      const { backend } = draftPublishBackend(() => {
+        throw new DesktopRequestError("card_publish_invalid", "完成创建前必填：第一条消息");
       });
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
+      await renderCreatePage(backend);
 
       fireEvent.change(screen.getByLabelText(/名称/), { target: { value: "缺首句" } });
+      fireEvent.click(screen.getByTestId("btn-submit"));
 
-      await act(async () => {
-        fireEvent.click(screen.getByTestId("btn-submit"));
-      });
-
-      await waitFor(() => {
-        expect(screen.getByTestId("publish-error")).toHaveTextContent("card_publish_invalid：缺少 first_mes");
-      });
+      expect(await screen.findByTestId("publish-error")).toHaveTextContent("完成创建前必填：第一条消息");
+      expect(screen.getByTestId("btn-submit")).toHaveTextContent("完成创建");
+      expect(screen.queryByTestId("btn-start-chat")).not.toBeInTheDocument();
     });
 
-    it("已发布卡片显示开始对话按钮并走 selectActiveCard + createConversation + openChat", async () => {
-      const actions = createMockActions({
-        cardGet: vi.fn().mockResolvedValue({
-          card_id: "card-saved-002",
-          state: "saved",
-          source: "user_created",
-          created_at: "",
-          updated_at: "",
-          card: {},
-          read_only: false,
-          avatar: null,
-        }),
-      });
-      const publishedVm: CharacterCreateViewModel = {
-        cardId: "card-saved-002",
-        card: {
-          spec: "chara_card_v3",
-          spec_version: "3.0",
-          data: {
-            name: "卡芙卡",
-            description: "星核猎手成员",
-            tags: ["星核猎手"],
-            personality: "冷静果决",
-            scenario: "未知星域",
-            first_mes: "准备好了吗？",
-            mes_example: "",
-          },
-        },
-        readOnly: false,
-        loading: false,
-        error: null,
-      };
-      render(<CharacterCreatePage vm={publishedVm} actions={actions} />);
+    it("已发布的卡点击开始对话：设为当前角色、复用或新建聊天并回到聊天视图", async () => {
+      const backend = new MockDesktopBackend();
+      await renderCreatePage(backend, "card-saved-002");
 
-      await waitFor(() => {
-        expect(screen.getAllByTestId("btn-start-chat").length).toBeGreaterThanOrEqual(1);
-      });
+      const [startChat] = await screen.findAllByTestId("btn-start-chat");
+      fireEvent.click(startChat);
 
-      await act(async () => {
-        fireEvent.click(screen.getAllByTestId("btn-start-chat")[0]);
-      });
-
-      expect(actions.selectActiveCard).toHaveBeenCalledWith("card-saved-002");
-      expect(actions.createConversation).toHaveBeenCalled();
-      expect(actions.openChat).toHaveBeenCalled();
+      await waitFor(() => expect(desktopStore.getState().mainView).toBe("chat"));
+      expect(
+        backend.recordedRequests
+          .filter((command) => command.method !== "card.get")
+          .map((command) => [command.method, command.params]),
+      ).toEqual([
+        ["card.select_active", { card_id: "card-saved-002" }],
+        ["card.list", { include_archived: true }],
+        ["conversation.create", { reuse_active: true }],
+      ]);
     });
   });
 
-  describe("高级字段编辑 (Advanced editor)", () => {
-    it("切换到高级编辑可编辑系统提示、历史后指令、备选问候、群组问候", () => {
-      const actions = createMockActions();
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
+  describe("高级编辑", () => {
+    it("切换到高级编辑可编辑系统提示、历史后指令、备选问候、群组问候", async () => {
+      await renderCreatePage(new MockDesktopBackend());
 
       fireEvent.click(screen.getByTestId("mode-btn-advanced"));
       expect(screen.getByTestId("advanced-panel")).toBeInTheDocument();
@@ -618,9 +489,8 @@ describe("CharacterCreatePage", () => {
       expect(screen.getByTestId("f-group-greet")).toHaveValue("大家好");
     });
 
-    it("高级字段编辑后返回快速创建保留数据", () => {
-      const actions = createMockActions();
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
+    it("高级字段编辑后返回快速创建保留数据", async () => {
+      await renderCreatePage(new MockDesktopBackend());
 
       fireEvent.click(screen.getByTestId("mode-btn-advanced"));
       fireEvent.change(screen.getByTestId("f-system-prompt"), { target: { value: "系统提示保留" } });
@@ -630,83 +500,66 @@ describe("CharacterCreatePage", () => {
       expect(screen.getByTestId("f-system-prompt")).toHaveValue("系统提示保留");
     });
 
-    describe("V0.3.7 世界书与 mufy 接线 (V1/V2/V3 wiring)", () => {
-      const wiredCardVm: CharacterCreateViewModel = {
-        cardId: "card-001",
-        card: {
-          spec: "chara_card_v3",
-          spec_version: "3.0",
-          data: {
-            name: "临海角色",
-            description: "",
-            personality: "",
-            scenario: "",
-            first_mes: "",
-            mes_example: "",
-            character_book: {
-              name: "临海世界书",
-              entries: [
-                {
-                  keys: ["临海"],
-                  content: "临海是一座永远下雨的港口城市。",
-                  comment: "世界观总纲",
-                  enabled: true,
-                  insertion_order: 100,
-                  constant: false,
-                  selective: false,
-                  position: "before_char",
-                },
-              ],
-            },
-            extensions: {
-              hsr: {
-                world_architecture: {
-                  world_foundation: { one_line_pitch: "一座永远下雨的港口城市。" },
-                },
-                legacy_note: "旧版字段",
-              },
-            },
-          },
-        },
-        readOnly: false,
-        loading: false,
-        error: null,
-      };
+    it("高级编辑区可编辑示例对话，并在实时预览中显示", async () => {
+      await renderCreatePage(new MockDesktopBackend());
 
-      beforeEach(() => {
-        vi.useFakeTimers();
+      fireEvent.click(screen.getByTestId("mode-btn-advanced"));
+      fireEvent.click(screen.getByTestId("tree-item-mesexample"));
+      fireEvent.change(screen.getByTestId("f-mes-example"), {
+        target: { value: "<START>\n角色：你好。\n用户：你好呀。" },
       });
+      fireEvent.click(screen.getByTestId("btn-return-quick"));
 
-      afterEach(() => {
-        vi.useRealTimers();
-      });
+      expect(screen.getByTestId("preview-mes-example")).toHaveTextContent("角色：你好。");
+    });
 
-      it("世界书分区接 WorldBookEditor：条目编辑合并回整卡 JSON 并随防抖保存经 card.update 提交", async () => {
-        const actions = createMockActions();
-        render(<CharacterCreatePage vm={wiredCardVm} actions={actions} />);
+    it("原始数据分区以只读视图展示整卡 JSON", async () => {
+      const { backend } = storedCardBackend();
+      await renderCreatePage(backend, "card-001");
 
-        fireEvent.click(screen.getByTestId("mode-btn-advanced"));
-        fireEvent.click(screen.getByTestId("tree-item-worldbook"));
+      fireEvent.click(screen.getByTestId("mode-btn-advanced"));
+      fireEvent.click(screen.getByTestId("tree-item-raw"));
 
-        expect(screen.getByTestId("wb-editor")).toBeInTheDocument();
-        expect(screen.getByTestId("wb-entry-row-0")).toHaveTextContent("世界观总纲");
-        expect(screen.queryByText(/完整字段编辑随/)).not.toBeInTheDocument();
+      const rawView = screen.getByTestId("raw-json-view");
+      expect(rawView).toHaveTextContent("character_book");
+      expect(rawView).toHaveTextContent("one_line_pitch");
+      expect(within(rawView).queryByRole("textbox")).not.toBeInTheDocument();
+    });
+  });
 
-        fireEvent.click(screen.getByTestId("wb-entry-toggle-0"));
-        fireEvent.change(screen.getByTestId("wb-entry-0-content"), {
-          target: { value: "临海永远下雨。" },
-        });
+  describe("世界书与 mufy 高级设定随整卡保存", () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    });
 
-        expect(screen.getByTestId("save-status-unsaved")).toBeInTheDocument();
-        expect(actions.updateCard).not.toHaveBeenCalled();
+    afterEach(() => {
+      vi.useRealTimers();
+    });
 
-        await act(async () => {
-          vi.advanceTimersByTime(1000);
-        });
+    async function flushAutoSave(): Promise<void> {
+      await advance(1000);
+      expect(screen.getByTestId("save-status-saved")).toBeInTheDocument();
+    }
 
-        expect(actions.updateCard).toHaveBeenCalledWith(
-          "card-001",
-          expect.objectContaining({
+    it("世界书条目编辑合并回整卡，防抖后经 card.update 提交", async () => {
+      const { backend, commands } = storedCardBackend();
+      await renderCreatePage(backend, "card-001");
+
+      fireEvent.click(screen.getByTestId("mode-btn-advanced"));
+      fireEvent.click(screen.getByTestId("tree-item-worldbook"));
+      expect(screen.getByTestId("wb-entry-row-0")).toHaveTextContent("世界观总纲");
+
+      fireEvent.click(screen.getByTestId("wb-entry-toggle-0"));
+      fireEvent.change(screen.getByTestId("wb-entry-0-content"), { target: { value: "临海永远下雨。" } });
+      expect(screen.getByTestId("save-status-unsaved")).toBeInTheDocument();
+      expect(paramsOf(commands, "card.update")).toEqual([]);
+
+      await flushAutoSave();
+
+      expect(paramsOf(commands, "card.update")).toEqual([
+        {
+          card_id: "card-001",
+          card: expect.objectContaining({
             data: expect.objectContaining({
               name: "临海角色",
               character_book: expect.objectContaining({
@@ -723,318 +576,193 @@ describe("CharacterCreatePage", () => {
               }),
             }),
           }),
-        );
-      });
-
-      it("mufy 分区接 MufyAdvancedEditor：hsr 编辑合并回 extensions.hsr，未识别键原样保留", async () => {
-        const actions = createMockActions();
-        render(<CharacterCreatePage vm={wiredCardVm} actions={actions} />);
-
-        fireEvent.click(screen.getByTestId("mode-btn-advanced"));
-        fireEvent.click(screen.getByTestId("tree-item-mufy"));
-
-        expect(screen.getByTestId("mufy-advanced-editor")).toBeInTheDocument();
-        expect(screen.getByTestId("mufy-block-world_architecture")).toBeInTheDocument();
-        expect(screen.queryByText(/完整字段编辑随/)).not.toBeInTheDocument();
-
-        fireEvent.change(
-          screen.getByTestId("mufy-value-world_architecture.world_foundation.one_line_pitch"),
-          { target: { value: "永不晴天。" } },
-        );
-
-        await act(async () => {
-          vi.advanceTimersByTime(1000);
-        });
-
-        expect(actions.updateCard).toHaveBeenCalledWith(
-          "card-001",
-          expect.objectContaining({
-            data: expect.objectContaining({
-              extensions: expect.objectContaining({
-                hsr: expect.objectContaining({
-                  world_architecture: { world_foundation: { one_line_pitch: "永不晴天。" } },
-                  legacy_note: "旧版字段",
-                }),
-              }),
-            }),
-          }),
-        );
-      });
-
-      it("新建卡在 mufy 分区添加内容后，自动保存生成带 extensions.hsr 的整卡 JSON", async () => {
-        const actions = createMockActions();
-        render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
-
-        fireEvent.change(screen.getByLabelText(/名称/), { target: { value: "新角色" } });
-
-        fireEvent.click(screen.getByTestId("mode-btn-advanced"));
-        fireEvent.click(screen.getByTestId("tree-item-mufy"));
-        fireEvent.click(screen.getByTestId("mufy-add-world_architecture.world_foundation"));
-
-        await act(async () => {
-          vi.advanceTimersByTime(1000);
-        });
-
-        expect(actions.createCardDraft).toHaveBeenCalledWith("新角色");
-        expect(actions.updateCard).toHaveBeenCalledWith(
-          "draft-123",
-          expect.objectContaining({
-            data: expect.objectContaining({
-              extensions: expect.objectContaining({
-                hsr: { world_architecture: { world_foundation: {} } },
-              }),
-            }),
-          }),
-        );
-      });
-
-      it("原始数据分区保持只读 JSON 核对视图，实时反映最新编辑", () => {
-        const actions = createMockActions();
-        render(<CharacterCreatePage vm={wiredCardVm} actions={actions} />);
-
-        fireEvent.click(screen.getByTestId("mode-btn-advanced"));
-        fireEvent.click(screen.getByTestId("tree-item-raw"));
-
-        const rawView = screen.getByTestId("raw-json-view");
-        expect(rawView.tagName).toBe("PRE");
-        expect(rawView).toHaveTextContent("character_book");
-        expect(rawView).toHaveTextContent("one_line_pitch");
-        expect(within(rawView).queryByRole("textbox")).not.toBeInTheDocument();
-      });
-
-      it("内置只读卡：readOnly 透传给世界书与 mufy 编辑器，不提供编辑入口", () => {
-        const actions = createMockActions();
-        render(<CharacterCreatePage vm={{ ...wiredCardVm, cardId: "builtin:baihe", readOnly: true }} actions={actions} />);
-
-        fireEvent.click(screen.getByTestId("mode-btn-advanced"));
-        fireEvent.click(screen.getByTestId("tree-item-worldbook"));
-
-        expect(screen.getByTestId("wb-editor")).toBeInTheDocument();
-        expect(screen.getByTestId("wb-entry-row-0")).toBeInTheDocument();
-        expect(screen.queryByTestId("wb-add-entry")).not.toBeInTheDocument();
-        expect(screen.queryByTestId("wb-entry-remove-0")).not.toBeInTheDocument();
-
-        fireEvent.click(screen.getByTestId("tree-item-mufy"));
-        expect(screen.getByTestId("mufy-advanced-editor")).toBeInTheDocument();
-        expect(
-          screen.getByTestId("mufy-value-world_architecture.world_foundation.one_line_pitch"),
-        ).toBeDisabled();
-        expect(screen.queryByTestId("mufy-block-raw-world_architecture")).not.toBeInTheDocument();
-        expect(screen.queryByTestId("mufy-addkey-input-world_architecture")).not.toBeInTheDocument();
-      });
-    });
-  });
-
-  describe("只读卡片查看 (vm.readOnly = true)", () => {
-    it("readOnly=true 时禁用全部输入项与保存动作", async () => {
-      const actions = createMockActions();
-      const readOnlyVm: CharacterCreateViewModel = {
-        cardId: "builtin:phainon",
-        card: {
-          spec: "chara_card_v3",
-          spec_version: "3.0",
-          data: {
-            name: "白厄",
-            description: "星核猎手成员",
-            tags: ["星核猎手"],
-            personality: "冷静果决",
-            scenario: "未知星域",
-            first_mes: "准备好了吗？",
-            mes_example: "",
-          },
         },
-        readOnly: true,
-        loading: false,
-        error: null,
-      };
-
-      render(<CharacterCreatePage vm={readOnlyVm} actions={actions} />);
-
-      // 等待 cardGet 副作用完成并更新状态
-      await waitFor(() => {
-        expect(actions.cardGet).toHaveBeenCalledWith("builtin:phainon");
-        expect(screen.getByTestId("btn-submit")).toBeInTheDocument();
-      });
-
-      expect(screen.getByText("内置角色卡为只读模式，不可修改或保存。")).toBeInTheDocument();
-      expect(screen.getByLabelText(/名称/)).toBeDisabled();
-      expect(screen.getByLabelText(/简介/)).toBeDisabled();
-      expect(screen.getByLabelText(/性格/)).toBeDisabled();
-      expect(screen.getByLabelText(/对话场景/)).toBeDisabled();
-      expect(screen.getByLabelText(/第一条消息/)).toBeDisabled();
-      expect(screen.getByLabelText(/示例对话/)).toBeDisabled();
-      expect(screen.getByTestId("btn-draft")).toBeDisabled();
-      expect(screen.getByTestId("btn-submit")).toBeDisabled();
-      expect(screen.getByLabelText("添加标签")).toBeDisabled();
-      expect(screen.getByLabelText("删除标签「星核猎手」")).toBeDisabled();
-    });
-  });
-
-  describe("加载状态与加载错误呈现 (vm.loading & vm.error)", () => {
-    it("vm.loading=true 显示载入中", () => {
-      const actions = createMockActions();
-      render(<CharacterCreatePage vm={{ ...defaultVm, loading: true }} actions={actions} />);
-      expect(screen.getByText("载入角色卡数据中…")).toBeInTheDocument();
+      ]);
     });
 
-    it("vm.error 显示真实错误与重试按钮", async () => {
-      const actions = createMockActions();
-      render(
-        <CharacterCreatePage
-          vm={{ ...defaultVm, cardId: "card-999", error: "未找到该角色卡 (404)" }}
-          actions={actions}
-        />,
-      );
-
-      await waitFor(() => {
-        expect(actions.cardGet).toHaveBeenCalledWith("card-999");
-      });
-
-      expect(screen.getByText("角色卡加载失败：未找到该角色卡 (404)")).toBeInTheDocument();
-      const retryBtn = screen.getByRole("button", { name: "重试" });
-      fireEvent.click(retryBtn);
-      expect(actions.openCharacterCreate).toHaveBeenCalledWith("card-999");
-    });
-
-    it("点击返回角色库触发 actions.openCharacterLibrary", () => {
-      const actions = createMockActions();
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
-
-      const backButtons = screen.getAllByRole("button", { name: /角色库/ });
-      fireEvent.click(backButtons[0]);
-      expect(actions.openCharacterLibrary).toHaveBeenCalled();
-    });
-  });
-
-  describe("高级字段 mes_example", () => {
-    it("高级编辑区可编辑示例对话，并在实时预览中显示", () => {
-      const actions = createMockActions();
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
+    it("mufy 编辑合并回 extensions.hsr，未识别键原样保留", async () => {
+      const { backend, commands } = storedCardBackend();
+      await renderCreatePage(backend, "card-001");
 
       fireEvent.click(screen.getByTestId("mode-btn-advanced"));
-      fireEvent.click(screen.getByTestId("tree-item-mesexample"));
-
-      fireEvent.change(screen.getByTestId("f-mes-example"), {
-        target: { value: "<START>\n角色：你好。\n用户：你好呀。" },
+      fireEvent.click(screen.getByTestId("tree-item-mufy"));
+      fireEvent.change(screen.getByTestId("mufy-value-world_architecture.world_foundation.one_line_pitch"), {
+        target: { value: "永不晴天。" },
       });
-      expect(screen.getByTestId("f-mes-example")).toHaveValue(
-        "<START>\n角色：你好。\n用户：你好呀。",
+
+      await flushAutoSave();
+
+      expect(paramsOf(commands, "card.update")).toEqual([
+        {
+          card_id: "card-001",
+          card: expect.objectContaining({
+            data: expect.objectContaining({
+              extensions: {
+                hsr: {
+                  world_architecture: { world_foundation: { one_line_pitch: "永不晴天。" } },
+                  legacy_note: "旧版字段",
+                },
+              },
+            }),
+          }),
+        },
+      ]);
+    });
+
+    it("新建卡在 mufy 分区添加内容后，自动保存建草稿并提交带 extensions.hsr 的整卡", async () => {
+      const backend = new MockDesktopBackend();
+      await renderCreatePage(backend);
+
+      fireEvent.change(screen.getByLabelText(/名称/), { target: { value: "新角色" } });
+      fireEvent.click(screen.getByTestId("mode-btn-advanced"));
+      fireEvent.click(screen.getByTestId("tree-item-mufy"));
+      fireEvent.click(screen.getByTestId("mufy-add-world_architecture.world_foundation"));
+
+      await flushAutoSave();
+
+      expect(paramsOf(backend.recordedRequests, "card.create_draft")).toEqual([{ name: "新角色" }]);
+      expect(paramsOf(backend.recordedRequests, "card.update")).toEqual([
+        {
+          card_id: NEW_DRAFT_ID,
+          card: expect.objectContaining({
+            data: expect.objectContaining({
+              extensions: { hsr: { world_architecture: { world_foundation: {} } } },
+            }),
+          }),
+        },
+      ]);
+    });
+  });
+
+  describe("内置只读卡", () => {
+    it("表单、世界书与 mufy 编辑器都不可编辑，不提供保存与发布", async () => {
+      const { backend } = storedCardBackend(
+        cardGetResult({ card_id: "builtin:phainon", source: "builtin", read_only: true }),
+      );
+      await renderCreatePage(backend, "builtin:phainon");
+
+      expect(await screen.findByTestId("btn-start-chat")).toBeInTheDocument();
+      expect(screen.getByText("内置角色卡为只读模式，不可修改或保存。")).toBeInTheDocument();
+      for (const label of [/名称/, /简介/, /性格/, /对话场景/, /第一条消息/, /示例对话/]) {
+        expect(screen.getByLabelText(label)).toBeDisabled();
+      }
+      expect(screen.getByLabelText("添加标签")).toBeDisabled();
+      expect(screen.getByLabelText("删除标签「港口」")).toBeDisabled();
+      expect(screen.getByTestId("btn-draft")).toBeDisabled();
+      expect(screen.getByTestId("btn-set-avatar")).toBeDisabled();
+      expect(screen.queryByTestId("btn-submit")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("btn-publish")).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId("mode-btn-advanced"));
+      fireEvent.click(screen.getByTestId("tree-item-worldbook"));
+      expect(screen.getByTestId("wb-entry-row-0")).toBeInTheDocument();
+      expect(screen.queryByTestId("wb-add-entry")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("wb-entry-remove-0")).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId("tree-item-mufy"));
+      expect(screen.getByTestId("mufy-value-world_architecture.world_foundation.one_line_pitch")).toBeDisabled();
+      expect(screen.queryByTestId("mufy-block-raw-world_architecture")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("mufy-addkey-input-world_architecture")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("读取卡片", () => {
+    it("读取期间显示载入提示，读取完成后用卡内容填充表单", async () => {
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const { backend } = fakeBackend(async (command) => {
+        if (command.method !== "card.get") return unexpectedCommand(command);
+        await gate;
+        return cardGetResult();
+      });
+      const { actions } = createActionController(backend);
+      const opening = actions.openCharacterCreate("card-001");
+      render(<CreateHost actions={actions} backend={backend} />);
+
+      expect(screen.getByText("载入角色卡数据中…")).toBeInTheDocument();
+
+      await act(async () => {
+        release();
+        await opening;
+      });
+
+      expect(screen.queryByText("载入角色卡数据中…")).not.toBeInTheDocument();
+      expect(screen.getByLabelText(/名称/)).toHaveValue("临海角色");
+    });
+
+    it("卡不存在时显示读取错误原文", async () => {
+      await renderCreatePage(new MockDesktopBackend(), "card-999");
+
+      expect(screen.getByText("角色卡加载失败：角色卡不存在")).toBeInTheDocument();
+    });
+
+    it("读取失败后点重试重新读取原来的卡，成功后用卡内容填充表单", async () => {
+      let attempts = 0;
+      const { backend, commands } = fakeBackend((command) => {
+        if (command.method !== "card.get") return unexpectedCommand(command);
+        attempts += 1;
+        if (attempts === 1) throw new DesktopRequestError("internal_error", "database is locked");
+        return cardGetResult();
+      });
+      await renderCreatePage(backend, "card-001");
+      expect(screen.getByText("角色卡加载失败：database is locked")).toBeInTheDocument();
+
+      await click(screen.getByRole("button", { name: "重试" }));
+
+      await waitFor(() => expect(screen.getByLabelText(/名称/)).toHaveValue("临海角色"));
+      expect(screen.queryByText(/角色卡加载失败/)).not.toBeInTheDocument();
+      expect(paramsOf(commands, "card.get").slice(0, 2)).toEqual([
+        { card_id: "card-001" },
+        { card_id: "card-001" },
+      ]);
+    });
+
+    it("页内读取卡状态失败时显示错误原文，重新读取成功后提示消失", async () => {
+      let attempts = 0;
+      const { backend, commands } = fakeBackend((command) => {
+        if (command.method !== "card.get") return unexpectedCommand(command);
+        attempts += 1;
+        if (attempts === 2) throw new DesktopRequestError("internal_error", "database is locked");
+        return cardGetResult();
+      });
+      await renderCreatePage(backend, "card-001");
+
+      expect(await screen.findByTestId("card-details-error-banner")).toHaveTextContent(
+        "读取角色卡状态失败：database is locked",
       );
 
-      // 返回快速创建，预览区应展示示例对话
-      fireEvent.click(screen.getByTestId("btn-return-quick"));
-      expect(screen.getByTestId("preview-mes-example")).toHaveTextContent("角色：你好。");
+      fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
+
+      await waitFor(() => expect(screen.queryByTestId("card-details-error-banner")).not.toBeInTheDocument());
+      expect(paramsOf(commands, "card.get")).toEqual([
+        { card_id: "card-001" },
+        { card_id: "card-001" },
+        { card_id: "card-001" },
+      ]);
     });
   });
 
-  describe("发布校验 (Publish validation)", () => {
-    it("发布缺少名称时后端返回 card_publish_invalid，界面如实呈现", async () => {
-      const actions = createMockActions({
-        cardPublish: vi.fn().mockRejectedValue(new Error("card_publish_invalid：缺少 name")),
-      });
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
-
-      // 只填首句不填名称，手动保存会触发名称校验，因此直接模拟后端返回缺少 name。
-      fireEvent.change(screen.getByLabelText(/名称/), { target: { value: "有名称" } });
-      fireEvent.change(screen.getByLabelText(/第一条消息/), { target: { value: "首句" } });
-
-      await act(async () => {
-        fireEvent.click(screen.getByTestId("btn-submit"));
-      });
-
-      await waitFor(() => {
-        expect(screen.getByTestId("publish-error")).toHaveTextContent(
-          "card_publish_invalid：缺少 name",
-        );
-      });
-    });
-  });
-
-  describe("头像后端错误状态 (Avatar backend errors)", () => {
-    it("card_avatar_too_large 错误如实呈现在头像区域", async () => {
-      const actions = createMockActions({
-        cardSetAvatar: vi.fn().mockRejectedValue(new Error("card_avatar_too_large：文件超过 5MB")),
-      });
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
-
-      fireEvent.change(screen.getByLabelText(/名称/), { target: { value: "大文件测试" } });
-      await act(async () => {
-        fireEvent.click(screen.getByTestId("btn-draft"));
-      });
-
-      const fileInput = screen.getByTestId("avatar-file-input");
-      const file = new File(["png"], "avatar.png", { type: "image/png" });
+  describe("离开创作页", () => {
+    it.each([
+      { label: "没有未保存的更改时直接回到角色库", edit: false, confirmed: true, leaves: true },
+      { label: "有未保存的更改且取消确认时留在创作页", edit: true, confirmed: false, leaves: false },
+      { label: "有未保存的更改且确认离开时回到角色库", edit: true, confirmed: true, leaves: true },
+    ])("$label", async ({ edit, confirmed, leaves }) => {
+      // window.confirm 是浏览器原生对话框，按用户的选择作答。
+      const confirm = vi.spyOn(window, "confirm").mockReturnValue(confirmed);
+      const backend = new MockDesktopBackend();
+      await renderCreatePage(backend);
+      if (edit) fireEvent.change(screen.getByLabelText(/名称/), { target: { value: "未保存" } });
 
       await act(async () => {
-        fireEvent.change(fileInput, { target: { files: [file] } });
+        fireEvent.click(screen.getAllByRole("button", { name: "返回角色库" })[0]);
       });
 
-      await waitFor(() => {
-        expect(screen.getByTestId("avatar-error")).toHaveTextContent("card_avatar_too_large");
-      });
-    });
-
-    it("有头像时显示替换按钮，移除时调用 cardRemoveAvatar", async () => {
-      const actions = createMockActions({
-        cardGet: vi.fn().mockResolvedValue({
-          card_id: "draft-123",
-          state: "draft",
-          source: "user_created",
-          created_at: "",
-          updated_at: "",
-          card: {},
-          read_only: false,
-          avatar: { mime_type: "image/png", data_base64: "iVBORw0KGgo=" },
-        }),
-      });
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
-
-      fireEvent.change(screen.getByLabelText(/名称/), { target: { value: "头像状态" } });
-      await act(async () => {
-        fireEvent.click(screen.getByTestId("btn-draft"));
-      });
-
-      await waitFor(() => {
-        expect(screen.getByTestId("btn-remove-avatar")).toBeInTheDocument();
-      });
-
-      await act(async () => {
-        fireEvent.click(screen.getByTestId("btn-remove-avatar"));
-      });
-
-      await waitFor(() => {
-        expect(actions.cardRemoveAvatar).toHaveBeenCalledWith("draft-123");
-      });
-    });
-  });
-
-  describe("未保存退出确认 (Unsaved leave guard)", () => {
-    it("有未保存变更时点击返回角色库弹出确认，取消则不离开", () => {
-      const actions = createMockActions();
-      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
-
-      fireEvent.change(screen.getByLabelText(/名称/), { target: { value: "未保存" } });
-      expect(screen.getByTestId("save-status-unsaved")).toBeInTheDocument();
-
-      const backButtons = screen.getAllByRole("button", { name: /角色库/ });
-      fireEvent.click(backButtons[0]);
-
-      expect(confirmSpy).toHaveBeenCalledWith("有未保存的更改，确定要离开创作页吗？");
-      expect(actions.openCharacterLibrary).not.toHaveBeenCalled();
-    });
-
-    it("确认离开后调用 openCharacterLibrary", () => {
-      const actions = createMockActions();
-      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
-      render(<CharacterCreatePage vm={defaultVm} actions={actions} />);
-
-      fireEvent.change(screen.getByLabelText(/名称/), { target: { value: "未保存" } });
-      const backButtons = screen.getAllByRole("button", { name: /角色库/ });
-      fireEvent.click(backButtons[0]);
-
-      expect(confirmSpy).toHaveBeenCalled();
-      expect(actions.openCharacterLibrary).toHaveBeenCalled();
+      expect(confirm.mock.calls).toEqual(edit ? [["有未保存的更改，确定要离开创作页吗？"]] : []);
+      expect(desktopStore.getState().mainView).toBe(leaves ? "characters" : "characterCreate");
+      expect(paramsOf(backend.recordedRequests, "card.list")).toHaveLength(leaves ? 1 : 0);
     });
   });
 });

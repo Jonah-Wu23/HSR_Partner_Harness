@@ -1,22 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, act, cleanup } from "@testing-library/react";
-import { useMobileStore, type MobileTtsChunk, type MobileVoicePlayback } from "../mobileStore";
-import {
-  createVoicePlaybackEngine,
-  END_SIGNAL_TIMEOUT_MS,
-  resetSharedAudioContextForTests,
-  resampleLinear,
-  SCHEDULE_LEAD_SECONDS,
-  useVoicePlayback,
-  type VoicePlaybackEngine,
-} from "../voicePlayback";
+import type { MobileTtsChunk, MobileVoicePlayback } from "../mobileStore";
+import { END_SIGNAL_TIMEOUT_MS, type VoicePlaybackEngine } from "../voicePlayback";
+import { installFakeWebSocket, latestSocket } from "../../test/fakeWebSocket";
 
-/**
- * V0.3.8 播放路径改造测试：共享 AudioContext 单例、默认采样率 + JS 侧
- * 线性重采样、suspended→resume、结束信号驱动收尾（网络间隔大不误判）、
- * 结束信号保护性超时。FakeAudioContext 遵循 mobileStore.test.ts 的
- * FakeWebSocket 风格：手动驱动 onended，不做时间线启发。
- */
+// 共享 AudioContext 是模块级单例：每个用例重新加载模块，拿到新的单例与对应的 store。
+let useMobileStore: typeof import("../mobileStore").useMobileStore;
+let mobileWsClient: typeof import("../mobileStore").mobileWsClient;
+let createVoicePlaybackEngine: typeof import("../voicePlayback").createVoicePlaybackEngine;
+let useVoicePlayback: typeof import("../voicePlayback").useVoicePlayback;
+
+// AudioContext 是浏览器音频平台边界，jsdom 没有实现。FakeAudioContext 记录排程的音源，
+// 用例手动触发 onended 表示音源播完。
 
 interface FakeAudioBuffer {
   sampleRate: number;
@@ -51,10 +46,10 @@ class FakeAudioBufferSourceNode {
 
 class FakeAudioContext {
   static instances: FakeAudioContext[] = [];
-  /** 下一个实例的初始 state（默认 running；suspended 用例手工指定）。 */
+  /** 下一个实例的初始 state。 */
   static nextInitialState: "running" | "suspended" = "running";
-  /** resume 行为：resolve（进入 running）/ reject / resolve 但保持 suspended。 */
-  resumeBehavior: "resolve" | "reject" | "resolve-but-stay-suspended" = "resolve";
+  /** resume 的结果：进入 running、被拒绝，或正常返回但仍停在 suspended。 */
+  static resumeBehavior: "resolve" | "reject" | "resolve-but-stay-suspended" = "resolve";
 
   readonly sampleRate: number;
   state: "running" | "suspended";
@@ -72,10 +67,10 @@ class FakeAudioContext {
 
   async resume(): Promise<void> {
     this.resumeCalls += 1;
-    if (this.resumeBehavior === "reject") {
+    if (FakeAudioContext.resumeBehavior === "reject") {
       throw new Error("resume rejected: not allowed by autoplay policy");
     }
-    if (this.resumeBehavior === "resolve") {
+    if (FakeAudioContext.resumeBehavior === "resolve") {
       this.state = "running";
     }
   }
@@ -126,70 +121,20 @@ function lastContext(): FakeAudioContext {
   return instance;
 }
 
-beforeEach(() => {
-  resetSharedAudioContextForTests();
+beforeEach(async () => {
   FakeAudioContext.instances = [];
+  FakeAudioContext.nextInitialState = "running";
+  FakeAudioContext.resumeBehavior = "resolve";
   vi.stubGlobal("AudioContext", FakeAudioContext);
+  vi.resetModules();
+  ({ useMobileStore, mobileWsClient } = await import("../mobileStore"));
+  ({ createVoicePlaybackEngine, useVoicePlayback } = await import("../voicePlayback"));
 });
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.useRealTimers();
-  useMobileStore.setState({
-    voice: {
-      capture: { state: "idle", sessionId: null, error: null },
-      transcript: null,
-      playback: { messageId: null, state: "idle", error: null },
-      availability: {
-        secureContext: false,
-        micPermission: "unknown",
-        supported: false,
-      },
-      ttsChunks: {},
-      ttsDroppedChunks: {},
-    },
-  });
-});
-
-describe("resampleLinear 重采样正确性", () => {
-  it("24000→48000：长度翻倍且线性波形保持", () => {
-    // 线性斜坡作为「波形」：整点采样必须精确还原，半点为相邻均值。
-    const input = new Float32Array(24000);
-    for (let i = 0; i < input.length; i++) input[i] = i;
-    const output = resampleLinear(input, 24000, 48000);
-    expect(output).toHaveLength(48000);
-    expect(output[0]).toBe(0);
-    expect(output[2]).toBe(1);
-    expect(output[48000 - 2]).toBe(23999);
-    expect(output[3]).toBeCloseTo(1.5, 10);
-    // 末点位置 47999*0.5=23999.5 越过最后一个源采样，按不越界钳制取 23999。
-    expect(output[48000 - 1]).toBe(23999);
-  });
-
-  it("24000→44100：长度按比例缩放且波形采样保持", () => {
-    const input = new Float32Array(24000);
-    for (let i = 0; i < input.length; i++) input[i] = Math.sin(i / 100);
-    const output = resampleLinear(input, 24000, 44100);
-    expect(output).toHaveLength(Math.floor((24000 * 44100) / 24000));
-    expect(output[0]).toBeCloseTo(input[0], 10);
-    // 输出采样必须等于源波形在对应位置上的线性插值（波形保持）。
-    const ratio = 24000 / 44100;
-    for (let i = 0; i < output.length; i += 911) {
-      const pos = i * ratio;
-      const idx = Math.floor(pos);
-      const frac = pos - idx;
-      const left = input[idx];
-      const right = idx + 1 < input.length ? input[idx + 1] : left;
-      expect(output[i]).toBeCloseTo(left + (right - left) * frac, 5);
-    }
-  });
-
-  it("同采样率原样返回，空输入返回空", () => {
-    const input = new Float32Array([0.1, -0.2, 0.3]);
-    expect(resampleLinear(input, 24000, 24000)).toBe(input);
-    expect(resampleLinear(new Float32Array(0), 24000, 48000)).toHaveLength(0);
-  });
 });
 
 describe("共享 AudioContext 单例", () => {
@@ -207,26 +152,18 @@ describe("共享 AudioContext 单例", () => {
   });
 });
 
-describe("播放启动：解码、重采样与 state/resume", () => {
-  it("s16le 解码 + 24000→48000 重采样后进入共享 context 排程", async () => {
+describe("播放启动：解码与 state/resume", () => {
+  it("24kHz s16le 分片解码为同采样率的单声道 AudioBuffer，满幅采样落在 [-1, 1]", async () => {
     const { engine } = createEngineHarness();
-    const pcm = [-32768, 0, 16384, 32767];
-    engine.playChunk(0, int16Base64(pcm));
+    engine.playChunk(0, int16Base64([-32768, 0, 16384, 32767]));
 
     await vi.waitFor(() => expect(lastContext().sources).toHaveLength(1));
     const buffer = lastContext().sources[0]!.buffer!;
-    expect(buffer.sampleRate).toBe(48000);
-    expect(buffer.length).toBe(8);
+    expect(buffer.sampleRate).toBe(24000);
+    expect(buffer.length).toBe(4);
     const channel = buffer.getChannelData(0);
-    const f = (v: number) => v / 32768;
-    expect(channel[0]).toBeCloseTo(f(-32768), 6);
-    expect(channel[1]).toBeCloseTo(f(-16384), 6);
-    expect(channel[2]).toBeCloseTo(f(0), 6);
-    expect(channel[3]).toBeCloseTo(f(8192), 6);
-    expect(channel[4]).toBeCloseTo(f(16384), 6);
-    expect(channel[5]).toBeCloseTo(f(24575.5), 6);
-    // 末点越界钳制：插值不超过最后一个源采样。
-    expect(channel[7]).toBeCloseTo(f(32767), 6);
+    expect(channel[0]).toBe(-1);
+    expect(channel[3]).toBeCloseTo(1, 4);
   });
 
   it("suspended 时先 resume 再排程播放", async () => {
@@ -242,47 +179,32 @@ describe("播放启动：解码、重采样与 state/resume", () => {
     expect(onFailed).not.toHaveBeenCalled();
   });
 
-  it("resume 被拒绝时经 onFailed 如实上报，不伪造播放", async () => {
+  it("resume 被拒绝时经 onFailed 上报原始错误，不排程音频", async () => {
     FakeAudioContext.nextInitialState = "suspended";
+    FakeAudioContext.resumeBehavior = "reject";
     const { engine, onFinished, onFailed } = createEngineHarness();
-    const originalResume = FakeAudioContext.prototype.resume;
-    FakeAudioContext.prototype.resume = async function (this: FakeAudioContext) {
-      this.resumeCalls += 1;
-      throw new Error("resume rejected: not allowed by autoplay policy");
-    };
-    try {
-      engine.playChunk(0, int16Base64([0, 1000]));
-      await vi.waitFor(() => expect(onFailed).toHaveBeenCalledTimes(1));
-    } finally {
-      FakeAudioContext.prototype.resume = originalResume;
-    }
-    expect(onFailed.mock.calls[0]![0]).toBeInstanceOf(Error);
+    engine.playChunk(0, int16Base64([0, 1000]));
+
+    await vi.waitFor(() => expect(onFailed).toHaveBeenCalledTimes(1));
     expect(onFailed.mock.calls[0]![0].message).toContain("resume rejected");
     expect(onFinished).not.toHaveBeenCalled();
-    expect(FakeAudioContext.instances[0]?.sources ?? []).toHaveLength(0);
+    expect(lastContext().sources).toHaveLength(0);
   });
 
-  it("resume 后仍未 running 时如实上报「无法进入运行态」", async () => {
+  it("resume 后仍未 running 时上报「无法进入运行态」", async () => {
     FakeAudioContext.nextInitialState = "suspended";
+    FakeAudioContext.resumeBehavior = "resolve-but-stay-suspended";
     const { engine, onFinished, onFailed } = createEngineHarness();
-    const originalResume = FakeAudioContext.prototype.resume;
-    FakeAudioContext.prototype.resume = async function (this: FakeAudioContext) {
-      this.resumeCalls += 1;
-      // resolve 但保持 suspended：模拟被系统拒绝但 Promise 正常返回
-    };
-    try {
-      engine.playChunk(0, int16Base64([0, 1000]));
-      await vi.waitFor(() => expect(onFailed).toHaveBeenCalledTimes(1));
-    } finally {
-      FakeAudioContext.prototype.resume = originalResume;
-    }
+    engine.playChunk(0, int16Base64([0, 1000]));
+
+    await vi.waitFor(() => expect(onFailed).toHaveBeenCalledTimes(1));
     expect(onFailed.mock.calls[0]![0].message).toContain("无法进入运行态");
     expect(onFinished).not.toHaveBeenCalled();
   });
 });
 
 describe("结束信号驱动的收尾", () => {
-  it("end 未到时网络间隔再长也不误判结束（必现截断缺陷回归）", async () => {
+  it("end 未到时分片间隔再长也不收尾，迟到的分片照常播放", async () => {
     const { engine, onFinished, onFailed } = createEngineHarness();
     engine.playChunk(0, int16Base64([0, 1000]));
     await vi.waitFor(() => expect(lastContext().sources).toHaveLength(1));
@@ -323,12 +245,13 @@ describe("结束信号驱动的收尾", () => {
 });
 
 describe("结束信号保护性超时", () => {
-  it("end 迟迟不到时按上限如实报播放异常", async () => {
+  it("end 迟迟不到时按上限上报播放失败并停止已排程音频", async () => {
     vi.useFakeTimers();
     const { engine, onFinished, onFailed } = createEngineHarness();
     engine.playChunk(0, int16Base64([0, 1000]));
     await vi.advanceTimersByTimeAsync(0);
     expect(lastContext().sources).toHaveLength(1);
+    const source = lastContext().sources[0]!;
 
     await vi.advanceTimersByTimeAsync(END_SIGNAL_TIMEOUT_MS - 1);
     expect(onFailed).not.toHaveBeenCalled();
@@ -336,6 +259,7 @@ describe("结束信号保护性超时", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(onFailed).toHaveBeenCalledTimes(1);
     expect(onFailed.mock.calls[0]![0].message).toContain("voice.mobile_tts_end");
+    expect(source.stopped).toBe(true);
     expect(onFinished).not.toHaveBeenCalled();
   });
 
@@ -355,13 +279,12 @@ describe("结束信号保护性超时", () => {
 describe("排程提前量（内存驻留控制）", () => {
   it("提前量已满时分片留在队列，onended 后继续排程", async () => {
     const { engine } = createEngineHarness();
-    // 每个 chunk 24000 样本 ≈ 1s（重采样后 1s@48kHz），两个都已入队。
+    // 每个分片 24000 个采样，即 1 秒音频。
     engine.playChunk(0, int16Base64(new Array(24000).fill(0)));
     engine.playChunk(1, int16Base64(new Array(24000).fill(0)));
     await vi.waitFor(() => expect(lastContext().sources).toHaveLength(1));
 
-    // 提前量 1s 已满：第二个分片未排程（AudioBuffer 不驻留）。
-    expect(SCHEDULE_LEAD_SECONDS).toBe(1);
+    // 时间线上已排入 1 秒音频，提前量已满，后续分片不建 AudioBuffer。
     engine.playChunk(2, int16Base64(new Array(24000).fill(0)));
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(lastContext().sources).toHaveLength(1);
@@ -394,50 +317,40 @@ describe("排程提前量（内存驻留控制）", () => {
   });
 });
 
-describe("失败清理", () => {
-  it("结束信号超时会停止已排程音频，失败后不再继续播放", async () => {
-    vi.useFakeTimers();
-    const { engine, onFailed } = createEngineHarness();
-    engine.playChunk(0, int16Base64([0, 1000]));
-    await vi.advanceTimersByTimeAsync(0);
-    const source = lastContext().sources[0]!;
-
-    await vi.advanceTimersByTimeAsync(END_SIGNAL_TIMEOUT_MS);
-
-    expect(onFailed).toHaveBeenCalledTimes(1);
-    expect(source.stopped).toBe(true);
-  });
-});
-
 describe("useVoicePlayback 与 store 的衔接", () => {
-  function setStoreVoice(playback: MobileVoicePlayback, chunks: Record<string, MobileTtsChunk[]>): void {
+  function setStoreVoice(
+    playback: Omit<MobileVoicePlayback, "errorCode">,
+    chunks: Record<string, MobileTtsChunk[]>,
+  ): void {
     act(() => {
       useMobileStore.setState({
         voice: {
           ...useMobileStore.getState().voice,
-          playback,
+          playback: { ...playback, errorCode: null },
           ttsChunks: chunks,
-          ttsDroppedChunks: {},
         },
       });
     });
   }
 
-  it("分片交给引擎后从 store 释放；end 后最后一个分片播完才复位", async () => {
-    const chunk = { seq: 0, mime: "audio/pcm;rate=24000", data: int16Base64([0, 1000]), bytes: 4 };
+  it("分片交给引擎后从 store 释放；end 后最后一个分片播完才复位，之后卸载不再请求停止", async () => {
+    installFakeWebSocket();
+    mobileWsClient.connect();
+    latestSocket().open();
+    const chunk ={ seq: 0, mime: "audio/pcm;rate=24000", data: int16Base64([0, 1000]), bytes: 4 };
     setStoreVoice(
       { messageId: "m-hook", state: "buffering", error: null },
       { "m-hook": [chunk] },
     );
-    const { unmount } = renderHook(() => useVoicePlayback("c1"));
+    const { unmount } = renderHook(() => useVoicePlayback());
 
-    // 分片被引擎取走后 store 立即释放（长回复不全量驻留）。
+    // 分片被引擎取走后 store 立即释放，长回复不整段驻留。
     await vi.waitFor(() => {
       expect(useMobileStore.getState().voice.ttsChunks["m-hook"]).toBeUndefined();
     });
     expect(lastContext().sources).toHaveLength(1);
 
-    // end 信号（playing）→ 引擎等最后一个分片真实播完。
+    // end 信号到达（playing）后，引擎等最后一个分片真实播完。
     setStoreVoice({ messageId: "m-hook", state: "playing", error: null }, {});
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(useMobileStore.getState().voice.playback.state).toBe("playing");
@@ -449,76 +362,40 @@ describe("useVoicePlayback 与 store 的衔接", () => {
         state: "idle",
       });
     });
+
     unmount();
+    expect(latestSocket().sentFrames("voice.mobile_tts_stop")).toEqual([]);
   });
 
   it("播放引擎异常经 onFailed 写入 store 的 failed 状态与错误", async () => {
     FakeAudioContext.nextInitialState = "suspended";
-    const originalResume = FakeAudioContext.prototype.resume;
-    FakeAudioContext.prototype.resume = async function (this: FakeAudioContext) {
-      this.resumeCalls += 1;
-      throw new Error("resume rejected: not allowed by autoplay policy");
-    };
-    try {
-      const chunk = { seq: 0, mime: "audio/pcm;rate=24000", data: int16Base64([0, 1000]), bytes: 4 };
-      setStoreVoice(
-        { messageId: "m-fail", state: "buffering", error: null },
-        { "m-fail": [chunk] },
-      );
-      const { unmount } = renderHook(() => useVoicePlayback("c1"));
-
-      await vi.waitFor(() => {
-        expect(useMobileStore.getState().voice.playback).toMatchObject({
-          messageId: "m-fail",
-          state: "failed",
-        });
-      });
-      expect(useMobileStore.getState().voice.playback.error).toContain("resume rejected");
-      // 失败消息的分片一并清理，不再驻留。
-      expect(useMobileStore.getState().voice.ttsChunks["m-fail"]).toBeUndefined();
-      unmount();
-    } finally {
-      FakeAudioContext.prototype.resume = originalResume;
-    }
-  });
-
-  it("V0.3.8 D1：一条消息自然播完并置 idle，组件不会向服务端发送 stop 请求", async () => {
+    FakeAudioContext.resumeBehavior = "reject";
     const chunk = { seq: 0, mime: "audio/pcm;rate=24000", data: int16Base64([0, 1000]), bytes: 4 };
     setStoreVoice(
-      { messageId: "m-end-clean", state: "buffering", error: null },
-      { "m-end-clean": [chunk] },
+      { messageId: "m-fail", state: "buffering", error: null },
+      { "m-fail": [chunk] },
     );
-    const { unmount } = renderHook(() => useVoicePlayback("c1"));
+    const { unmount } = renderHook(() => useVoicePlayback());
 
     await vi.waitFor(() => {
-      expect(useMobileStore.getState().voice.ttsChunks["m-end-clean"]).toBeUndefined();
+      expect(useMobileStore.getState().voice.playback).toMatchObject({
+        messageId: "m-fail",
+        state: "failed",
+      });
     });
-    expect(lastContext().sources).toHaveLength(1);
-
-    // 转换为 playing
-    setStoreVoice({ messageId: "m-end-clean", state: "playing", error: null }, {});
-    await vi.waitFor(() => {
-      expect(useMobileStore.getState().voice.playback.state).toBe("playing");
-    });
-
-    // 音频自然播完
-    lastContext().sources[0]!.onended?.();
-    await vi.waitFor(() => {
-      expect(useMobileStore.getState().voice.playback.state).toBe("idle");
-    });
-
-    // 自然播完后卸载，绝不能触发 stop 请求
+    expect(useMobileStore.getState().voice.playback.error).toContain("resume rejected");
+    // 失败消息的分片一并清理，不再驻留。
+    expect(useMobileStore.getState().voice.ttsChunks["m-fail"]).toBeUndefined();
     unmount();
-    expect(useMobileStore.getState().voice.playback.state).toBe("idle");
   });
 
-  it("V0.3.8 D1：两条消息交叠时，旧引擎停止，新消息正常建立，不发生重复停止风暴", async () => {
+  it("换到下一条朗读时停止旧消息的音源并为新消息排程", async () => {
     const chunk1 = { seq: 0, mime: "audio/pcm;rate=24000", data: int16Base64([0, 1000]), bytes: 4 };
     setStoreVoice(
       { messageId: "m-first", state: "buffering", error: null },
       { "m-first": [chunk1] },
     );
-    const { unmount } = renderHook(() => useVoicePlayback("c1"));
+    const { unmount } = renderHook(() => useVoicePlayback());
 
     await vi.waitFor(() => {
       expect(useMobileStore.getState().voice.ttsChunks["m-first"]).toBeUndefined();
@@ -526,7 +403,6 @@ describe("useVoicePlayback 与 store 的衔接", () => {
     expect(lastContext().sources).toHaveLength(1);
     const firstSource = lastContext().sources[0]!;
 
-    // 切换到第二条消息
     const chunk2 = { seq: 0, mime: "audio/pcm;rate=24000", data: int16Base64([0, 2000]), bytes: 4 };
     setStoreVoice(
       { messageId: "m-second", state: "buffering", error: null },
@@ -537,7 +413,6 @@ describe("useVoicePlayback 与 store 的衔接", () => {
       expect(useMobileStore.getState().voice.ttsChunks["m-second"]).toBeUndefined();
     });
     expect(lastContext().sources).toHaveLength(2);
-    // 第一条音源已被停止
     expect(firstSource.stopped).toBe(true);
 
     unmount();

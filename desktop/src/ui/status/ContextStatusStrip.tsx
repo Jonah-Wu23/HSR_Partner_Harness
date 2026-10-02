@@ -1,70 +1,18 @@
 import { useState } from "react";
 
 import type { ConversationSummary, PairMemory } from "../../contracts/protocol";
-
-/** 压缩触发原因：契约 §2 的两种触发条件，manual 表示用户显式请求重新生成。 */
-export type SummaryTriggerReason = "message_count" | "byte_size" | "manual";
-
-/**
- * 触发详情。contract-v1 的 ConversationSummary 与 summary.* 事件暂未携带触发原因，
- * 由父级适配后传入；缺字段保持 null，界面如实显示「无数据」，不硬编码 80 条 / 256 KiB。
- */
-export interface SummaryTriggerInfo {
-  reason: SummaryTriggerReason;
-  /** 触发时服务端观测到的计数（消息条数或 UTF-8 正文字节数）；未提供为 null。 */
-  observed: number | null;
-  /** 服务端生效阈值；未提供为 null，前端不猜。 */
-  threshold: number | null;
-}
-
-/**
- * 真实存在的 summary.regenerate 目标。为 null/缺省时不渲染恢复按钮
- * （契约 §2：没有真实恢复能力时 UI 不显示恢复按钮）。
- */
-export interface SummaryRegenerateTarget {
-  summary_id: string;
-  conversation_id: string;
-  /** failed_record = 真实失败记录；user_request = 用户显式请求。 */
-  reason: "failed_record" | "user_request";
-}
+import type { SummaryRegenerateTarget } from "../../contracts/view-models";
 
 export interface ContextStatusStripProps {
-  /** 压缩记录（contract-v1 §2 ConversationSummary）。null/缺省 = 未读取；[] = 真实零条。 */
+  /** 摘要记录。null 或缺省表示没有数据，[] 是零条。 */
   summaries?: ConversationSummary[] | null;
-  /** 配对记忆记录（contract-v1 §2 PairMemory）。null/缺省 = 未读取；[] = 真实零条。 */
+  /** 长期记忆记录。null 或缺省表示没有数据，[] 是零条。 */
   memories?: PairMemory[] | null;
-  /** 触发详情，键为 summary_id；协议字段待补，缺失即「未报告」。 */
-  triggers?: Record<string, SummaryTriggerInfo> | null;
-  /** 只在有真实对象时显示恢复按钮。 */
+  /** summary.failed 留下的重新生成目标；只在有目标时显示重新生成按钮。 */
   regenerate?: SummaryRegenerateTarget | null;
   onRegenerate?: (target: SummaryRegenerateTarget) => void | Promise<void>;
-  /** 用户处理（关闭）状态行。失败行不会自动消失；未提供时不渲染关闭按钮。 */
-  onDismiss?: (summaryId: string) => void;
-  /** 显式传 null 表示日常聊天（无项目）：不读写长期记忆，界面如实说明。 */
+  /** null 表示日常聊天（无项目），不读写长期记忆，界面加以说明。 */
   projectId?: string | null;
-}
-
-function formatBytes(value: number): string {
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
-  return `${(value / (1024 * 1024)).toFixed(2)} MiB`;
-}
-
-function describeTrigger(trigger: SummaryTriggerInfo | null): string {
-  if (!trigger) return "触发原因：未报告";
-  if (trigger.reason === "manual") return "触发原因：用户显式请求";
-  const unit = trigger.reason === "message_count" ? "条" : "字节";
-  const label =
-    trigger.reason === "message_count" ? "消息条数达到阈值" : "UTF-8 正文字节数达到阈值";
-  const observed =
-    trigger.observed === null
-      ? "已观测：无数据"
-      : `已观测：${trigger.reason === "message_count" ? `${trigger.observed} ${unit}` : formatBytes(trigger.observed)}`;
-  const threshold =
-    trigger.threshold === null
-      ? "阈值：无数据"
-      : `阈值：${trigger.reason === "message_count" ? `${trigger.threshold} ${unit}` : formatBytes(trigger.threshold)}`;
-  return `触发原因：${label} · ${observed} · ${threshold}`;
 }
 
 const STATUS_LABEL: Record<ConversationSummary["status"], string> = {
@@ -75,25 +23,15 @@ const STATUS_LABEL: Record<ConversationSummary["status"], string> = {
 };
 
 /**
- * V0.3.9 V02 桌面端上下文状态条（压缩 / 长期记忆）。
- *
- * 非消息状态条（非消息条目）：挂在聊天视图内、输入区之上，形态参考 ToastStack /
- * PowerPrompt，不进入消息时间线，也不占用模态焦点。压缩失败持久保留到用户处理
- * （关闭按钮是「用户处理」），不自动消失；失败可展开 error_code 与原始 error。
- *
- * 长期记忆只展示服务端解析出的作用域分量，客户端不拼键、不写死；
- * 恢复按钮只在父级传入真实 summary.regenerate 目标时出现。
- *
- * 数据来源（待真实接线）：contract-v1 的 ConversationSummary / PairMemory 由逻辑轨
- * store 与 presenters 提供，本组件只消费 props，不订阅 store、不调协议。
+ * 上下文状态条（压缩与长期记忆），挂在聊天视图的输入区之上，不进入消息时间线，
+ * 也不占用模态焦点。压缩失败的状态行一直显示，可展开 error_code 与原始 error。
+ * 长期记忆只展示服务端解析出的作用域分量。
  */
 export function ContextStatusStrip({
   summaries,
   memories,
-  triggers,
   regenerate,
   onRegenerate,
-  onDismiss,
   projectId,
 }: ContextStatusStripProps) {
   const [expanded, setExpanded] = useState<string[]>([]);
@@ -105,10 +43,6 @@ export function ContextStatusStrip({
     ? null
     : memories.filter((memory) => memory.status === "active");
   const memoryScope = (activeMemories?.find((memory) => memory.scope) ?? memories?.find((memory) => memory.scope))?.scope ?? null;
-  const regenerateMissingRow =
-    regenerate && regenerate.reason === "user_request"
-      ? !rows.some((summary) => summary.summary_id === regenerate.summary_id)
-      : false;
 
   if (rows.length === 0 && activeMemories === null && projectId !== null) return null;
 
@@ -131,7 +65,7 @@ export function ContextStatusStrip({
     try {
       await onRegenerate(target);
     } catch (error) {
-      // Let It Fail：恢复失败原文上屏，不吞异常、不合成成功。
+      // 请求失败原文显示在按钮旁。
       setRegenerateErrors((current) => ({
         ...current,
         [target.summary_id]: error instanceof Error ? error.message : String(error),
@@ -180,10 +114,7 @@ export function ContextStatusStrip({
       {rows.map((summary) => {
         const isExpanded = expanded.includes(summary.summary_id);
         const canRegenerate =
-          regenerate !== null &&
-          regenerate !== undefined &&
-          regenerate.summary_id === summary.summary_id &&
-          (regenerate.reason === "user_request" || summary.status === "failed");
+          summary.status === "failed" && regenerate?.summary_id === summary.summary_id;
         return (
           <div
             key={summary.summary_id}
@@ -209,12 +140,6 @@ export function ContextStatusStrip({
               {summary.provider || summary.model
                 ? ` · ${summary.provider ?? "未报告供应商"}/${summary.model ?? "未报告模型"}`
                 : " · 供应商与模型：未报告"}
-            </span>
-            <span
-              className="context-strip-note"
-              data-testid={`context-strip-trigger-${summary.summary_id}`}
-            >
-              {describeTrigger(triggers?.[summary.summary_id] ?? null)}
             </span>
 
             {summary.status === "failed" ? (
@@ -248,28 +173,10 @@ export function ContextStatusStrip({
             ) : null}
 
             {canRegenerate ? renderRegenerate(summary.summary_id) : null}
-
-            {onDismiss ? (
-              <button
-                type="button"
-                className="context-strip-close"
-                aria-label={`关闭${STATUS_LABEL[summary.status]}状态条`}
-                onClick={() => onDismiss(summary.summary_id)}
-              >
-                ×
-              </button>
-            ) : null}
           </div>
         );
       })}
 
-      {regenerateMissingRow && regenerate ? (
-        <div className="context-strip-row is-pending" data-testid="context-strip-regenerate-orphan">
-          <span className="context-strip-status context-strip-status-pending">用户请求重新生成</span>
-          <span className="context-strip-value">目标摘要：{regenerate.summary_id}</span>
-          {renderRegenerate(regenerate.summary_id)}
-        </div>
-      ) : null}
 
       {activeMemories !== null ? (
         <div className="context-strip-row is-memory" data-testid="context-strip-memory">

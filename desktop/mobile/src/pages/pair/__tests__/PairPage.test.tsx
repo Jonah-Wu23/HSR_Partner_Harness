@@ -2,9 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { PairPage } from "../PairPage";
 import { useMobileStore } from "../../../lib/mobileStore";
-import { RemoteCommandError } from "../../../lib/wsClient";
-
-const initialStoreState = useMobileStore.getState();
+import { getStoredToken } from "../../../lib/wsClient";
+import {
+  FakeWebSocket,
+  installFakeWebSocket,
+  latestSocket,
+  type SentFrame,
+} from "../../../test/fakeWebSocket";
 
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
@@ -23,55 +27,70 @@ function stubAndroidShell(): void {
   stubUserAgent(ANDROID_SHELL_UA);
 }
 
-describe("PairPage 组件", () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-    window.localStorage.clear();
-    window.history.pushState({}, "", "/");
-    delete window.__TAURI_INTERNALS__;
-    delete window.__TAURI__;
-    stubUserAgent(BROWSER_UA);
-    useMobileStore.setState({
-      connection: "disconnected",
-      deviceName: null,
-      projects: [],
-      conversationsById: {},
-      activeConversationId: null,
-      messages: [],
-      toolRuns: [],
-      approvals: [],
-      lastSequence: 0,
-      bootstrapped: false,
-    });
+/**
+ * 扫码平台桩：摄像头流、视频播放与 BarcodeDetector（识别出给定的二维码内容）。
+ * 返回摄像头轨道的 stop，用于确认扫码结束后摄像头已关闭。
+ */
+function stubScanner(rawValue: string): ReturnType<typeof vi.fn> {
+  const stopTrack = vi.fn();
+  vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "mediaDevices", {
+    value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: stopTrack }] }) },
+    configurable: true,
   });
+  window.BarcodeDetector = class {
+    detect = vi.fn().mockResolvedValue([{ rawValue }]);
+  } as unknown as typeof window.BarcodeDetector;
+  return stopTrack;
+}
 
-  afterEach(() => {
-    cleanup();
-    vi.restoreAllMocks();
-    window.localStorage.clear();
-    useMobileStore.setState(initialStoreState);
-    delete window.BarcodeDetector;
-    delete window.__TAURI_INTERNALS__;
-    delete window.__TAURI__;
-  });
+/** 提交配对表单。配对总在新连接上进行：等新连接建立后返回发出的 remote.pair 请求帧。 */
+async function submitPair(code: string): Promise<SentFrame> {
+  fireEvent.change(screen.getByTestId("input-pair-code"), { target: { value: code } });
+  const socketsBefore = FakeWebSocket.instances.length;
+  fireEvent.click(screen.getByTestId("btn-submit-pair"));
+  await vi.waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThan(socketsBefore));
+  const socket = latestSocket();
+  socket.open();
+  await vi.waitFor(() => socket.lastFrame("remote.pair"));
+  return socket.lastFrame("remote.pair");
+}
 
-  it("当 URL 查询参数包含 ?code= 时，自动预填配对码", () => {
+beforeEach(async () => {
+  installFakeWebSocket();
+  window.localStorage.clear();
+  window.history.pushState({}, "", "/");
+  delete window.__TAURI_INTERNALS__;
+  delete window.__TAURI__;
+  stubUserAgent(BROWSER_UA);
+  // disconnect 把会话级状态复位到初值，并断开上一条用例留下的连接。
+  await useMobileStore.getState().disconnect();
+});
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  window.localStorage.clear();
+  delete window.BarcodeDetector;
+  delete (navigator as { mediaDevices?: unknown }).mediaDevices;
+  delete window.__TAURI_INTERNALS__;
+  delete window.__TAURI__;
+});
+
+describe("PairPage 配对", () => {
+  it("地址栏带 ?code= 时预填配对码", () => {
     window.history.pushState({}, "", "/?code=123456");
     render(<PairPage />);
-    const codeInput = screen.getByTestId("input-pair-code") as HTMLInputElement;
-    expect(codeInput.value).toBe("123456");
+    expect(screen.getByTestId("input-pair-code")).toHaveValue("123456");
   });
 
-  it("设备名称默认预填「我的手机」，用户可自行修改", () => {
+  it("设备名称默认预填「我的手机」", () => {
     render(<PairPage />);
-    const deviceInput = screen.getByTestId("input-device-name") as HTMLInputElement;
-    expect(deviceInput.value).toBe("我的手机");
-
-    fireEvent.change(deviceInput, { target: { value: "我的备用机" } });
-    expect(deviceInput.value).toBe("我的备用机");
+    expect(screen.getByTestId("input-device-name")).toHaveValue("我的手机");
   });
 
-  it("浏览器不支持 BarcodeDetector 时，如实展示不支持提示，不伪造扫码能力", () => {
+  it("浏览器没有 BarcodeDetector 时不提供扫码入口并说明原因", () => {
     render(<PairPage />);
     expect(screen.queryByTestId("btn-start-scan")).toBeNull();
     expect(screen.getByTestId("scan-unsupported-hint")).toHaveTextContent(
@@ -79,242 +98,66 @@ describe("PairPage 组件", () => {
     );
   });
 
-  it("浏览器支持 BarcodeDetector 时，提供扫码入口并能解析扫码结果", async () => {
-    const mockStop = vi.fn();
-    const mockMediaStream = {
-      getTracks: () => [{ stop: mockStop }],
-    };
-
-    HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
-
-    Object.defineProperty(navigator, "mediaDevices", {
-      value: {
-        getUserMedia: vi.fn().mockResolvedValue(mockMediaStream),
-      },
-      writable: true,
-      configurable: true,
-    });
-
-    class MockBarcodeDetector {
-      detect = vi.fn().mockResolvedValue([
-        { rawValue: "http://192.168.1.100:1421/?ws=ws%3A%2F%2F192.168.1.100%3A8765%2Fws&code=998877" },
-      ]);
-    }
-    window.BarcodeDetector = MockBarcodeDetector as unknown as typeof window.BarcodeDetector;
-
+  it("提交后在新连接上发出不带令牌的 remote.pair，成功后保存令牌并开始同步", async () => {
     render(<PairPage />);
-    const startScanBtn = screen.getByTestId("btn-start-scan");
-    expect(startScanBtn).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId("input-device-name"), { target: { value: "工作手机" } });
 
-    fireEvent.click(startScanBtn);
+    const frame = await submitPair("654321");
+    expect(frame.params).toEqual({ code: "654321", device_name: "工作手机" });
+    expect(frame).not.toHaveProperty("auth");
+    latestSocket().respond(frame, { token: "tok-new" });
 
-    await waitFor(() => {
-      const codeInput = screen.getByTestId("input-pair-code") as HTMLInputElement;
-      expect(codeInput.value).toBe("998877");
-    });
-
-    expect(window.localStorage.getItem("phm.wsUrl")).toBe("ws://192.168.1.100:8765/ws");
-    expect(mockStop).toHaveBeenCalled();
-  });
-
-  it("配对成功时调用 store.pair", async () => {
-    const pairSpy = vi.fn().mockResolvedValue(undefined);
-    useMobileStore.setState({ pairDevice: pairSpy });
-
-    render(<PairPage />);
-    const codeInput = screen.getByTestId("input-pair-code");
-    const deviceInput = screen.getByTestId("input-device-name");
-    const submitBtn = screen.getByTestId("btn-submit-pair");
-
-    fireEvent.change(codeInput, { target: { value: "654321" } });
-    fireEvent.change(deviceInput, { target: { value: "工作手机" } });
-
-    fireEvent.click(submitBtn);
-
-    await waitFor(() => {
-      expect(pairSpy).toHaveBeenCalledWith("654321", "工作手机");
-    });
+    await vi.waitFor(() => latestSocket().lastFrame("app.bootstrap"));
+    expect(getStoredToken()).toBe("tok-new");
     expect(screen.queryByTestId("pair-error")).toBeNull();
   });
 
-  it("配对失败三态：invalid_code 提示「配对码无效或已被新码作废」且可重新提交", async () => {
-    const pairSpy = vi
-      .fn()
-      .mockRejectedValue(new RemoteCommandError("pairing_invalid_code", "配对码错误或已失效"));
-    useMobileStore.setState({ pairDevice: pairSpy });
-
+  it.each([
+    { code: "pairing_invalid_code", message: "配对码无效", copy: "配对码无效或已被新码作废" },
+    { code: "pairing_expired_code", message: "配对码已过期", copy: "配对码已过期，请在电脑端重新生成" },
+    {
+      code: "pairing_code_exhausted",
+      message: "配对码错误次数过多，已作废，请在桌面端重新生成",
+      copy: "配对码输错次数过多，已作废",
+    },
+  ])("remote.pair 返回 $code 时展示对应提示，改码后可以重新提交", async ({ code, message, copy }) => {
     render(<PairPage />);
-    const codeInput = screen.getByTestId("input-pair-code");
-    const submitBtn = screen.getByTestId("btn-submit-pair");
 
-    fireEvent.change(codeInput, { target: { value: "000000" } });
-    fireEvent.click(submitBtn);
+    const frame = await submitPair("000000");
+    latestSocket().respondError(frame, code, message);
+    expect(await screen.findByTestId("pair-error-message")).toHaveTextContent(copy);
 
-    await waitFor(() => {
-      const errorBox = screen.getByTestId("pair-error");
-      expect(errorBox).toBeInTheDocument();
-      expect(errorBox).toHaveTextContent("配对码无效或已被新码作废");
-    });
-
-    // 重新提交
-    pairSpy.mockResolvedValueOnce(undefined);
-    fireEvent.change(codeInput, { target: { value: "111222" } });
-    fireEvent.click(submitBtn);
-
-    await waitFor(() => {
-      expect(pairSpy).toHaveBeenCalledWith("111222", "我的手机");
-    });
+    const retry = await submitPair("111222");
+    expect(retry.params).toEqual({ code: "111222", device_name: "我的手机" });
   });
 
-  it("配对失败三态：expired_code 提示「配对码已过期，请在电脑端重新生成」", async () => {
-    const pairSpy = vi
-      .fn()
-      .mockRejectedValue(new RemoteCommandError("pairing_expired_code", "配对码已过期"));
-    useMobileStore.setState({ pairDevice: pairSpy });
-
+  it("配对请求途中连接断开时展示原始错误", async () => {
     render(<PairPage />);
-    fireEvent.change(screen.getByTestId("input-pair-code"), { target: { value: "123456" } });
-    fireEvent.click(screen.getByTestId("btn-submit-pair"));
+    await submitPair("123456");
 
-    await waitFor(() => {
-      const errorBox = screen.getByTestId("pair-error");
-      expect(errorBox).toBeInTheDocument();
-      expect(errorBox).toHaveTextContent("配对码已过期，请在电脑端重新生成");
-    });
+    latestSocket().close();
+
+    expect(await screen.findByTestId("pair-error-message")).toHaveTextContent("WebSocket 连接已关闭");
   });
 
-  it("配对失败三态：rate_limited 展示限流封锁倒计时且倒计时结束前禁用提交按钮", async () => {
-    vi.useFakeTimers();
-    const pairSpy = vi
-      .fn()
-      .mockRejectedValue(
-        new RemoteCommandError("pairing_rate_limited", "来源已封锁", { retry_after_s: 30 }),
-      );
-    useMobileStore.setState({ pairDevice: pairSpy });
-
+  it("登录令牌过期后进入配对页时说明过期规则", () => {
+    // 与 store 收到 expired_token 鉴权失败后的状态一致。
+    useMobileStore.setState({
+      connection: "auth_failed",
+      authFailureReason: "expired_token",
+      deviceName: null,
+    });
     render(<PairPage />);
-    fireEvent.change(screen.getByTestId("input-pair-code"), { target: { value: "123456" } });
-    const submitBtn = screen.getByTestId("btn-submit-pair");
-    fireEvent.click(submitBtn);
-
-    await vi.waitFor(() => {
-      const errorBox = screen.getByTestId("pair-error");
-      expect(errorBox).toBeInTheDocument();
-      expect(errorBox).toHaveTextContent("限流封锁");
-      expect(errorBox).toHaveTextContent("30 秒");
-    });
-
-    // 倒计时期间提交按钮禁用
-    expect(submitBtn).toBeDisabled();
-    expect(submitBtn).toHaveTextContent("30s");
-
-    // 时间流逝 15 秒，倒计时更新
-    vi.advanceTimersByTime(15_000);
-    await vi.waitFor(() => {
-      expect(screen.getByTestId("pair-error")).toHaveTextContent("15 秒");
-      expect(submitBtn).toHaveTextContent("15s");
-      expect(submitBtn).toBeDisabled();
-    });
-
-    // 倒计时结束，按钮重新恢复可用
-    vi.advanceTimersByTime(16_000);
-    await vi.waitFor(() => {
-      expect(submitBtn).not.toBeDisabled();
-      expect(submitBtn).toHaveTextContent("开始配对");
-    });
-
-    vi.useRealTimers();
-  });
-
-  it("D5：登录令牌过期时进入重新配对引导，如实提示最长30天或7天未使用", () => {
-    useMobileStore.setState({ authFailureCode: "expired_token" });
-    render(<PairPage />);
-    const alert = screen.getByTestId("expired-token-alert");
-    expect(alert).toBeInTheDocument();
-    expect(alert).toHaveTextContent("登录令牌已过期（最长30天或7天未使用），请重新配对。");
-  });
-
-  it("扫码公网隧道 URL（https://xxx.trycloudflare.com/?code=...）正确规范化为 wss:// 入口", async () => {
-    const mockStop = vi.fn();
-    const mockMediaStream = { getTracks: () => [{ stop: mockStop }] };
-    HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "mediaDevices", {
-      value: { getUserMedia: vi.fn().mockResolvedValue(mockMediaStream) },
-      writable: true,
-      configurable: true,
-    });
-
-    class MockBarcodeDetector {
-      detect = vi.fn().mockResolvedValue([
-        { rawValue: "https://my-tunnel.trycloudflare.com/?code=889900" },
-      ]);
-    }
-    window.BarcodeDetector = MockBarcodeDetector as unknown as typeof window.BarcodeDetector;
-
-    render(<PairPage />);
-    fireEvent.click(screen.getByTestId("btn-start-scan"));
-
-    await waitFor(() => {
-      const codeInput = screen.getByTestId("input-pair-code") as HTMLInputElement;
-      expect(codeInput.value).toBe("889900");
-    });
-
-    expect(window.localStorage.getItem("phm.wsUrl")).toBe("wss://my-tunnel.trycloudflare.com/ws");
-  });
-
-  it("连接问题（普通 Error）如实展示网络错误", async () => {
-    const pairSpy = vi.fn().mockRejectedValue(new Error("WebSocket 未连接"));
-    useMobileStore.setState({ pairDevice: pairSpy });
-
-    render(<PairPage />);
-    const codeInput = screen.getByTestId("input-pair-code");
-    const submitBtn = screen.getByTestId("btn-submit-pair");
-
-    fireEvent.change(codeInput, { target: { value: "123456" } });
-    fireEvent.click(submitBtn);
-
-    await waitFor(() => {
-      const errorBox = screen.getByTestId("pair-error");
-      expect(errorBox).toHaveTextContent("WebSocket 未连接");
-    });
+    expect(screen.getByTestId("expired-token-alert")).toHaveTextContent(
+      "登录令牌已过期（最长30天或7天未使用），请重新配对。",
+    );
   });
 });
 
-describe("PairPage V0.3.7 壳内桌面端地址输入", () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-    window.localStorage.clear();
-    window.history.pushState({}, "", "/");
-    delete window.__TAURI_INTERNALS__;
-    delete window.__TAURI__;
-    stubUserAgent(BROWSER_UA);
-    useMobileStore.setState({
-      connection: "disconnected",
-      deviceName: null,
-      projects: [],
-      conversationsById: {},
-      activeConversationId: null,
-      messages: [],
-      toolRuns: [],
-      approvals: [],
-      lastSequence: 0,
-      bootstrapped: false,
-    });
-  });
-
-  afterEach(() => {
-    cleanup();
-    vi.restoreAllMocks();
-    window.localStorage.clear();
-    useMobileStore.setState(initialStoreState);
-    delete window.__TAURI_INTERNALS__;
-    delete window.__TAURI__;
-  });
-
-  it("PWA 下不渲染地址输入区，配对体验不变", () => {
+describe("PairPage 桌面端地址与扫码", () => {
+  it("PWA 下不渲染地址输入区", () => {
     render(<PairPage />);
     expect(screen.queryByTestId("ws-address-section")).toBeNull();
-    expect(screen.queryByTestId("ws-address-input")).toBeNull();
   });
 
   it("Android 壳内渲染地址输入区并预填已保存的地址", () => {
@@ -322,43 +165,41 @@ describe("PairPage V0.3.7 壳内桌面端地址输入", () => {
     window.localStorage.setItem("phm.wsUrl", "ws://192.168.1.50:8765/ws");
 
     render(<PairPage />);
-    const input = screen.getByTestId("ws-address-input") as HTMLInputElement;
-    expect(input.value).toBe("ws://192.168.1.50:8765/ws");
+    expect(screen.getByTestId("ws-address-input")).toHaveValue("ws://192.168.1.50:8765/ws");
     expect(screen.getByTestId("btn-save-ws-address")).toBeEnabled();
   });
 
-  it("壳内保存合法地址写入 phm.wsUrl 并立即触发重连", () => {
+  it("壳内保存合法地址：规范化后写入并立即用新地址重连", () => {
     stubAndroidShell();
-    const reconnectSpy = vi.fn();
-    useMobileStore.setState({ reconnect: reconnectSpy });
-
     render(<PairPage />);
-    const input = screen.getByTestId("ws-address-input");
-    fireEvent.change(input, { target: { value: "  ws://10.0.0.5:8765/ws  " } });
+
+    fireEvent.change(screen.getByTestId("ws-address-input"), {
+      target: { value: "  ws://10.0.0.5:8765/ws  " },
+    });
     fireEvent.click(screen.getByTestId("btn-save-ws-address"));
 
     expect(window.localStorage.getItem("phm.wsUrl")).toBe("ws://10.0.0.5:8765/ws");
-    expect(reconnectSpy).toHaveBeenCalledTimes(1);
+    expect(latestSocket().url).toBe("ws://10.0.0.5:8765/ws");
     expect(screen.getByTestId("ws-address-saved")).toHaveTextContent("地址已保存");
   });
 
-  it("壳内非法地址时保存按钮禁用，不写入 localStorage", () => {
+  it("壳内地址非法时保存按钮禁用，不写入地址", () => {
     stubAndroidShell();
-
     render(<PairPage />);
-    const input = screen.getByTestId("ws-address-input");
-    fireEvent.change(input, { target: { value: "http://192.168.1.50:8765/ws" } });
+
+    fireEvent.change(screen.getByTestId("ws-address-input"), {
+      target: { value: "http://192.168.1.50:8765/ws" },
+    });
 
     expect(screen.getByTestId("btn-save-ws-address")).toBeDisabled();
     expect(window.localStorage.getItem("phm.wsUrl")).toBeNull();
   });
 
-  it("壳内再次编辑地址时「已保存」提示消失，等下次保存", () => {
+  it("壳内保存后再次编辑地址，「已保存」提示消失", () => {
     stubAndroidShell();
-    useMobileStore.setState({ reconnect: vi.fn() });
-
     render(<PairPage />);
     const input = screen.getByTestId("ws-address-input");
+
     fireEvent.change(input, { target: { value: "ws://10.0.0.5:8765/ws" } });
     fireEvent.click(screen.getByTestId("btn-save-ws-address"));
     expect(screen.getByTestId("ws-address-saved")).toBeInTheDocument();
@@ -367,70 +208,61 @@ describe("PairPage V0.3.7 壳内桌面端地址输入", () => {
     expect(screen.queryByTestId("ws-address-saved")).toBeNull();
   });
 
-  it("R1-006：壳内扫码载荷携带 ?ws= 时，配对码与桌面端连接地址框同时带入", async () => {
+  it.each([
+    {
+      label: "局域网二维码（带 ?ws=）",
+      rawValue: "http://192.168.1.100:1421/?ws=ws%3A%2F%2F192.168.1.100%3A8765%2Fws&code=998877",
+      code: "998877",
+      wsUrl: "ws://192.168.1.100:8765/ws",
+    },
+    {
+      label: "公网隧道二维码（只有 ?code=）",
+      rawValue: "https://my-tunnel.trycloudflare.com/?code=889900",
+      code: "889900",
+      wsUrl: "wss://my-tunnel.trycloudflare.com/ws",
+    },
+  ])("壳内扫描$label：带入配对码与规范化地址，关闭摄像头并用该地址重连", async ({
+    rawValue,
+    code,
+    wsUrl,
+  }) => {
     stubAndroidShell();
-    stubScanner();
-
+    const stopTrack = stubScanner(rawValue);
     render(<PairPage />);
+
     fireEvent.click(screen.getByTestId("btn-start-scan"));
 
-    await waitFor(() => {
-      const codeInput = screen.getByTestId("input-pair-code") as HTMLInputElement;
-      expect(codeInput.value).toBe("998877");
-    });
-    const addressInput = screen.getByTestId("ws-address-input") as HTMLInputElement;
-    expect(addressInput.value).toBe("ws://192.168.1.100:8765/ws");
-    expect(window.localStorage.getItem("phm.wsUrl")).toBe("ws://192.168.1.100:8765/ws");
-    // 地址来自本次扫码，「已保存」提示不得残留上一轮状态
+    await waitFor(() => expect(screen.getByTestId("input-pair-code")).toHaveValue(code));
+    expect(screen.getByTestId("ws-address-input")).toHaveValue(wsUrl);
+    expect(window.localStorage.getItem("phm.wsUrl")).toBe(wsUrl);
+    expect(latestSocket().url).toBe(wsUrl);
+    expect(stopTrack).toHaveBeenCalled();
+    // 地址来自本次扫码，「已保存」提示不残留。
     expect(screen.queryByTestId("ws-address-saved")).toBeNull();
   });
 
-  it("R1-006：壳内扫码公网隧道 URL（仅 ?code=，无 ?ws=）时，地址框带入规范化隧道地址", async () => {
+  it("壳内扫描裸配对码：只带入配对码，地址与连接保持不变", async () => {
     stubAndroidShell();
-    stubScanner({ rawValue: "https://my-tunnel.trycloudflare.com/?code=889900" });
-
+    stubScanner("654321");
+    window.localStorage.setItem("phm.wsUrl", "ws://10.0.0.5:8765/ws");
     render(<PairPage />);
+
     fireEvent.click(screen.getByTestId("btn-start-scan"));
 
-    await waitFor(() => {
-      const codeInput = screen.getByTestId("input-pair-code") as HTMLInputElement;
-      expect(codeInput.value).toBe("889900");
-    });
-    const addressInput = screen.getByTestId("ws-address-input") as HTMLInputElement;
-    expect(addressInput.value).toBe("wss://my-tunnel.trycloudflare.com/ws");
-    expect(window.localStorage.getItem("phm.wsUrl")).toBe("wss://my-tunnel.trycloudflare.com/ws");
+    await waitFor(() => expect(screen.getByTestId("input-pair-code")).toHaveValue("654321"));
+    expect(screen.getByTestId("ws-address-input")).toHaveValue("ws://10.0.0.5:8765/ws");
+    expect(FakeWebSocket.instances).toHaveLength(0);
   });
 
-  it("R1-006：壳内扫码仅含裸配对码时，配对码带入且地址框保持原值", async () => {
-    stubAndroidShell();
-    stubScanner({ rawValue: "654321" });
-    window.localStorage.setItem("phm.wsUrl", "ws://10.0.0.5:8765/ws");
-
+  it("二维码地址里没有配对码时展示扫码错误原文", async () => {
+    stubScanner("https://my-tunnel.trycloudflare.com/");
     render(<PairPage />);
+
     fireEvent.click(screen.getByTestId("btn-start-scan"));
 
-    await waitFor(() => {
-      const codeInput = screen.getByTestId("input-pair-code") as HTMLInputElement;
-      expect(codeInput.value).toBe("654321");
-    });
-    const addressInput = screen.getByTestId("ws-address-input") as HTMLInputElement;
-    expect(addressInput.value).toBe("ws://10.0.0.5:8765/ws");
+    expect(await screen.findByTestId("scanner-error")).toHaveTextContent(
+      "二维码地址里没有配对码：https://my-tunnel.trycloudflare.com/",
+    );
+    expect(screen.getByTestId("input-pair-code")).toHaveValue("");
   });
 });
-
-/** 扫码测试公共桩：摄像头流 + BarcodeDetector（默认返回带 ws 参数的完整 URL）。 */
-function stubScanner(firstResult: { rawValue: string } = {
-  rawValue: "http://192.168.1.100:1421/?ws=ws%3A%2F%2F192.168.1.100%3A8765%2Fws&code=998877",
-}): void {
-  const mockMediaStream = { getTracks: () => [{ stop: vi.fn() }] };
-  HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
-  Object.defineProperty(navigator, "mediaDevices", {
-    value: { getUserMedia: vi.fn().mockResolvedValue(mockMediaStream) },
-    writable: true,
-    configurable: true,
-  });
-  class MockBarcodeDetector {
-    detect = vi.fn().mockResolvedValue([firstResult]);
-  }
-  window.BarcodeDetector = MockBarcodeDetector as unknown as typeof window.BarcodeDetector;
-}

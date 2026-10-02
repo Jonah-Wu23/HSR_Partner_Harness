@@ -16,12 +16,10 @@ class BusyTurnError(RuntimeError):
 _ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     TaskStatus.PENDING: {TaskStatus.RUNNING, TaskStatus.CANCELLED},
     TaskStatus.RUNNING: {
-        TaskStatus.AMENDMENT_PENDING,
         TaskStatus.COMPLETED,
         TaskStatus.FAILED,
         TaskStatus.CANCELLED,
     },
-    TaskStatus.AMENDMENT_PENDING: {TaskStatus.RUNNING, TaskStatus.CANCELLED},
     TaskStatus.COMPLETED: set(),
     TaskStatus.FAILED: set(),
     TaskStatus.CANCELLED: set(),
@@ -49,7 +47,7 @@ class ActiveTurn:
 
 
 class GlobalEngineState:
-    """V0.3.2 M4：并发单位是 conversation。
+    """活动任务登记表，并发单位是 conversation。
 
     - 不同聊天的任务同时 active，互不阻塞（同一账号内）；
     - 同一聊天最多一个活动任务，第二个 start 被拒绝（BusyTurnError）；
@@ -83,7 +81,7 @@ class GlobalEngineState:
         return self.active_by_task.get(task_id)
 
     def active_tasks(self) -> list[ActiveTurn]:
-        """V0.3.2 M4：当前全部活动任务（快照/事件用）。"""
+        """当前全部活动任务（快照与事件用）。"""
         return list(self.active_by_task.values())
 
     def bind_engine_turn(self, task_id: str, engine_turn_id: str) -> None:
@@ -114,9 +112,7 @@ class GlobalEngineState:
         )
 
     def mark_cancel_sent(self, task_id: str) -> None:
-        turn = self.active_by_task.get(task_id)
-        if turn is None:
-            return
+        turn = self.active_by_task[task_id]
         self._store(
             ActiveTurn(
                 project_id=turn.project_id,

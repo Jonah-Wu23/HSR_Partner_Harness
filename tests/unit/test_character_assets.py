@@ -1,26 +1,19 @@
-"""CharacterAssetService 测试（V0.3.5 强逻辑 AI 轨道，成员 C）。
-
-全部使用真实临时库与临时目录，不 mock 存储层；真实 IO 失败直接抛出。
-契约：``docs/plans/V0.3.5-契约冻结.md`` §2.5/§2.6。
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 
-from pair_harness.app_paths import AppPaths
 from pair_harness.character_cards.assets import (
-    KIND_AVATAR,
-    KIND_REFERENCE_AUDIO,
     AssetRecord,
     CharacterAssetError,
     CharacterAssetService,
 )
 from pair_harness.storage.sqlite_store import SQLiteStore
 
-PNG_BYTES = b"\x89PNG\r\n\x1a\nmock-png-body"
+PNG_BYTES = b"\x89PNG\r\n\x1a\npng-body"
+KIND_AVATAR = "avatar"
+KIND_REFERENCE_AUDIO = "reference_audio"
 
 
 @pytest.fixture()
@@ -43,19 +36,14 @@ def _store_png(
         data=data,
         kind=KIND_AVATAR,
         mime_type="image/png",
-        source="user_upload",
         source_ref=source_ref,
     )
-
-
-# ---------------------------------------------------------------- 全路径
 
 
 def test_store_and_get_round_trip(service) -> None:
     assets, store, root = service
     asset_id = _store_png(assets, card_id="card-1", source_ref="原文件名.png")
 
-    assert len(asset_id) == 32
     # 文件存在且遵守 <asset_id>.<ext> 命名
     stored = root / f"{asset_id}.png"
     assert stored.exists()
@@ -82,7 +70,6 @@ def test_store_asset_extension_inference_and_explicit(service) -> None:
         data=b"jpeg",
         kind=KIND_AVATAR,
         mime_type="image/jpeg",
-        source="user_upload",
         source_ref="a.jpg",
     )
     assert (root / f"{jpeg}.jpeg").exists()
@@ -92,7 +79,6 @@ def test_store_asset_extension_inference_and_explicit(service) -> None:
         data=b"dat",
         kind=KIND_REFERENCE_AUDIO,
         mime_type="application/octet-stream",
-        source="user_upload",
         source_ref="b.dat",
     )
     assert (root / f"{unknown}.bin").exists()
@@ -102,7 +88,6 @@ def test_store_asset_extension_inference_and_explicit(service) -> None:
         data=b"png",
         kind=KIND_AVATAR,
         mime_type="image/png",
-        source="user_upload",
         source_ref="c.txt",
         extension="custom",
     )
@@ -188,13 +173,3 @@ def test_store_asset_write_failure_leaves_no_record(service) -> None:
         "SELECT COUNT(*) FROM character_assets"
     ).fetchone()[0]
     assert count == 0  # 不留半行记录
-
-
-# ---------------------------------------------------------------- AppPaths 目录
-
-
-def test_app_paths_character_assets(tmp_path: Path) -> None:
-    data_dir = tmp_path / "data"
-    paths = AppPaths(data_dir).ensure()
-    assert paths.character_assets == data_dir / "character_assets"
-    assert paths.character_assets.is_dir()

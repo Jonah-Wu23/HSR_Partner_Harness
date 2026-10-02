@@ -18,14 +18,14 @@ export interface PromptAssemblyPanelProps {
   error?: string | null;
   onLoad?: () => void;
   /**
-   * 用户显式请求隐藏原文。未提供时不渲染按钮（不谎称支持）。
+   * 用户显式请求隐藏原文；未提供时不渲染按钮。
    * 返回的原文只留在本组件内部状态里，抽屉关闭即随组件卸载清除。
    */
   onRequestHiddenContent?: (moduleName: string) => Promise<string>;
 }
 
 /**
- * V0.3.9 V03 提示词装配视图：模块名、字符范围、hash、摘要与记忆是否注入。
+ * 提示词装配视图：模块名、字符范围、hash、摘要与记忆是否注入。
  * 隐藏原文只在用户点「显示原文」后请求并展示；普通聊天不出现该内容，
  * 关闭抽屉（组件卸载）即清除，不做任何缓存或跨会话保留。
  */

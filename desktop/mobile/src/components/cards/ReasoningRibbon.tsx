@@ -11,9 +11,8 @@ export interface ReasoningRibbonProps {
 }
 
 /**
- * V0.3.3 手机端思考折叠缎带：
- * 思考段默认折叠，点击展开查看推理过程；
- * 流式进行中显示动画与实时增量；思考结束后折叠成耗时摘要。
+ * 手机端思考折叠缎带：思考段默认折叠，点击展开查看推理过程；
+ * 流式进行中显示动画与实时增量，思考结束后折叠成耗时摘要。
  */
 export function ReasoningRibbon({
   text,

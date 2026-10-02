@@ -1,15 +1,3 @@
-"""B1 真实联调：DeepSeek 对话 + codex app-server 全链路（live marker）。
-
-依赖真实凭据（PAIR_HARNESS_DIALOGUE_* 与 codex 登录态），无凭据时跳过：:
-
-  .\\.venv\\Scripts\\python.exe -m pytest -q -m live tests\\integration\\test_text_loop_live.py
-
-覆盖 MVP 计划 B1 完成标准：
-- 真实文件修改（hello.txt 创建）；
-- 旧聊天恢复同一编程线程（thread/resume）；
-- 新聊天不继承旧会话（thread/start）。
-"""
-
 import os
 import shutil
 import subprocess
@@ -17,13 +5,17 @@ import sys
 from pathlib import Path
 
 import pytest
+from dotenv import load_dotenv
 
 from pair_harness.adapters.demo import ScriptedCodingEngine
 from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDialogueModel
-from pair_harness.cli import load_dotenv
 from pair_harness.core.contracts import ApprovalMode, MessageKind, ProjectRef
 from pair_harness.core.orchestrator import ConversationOrchestrator
+from tests.fakes import make_context, unexpected_approval
 
+# 真实 DeepSeek 对话与打包 Reasonix 的全链路联调。在进程环境里设置
+# RUN_LIVE_DEEPSEEK=1 才会运行，凭据 PAIR_HARNESS_DIALOGUE_* 可放在仓库根 .env：
+#   .\.venv\Scripts\python.exe -m pytest -q -m live tests\integration\test_text_loop_live.py
 pytestmark = pytest.mark.live
 
 _REQUIRED_ENV = (
@@ -35,9 +27,10 @@ _REQUIRED_ENV = (
 
 @pytest.fixture(scope="module")
 def live_env() -> None:
-    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
     if os.getenv("RUN_LIVE_DEEPSEEK") != "1":
-        pytest.skip("未设置 RUN_LIVE_DEEPSEEK=1（live 双重门槛）")
+        pytest.skip("未设置 RUN_LIVE_DEEPSEEK=1")
+    # 确定运行 live 用例后才读取 .env，跳过时不向测试进程注入任何变量
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
     missing = [name for name in _REQUIRED_ENV if not os.getenv(name)]
     if missing:
         pytest.skip(f"缺少真实凭据: {', '.join(missing)}")
@@ -45,8 +38,8 @@ def live_env() -> None:
 
 @pytest.fixture(scope="module")
 def smoke_project(tmp_path_factory) -> Path:
-    project = tmp_path_factory.mktemp("codex-smoke")
-    # codex 在 git 仓库里展示差异与沙箱行为更完整；无 git 也可运行
+    project = tmp_path_factory.mktemp("live-smoke")
+    # 在 git 仓库里 Reasonix 的差异展示更完整；没有 git 也可运行
     git = shutil.which("git")
     if git:
         subprocess.run(
@@ -91,10 +84,10 @@ def run_cli(project: Path, message: str, conversation: str, *extra: str) -> subp
     )
 
 
-def test_live_cli_creates_file_and_resumes_thread(
+def test_live_cli_creates_file_and_resumes_session(
     live_env: None, smoke_project: Path
 ) -> None:
-    """第一次运行创建 hello.txt；同一会话二次运行恢复旧聊天；新会话另开线程。"""
+    """第一次运行创建 hello.txt；同一会话二次运行恢复旧聊天；新会话另开编程会话。"""
     first = run_cli(
         smoke_project,
         "请严格通过结构化 delegation 让古代机械创建 hello.txt，内容为 hello",
@@ -105,9 +98,8 @@ def test_live_cli_creates_file_and_resumes_thread(
     assert hello.is_file(), f"hello.txt 未创建\n{first.stdout}\n{first.stderr}"
     assert "hello" in hello.read_text(encoding="utf-8", errors="replace").lower()
 
-    # 同一会话：恢复旧聊天（输出应带恢复标记），线程复用 thread/resume。
-    # 注意：恢复后模型"记得"上次执行结果，纯查看请求可能不委派（只闲聊），
-    # 因此用"追加一行"这类必须真实执行引擎操作的请求来验证 resume 路径。
+    # 同一会话：恢复旧聊天（输出带恢复标记）并复用 ACP 会话。恢复后模型记得
+    # 上次的执行结果，纯查看请求可能只闲聊不委派，因此用必须真实执行的追加请求。
     second = run_cli(
         smoke_project,
         "请严格通过结构化 delegation 让古代机械在 hello.txt 末尾追加一行 world，其他内容保持不变",
@@ -118,7 +110,7 @@ def test_live_cli_creates_file_and_resumes_thread(
     content = hello.read_text(encoding="utf-8", errors="replace")
     assert "world" in content.lower(), f"resume 后未追加 world\n{content}\n{second.stdout}\n{second.stderr}"
 
-    # 新会话：不应继承旧线程上下文（hello.txt 已存在，新线程需自行检查）。
+    # 新会话不继承旧编程会话的上下文（hello.txt 已存在，需要自行检查）。
     # 用明确委派句式降低真实模型闲聊不委派的概率。
     fresh = run_cli(
         smoke_project,
@@ -126,8 +118,7 @@ def test_live_cli_creates_file_and_resumes_thread(
         conversation="live-smoke-fresh",
     )
     assert fresh.returncode == 0, fresh.stdout + fresh.stderr
-    # 新会话没有历史快照：CLI 不得打印「恢复旧聊天」——
-    # 若新会话误复用旧线程（resume），此断言随即变红。
+    # 新会话没有历史快照，误复用旧编程会话时 CLI 会打印「恢复旧聊天」
     assert "恢复旧聊天" not in fresh.stdout, (
         f"新会话不应恢复旧聊天\n{fresh.stdout}\n{fresh.stderr}"
     )
@@ -142,36 +133,37 @@ async def test_live_deepseek_roleplay_boundaries_are_stable(
         base_url=os.environ["PAIR_HARNESS_DIALOGUE_BASE_URL"],
         api_key=os.environ["PAIR_HARNESS_DIALOGUE_API_KEY"],
         model=os.environ["PAIR_HARNESS_DIALOGUE_MODEL"],
-        thinking=True,
-        reasoning_effort="max",
         temperature=1.0,
     )
     try:
         for iteration in range(2):
             chat_engine = ScriptedCodingEngine()
-            chat = _live_orchestrator(model, chat_engine, tmp_path)
+            chat = _live_orchestrator(model, chat_engine)
             chat_outcome = await chat.handle_character_input(
                 conversation_id=f"chat-{iteration}",
                 text="今天有点累，陪我聊聊奥赫玛的日常。",
+                context=_live_context(f"chat-{iteration}", tmp_path),
             )
             assert chat_outcome.receipt is None
             assert chat_engine.requests == []
 
             task_engine = ScriptedCodingEngine()
-            task = _live_orchestrator(model, task_engine, tmp_path)
+            task = _live_orchestrator(model, task_engine)
             task_outcome = await task.handle_character_input(
                 conversation_id=f"task-{iteration}",
                 text="请帮我创建 notes.txt 文件，内容写一行 hello。",
+                context=_live_context(f"task-{iteration}", tmp_path),
             )
             assert task_outcome.receipt is not None
             assert task_outcome.receipt.status == "completed"
             assert len(task_engine.requests) == 1
 
             failed_engine = ScriptedCodingEngine(fail_tool=True)
-            failed = _live_orchestrator(model, failed_engine, tmp_path)
+            failed = _live_orchestrator(model, failed_engine)
             failed_outcome = await failed.handle_character_input(
                 conversation_id=f"failed-{iteration}",
                 text="请帮我删除 missing.txt 文件。",
+                context=_live_context(f"failed-{iteration}", tmp_path),
             )
             assert failed_outcome.receipt is not None
             assert failed_outcome.receipt.status == "failed"
@@ -203,13 +195,18 @@ async def test_live_deepseek_roleplay_boundaries_are_stable(
 def _live_orchestrator(
     model: OpenAICompatibleDialogueModel,
     engine: ScriptedCodingEngine,
-    project_root: Path,
 ) -> ConversationOrchestrator:
     return ConversationOrchestrator(
-        pair_id="phainon_ancient_machine",
-        project=ProjectRef(project_id="live-role", name="live-role", root_path=str(project_root)),
         dialogue_model=model,
         coding_engine=engine,
         store=None,
+        approval_callback=unexpected_approval,
+    )
+
+
+def _live_context(conversation_id: str, project_root: Path):
+    return make_context(
+        ProjectRef(project_id="live-role", name="live-role", root_path=str(project_root)),
+        conversation_id=conversation_id,
         approval_mode=ApprovalMode.FULL_AUTO,
     )

@@ -1,494 +1,257 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { HarnessActions } from "../../../contracts/actions";
-import type { CardGetResult } from "../../../contracts/protocol";
-import type { DesktopBackend } from "../../../services/backend";
+import type { CardGetResult, DesktopCommand } from "../../../contracts/protocol";
+import { createActionController } from "../../../services/actions";
+import { DesktopRequestError, type DesktopBackend } from "../../../services/backend";
+import { MockDesktopBackend } from "../../../services/mockDesktopBackend";
+import { desktopStore } from "../../../stores/desktopStore";
+import { fakeBackend, unexpectedCommand } from "../../../test/fakeBackend";
 import { CharacterExportFlow } from "../CharacterExportFlow";
 
-function createMockActions(overrides: Partial<HarnessActions> = {}): HarnessActions {
-  return {
-    createProject: vi.fn().mockResolvedValue(true),
-    renameProject: vi.fn().mockResolvedValue(undefined),
-    repairProjectPath: vi.fn().mockResolvedValue(undefined),
-    selectProject: vi.fn().mockResolvedValue(undefined),
-    archiveProject: vi.fn().mockResolvedValue(undefined),
-    createConversation: vi.fn().mockResolvedValue(undefined),
-    selectConversation: vi.fn().mockResolvedValue(undefined),
-    openConversationTab: vi.fn().mockResolvedValue(undefined),
-    closeConversationTab: vi.fn(),
-    openConversationWindow: vi.fn().mockResolvedValue(undefined),
-    renameConversation: vi.fn().mockResolvedValue(undefined),
-    archiveConversation: vi.fn().mockResolvedValue(undefined),
-    switchMode: vi.fn().mockResolvedValue(undefined),
-    switchTheme: vi.fn(),
-    submitMessage: vi.fn().mockResolvedValue({}),
-    editQueueItem: vi.fn().mockResolvedValue(undefined),
-    withdrawQueueItem: vi.fn().mockResolvedValue(undefined),
-    prioritizeQueueItem: vi.fn().mockResolvedValue(undefined),
-    editQueueFromStrip: vi.fn().mockResolvedValue(null),
-    cancelTask: vi.fn().mockResolvedValue(undefined),
-    resolveApproval: vi.fn().mockResolvedValue(undefined),
-    setApprovalMode: vi.fn().mockResolvedValue(undefined),
-    setReasoningEffort: vi.fn().mockResolvedValue(undefined),
-    setVadEnabled: vi.fn().mockResolvedValue(undefined),
-    startPushToTalk: vi.fn().mockResolvedValue(undefined),
-    stopPushToTalk: vi.fn().mockResolvedValue(undefined),
-    stopSpeech: vi.fn().mockResolvedValue(undefined),
-    skipSpeech: vi.fn().mockResolvedValue(undefined),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    listAccounts: vi.fn().mockResolvedValue(undefined),
-    registerAccount: vi.fn().mockResolvedValue(undefined),
-    loginAccount: vi.fn().mockResolvedValue(undefined),
-    logoutAccount: vi.fn().mockResolvedValue(undefined),
-    updateAccountProfile: vi.fn().mockResolvedValue(undefined),
-    changePassword: vi.fn().mockResolvedValue(undefined),
-    completeOnboarding: vi.fn().mockResolvedValue(undefined),
-    getConfig: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn().mockResolvedValue(undefined),
-    testConnection: vi.fn().mockResolvedValue("ok"),
-    dismissToast: vi.fn(),
-    voicePreview: vi.fn().mockResolvedValue(undefined),
-    provisionVoices: vi.fn().mockResolvedValue({}),
-    listCards: vi.fn().mockResolvedValue(undefined),
-    openCharacterLibrary: vi.fn().mockResolvedValue(undefined),
-    openCharacterCreate: vi.fn().mockResolvedValue(undefined),
-    openChat: vi.fn(),
-    createCardDraft: vi.fn().mockResolvedValue("draft-123"),
-    updateCard: vi.fn().mockResolvedValue(undefined),
-    duplicateCard: vi.fn().mockResolvedValue(undefined),
-    archiveCard: vi.fn().mockResolvedValue(undefined),
-    deleteCard: vi.fn().mockResolvedValue(undefined),
-    selectActiveCard: vi.fn().mockResolvedValue(undefined),
-    cardGet: vi.fn().mockResolvedValue(sampleCardGet()),
-    cardPeekImportJson: vi.fn().mockResolvedValue({}),
-    cardImportJson: vi.fn().mockResolvedValue({}),
-    cardExportJson: vi.fn().mockResolvedValue({
-      exported: true,
-      path: "C:/Cards/卡芙卡.json",
-      avatar_saved: true,
-    }),
-    cardPeekImport: vi.fn().mockResolvedValue({}),
-    cardImportPng: vi.fn().mockResolvedValue({}),
-    cardExportPng: vi.fn().mockResolvedValue({
-      exported: true,
-      path: "C:/Cards/卡芙卡.png",
-      name: "卡芙卡",
-      spec_version: "3.0",
-      greeting_count: 6,
-      world_book_entries: 20,
-      extensions: ["hsr"],
-    }),
-    cardPublish: vi.fn().mockResolvedValue({}),
-    cardSetAvatar: vi.fn().mockResolvedValue({}),
-    cardRemoveAvatar: vi.fn().mockResolvedValue({}),
-    voiceCardBindReference: vi.fn().mockResolvedValue({}),
-    voiceCardCreate: vi.fn().mockResolvedValue({}),
-    voiceCardUnbind: vi.fn().mockResolvedValue({}),
-    voiceCardPreview: vi.fn().mockResolvedValue(undefined),
-    voiceMobilePttStart: vi.fn().mockResolvedValue({}),
-    voiceMobileAudioChunk: vi.fn().mockResolvedValue(undefined),
-    voiceMobilePttStop: vi.fn().mockResolvedValue({}),
-    voiceMobileTtsStop: vi.fn().mockResolvedValue(undefined),
-    issuePairingCode: vi.fn().mockResolvedValue(undefined),
-    listRemoteDevices: vi.fn().mockResolvedValue(undefined),
-    revokeRemoteDevice: vi.fn().mockResolvedValue(undefined),
-    tunnelStart: vi.fn().mockResolvedValue(undefined),
-    tunnelStop: vi.fn().mockResolvedValue(undefined),
-    queryTunnelStatus: vi.fn().mockResolvedValue(undefined),
-    ...overrides,
-  } as unknown as HarnessActions;
-}
+/** mock 后端里已保存、音色已绑定的用户卡。 */
+const KAFKA = { cardId: "card-saved-002", cardName: "卡芙卡" };
 
-function createMockBackend(saveResult: string | null = "C:/Cards/卡芙卡.json"): DesktopBackend {
+/** card.get 的响应：带两条世界书条目与两个扩展键的卡。 */
+function cardGetResult(overrides: Partial<CardGetResult> = {}): CardGetResult {
   return {
-    request: vi.fn().mockResolvedValue({}),
-    openChatWindow: vi.fn().mockResolvedValue(""),
-    pickFolder: vi.fn().mockResolvedValue(null),
-    pickFile: vi.fn().mockResolvedValue(null),
-    saveFile: vi.fn().mockResolvedValue(saveResult),
-    subscribe: vi.fn().mockReturnValue(() => {}),
-    reconnectSidecar: vi.fn().mockResolvedValue(undefined),
-  };
-}
-
-function sampleCardGet(overrides: Partial<CardGetResult> = {}): CardGetResult {
-  return {
-    card_id: "card-saved-002",
+    card_id: KAFKA.cardId,
     state: "saved",
     source: "user_created",
     created_at: "2026-08-18T21:40:00+00:00",
     updated_at: "2026-08-18T21:40:00+00:00",
     read_only: false,
-    avatar: { mime_type: "image/png", data_base64: "abc" },
+    avatar: { mime_type: "image/png", data_base64: "iVBORw0KGgo=" },
     card: {
       spec: "chara_card_v3",
       spec_version: "3.0",
       data: {
         name: "卡芙卡",
-        description: "",
-        personality: "",
-        scenario: "",
-        first_mes: "",
-        mes_example: "",
-        creator_notes: "",
-        system_prompt: "",
-        post_history_instructions: "",
-        tags: [],
-        creator: "",
-        character_version: "1",
-        alternate_greetings: [],
-        character_book: {
-          entries: [{ name: "entry1" }, { name: "entry2" }],
-        },
-        extensions: {
-          hsr: {},
-          talkativeness: 0.5,
-        },
+        first_mes: "又见面了。",
+        alternate_greetings: ["好久不见。"],
+        character_book: { entries: [{ keys: ["星核"], content: "条目一" }, { keys: ["猎手"], content: "条目二" }] },
+        extensions: { hsr: {}, talkativeness: 0.5 },
       },
+    },
+    compat_report: {
+      applied: [],
+      preserved: [],
+      not_executed: [],
+      normalized_from_root: [],
+      warnings: [],
+      errors: [],
     },
     ...overrides,
   };
 }
 
+function renderExport(backend: DesktopBackend, card: { cardId: string; cardName: string } = KAFKA) {
+  const { actions } = createActionController(backend);
+  const onSuccess = vi.fn();
+  const onClose = vi.fn();
+  render(
+    <CharacterExportFlow
+      cardId={card.cardId}
+      cardName={card.cardName}
+      backend={backend}
+      actions={actions}
+      onClose={onClose}
+      onSuccess={onSuccess}
+    />,
+  );
+  return { onSuccess, onClose };
+}
+
+/** mock 后端先经 card.set_avatar 给卡芙卡设置头像，card.get 才会带回头像。 */
+async function mockWithAvatar(saveFileResult: string | null): Promise<MockDesktopBackend> {
+  const backend = new MockDesktopBackend("single-project", { saveFileResult });
+  await createActionController(backend).actions.cardSetAvatar(KAFKA.cardId, "C:/avatars/kafka.png");
+  return backend;
+}
+
+function paramsOf(commands: readonly DesktopCommand[], method: string): Record<string, unknown>[] {
+  return commands.filter((command) => command.method === method).map((command) => command.params);
+}
+
+async function clickExport(): Promise<void> {
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "导出" }));
+  });
+}
+
 describe("CharacterExportFlow", () => {
   afterEach(() => {
     cleanup();
-    vi.restoreAllMocks();
+    desktopStore.setState(desktopStore.getInitialState(), true);
   });
 
-  it("backend 缺失时显示不可用提示", async () => {
-    const actions = createMockActions();
-    render(<CharacterExportFlow cardId="card-1" cardName="卡芙卡" actions={actions} onClose={vi.fn()} />);
-
-    await waitFor(() => {
-      expect(screen.getByText("导出角色")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "导出" }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/环境不可用/)).toBeInTheDocument();
-      expect(screen.getByText(/当前环境未提供桌面后端/)).toBeInTheDocument();
-    });
-  });
-
-  it("完整流程：加载卡 → 确认面板 → 导出 → 成功", async () => {
-    const actions = createMockActions();
-    const backend = createMockBackend("C:/Cards/卡芙卡.json");
-    const onSuccess = vi.fn();
-    render(
-      <CharacterExportFlow
-        cardId="card-saved-002"
-        cardName="卡芙卡"
-        backend={backend}
-        actions={actions}
-        onClose={vi.fn()}
-        onSuccess={onSuccess}
-      />,
+  it.each([
+    { label: "已设置头像", avatar: { mime_type: "image/png", data_base64: "iVBORw0KGgo=" }, avatarText: "已绑定头像" },
+    { label: "没有头像", avatar: null, avatarText: "无头像，JSON 中只保留引用" },
+  ])("确认面板按 card.get 结果列出卡内容（$label）", async ({ avatar, avatarText }) => {
+    const { backend, commands } = fakeBackend((command) =>
+      command.method === "card.get" ? cardGetResult({ avatar }) : unexpectedCommand(command),
     );
+    renderExport(backend);
 
-    await waitFor(() => {
-      expect(actions.cardGet).toHaveBeenCalledWith("card-saved-002");
-    });
-
-    // 确认面板
-    await waitFor(() => {
-      expect(screen.getByLabelText("导出文件名")).toHaveValue("卡芙卡.json");
-      expect(screen.getByText("2 条已包含")).toBeInTheDocument();
-      expect(screen.getByText("hsr、talkativeness 等 2 项")).toBeInTheDocument();
-      expect(screen.getByText("已绑定头像")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "导出" }));
-
-    await waitFor(() => {
-      expect(backend.saveFile).toHaveBeenCalledWith({
-        title: "导出角色卡",
-        defaultPath: "卡芙卡.json",
-        filters: [{ name: "Character Card JSON", extensions: ["json"] }],
-      });
-    });
-
-    await waitFor(() => {
-      expect(actions.cardExportJson).toHaveBeenCalledWith("card-saved-002", "C:/Cards/卡芙卡.json", true);
-      expect(screen.getByText("导出完成")).toBeInTheDocument();
-      expect(screen.getByText("C:/Cards/卡芙卡.json")).toBeInTheDocument();
-      expect(screen.getByText("头像文件已配套保存")).toBeInTheDocument();
-      expect(onSuccess).toHaveBeenCalled();
-    });
+    expect(await screen.findByLabelText("导出文件名")).toHaveValue("卡芙卡.json");
+    expect(screen.getByText(avatarText)).toBeInTheDocument();
+    expect(screen.getByText("Character Card v3.0")).toBeInTheDocument();
+    expect(screen.getByText("2 条（含开场白与备选）")).toBeInTheDocument();
+    expect(screen.getByText("2 条已包含")).toBeInTheDocument();
+    expect(screen.getByText("hsr、talkativeness 等 2 项")).toBeInTheDocument();
+    expect(paramsOf(commands, "card.get")).toEqual([{ card_id: KAFKA.cardId }]);
   });
 
-  it("取消保存对话框保持确认态", async () => {
-    const actions = createMockActions();
-    const backend = createMockBackend(null);
-    render(
-      <CharacterExportFlow
-        cardId="card-saved-002"
-        cardName="卡芙卡"
-        backend={backend}
-        actions={actions}
-        onClose={vi.fn()}
-      />,
-    );
+  it.each([
+    { label: "保持勾选", uncheck: false, saveAvatar: true, resultText: "头像文件已配套保存" },
+    { label: "取消勾选", uncheck: true, saveAvatar: false, resultText: "未保存头像文件" },
+  ])("JSON 导出时$label「同时保存头像文件」，下发 save_avatar=$saveAvatar", async ({ uncheck, saveAvatar, resultText }) => {
+    const backend = await mockWithAvatar("C:/Cards/卡芙卡.json");
+    const { onSuccess } = renderExport(backend);
+    await screen.findByText("已绑定头像");
+    if (uncheck) fireEvent.click(screen.getByRole("checkbox", { name: "同时保存头像文件" }));
 
-    await waitFor(() => expect(screen.getByText("导出角色")).toBeInTheDocument());
+    await clickExport();
 
-    fireEvent.click(screen.getByRole("button", { name: "导出" }));
+    expect(await screen.findByText("导出完成")).toBeInTheDocument();
+    expect(screen.getByText("C:/Cards/卡芙卡.json")).toBeInTheDocument();
+    expect(screen.getByText(resultText)).toBeInTheDocument();
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    expect(paramsOf(backend.recordedRequests, "card.export_json")).toEqual([
+      { card_id: KAFKA.cardId, path: "C:/Cards/卡芙卡.json", save_avatar: saveAvatar },
+    ]);
+  });
 
-    await waitFor(() => expect(backend.saveFile).toHaveBeenCalled());
+  it("取消保存对话框时停留在确认面板且不导出", async () => {
+    const backend = new MockDesktopBackend("single-project", { saveFileResult: null });
+    renderExport(backend);
+    await screen.findByLabelText("导出文件名");
 
-    expect(actions.cardExportJson).not.toHaveBeenCalled();
+    await clickExport();
+
     expect(screen.getByLabelText("导出文件名")).toBeInTheDocument();
+    expect(paramsOf(backend.recordedRequests, "card.export_json")).toEqual([]);
   });
 
-  it("保存对话框打开失败如实进入错误态并保留原始错误", async () => {
-    const actions = createMockActions();
-    const backend = createMockBackend(null);
-    backend.saveFile = vi.fn().mockRejectedValue(new Error("dialog plugin unavailable"));
-    render(
-      <CharacterExportFlow
-        cardId="card-saved-002"
-        cardName="卡芙卡"
-        backend={backend}
-        actions={actions}
-        onClose={vi.fn()}
-      />,
-    );
+  it("保存对话框打开失败时进入错误态并显示原始错误", async () => {
+    const backend = new MockDesktopBackend();
+    // Tauri dialog 插件不可用属于平台边界，这里让保存对话框直接抛错。
+    backend.saveFile = () => Promise.reject(new Error("dialog plugin unavailable"));
+    renderExport(backend);
+    await screen.findByLabelText("导出文件名");
 
-    await waitFor(() => expect(screen.getByText("导出角色")).toBeInTheDocument());
+    await clickExport();
 
-    fireEvent.click(screen.getByRole("button", { name: "导出" }));
-
-    await waitFor(() => {
-      expect(screen.getByText("打开保存对话框失败")).toBeInTheDocument();
-      expect(screen.getByText(/dialog plugin unavailable/)).toBeInTheDocument();
-    });
-    expect(actions.cardExportJson).not.toHaveBeenCalled();
+    expect(await screen.findByText("打开保存对话框失败")).toBeInTheDocument();
+    expect(screen.getByText(/dialog plugin unavailable/)).toBeInTheDocument();
+    expect(paramsOf(backend.recordedRequests, "card.export_json")).toEqual([]);
   });
 
-  it("内置卡导出显示 read-only 引导并提供复制入口", async () => {
-    const actions = createMockActions({
-      cardGet: vi.fn().mockResolvedValue(sampleCardGet({ card_id: "builtin:phainon", read_only: true })),
+  it("内置卡只读时引导复制，复制后刷新角色库并关闭流程", async () => {
+    const { backend, commands } = fakeBackend((command) => {
+      switch (command.method) {
+        case "card.get":
+          return cardGetResult({ card_id: "builtin:phainon", source: "builtin", read_only: true });
+        case "card.duplicate":
+          return { card_id: "card-copy-9", name: "白厄（副本）" };
+        case "card.list":
+          return { cards: [] };
+        default:
+          return unexpectedCommand(command);
+      }
     });
-    const backend = createMockBackend("C:/Cards/白厄.json");
-    const onSuccess = vi.fn();
-    const onClose = vi.fn();
-    render(
-      <CharacterExportFlow
-        cardId="builtin:phainon"
-        cardName="白厄"
-        backend={backend}
-        actions={actions}
-        onClose={onClose}
-        onSuccess={onSuccess}
-      />,
-    );
+    const { onSuccess, onClose } = renderExport(backend, { cardId: "builtin:phainon", cardName: "白厄" });
 
-    await waitFor(() => {
-      expect(screen.getByText("内置角色卡不可导出")).toBeInTheDocument();
-      expect(screen.getByText(/内置角色卡只读/)).toBeInTheDocument();
+    expect(await screen.findByText("内置角色卡不可导出")).toBeInTheDocument();
+    expect(screen.getByText("内置角色卡只读，导出前请先复制。")).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "复制此卡" }));
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "复制此卡" }));
-
-    await waitFor(() => {
-      expect(actions.duplicateCard).toHaveBeenCalledWith("builtin:phainon");
-      expect(onSuccess).toHaveBeenCalled();
-      expect(onClose).toHaveBeenCalled();
-    });
+    expect(commands.map((command) => [command.method, command.params])).toEqual([
+      ["card.get", { card_id: "builtin:phainon" }],
+      ["card.duplicate", { card_id: "builtin:phainon" }],
+      ["card.list", { include_archived: true }],
+    ]);
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("导出失败呈现原始错误摘要", async () => {
-    const exportError = new Error("EACCES: 无法写入目录");
-    (exportError as Error & { code?: string }).code = "card_export_failed";
-    const actions = createMockActions({
-      cardExportJson: vi.fn().mockRejectedValue(exportError),
-    });
-    const backend = createMockBackend("C:/Cards/卡芙卡.json");
-    render(
-      <CharacterExportFlow
-        cardId="card-saved-002"
-        cardName="卡芙卡"
-        backend={backend}
-        actions={actions}
-        onClose={vi.fn()}
-      />,
+  it("JSON 导出失败时显示错误码与原文", async () => {
+    const { backend } = fakeBackend(
+      (command) => {
+        if (command.method === "card.get") return cardGetResult();
+        if (command.method === "card.export_json") {
+          throw new DesktopRequestError("card_export_failed", "写出角色卡文件失败：[Errno 13] Permission denied");
+        }
+        return unexpectedCommand(command);
+      },
+      { saveFileResult: "C:/Cards/卡芙卡.json" },
     );
+    renderExport(backend);
+    await screen.findByLabelText("导出文件名");
 
-    await waitFor(() => expect(screen.getByText("导出角色")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "导出" }));
+    await clickExport();
 
-    await waitFor(() => {
-      expect(screen.getByText("导出失败")).toBeInTheDocument();
-      expect(screen.getByText(/EACCES: 无法写入目录/)).toBeInTheDocument();
-    });
+    expect(await screen.findByText("导出失败")).toBeInTheDocument();
+    expect(
+      screen.getByText("card_export_failed：写出角色卡文件失败：[Errno 13] Permission denied"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("PNG 导出需要头像")).not.toBeInTheDocument();
   });
 
-  it("save_avatar 勾选状态正确传入", async () => {
-    const actions = createMockActions();
-    const backend = createMockBackend("C:/Cards/卡芙卡.json");
-    render(
-      <CharacterExportFlow
-        cardId="card-saved-002"
-        cardName="卡芙卡"
-        backend={backend}
-        actions={actions}
-        onClose={vi.fn()}
-      />,
-    );
-
-    await waitFor(() => expect(screen.getByText("导出角色")).toBeInTheDocument());
-
-    const checkbox = screen.getByRole("checkbox", { name: "同时保存头像文件" });
-    fireEvent.click(checkbox); // 默认 true，点击后 false
-
-    fireEvent.click(screen.getByRole("button", { name: "导出" }));
-
-    await waitFor(() => {
-      expect(actions.cardExportJson).toHaveBeenCalledWith("card-saved-002", "C:/Cards/卡芙卡.json", false);
+  it("读取角色卡失败时显示错误码与原文", async () => {
+    const { backend } = fakeBackend((command) => {
+      if (command.method === "card.get") throw new DesktopRequestError("card_not_found", "角色卡不存在");
+      return unexpectedCommand(command);
     });
+    renderExport(backend, { cardId: "card-missing", cardName: "missing" });
+
+    expect(await screen.findByText("加载角色卡失败")).toBeInTheDocument();
+    expect(screen.getByText("card_not_found：角色卡不存在")).toBeInTheDocument();
   });
 
-  it("无头像时显示无头像状态", async () => {
-    const actions = createMockActions({
-      cardGet: vi.fn().mockResolvedValue(sampleCardGet({ avatar: null })),
-    });
-    render(
-      <CharacterExportFlow
-        cardId="card-saved-002"
-        cardName="卡芙卡"
-        actions={actions}
-        onClose={vi.fn()}
-      />,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("无头像，JSON 中只保留引用")).toBeInTheDocument();
-    });
-  });
-
-  it("加载卡失败显示错误", async () => {
-    const actions = createMockActions({
-      cardGet: vi.fn().mockRejectedValue(new Error("卡不存在")),
-    });
-    render(
-      <CharacterExportFlow
-        cardId="card-missing"
-        cardName="missing"
-        actions={actions}
-        onClose={vi.fn()}
-      />,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("加载角色卡失败")).toBeInTheDocument();
-      expect(screen.getByText(/卡不存在/)).toBeInTheDocument();
-    });
-  });
-
-  it("切换 PNG 格式：文件名扩展联动，导出调用 cardExportPng，成功展示 §1.3 结果字段", async () => {
-    const actions = createMockActions();
-    const backend = createMockBackend("C:/Cards/卡芙卡.png");
-    render(
-      <CharacterExportFlow
-        cardId="card-saved-002"
-        cardName="卡芙卡"
-        backend={backend}
-        actions={actions}
-        onClose={vi.fn()}
-      />,
-    );
-
-    await waitFor(() => expect(screen.getByText("导出角色")).toBeInTheDocument());
+  it("切到 PNG 后文件名改为 .png、不再提供另存头像，完成页列出写入的卡信息", async () => {
+    const backend = await mockWithAvatar("C:/Cards/卡芙卡.png");
+    renderExport(backend);
+    await screen.findByText("已绑定头像");
 
     fireEvent.click(screen.getByRole("radio", { name: "PNG 格式" }));
 
     expect(screen.getByLabelText("导出文件名")).toHaveValue("卡芙卡.png");
-    // PNG 头像内嵌，不出现「另存头像文件」选项
+    expect(screen.getByText("已绑定头像，将内嵌为 PNG 图像块")).toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: "同时保存头像文件" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "导出" }));
+    await clickExport();
 
-    await waitFor(() => {
-      expect(backend.saveFile).toHaveBeenCalledWith({
-        title: "导出角色卡 PNG",
-        defaultPath: "卡芙卡.png",
-        filters: [{ name: "PNG Character Card", extensions: ["png"] }],
-      });
-    });
-
-    await waitFor(() => {
-      expect(actions.cardExportPng).toHaveBeenCalledWith("card-saved-002", "C:/Cards/卡芙卡.png");
-      expect(screen.getByText("导出完成")).toBeInTheDocument();
-      expect(screen.getByText("C:/Cards/卡芙卡.png")).toBeInTheDocument();
-      expect(screen.getByText("卡芙卡")).toBeInTheDocument();
-      expect(screen.getByText("Character Card v3.0")).toBeInTheDocument();
-      expect(screen.getByText("hsr")).toBeInTheDocument();
-      expect(screen.getByText(/头像已内嵌 PNG 图像块/)).toBeInTheDocument();
-    });
+    expect(await screen.findByText("导出完成")).toBeInTheDocument();
+    expect(paramsOf(backend.recordedRequests, "card.export_png")).toEqual([
+      { card_id: KAFKA.cardId, path: "C:/Cards/卡芙卡.png" },
+    ]);
+    expect(screen.getByText("C:/Cards/卡芙卡.png")).toBeInTheDocument();
+    expect(screen.getByText("Character Card v3.0")).toBeInTheDocument();
+    expect(screen.getByText("hsr")).toBeInTheDocument();
+    expect(screen.getByText(/头像已内嵌 PNG 图像块/)).toBeInTheDocument();
   });
 
-  it("无头像卡选 PNG：预览面板如实警告，导出被后端真实拒绝后呈现原始错误与设置头像引导", async () => {
-    const exportError = new Error("卡未设置头像，请先设置头像后再导出 PNG");
-    (exportError as Error & { code?: string }).code = "card_export_failed";
-    const actions = createMockActions({
-      cardGet: vi.fn().mockResolvedValue(sampleCardGet({ avatar: null })),
-      cardExportPng: vi.fn().mockRejectedValue(exportError),
-    });
-    const backend = createMockBackend("C:/Cards/卡芙卡.png");
-    render(
-      <CharacterExportFlow
-        cardId="card-saved-002"
-        cardName="卡芙卡"
-        backend={backend}
-        actions={actions}
-        onClose={vi.fn()}
-      />,
-    );
-
-    await waitFor(() => expect(screen.getByText("导出角色")).toBeInTheDocument());
+  it("无头像的卡切到 PNG 时先行警告，后端拒绝导出后显示原文与设置头像引导", async () => {
+    const backend = new MockDesktopBackend("single-project", { saveFileResult: "C:/Cards/草稿.png" });
+    renderExport(backend, { cardId: "card-draft-001", cardName: "新角色草稿" });
+    await screen.findByText("无头像，JSON 中只保留引用");
 
     fireEvent.click(screen.getByRole("radio", { name: "PNG 格式" }));
 
     expect(screen.getByText("未设置头像，PNG 导出将被拒绝")).toBeInTheDocument();
     expect(screen.getByText(/导出将被后端拒绝/)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "导出" }));
+    await clickExport();
 
-    await waitFor(() => {
-      expect(actions.cardExportPng).toHaveBeenCalledWith("card-saved-002", "C:/Cards/卡芙卡.png");
-      expect(screen.getByText("导出失败")).toBeInTheDocument();
-      expect(screen.getByText(/card_export_failed/)).toBeInTheDocument();
-      expect(screen.getByText(/卡未设置头像，请先设置头像后再导出 PNG/)).toBeInTheDocument();
-      expect(screen.getByText("PNG 导出需要头像")).toBeInTheDocument();
-      expect(screen.getByText(/请先在角色编辑页为该卡设置头像/)).toBeInTheDocument();
-    });
-  });
-
-  it("JSON 格式（默认）的导出行为与头像行文案保持不变", async () => {
-    const actions = createMockActions();
-    const backend = createMockBackend("C:/Cards/卡芙卡.json");
-    render(
-      <CharacterExportFlow
-        cardId="card-saved-002"
-        cardName="卡芙卡"
-        backend={backend}
-        actions={actions}
-        onClose={vi.fn()}
-      />,
-    );
-
-    await waitFor(() => expect(screen.getByText("导出角色")).toBeInTheDocument());
-
-    expect(screen.getByRole("radio", { name: "JSON 格式" })).toBeChecked();
-    expect(screen.getByText("已绑定头像")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "导出" }));
-
-    await waitFor(() => {
-      expect(actions.cardExportJson).toHaveBeenCalledWith("card-saved-002", "C:/Cards/卡芙卡.json", true);
-      expect(screen.getByText("头像文件已配套保存")).toBeInTheDocument();
-    });
-    expect(actions.cardExportPng).not.toHaveBeenCalled();
+    expect(await screen.findByText("导出失败")).toBeInTheDocument();
+    expect(screen.getByText("card_export_failed：卡未设置头像，请先设置头像后再导出 PNG")).toBeInTheDocument();
+    expect(screen.getByText("PNG 导出需要头像")).toBeInTheDocument();
+    expect(paramsOf(backend.recordedRequests, "card.export_png")).toEqual([
+      { card_id: "card-draft-001", path: "C:/Cards/草稿.png" },
+    ]);
   });
 });

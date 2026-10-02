@@ -7,6 +7,8 @@ import type { PromptAssemblyView } from "../types";
 
 afterEach(cleanup);
 
+const loadProps = { onLoadMetrics: () => {}, onLoadMoreMetrics: () => {} };
+
 function metricRecord(overrides: Partial<TurnMetric> = {}): TurnMetric {
   return {
     metric_id: "tm-1",
@@ -44,6 +46,7 @@ function metricRecord(overrides: Partial<TurnMetric> = {}): TurnMetric {
   };
 }
 
+/** diagnostics.prompt_assembly 经 adaptPromptAssembly 适配后的结果；Sidecar 的 hash 与 summary 恒为 null。 */
 function assemblyView(overrides: Partial<PromptAssemblyView> = {}): PromptAssemblyView {
   return {
     conversation_id: "c1",
@@ -52,8 +55,8 @@ function assemblyView(overrides: Partial<PromptAssemblyView> = {}): PromptAssemb
         name: "character_frame",
         char_start: 0,
         char_end: 512,
-        hash: "abc123",
-        summary: "角色框架",
+        hash: null,
+        summary: null,
         memory_injected: false,
         hidden_content: null,
       },
@@ -61,50 +64,42 @@ function assemblyView(overrides: Partial<PromptAssemblyView> = {}): PromptAssemb
         name: "pair_memory",
         char_start: 513,
         char_end: 700,
-        hash: "def456",
-        summary: "配对记忆片段",
+        hash: null,
+        summary: null,
         memory_injected: true,
         hidden_content: null,
       },
     ],
-    diagnostics: ["世界书命中 2 条"],
+    diagnostics: ["world_book_hits: 2"],
     generated_at: "2026-01-01T00:00:00Z",
     ...overrides,
   };
 }
 
-describe("DiagnosticsDrawer（V0.3.9 V03 诊断抽屉）", () => {
+describe("DiagnosticsDrawer 诊断抽屉", () => {
   it("关闭时不渲染；打开时渲染抽屉并各触发一次显式查询", () => {
     const onLoadMetrics = vi.fn();
     const onLoadAssembly = vi.fn();
-    const { rerender } = render(
-      <DiagnosticsDrawer
-        open={false}
-        onClose={() => {}}
-        onLoadMetrics={onLoadMetrics}
-        onLoadAssembly={onLoadAssembly}
-      />,
-    );
+    const props = {
+      onClose: () => {},
+      onLoadMetrics,
+      onLoadMoreMetrics: () => {},
+      onLoadAssembly,
+    };
+    const { rerender } = render(<DiagnosticsDrawer open={false} {...props} />);
     expect(screen.queryByRole("dialog", { name: "诊断" })).not.toBeInTheDocument();
 
-    rerender(
-      <DiagnosticsDrawer
-        open
-        onClose={() => {}}
-        onLoadMetrics={onLoadMetrics}
-        onLoadAssembly={onLoadAssembly}
-      />,
-    );
+    rerender(<DiagnosticsDrawer open {...props} />);
     expect(screen.getByRole("dialog", { name: "诊断" })).toBeInTheDocument();
     expect(onLoadMetrics).toHaveBeenCalledTimes(1);
     expect(onLoadAssembly).toHaveBeenCalledTimes(1);
   });
 
   it("未读取（null）与真实零条（[]）区分", () => {
-    const { rerender } = render(<DiagnosticsDrawer open onClose={() => {}} metrics={null} />);
+    const { rerender } = render(<DiagnosticsDrawer open onClose={() => {}} {...loadProps} metrics={null} />);
     expect(screen.getByTestId("diag-metrics-nodata")).toHaveTextContent("无数据：尚未读取指标。");
 
-    rerender(<DiagnosticsDrawer open onClose={() => {}} metrics={[]} />);
+    rerender(<DiagnosticsDrawer open onClose={() => {}} {...loadProps} metrics={[]} />);
     expect(screen.getByTestId("diag-metrics-empty")).toHaveTextContent("查询返回 0 条指标记录。");
     expect(screen.queryByTestId("diag-metrics-nodata")).not.toBeInTheDocument();
   });
@@ -114,6 +109,7 @@ describe("DiagnosticsDrawer（V0.3.9 V03 诊断抽屉）", () => {
       <DiagnosticsDrawer
         open
         onClose={() => {}}
+        {...loadProps}
         metrics={[
           metricRecord({ metric_id: "tm-null", input_tokens: null, output_tokens: null, total_tokens: 0 }),
           metricRecord({ metric_id: "tm-zero", input_tokens: 0, output_tokens: 0, total_tokens: 0 }),
@@ -130,49 +126,33 @@ describe("DiagnosticsDrawer（V0.3.9 V03 诊断抽屉）", () => {
     expect(screen.getByTestId("diag-toolrounds-tm-zero")).toHaveTextContent("0");
   });
 
-  it("查询失败如实显示错误原文，不伪造数据", () => {
+  it("查询失败以告警显示错误原文，不给出「0 条」结论", () => {
+    // 首次查询失败时 Host 传下来的仍是 store 初值 []。
     render(
       <DiagnosticsDrawer
         open
         onClose={() => {}}
-        metrics={null}
-        metricsState="failed"
-        metricsError="metrics_query_failed: sidecar 连接中断"
-      />,
-    );
-    const alert = screen.getByTestId("diag-metrics-error");
-    expect(alert).toHaveTextContent("metrics_query_failed: sidecar 连接中断");
-    expect(alert).toHaveAttribute("role", "alert");
-    expect(screen.getByTestId("diag-metrics-nodata")).toHaveTextContent("指标未读取到");
-  });
-
-
-  it("V039-S4-001：查询失败时不得给出「0 条」这一成功语义", () => {
-    // store 的 turnMetrics 初值是 []（未读取），失败后 Host 仍会把它当结果传下来；
-    // 此时抽屉必须只说失败，不能并列渲染「查询返回 0 条指标记录。」
-    render(
-      <DiagnosticsDrawer
-        open
-        onClose={() => {}}
+        {...loadProps}
         metrics={[]}
         metricsState="failed"
         metricsError="backend_timeout: metrics.query 未在 30s 内返回"
       />,
     );
 
-    expect(screen.getByTestId("diag-metrics-error")).toHaveTextContent(
-      "backend_timeout: metrics.query 未在 30s 内返回",
-    );
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveAttribute("data-testid", "diag-metrics-error");
+    expect(alert).toHaveTextContent("backend_timeout: metrics.query 未在 30s 内返回");
     expect(screen.queryByTestId("diag-metrics-empty")).not.toBeInTheDocument();
     expect(screen.queryByTestId("diag-metrics-count")).not.toBeInTheDocument();
     expect(screen.getByTestId("diag-metrics-nodata")).toHaveTextContent("指标未读取到");
   });
 
-  it("V039-S4-001：刷新失败但保留上次结果时，只如实标注为上一次读取的结果", () => {
+  it("刷新失败但保留上次结果时，标注为上一次成功读取的结果", () => {
     render(
       <DiagnosticsDrawer
         open
         onClose={() => {}}
+        {...loadProps}
         metrics={[metricRecord({ metric_id: "tm-stale" })]}
         metricsState="failed"
         metricsError="backend_timeout"
@@ -188,43 +168,55 @@ describe("DiagnosticsDrawer（V0.3.9 V03 诊断抽屉）", () => {
     expect(screen.getByTestId("diag-metric-tm-stale")).toBeInTheDocument();
   });
 
-  it("V039-S4-001：首次读取中不提前宣称「0 条」", () => {
-    render(<DiagnosticsDrawer open onClose={() => {}} metrics={[]} metricsState="loading" />);
+  it("首次读取中不提前给出「0 条」结论", () => {
+    render(<DiagnosticsDrawer open onClose={() => {}} {...loadProps} metrics={[]} metricsState="loading" />);
 
     expect(screen.getByText("正在读取指标…")).toBeInTheDocument();
     expect(screen.queryByTestId("diag-metrics-empty")).not.toBeInTheDocument();
     expect(screen.queryByTestId("diag-metrics-nodata")).not.toBeInTheDocument();
   });
 
-  it("详情展开渲染 TurnMetric 全字段（含 null 与零值）", () => {
+  it("失败回合在行内显示失败类型与原因，详情展开列出全部字段", () => {
     render(
       <DiagnosticsDrawer
         open
         onClose={() => {}}
-        metrics={[metricRecord({ status: "failed", failure_type: "provider_error", failure_message: "500" })]}
+        {...loadProps}
+        metrics={[
+          metricRecord({
+            turn_kind: "assistant_task",
+            status: "failed",
+            failure_type: "turn_failed",
+            failure_message: "等待审批超时",
+          }),
+        ]}
       />,
     );
-    expect(screen.getByTestId("diag-metric-tm-1")).toHaveTextContent("失败");
-    expect(screen.getByTestId("diag-metric-tm-1")).toHaveTextContent("provider_error");
+    const row = screen.getByTestId("diag-metric-tm-1");
+    expect(row).toHaveTextContent("助手任务");
+    expect(row).toHaveTextContent("失败");
+    expect(row).toHaveTextContent("turn_failed");
+    expect(row).toHaveTextContent("等待审批超时");
 
-    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    fireEvent.click(within(row).getByRole("button", { name: "详情" }));
     const detail = screen.getByTestId("diag-metric-detail-tm-1");
     expect(detail).toHaveTextContent("acct-1");
     expect(detail).toHaveTextContent("card:card-1");
-    expect(detail).toHaveTextContent("task_id");
-    expect(detail).toHaveTextContent("remote_device_key");
-    expect(detail).toHaveTextContent("reasoning_effort");
-    expect(detail).toHaveTextContent("high");
+    expect(detail).toHaveTextContent("task_id无数据");
+    expect(detail).toHaveTextContent("remote_device_key无数据");
+    expect(detail).toHaveTextContent("reasoning_efforthigh");
+    expect(detail).toHaveTextContent("approval_count0");
   });
 
-  it("装配页签渲染模块字段；未提供隐藏原文回调时不显示按钮", () => {
-    render(<DiagnosticsDrawer open onClose={() => {}} assembly={assemblyView()} initialTab="assembly" />);
+  it("装配页签渲染模块的字符范围、记忆注入与服务端诊断，未提供的字段显示无数据", () => {
+    render(<DiagnosticsDrawer open onClose={() => {}} {...loadProps} assembly={assemblyView()} initialTab="assembly" />);
 
-    expect(screen.getByTestId("diag-module-character_frame")).toHaveTextContent("字符范围 0 – 512");
-    expect(screen.getByTestId("diag-module-character_frame")).toHaveTextContent("hash abc123");
-    expect(screen.getByTestId("diag-module-character_frame")).toHaveTextContent("记忆 未注入");
+    const frame = screen.getByTestId("diag-module-character_frame");
+    expect(frame).toHaveTextContent("字符范围 0 – 512");
+    expect(frame).toHaveTextContent("hash 无数据");
+    expect(frame).toHaveTextContent("记忆 未注入");
     expect(screen.getByTestId("diag-module-pair_memory")).toHaveTextContent("记忆 已注入");
-    expect(screen.getByTestId("diag-assembly-diagnostics")).toHaveTextContent("世界书命中 2 条");
+    expect(screen.getByTestId("diag-assembly-diagnostics")).toHaveTextContent("world_book_hits: 2");
     expect(screen.queryByRole("button", { name: "显示原文" })).not.toBeInTheDocument();
   });
 
@@ -234,6 +226,7 @@ describe("DiagnosticsDrawer（V0.3.9 V03 诊断抽屉）", () => {
       <DiagnosticsDrawer
         open
         onClose={() => {}}
+        {...loadProps}
         assembly={assemblyView()}
         initialTab="assembly"
         onRequestHiddenContent={onRequestHiddenContent}
@@ -253,6 +246,7 @@ describe("DiagnosticsDrawer（V0.3.9 V03 诊断抽屉）", () => {
       <DiagnosticsDrawer
         open={false}
         onClose={() => {}}
+        {...loadProps}
         assembly={assemblyView()}
         initialTab="assembly"
         onRequestHiddenContent={onRequestHiddenContent}
@@ -265,6 +259,7 @@ describe("DiagnosticsDrawer（V0.3.9 V03 诊断抽屉）", () => {
       <DiagnosticsDrawer
         open
         onClose={() => {}}
+        {...loadProps}
         assembly={assemblyView()}
         initialTab="assembly"
         onRequestHiddenContent={onRequestHiddenContent}
@@ -274,14 +269,15 @@ describe("DiagnosticsDrawer（V0.3.9 V03 诊断抽屉）", () => {
     await waitFor(() => expect(onRequestHiddenContent).toHaveBeenCalledTimes(1));
   });
 
-  it("隐藏原文请求失败原文上屏（不吞异常）", async () => {
+  it("隐藏原文请求失败时以告警显示错误原文", async () => {
     const onRequestHiddenContent = vi
       .fn()
-      .mockRejectedValue(new Error("prompt_assembly_unavailable: 服务端拒绝返回原文"));
+      .mockRejectedValue(new Error("服务端没有返回模块「character_frame」的隐藏原文"));
     render(
       <DiagnosticsDrawer
         open
         onClose={() => {}}
+        {...loadProps}
         assembly={assemblyView()}
         initialTab="assembly"
         onRequestHiddenContent={onRequestHiddenContent}
@@ -290,66 +286,17 @@ describe("DiagnosticsDrawer（V0.3.9 V03 诊断抽屉）", () => {
 
     fireEvent.click(screen.getByTestId("diag-module-hidden-btn-character_frame"));
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("prompt_assembly_unavailable: 服务端拒绝返回原文");
+    expect(alert).toHaveTextContent("服务端没有返回模块「character_frame」的隐藏原文");
     expect(screen.queryByTestId("diag-module-hidden-character_frame")).not.toBeInTheDocument();
   });
 
   it("关闭按钮与 Esc 都调用 onClose", () => {
     const onClose = vi.fn();
-    render(<DiagnosticsDrawer open onClose={onClose} />);
+    render(<DiagnosticsDrawer open onClose={onClose} {...loadProps} />);
     fireEvent.click(screen.getByLabelText("关闭诊断"));
     expect(onClose).toHaveBeenCalledTimes(1);
 
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(2);
-  });
-
-  it("契约 §9 timeout 样例：TurnMetric 渲染 approval_timeout 与 summary_timeout 终态", () => {
-    // 契约 §9 approval.resolved 超时：decision:"timeout", error_code:"approval_timeout", reason:"等待审批超时"
-    // 契约 §9 summary.failed 超时：error_code:"summary_timeout", error:"provider timeout"
-    render(
-      <DiagnosticsDrawer
-        open
-        onClose={() => {}}
-        metrics={[
-          metricRecord({
-            metric_id: "tm-approval-timeout",
-            turn_kind: "assistant_task",
-            status: "failed",
-            failure_type: "approval_timeout",
-            failure_message: "等待审批超时",
-          }),
-          metricRecord({
-            metric_id: "tm-summary-timeout",
-            turn_kind: "character_turn",
-            status: "failed",
-            failure_type: "summary_timeout",
-            failure_message: "provider timeout",
-          }),
-        ]}
-      />,
-    );
-
-    const approvalRow = screen.getByTestId("diag-metric-tm-approval-timeout");
-    expect(approvalRow).toHaveTextContent("助手任务");
-    expect(approvalRow).toHaveTextContent("失败");
-    expect(approvalRow).toHaveTextContent("approval_timeout");
-    expect(approvalRow).toHaveTextContent("等待审批超时");
-
-    const summaryRow = screen.getByTestId("diag-metric-tm-summary-timeout");
-    expect(summaryRow).toHaveTextContent("角色回合");
-    expect(summaryRow).toHaveTextContent("失败");
-    expect(summaryRow).toHaveTextContent("summary_timeout");
-    expect(summaryRow).toHaveTextContent("provider timeout");
-
-    // 展开详情验证全量字段完整呈现
-    fireEvent.click(within(approvalRow).getByRole("button", { name: "详情" }));
-    const detail = screen.getByTestId("diag-metric-detail-tm-approval-timeout");
-    expect(detail).toHaveTextContent("turn_kind");
-    expect(detail).toHaveTextContent("assistant_task");
-    expect(detail).toHaveTextContent("status");
-    expect(detail).toHaveTextContent("failed");
-    expect(detail).toHaveTextContent("approval_timeout");
-    expect(detail).toHaveTextContent("等待审批超时");
   });
 });

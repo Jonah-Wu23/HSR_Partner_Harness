@@ -20,12 +20,13 @@ import type {
   CardRemoveAvatarResult,
   CardSetAvatarResult,
   CardUpdateResult,
+  ConfigTestConnectionResult,
   ConversationCreateResult,
   ConversationOpenResult,
   DesktopCommand,
-  DesktopEvent,
   DesktopCommandMethod,
   DesktopSnapshot,
+  DesktopStreamEvent,
   ReasoningEffort,
   PowerStatusPayload,
   RemoteIssueCodeResult,
@@ -34,28 +35,24 @@ import type {
   RemoteTunnelStartResult,
   RemoteTunnelStopResult,
   RemoteTunnelStatusResult,
+  TaskCancelResult,
   VoiceCardBindReferenceResult,
   VoiceCardCreateResult,
   VoiceCardUnbindResult,
   VoiceMobilePttStartResult,
   VoiceMobilePttStopResult,
-  TurnMetric,
   MemoryListResult,
   MemoryWriteResult,
   PairMemory,
 } from "../contracts/protocol";
 import { pairMemoryFromPayload } from "../contracts/protocol";
-import type {
-  CharacterCardSummaryView,
-  RemoteDeviceView,
-  PromptAssemblyView,
-  PromptAssemblyModule,
-} from "../contracts/view-models";
+import type { CharacterCardSummaryView, RemoteDeviceView } from "../contracts/view-models";
 import type { DesktopBackend } from "./backend";
 import { RequestIdFactory } from "./backend";
-import { isDesktopSnapshot } from "./mockDesktopBackend";
+import { adaptMetricsQueryResult, adaptPromptAssembly } from "../ui/diagnostics/types";
 import {
   desktopStore,
+  selectComposerTarget,
   selectWindowConversationId,
   selectWindowProjectId,
 } from "../stores/desktopStore";
@@ -63,27 +60,61 @@ import {
 export interface ActionController {
   actions: HarnessActions;
   loadBootstrap(): Promise<void>;
-  /** V0.3.2 M5：conversation.open 只读装载指定聊天并打开其标签（不改全局当前聊天）。 */
+  /** conversation.open 只读装载指定聊天并打开其标签，不改全局当前聊天。 */
   conversationOpen(conversationId: string): Promise<void>;
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export function createActionController(backend: DesktopBackend): ActionController {
-  // V0.3.2 M5：请求 id 携带本窗口 viewId（多窗口全应用唯一），失败如常上抛。
+  // 请求 id 携带本窗口 viewId，多窗口之间全应用唯一。
   const ids = new RequestIdFactory(() => desktopStore.getState().viewId);
   let conversationOpenGeneration = 0;
 
-  async function request<T>(method: DesktopCommandMethod, params: Record<string, unknown> = {}): Promise<T> {
-    const viewId = desktopStore.getState().viewId;
+  /** 请求失败统一推送带原始错误的 Toast，错误继续抛给调用方。
+      timeoutSecs 缺省用后端默认上限，null 表示一直等到 Sidecar 回复或断开。 */
+  async function request<T>(
+    method: DesktopCommandMethod,
+    params: Record<string, unknown> = {},
+    timeoutSecs?: number | null,
+  ): Promise<T> {
     const command: DesktopCommand = {
       kind: "request",
       id: ids.next(),
       method,
       params,
-      view_id: viewId,
+      view_id: desktopStore.getState().viewId,
     };
-    const result = await backend.request<T>(command);
-    if (isDesktopSnapshot(result)) desktopStore.getState().hydrate(result);
-    return result;
+    try {
+      return await backend.request<T>(command, timeoutSecs);
+    } catch (error) {
+      const message = errorMessage(error);
+      desktopStore.getState().pushToast({
+        id: `request-failed:${method}:${message}`,
+        kind: "error",
+        text: `${method} 失败：${message}`,
+        hasDetails: true,
+      });
+      throw error;
+    }
+  }
+
+  /** 返回 bootstrap 快照的命令：结果直接水合。 */
+  async function requestSnapshot<T extends DesktopSnapshot = DesktopSnapshot>(
+    method: DesktopCommandMethod,
+    params: Record<string, unknown> = {},
+  ): Promise<T> {
+    const snapshot = await request<T>(method, params);
+    desktopStore.getState().hydrate(snapshot);
+    return snapshot;
+  }
+
+  /** 发请求前的前置条件不满足：与请求失败一样推送 Toast 并抛出。 */
+  function rejectAction(id: string, text: string): never {
+    desktopStore.getState().pushToast({ id, kind: "error", text });
+    throw new Error(text);
   }
 
   /** 记忆命令一律按会话下发，作用域由服务端解析；没有会话上下文时如实失败。 */
@@ -95,31 +126,29 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     return conversationId;
   }
 
-  /** 写命令返回体 → store 中的记录（响应与 memory.updated/deleted 事件同形，按 memory_id 幂等）。 */
+  /** 写命令返回体写入 store（与 memory.updated/deleted 事件同形，按 memory_id 幂等）。 */
   function recordMemoryWrite(result: MemoryWriteResult, conversationId: string): PairMemory {
-    if (!result?.memory) {
-      throw new Error("记忆命令返回体缺少 memory 字段");
-    }
     const memory = pairMemoryFromPayload(result.memory);
     desktopStore.getState().upsertMemory(memory, memory.conversation_id ?? conversationId);
     return memory;
   }
 
+  // 序号缺口触发的重新同步不切到启动状态页：界面与输入区保持可用，直到快照水合。
   const loadBootstrap = async () => {
-    desktopStore.getState().setStatus("booting");
+    if (!desktopStore.getState().resyncing) desktopStore.getState().setStatus("booting");
     try {
-      await request<DesktopSnapshot>("app.bootstrap");
+      await requestSnapshot("app.bootstrap");
     } catch (error) {
-      desktopStore.getState().setStatus("error", error instanceof Error ? error.message : String(error));
+      desktopStore.getState().setStatus("error", errorMessage(error));
     }
   };
 
-  // V0.3.2 M5：只读装载指定聊天——参数携带本窗口 view_id；结果合并进
-  // 各会话索引并打开该聊天的标签，不改变后端全局当前聊天。
+  // 只读装载指定聊天：参数携带本窗口 view_id；结果合并进各会话索引并打开该聊天的标签，
+  // 不改变后端全局当前聊天。
   const conversationOpen = async (conversationId: string) => {
     const generation = ++conversationOpenGeneration;
     const requestAccountGeneration = desktopStore.getState().accountGeneration;
-    const bufferedEvents: DesktopEvent[] = [];
+    const bufferedEvents: DesktopStreamEvent[] = [];
     const unsubscribe = backend.subscribe((event) => bufferedEvents.push(event));
     let result: ConversationOpenResult;
     try {
@@ -147,7 +176,7 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async createProject(rootPath, name) {
       const selectedRoot = rootPath?.trim() || (await backend.pickFolder("选择项目文件夹"));
       if (!selectedRoot) return false;
-      await request("project.create", { root_path: selectedRoot, name });
+      await requestSnapshot("project.create", { root_path: selectedRoot, name });
       focusBackendConversation();
       return true;
     },
@@ -163,15 +192,14 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       });
     },
     async selectProject(projectId) {
-      await request("project.select", { project_id: projectId });
+      await requestSnapshot("project.select", { project_id: projectId });
     },
     async archiveProject(projectId) {
-      await request("project.archive", { project_id: projectId });
+      await requestSnapshot("project.archive", { project_id: projectId });
     },
     async createConversation(projectId, title, pairId, opts) {
-      // V0.3.8 T6：「使用该角色」类入口带 reuse_active 复用活跃会话；
-      // 「新建聊天」按钮不带该参数，维持显式新建（契约冻结 §14.2）。
-      await request<ConversationCreateResult>("conversation.create", {
+      // 「使用该角色」类入口带 reuse_active 复用活跃会话；「新建聊天」按钮总是新建。
+      await requestSnapshot<ConversationCreateResult>("conversation.create", {
         project_id: projectId,
         title,
         ...(pairId ? { pair_id: pairId } : {}),
@@ -180,30 +208,37 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       focusBackendConversation();
     },
     async selectConversation(conversationId) {
-      await request("conversation.select", { conversation_id: conversationId });
+      await requestSnapshot("conversation.select", { conversation_id: conversationId });
       focusBackendConversation();
     },
     async openConversationTab(conversationId) {
       // 每次聚焦都重新读取该会话的权威快照，同时让共享的
       // 物理语音运行时切到该聊天；conversation.open 不改 Sidecar 全局导航。
-      await conversationOpen(conversationId);
+      // 已有缓存的聊天先切换标签并标记同步中，权威结果到达后逐条对账。
+      const store = desktopStore.getState();
+      if (store.messageIdsByConversation[conversationId] === undefined) {
+        await conversationOpen(conversationId);
+        return;
+      }
+      store.openConversationTab(conversationId);
+      store.setConversationSyncing(conversationId, true);
+      try {
+        await conversationOpen(conversationId);
+      } finally {
+        desktopStore.getState().setConversationSyncing(conversationId, false);
+      }
     },
     closeConversationTab(conversationId) {
-      // V0.3.2 M5：只移除本窗口标签；标签已有完整缓存，切到相邻标签
-      // 不需要 conversation.select，也绝不取消任务或关闭会话。
+      // 只移除本窗口标签；标签已有完整缓存，切到相邻标签不需要 conversation.select，
+      // 也不取消任务或关闭会话。
       desktopStore.getState().closeConversationTab(conversationId);
     },
     async openConversationWindow(conversationId) {
-      const state = desktopStore.getState();
-      const conversation = state.conversationsById[conversationId];
-      const projectId = conversation?.project_id;
-      if (!conversation || !projectId) {
-        throw new Error(`找不到聊天 ${conversationId} 的项目上下文`);
-      }
+      const conversation = desktopStore.getState().conversationsById[conversationId];
       try {
-        await backend.openChatWindow(conversationId, projectId, conversation.title);
+        await backend.openChatWindow(conversationId, conversation.title);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         desktopStore.getState().pushToast({
           id: `open-chat-window:${conversationId}:${message}`,
           kind: "error",
@@ -214,33 +249,18 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       }
     },
     async renameConversation(conversationId, title) {
-      await request("conversation.rename", { conversation_id: conversationId, title });
+      await requestSnapshot("conversation.rename", { conversation_id: conversationId, title });
     },
     async archiveConversation(conversationId) {
-      await request("conversation.archive", { conversation_id: conversationId });
+      await requestSnapshot("conversation.archive", { conversation_id: conversationId });
     },
     async switchMode(mode) {
-      // V0.2 模式独立：模式由后端按会话持久化，走独立命令。
-      // M5.3：先持久化成功再切换本地模式；失败恢复原模式并保留真实错误。
-      const previous = desktopStore.getState().mode;
-      // V0.3.2 M5：模式保存到本窗口当前聊天（活动标签优先）。
+      // 模式按会话持久化在 last_mode；界面模式随后由 conversation.changed 更新。
       const conversationId = selectWindowConversationId(desktopStore.getState());
-      try {
-        if (conversationId) {
-          await request("conversation.set_mode", { conversation_id: conversationId, mode });
-        }
-        desktopStore.getState().setMode(mode);
-      } catch (error) {
-        desktopStore.getState().setMode(previous);
-        const message = error instanceof Error ? error.message : String(error);
-        desktopStore.getState().pushToast({
-          id: `mode:${message}`,
-          kind: "error",
-          text: `模式切换保存失败：${message}`,
-          hasDetails: true,
-        });
-        throw error;
+      if (!conversationId) {
+        rejectAction("mode:no-conversation", "当前窗口没有打开的聊天，无法切换模式");
       }
+      await request("conversation.set_mode", { conversation_id: conversationId, mode });
     },
     switchTheme(theme) {
       if (typeof window !== "undefined") window.localStorage.setItem("pair-harness-theme", theme);
@@ -248,13 +268,9 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     },
     async submitMessage(text, target, intent) {
       const state = desktopStore.getState();
-      const actualTarget = target ?? state.composerTarget;
-      // M5.3：草稿由 Composer 在收到 accepted/queued 回执后清除；这里不清空，
-      // 请求失败时输入文字与 target 都保留。
-      // V0.3.2 M5：提交到本窗口当前聊天（活动标签优先），其他窗口不受影响。
-      // V0.3.8 T6：不再携带窗口全局 mode——会话保持自己的 last_mode，
-      // 顺带改写会把普通消息盖成“委派”标签；显式切换走 switchMode
-      // （conversation.set_mode）。
+      const actualTarget = target ?? selectComposerTarget(state);
+      // 草稿由 Composer 在收到 accepted/queued 回执后清除，请求失败时输入保留。
+      // 消息提交到本窗口活动标签的聊天；模式只经 switchMode 修改。
       return request<SubmitMessageResult>("chat.submit", {
         conversation_id: selectWindowConversationId(state),
         target: actualTarget,
@@ -269,7 +285,7 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       await request("queue.withdraw", { queue_item_id: queueItemId });
     },
     async editQueueFromStrip(queueItemId) {
-      // V0.2 M4：QueueStrip「编辑」= 撤回该项并返回原文（拉回输入区）
+      // 队列条「编辑」：撤回该项并返回原文，拉回输入区。
       const state = desktopStore.getState();
       const conversationId = selectWindowConversationId(state);
       if (!conversationId) return null;
@@ -284,20 +300,27 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       await request("queue.prioritize", { queue_item_id: queueItemId });
     },
     async cancelTask() {
-      // V0.3.2 M5：定向取消必须携带本窗口当前聊天的 conversation_id 与
-      // 该聊天活动任务的 task_id；缺少任一项时不发送模糊的旧式全局取消。
+      // 定向取消携带本窗口聊天的 conversation_id 与其活动任务的 task_id。
+      // cancelled=false 表示服务端没有取消任何任务，如实提示。
       const state = desktopStore.getState();
       const conversationId = selectWindowConversationId(state);
       const activeTask = conversationId
         ? state.activeTasksByConversation[conversationId]
         : undefined;
       if (!conversationId || !activeTask) {
-        throw new Error("当前聊天没有可取消的活动任务");
+        rejectAction("task-cancel:no-task", "当前聊天没有可取消的活动任务");
       }
-      await request("task.cancel", {
+      const result = await request<TaskCancelResult>("task.cancel", {
         conversation_id: conversationId,
         task_id: activeTask.task_id,
       });
+      if (!result.cancelled) {
+        desktopStore.getState().pushToast({
+          id: `task-cancel:not-cancelled:${activeTask.task_id}`,
+          kind: "warning",
+          text: `取消未生效：服务端没有取消任务 ${activeTask.task_id}`,
+        });
+      }
     },
     async resolveApproval(approvalId, decision) {
       const state = desktopStore.getState();
@@ -312,12 +335,12 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     },
     async setApprovalMode(mode: ApprovalMode) {
       const projectId = selectWindowProjectId(desktopStore.getState());
-      if (!projectId) throw new Error("当前窗口没有项目上下文");
+      if (!projectId) rejectAction("approval-mode:no-project", "当前窗口没有项目上下文");
       await request("project.update_settings", { project_id: projectId, approval_mode: mode });
     },
     async setReasoningEffort(effort: ReasoningEffort) {
       const projectId = selectWindowProjectId(desktopStore.getState());
-      if (!projectId) throw new Error("当前窗口没有项目上下文");
+      if (!projectId) rejectAction("reasoning-effort:no-project", "当前窗口没有项目上下文");
       await request("project.update_settings", { project_id: projectId, reasoning_effort: effort });
     },
     async setVadEnabled(enabled) {
@@ -327,7 +350,7 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       const state = desktopStore.getState();
       const conversationId = selectWindowConversationId(state);
       await request("voice.ptt_start", {
-        target: target ?? state.composerTarget,
+        target: target ?? selectComposerTarget(state),
         ...(conversationId ? { conversation_id: conversationId } : {}),
       });
     },
@@ -341,14 +364,12 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       await request("voice.tts_skip");
     },
     async reconnect() {
-      // Sidecar 断开时走 Rust 侧强制重启（sidecar_reconnect），成功后由
-      // connection.status connected 事件驱动重新 bootstrap；失败则上报错误状态。
+      // Rust 侧强制重启 Sidecar；成功后由 connection.status connected 驱动重新 bootstrap，
+      // 失败时连接状态记为出错并显示原文。
       try {
         await backend.reconnectSidecar();
       } catch (error) {
-        desktopStore
-          .getState()
-          .setStatus("error", error instanceof Error ? error.message : String(error));
+        desktopStore.getState().setStatus("error", errorMessage(error));
       }
     },
     async listAccounts() {
@@ -382,7 +403,7 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       await request("account.onboarding_complete");
     },
     async getConfig() {
-      // V0.2 M4：config.get 结果存入 store（SettingsCenter 数据源）
+      // 账号切换后迟到的结果不覆盖新账号的设置页数据。
       const accountGeneration = desktopStore.getState().accountGeneration;
       const result = await request<Record<string, unknown>>("config.get");
       if (accountGeneration === desktopStore.getState().accountGeneration) {
@@ -391,19 +412,14 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     },
     async setConfig(updates) {
       const accountGeneration = desktopStore.getState().accountGeneration;
-      const result = await request<{ config?: Record<string, unknown> }>("config.set", { updates });
-      if (
-        result?.config &&
-        accountGeneration === desktopStore.getState().accountGeneration
-      ) {
+      const result = await request<{ config: Record<string, unknown> }>("config.set", { updates });
+      if (accountGeneration === desktopStore.getState().accountGeneration) {
         desktopStore.getState().setConfigSnapshot(result.config);
       }
     },
     async testConnection() {
-      // V0.2 M4：返回人话结果（Onboarding 保存并测试 / 设置中心模型页）
-      const result = await request<{ ok?: boolean; message?: string }>("config.test_connection");
-      if (result?.ok === false) return result.message ?? "连接失败，请检查配置";
-      return result?.message ?? "连接正常";
+      const result = await request<ConfigTestConnectionResult>("config.test_connection");
+      return { ok: result.ok, message: result.message };
     },
     async voicePreview(text, voiceId) {
       await request("voice.preview", { text, ...(voiceId ? { voice_id: voiceId } : {}) });
@@ -413,26 +429,21 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       const params: Record<string, unknown> = {};
       if (speakerIds !== undefined) params.speaker_ids = speakerIds;
       if (replaceExisting !== undefined) params.replace_existing = replaceExisting;
-      const result = await request<VoiceProvisionResult>("voice.provision", params);
-      // voice.provision 的逐项事件用于实时状态；命令完成后再取一次权威配置，
-      // 确保成功项已从 SQLite 水合到设置页，且失败项仍保留真实状态。
+      // 逐个生成音色耗时不定，一直等到 Sidecar 回复或断开。
+      const result = await request<VoiceProvisionResult>("voice.provision", params, null);
+      // 逐项事件用于实时状态；命令完成后再取一次配置，成功项从库里水合到设置页，
+      // 失败项保留原状态。
       const config = await request<Record<string, unknown>>("config.get");
       if (accountGeneration === desktopStore.getState().accountGeneration) {
         desktopStore.getState().setConfigSnapshot(config);
       }
       return result;
     },
-    /* —— V0.3.3 角色卡（card.*）—— */
     async listCards() {
       desktopStore.getState().setCharacterLibrary({ loading: true, error: null });
       try {
-        // card.list 不携带归档标记：对 include_archived 两次结果做差集推导。
-        const [visible, all] = await Promise.all([
-          request<CardListResult>("card.list", { include_archived: false }),
-          request<CardListResult>("card.list", { include_archived: true }),
-        ]);
-        const visibleIds = new Set((visible.cards ?? []).map((card) => card.card_id));
-        const cards: CharacterCardSummaryView[] = (all.cards ?? []).map((card) => ({
+        const result = await request<CardListResult>("card.list", { include_archived: true });
+        const cards: CharacterCardSummaryView[] = result.cards.map((card) => ({
           cardId: card.card_id,
           name: card.name,
           state: card.state,
@@ -442,14 +453,13 @@ export function createActionController(backend: DesktopBackend): ActionControlle
           voiceState: card.voice_state,
           active: card.active,
           readOnly: card.read_only,
-          archived: !visibleIds.has(card.card_id),
+          archived: card.archived,
         }));
         desktopStore.getState().setCharacterLibrary({ cards, loading: false, loaded: true });
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
         desktopStore
           .getState()
-          .setCharacterLibrary({ loading: false, error: message, loaded: true });
+          .setCharacterLibrary({ loading: false, error: errorMessage(error), loaded: true });
       }
     },
     async openCharacterLibrary() {
@@ -460,6 +470,7 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       desktopStore.getState().setMainView("characterCreate");
       if (!cardId) {
         desktopStore.getState().setCharacterCreate({
+          requestedCardId: null,
           cardId: null,
           card: null,
           readOnly: false,
@@ -468,7 +479,15 @@ export function createActionController(backend: DesktopBackend): ActionControlle
         });
         return;
       }
-      desktopStore.getState().setCharacterCreate({ loading: true, error: null });
+      // 先清空再载入：重新打开同一张卡时 cardId 也会变化一次，创作页据此用最新内容水合。
+      desktopStore.getState().setCharacterCreate({
+        requestedCardId: cardId,
+        cardId: null,
+        card: null,
+        readOnly: false,
+        loading: true,
+        error: null,
+      });
       try {
         const result = await request<CardGetResult>("card.get", { card_id: cardId });
         desktopStore.getState().setCharacterCreate({
@@ -478,16 +497,16 @@ export function createActionController(backend: DesktopBackend): ActionControlle
           loading: false,
         });
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        desktopStore.getState().setCharacterCreate({ loading: false, error: message });
+        desktopStore.getState().setCharacterCreate({ loading: false, error: errorMessage(error) });
       }
     },
     openChat() {
       desktopStore.getState().setMainView("chat");
     },
     async createCardDraft(name) {
+      // 草稿 id 由创作页自己持有；store 的 cardId 只表示经 openCharacterCreate 打开的卡，
+      // 创作页只在它变化时重新水合表单。
       const result = await request<CardCreateDraftResult>("card.create_draft", { name });
-      desktopStore.getState().setCharacterCreate({ cardId: result.card_id });
       return result.card_id;
     },
     async updateCard(cardId, card) {
@@ -501,6 +520,10 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       await request<CardArchiveResult>("card.archive", { card_id: cardId });
       await this.listCards();
     },
+    async unarchiveCard(cardId) {
+      await request<CardArchiveResult>("card.unarchive", { card_id: cardId });
+      await this.listCards();
+    },
     async deleteCard(cardId) {
       await request<CardDeleteResult>("card.delete", { card_id: cardId, confirm: true });
       await this.listCards();
@@ -511,10 +534,6 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     },
     async cardGet(cardId) {
       return request<CardGetResult>("card.get", { card_id: cardId });
-    },
-    /* —— V0.3.5 角色卡导入导出/发布/头像 —— */
-    async cardPeekImportJson(path) {
-      return request<CardPeekImportResult>("card.peek_import_json", { path });
     },
     async cardImportJson(path, asDuplicate) {
       const result = await request<CardImportJsonResult>("card.import_json", {
@@ -536,30 +555,18 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       await this.listCards();
       return result;
     },
+    // 头像由服务端写入卡的 avatar_asset；创作页经 card.get 刷新头像，
+    // 这里只刷新角色库的 has_avatar。
     async cardSetAvatar(cardId, path) {
       const result = await request<CardSetAvatarResult>("card.set_avatar", { card_id: cardId, path });
-      // V0.3.5：刷新创作页与角色库中该卡的头像状态。
-      const create = desktopStore.getState().characterCreate;
-      if (create.cardId === cardId) {
-        desktopStore.getState().setCharacterCreate({
-          card: { ...create.card, avatar_asset_id: result.asset_id },
-        });
-      }
       await this.listCards();
       return result;
     },
     async cardRemoveAvatar(cardId) {
       const result = await request<CardRemoveAvatarResult>("card.remove_avatar", { card_id: cardId });
-      const create = desktopStore.getState().characterCreate;
-      if (create.cardId === cardId) {
-        desktopStore.getState().setCharacterCreate({
-          card: { ...create.card, avatar_asset_id: null },
-        });
-      }
       await this.listCards();
       return result;
     },
-    /* —— V0.3.7 PNG 导入导出/电源状态 —— */
     async cardPeekImport(path) {
       return request<CardPeekImportResult>("card.peek_import", { path });
     },
@@ -577,7 +584,6 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async powerGetStatus() {
       return request<PowerStatusPayload>("power.get_status");
     },
-    /* —— V0.3.5 角色卡音色 —— */
     async voiceCardBindReference(cardId, path) {
       return request<VoiceCardBindReferenceResult>("voice.card_bind_reference", {
         card_id: cardId,
@@ -603,7 +609,6 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async voiceCardPreview(cardId, text) {
       await request("voice.card_preview", { card_id: cardId, ...(text ? { text } : {}) });
     },
-    /* —— V0.3.5 手机远程语音 —— */
     async voiceMobilePttStart(conversationId) {
       return request<VoiceMobilePttStartResult>("voice.mobile_ptt_start", { conversation_id: conversationId });
     },
@@ -616,7 +621,6 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async voiceMobileTtsStop(messageId) {
       await request("voice.mobile_tts_stop", { message_id: messageId });
     },
-    /* —— V0.3.3 手机远程配对（remote.*）—— */
     async issuePairingCode() {
       desktopStore.getState().setRemotePairing({ loading: true, error: null });
       try {
@@ -627,19 +631,17 @@ export function createActionController(backend: DesktopBackend): ActionControlle
           issuedAtEpochMs: Date.now(),
           loading: false,
         });
-        // V039-S4-004：返回体带当前 serve 地址（与 serve.started 同形），
-        // 即便这一次性事件在启动时被错过，二维码仍按真实监听地址生成。
-        desktopStore.getState().setServeAddress(result.serve_address ?? null);
+        // 返回体带当前 serve 地址（与 serve.started 同形），错过启动时的一次性事件也能出二维码。
+        desktopStore.getState().setServeAddress(result.serve_address);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        desktopStore.getState().setRemotePairing({ loading: false, error: message });
+        desktopStore.getState().setRemotePairing({ loading: false, error: errorMessage(error) });
       }
     },
     async listRemoteDevices() {
       desktopStore.getState().setRemotePairing({ loading: true, error: null });
       try {
         const result = await request<RemoteListDevicesResult>("remote.list_devices");
-        const devices: RemoteDeviceView[] = (result.devices ?? []).map((device) => ({
+        const devices: RemoteDeviceView[] = result.devices.map((device) => ({
           deviceName: device.device_name,
           issuedAt: device.issued_at,
           lastUsedAt: device.last_used_at,
@@ -648,31 +650,30 @@ export function createActionController(backend: DesktopBackend): ActionControlle
         }));
         desktopStore.getState().setRemotePairing({ devices, loading: false });
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        desktopStore.getState().setRemotePairing({ loading: false, error: message });
+        desktopStore.getState().setRemotePairing({ loading: false, error: errorMessage(error) });
       }
     },
     async revokeRemoteDevice(deviceName) {
       await request<RemoteRevokeResult>("remote.revoke", { device_name: deviceName });
       await this.listRemoteDevices();
     },
-    /* —— V0.4.0 公网隧道（Cloudflare Quick Tunnel）—— */
     async tunnelStart() {
       desktopStore.getState().setTunnelStarting();
       try {
         await request<RemoteTunnelStartResult>("remote.tunnel_start");
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        desktopStore.getState().setTunnelFailed(message);
+        desktopStore.getState().setTunnelFailed(errorMessage(error));
+        throw error;
       }
     },
+    // 停止或查询失败只说明这次请求失败，隧道状态以 tunnel.* 事件与状态查询结果为准。
     async tunnelStop() {
       desktopStore.getState().setTunnelStopping();
       try {
         await request<RemoteTunnelStopResult>("remote.tunnel_stop");
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        desktopStore.getState().setTunnelFailed(message);
+        desktopStore.getState().setTunnelRequestFailed(errorMessage(error));
+        throw error;
       }
     },
     async queryTunnelStatus() {
@@ -680,104 +681,51 @@ export function createActionController(backend: DesktopBackend): ActionControlle
         const result = await request<RemoteTunnelStatusResult>("remote.tunnel_status");
         desktopStore.getState().setTunnelStatus(result);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        desktopStore.getState().setTunnelFailed(message);
+        desktopStore.getState().setTunnelRequestFailed(errorMessage(error));
+        throw error;
       }
     },
-    /* —— V0.3.9 摘要、记忆与诊断（PM/视觉 V-B 2a1fccb）—— */
-    async regenerateSummary(summaryIdOrTarget) {
-      const summaryId =
-        typeof summaryIdOrTarget === "string"
-          ? summaryIdOrTarget
-          : summaryIdOrTarget.summary_id;
-      const conversationId =
-        typeof summaryIdOrTarget === "object" && summaryIdOrTarget.conversation_id
-          ? summaryIdOrTarget.conversation_id
-          : selectWindowConversationId(desktopStore.getState()) ?? "";
-      await request("summary.regenerate", {
-        summary_id: summaryId,
-        conversation_id: conversationId,
-      });
-      await desktopStore.getState().regenerateSummary(summaryIdOrTarget);
+    async regenerateSummary(summaryId, conversationId) {
+      // 服务端随后广播 summary.started 与终态事件，摘要状态由事件驱动。
+      await request("summary.regenerate", { summary_id: summaryId, conversation_id: conversationId });
     },
     async queryMetrics(params) {
       desktopStore.getState().setMetricsLoading(true);
       try {
-        const conversationId =
-          params?.conversation_id ?? selectWindowConversationId(desktopStore.getState()) ?? undefined;
-        const result = await request<{ metrics?: TurnMetric[]; next_cursor?: string | null }>(
-          "metrics.query",
-          {
-            ...params,
-            conversation_id: conversationId,
-          },
-        );
-        const metrics = result?.metrics ?? [];
-        const next_cursor = result?.next_cursor ?? null;
-        // 无 cursor = 首屏/刷新，整体替换；带 cursor = 加载更多，追加到已读结果之后。
-        // 组件契约不变（MetricsPanel / DiagnosticsDrawer 的 props 不区分模式）。
+        const raw = await request<unknown>("metrics.query", {
+          ...params,
+          conversation_id: params?.conversation_id ?? selectWindowConversationId(desktopStore.getState()),
+        });
+        const result = adaptMetricsQueryResult(raw);
+        // 不带 cursor 是首屏或刷新，整体替换；带 cursor 是加载更多，追加到已读结果之后。
         desktopStore.getState().setMetricsPage(
-          { metrics, cursor: next_cursor },
+          { metrics: result.metrics, cursor: result.next_cursor },
           params?.cursor ? "append" : "replace",
         );
-        return { metrics, next_cursor };
+        return result;
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        desktopStore.getState().setMetricsError(message);
+        desktopStore.getState().setMetricsError(errorMessage(error));
         throw error;
       }
     },
     async queryPromptAssembly(params) {
-      desktopStore.getState().setPromptAssemblyLoading(true);
+      // 概览结果进 store 供诊断抽屉渲染；带隐藏原文的结果只交给请求方，不留在 store。
+      const includeHidden = params?.includeHidden === true;
+      const store = desktopStore.getState();
+      if (!includeHidden) store.setPromptAssemblyLoading(true);
       try {
-        const conversationId =
-          params?.conversation_id ?? selectWindowConversationId(desktopStore.getState()) ?? undefined;
-        const includeHidden = params?.includeHidden === true;
         const raw = await request<unknown>("diagnostics.prompt_assembly", {
-          conversation_id: conversationId,
+          conversation_id: params?.conversation_id ?? selectWindowConversationId(store),
           include_hidden: includeHidden,
         });
-        const rawObj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-        const rawModules = Array.isArray(rawObj.modules) ? rawObj.modules : [];
-        const modules: PromptAssemblyModule[] = rawModules.map((item: any) => ({
-          name: typeof item?.name === "string" && item.name ? item.name : (item?.title ?? item?.kind ?? "未知模块"),
-          char_start: typeof item?.char_start === "number" ? item.char_start : null,
-          char_end: typeof item?.char_end === "number" ? item.char_end : null,
-          hash: typeof item?.hash === "string" ? item.hash : null,
-          summary: typeof item?.summary === "string" ? item.summary : null,
-          memory_injected: typeof item?.memory_injected === "boolean" ? item.memory_injected : null,
-          hidden_content: includeHidden && typeof item?.hidden_content === "string" ? item.hidden_content : null,
-        }));
-        const assembly = {
-          conversation_id: conversationId ?? null,
-          modules,
-          summary_injected: Boolean(rawObj.summary_injected),
-          memory_injected: Boolean(rawObj.memory_injected),
-          diagnostics: Array.isArray(rawObj.diagnostics)
-            ? (rawObj.diagnostics as string[])
-            : rawObj.diagnostics && typeof rawObj.diagnostics === "object"
-              ? Object.entries(rawObj.diagnostics).map(([k, v]) => `${k}: ${v}`)
-              : [],
-          hidden_content_included: includeHidden,
-          generated_at: typeof rawObj.generated_at === "string" ? rawObj.generated_at : new Date().toISOString(),
-        };
-        desktopStore.getState().setPromptAssembly(assembly);
-        if (includeHidden) {
-          desktopStore.getState().revealPromptAssembly();
-        }
-        return {
-          conversation_id: assembly.conversation_id,
-          modules: assembly.modules,
-          diagnostics: assembly.diagnostics,
-          generated_at: assembly.generated_at,
-        };
+        const assembly = adaptPromptAssembly(raw);
+        if (!includeHidden) desktopStore.getState().setPromptAssembly(assembly);
+        return assembly;
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        desktopStore.getState().setPromptAssemblyError(message);
+        if (!includeHidden) desktopStore.getState().setPromptAssemblyError(errorMessage(error));
         throw error;
       }
     },
-    /* —— V0.3.9 §2 长期记忆（memory.*）—— */
     async listMemories(opts) {
       const conversationId = resolveMemoryConversationId(opts?.conversationId);
       desktopStore.getState().setMemoryPanel({ conversationId, loading: true, error: null });
@@ -786,17 +734,17 @@ export function createActionController(backend: DesktopBackend): ActionControlle
           conversation_id: conversationId,
           ...(opts?.status ? { status: opts.status } : {}),
         });
-        const memories = (result?.memories ?? []).map(pairMemoryFromPayload);
-        // 服务端已按该会话的权威五分量作用域过滤；这里整批替换该聊天的条目，
-        // 不合并上一次结果，也不在客户端拼接作用域。
+        const memories = result.memories.map(pairMemoryFromPayload);
+        // 服务端已按该会话的作用域过滤；整批替换该聊天的条目。
         const store = desktopStore.getState();
         store.setMemoriesForConversation(conversationId, memories);
         if (store.activeConversationId === conversationId) store.setMemories(memories);
         desktopStore.getState().setMemoryPanel({ loading: false, error: null, loaded: true });
         return memories;
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        desktopStore.getState().setMemoryPanel({ loading: false, error: message, loaded: true });
+        desktopStore
+          .getState()
+          .setMemoryPanel({ loading: false, error: errorMessage(error), loaded: true });
         throw error;
       }
     },
@@ -826,7 +774,6 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       return recordMemoryWrite(result, conversationId);
     },
     dismissToast(id) {
-      // V0.2 M4：Toast 是本地 UI 状态，不经过后端
       desktopStore.getState().dismissToast(id);
     },
   };

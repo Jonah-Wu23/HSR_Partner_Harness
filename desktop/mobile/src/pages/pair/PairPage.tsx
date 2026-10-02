@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { RemoteCommandError, getStoredDeviceName, normalizeWsUrl } from "../../lib/wsClient";
+import {
+  RemoteCommandError,
+  getStoredDeviceName,
+  getStoredWsUrl,
+  parseWsAddress,
+  saveWsUrl,
+} from "../../lib/wsClient";
 import { useMobileStore } from "../../lib/mobileStore";
 import { useShellEnvironment } from "../../lib/shellCapabilities";
-import { WsAddressInput, validateWsAddress } from "../../components/WsAddressInput";
+import { WsAddressInput } from "../../components/WsAddressInput";
 import "./PairPage.css";
 
 interface BarcodeDetectorInstance {
@@ -22,145 +28,75 @@ declare global {
 
 interface PairingPayload {
   code: string;
-  /** 扫码载荷中携带的桌面端服务地址（已规范化）；载荷不含地址时为 null。 */
+  /** 二维码带的桌面端服务地址（已规范化）；裸配对码时为 null。 */
   wsUrl: string | null;
 }
 
-function extractPairingPayload(raw: string): PairingPayload {
+/**
+ * 解析二维码内容。桌面端二维码是带 ?code= 的接入地址，服务地址取 ?ws= 参数，
+ * 没有 ?ws= 时（如公网隧道地址）由页面地址本身推出；不是 URL 的内容按裸配对码处理。
+ */
+function parsePairingPayload(raw: string): PairingPayload {
   const trimmed = raw.trim();
-  if (!trimmed) return { code: "", wsUrl: null };
-
-  // 尝试解析为 URL（桌面端二维码常见格式：https://.../?ws=...&code=123456 或 https://xxx.trycloudflare.com/?code=123456）
-  if (
-    trimmed.startsWith("http://") ||
-    trimmed.startsWith("https://") ||
-    trimmed.startsWith("ws://") ||
-    trimmed.startsWith("wss://") ||
-    trimmed.includes("?")
-  ) {
-    try {
-      const url = new URL(trimmed, typeof window !== "undefined" ? window.location.href : "http://localhost");
-      const wsParam = url.searchParams.get("ws");
-      const codeParam = url.searchParams.get("code");
-      let wsUrl: string | null = null;
-      if (wsParam && typeof window !== "undefined") {
-        wsUrl = normalizeWsUrl(wsParam);
-        window.localStorage.setItem("phm.wsUrl", wsUrl);
-      } else if (
-        trimmed.startsWith("http://") ||
-        trimmed.startsWith("https://") ||
-        trimmed.startsWith("ws://") ||
-        trimmed.startsWith("wss://")
-      ) {
-        if (typeof window !== "undefined") {
-          wsUrl = normalizeWsUrl(trimmed);
-          window.localStorage.setItem("phm.wsUrl", wsUrl);
-        }
-      }
-      if (codeParam) return { code: codeParam.trim(), wsUrl };
-    } catch {
-      // 忽略 URL 解析异常
-    }
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return { code: trimmed, wsUrl: null };
   }
-
-  // 尝试解析为 JSON
-  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-    try {
-      const obj = JSON.parse(trimmed) as Record<string, unknown>;
-      let wsUrl: string | null = null;
-      if (typeof obj.ws === "string" && typeof window !== "undefined") {
-        wsUrl = normalizeWsUrl(obj.ws);
-        window.localStorage.setItem("phm.wsUrl", wsUrl);
-      }
-      if (typeof obj.code === "string") {
-        return { code: obj.code.trim(), wsUrl };
-      }
-    } catch {
-      // 忽略 JSON 解析异常
-    }
-  }
-
-  return { code: trimmed, wsUrl: null };
+  const code = url.searchParams.get("code")?.trim();
+  if (!code) throw new Error(`二维码地址里没有配对码：${trimmed}`);
+  const address = parseWsAddress(url.searchParams.get("ws") ?? trimmed);
+  if (!address.ok) throw new Error(`二维码里的桌面端地址无效：${address.error ?? trimmed}`);
+  return { code, wsUrl: address.url };
 }
+
+const PAIRING_ERROR_COPY: Record<string, { message: string; hint: string }> = {
+  pairing_invalid_code: {
+    message: "配对码无效或已被新码作废",
+    hint: "请在电脑桌面端查看当前有效的 6 位配对码或重新生成。",
+  },
+  pairing_expired_code: {
+    message: "配对码已过期，请在电脑端重新生成",
+    hint: "配对码有效时长有限，请在电脑端重新生成新配对码后再试。",
+  },
+  pairing_code_exhausted: {
+    message: "配对码输错次数过多，已作废",
+    hint: "请在电脑桌面端「设置 → 远程设备」重新生成配对码后再试。",
+  },
+};
 
 export function PairPage() {
   const pair = useMobileStore((state) => state.pairDevice);
 
-  // 从 URL 查询参数 ?code= 预填配对码
-  const [code, setCode] = useState(() => {
-    if (typeof window === "undefined") return "";
-    const params = new URLSearchParams(window.location.search);
-    return params.get("code") || "";
-  });
-
-  const [deviceName, setDeviceName] = useState(() => {
-    return getStoredDeviceName() || "我的手机";
-  });
+  // 地址栏 ?code= 预填配对码
+  const [code, setCode] = useState(
+    () => new URLSearchParams(window.location.search).get("code") ?? "",
+  );
+  const [deviceName, setDeviceName] = useState(() => getStoredDeviceName() ?? "我的手机");
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorInfo, setErrorInfo] = useState<{ code?: string; message: string } | null>(null);
 
-  const authFailureCode = useMobileStore((state) => state.authFailureCode);
-  const isTokenExpired = authFailureCode === "expired_token" || authFailureCode === "token_expired";
+  const isTokenExpired = useMobileStore((state) => state.authFailureReason === "expired_token");
 
-  const [lockoutCountdown, setLockoutCountdown] = useState<number>(0);
-  const countdownTimerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    if (lockoutCountdown <= 0) {
-      if (countdownTimerRef.current !== null && typeof window !== "undefined") {
-        window.clearInterval(countdownTimerRef.current);
-        countdownTimerRef.current = null;
-      }
-      return;
-    }
-
-    countdownTimerRef.current = window.setInterval(() => {
-      setLockoutCountdown((prev) => {
-        if (prev <= 1) {
-          if (countdownTimerRef.current !== null && typeof window !== "undefined") {
-            window.clearInterval(countdownTimerRef.current);
-            countdownTimerRef.current = null;
-          }
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => {
-      if (countdownTimerRef.current !== null && typeof window !== "undefined") {
-        window.clearInterval(countdownTimerRef.current);
-        countdownTimerRef.current = null;
-      }
-    };
-  }, [lockoutCountdown > 0]);
-
-  // V0.3.7 Android 壳内的桌面端服务地址输入（冻结 §9.1）：壳没有浏览器地址栏，
-  // 二维码 ?ws= 无法随链接带入。输入建立在既有 phm.wsUrl localStorage 机制之上
-  // （resolveWsUrl 与扫码 extractPairCode 写入同一键），PWA 下不渲染本区、体验不变。
-  // 判定必须订阅式：壳 internals 注入与首帧 render 存在竞态（真机实证），一次性
-  // 求值会在注入未就位时把壳误判为 PWA 且不再恢复。
+  // Android 壳没有浏览器地址栏，二维码的 ?ws= 无法随链接带入，因此壳内提供服务地址输入。
+  // 壳判定用订阅式 hook：壳注入的全局对象可能晚于首帧渲染就位。
   const inAndroidShell = useShellEnvironment() === "android_shell";
-  const [wsAddress, setWsAddress] = useState(() => {
-    if (typeof window === "undefined") return "";
-    return window.localStorage.getItem("phm.wsUrl") ?? "";
-  });
+  const [wsAddress, setWsAddress] = useState(() => getStoredWsUrl() ?? "");
   const [wsAddressSaved, setWsAddressSaved] = useState(false);
-  const wsAddressValid = validateWsAddress(wsAddress).valid;
+  const parsedAddress = parseWsAddress(wsAddress);
 
   const handleSaveAddress = () => {
-    const trimmed = wsAddress.trim();
-    if (!validateWsAddress(trimmed).valid) return;
-    const normalized = normalizeWsUrl(trimmed);
-    window.localStorage.setItem("phm.wsUrl", normalized);
+    if (!parsedAddress.ok) return;
+    saveWsUrl(parsedAddress.url);
     setWsAddressSaved(true);
-    // 立即用新地址重连：连不上会由顶部 ConnectionBanner 如实显示，不伪造成功。
+    // 立即用新地址重连，连接结果由顶部 ConnectionBanner 展示。
     useMobileStore.getState().reconnect();
   };
 
   // 扫码相关状态
-  const isBarcodeSupported = typeof window !== "undefined" && typeof window.BarcodeDetector !== "undefined";
+  const isBarcodeSupported = window.BarcodeDetector !== undefined;
   const [isScanning, setIsScanning] = useState(false);
   const [scannerError, setScannerError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -168,78 +104,66 @@ export function PairPage() {
   const scanIntervalRef = useRef<number | null>(null);
 
   const stopScanning = () => {
-    if (scanIntervalRef.current !== null && typeof window !== "undefined") {
+    if (scanIntervalRef.current !== null) {
       window.clearInterval(scanIntervalRef.current);
       scanIntervalRef.current = null;
     }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
     setIsScanning(false);
   };
 
-  useEffect(() => {
-    return () => {
-      stopScanning();
-    };
-  }, []);
+  /** 扫码失败：停掉摄像头，保留扫码卡片展示错误原文。 */
+  const failScanning = (err: unknown) => {
+    console.error("扫码失败", err);
+    stopScanning();
+    setScannerError(err instanceof Error ? err.message : String(err));
+    setIsScanning(true);
+  };
+
+  useEffect(() => stopScanning, []);
+
+  const applyScannedPayload = (raw: string) => {
+    const parsed = parsePairingPayload(raw);
+    setCode(parsed.code);
+    if (parsed.wsUrl) {
+      // 二维码带服务地址：保存并带入壳内地址框，立即用新地址重连。
+      saveWsUrl(parsed.wsUrl);
+      setWsAddress(parsed.wsUrl);
+      setWsAddressSaved(false);
+      useMobileStore.getState().reconnect();
+    }
+    stopScanning();
+  };
 
   const startScanning = async () => {
-    if (!isBarcodeSupported) return;
+    const Detector = window.BarcodeDetector;
+    if (!Detector) return;
     setScannerError(null);
     setIsScanning(true);
-
     try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error("当前环境不支持摄像头访问");
-      }
+      if (!navigator.mediaDevices) throw new Error("当前环境不支持摄像头访问");
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment" },
       });
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        try {
-          const playPromise = videoRef.current.play?.();
-          if (playPromise && typeof playPromise.catch === "function") {
-            await playPromise.catch(() => {});
-          }
-        } catch {
-          // 忽略在无 UI 或受限环境下的播放异常
-        }
+        await videoRef.current.play();
       }
-
-      const DetectorClass = window.BarcodeDetector!;
-      const detector = new DetectorClass({ formats: ["qr_code"] });
-
-      scanIntervalRef.current = window.setInterval(async () => {
+      const detector = new Detector({ formats: ["qr_code"] });
+      scanIntervalRef.current = window.setInterval(() => {
         if (!videoRef.current) return;
-        try {
-          const barcodes = await detector.detect(videoRef.current);
-          if (barcodes && barcodes.length > 0) {
-            const detected = barcodes[0].rawValue;
-            const parsed = extractPairingPayload(detected);
-            if (parsed.code) {
-              setCode(parsed.code);
-              // R1-006：载荷携带服务地址时同步带入壳内地址框——此前只写
-              // localStorage，框内 state 仍停留在挂载值，用户看不到已带入。
-              if (parsed.wsUrl) {
-                setWsAddress(parsed.wsUrl);
-                setWsAddressSaved(false);
-              }
-              stopScanning();
-            }
-          }
-        } catch {
-          // 单帧探测异常忽略，等待下一帧
-        }
+        detector
+          .detect(videoRef.current)
+          .then((barcodes) => {
+            // 视频尚无画面时 detect 返回空列表，等下一帧。
+            if (barcodes.length > 0) applyScannedPayload(barcodes[0].rawValue);
+          })
+          .catch(failScanning);
       }, 100);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setScannerError(msg);
-      stopScanning();
-      setIsScanning(true); // 保留扫码卡片展示错误
+      failScanning(err);
     }
   };
 
@@ -247,7 +171,7 @@ export function PairPage() {
     e.preventDefault();
     const trimmedCode = code.trim();
     const trimmedDevice = deviceName.trim();
-    if (!trimmedCode || !trimmedDevice || isSubmitting || lockoutCountdown > 0) return;
+    if (!trimmedCode || !trimmedDevice || isSubmitting) return;
 
     setIsSubmitting(true);
     setErrorInfo(null);
@@ -257,13 +181,6 @@ export function PairPage() {
     } catch (err: unknown) {
       if (err instanceof RemoteCommandError) {
         setErrorInfo({ code: err.code, message: err.message });
-        if (err.code === "pairing_rate_limited" || err.code === "rate_limited") {
-          const retryAfter =
-            typeof err.details?.retry_after_s === "number" && err.details.retry_after_s > 0
-              ? Math.round(err.details.retry_after_s)
-              : 60;
-          setLockoutCountdown(retryAfter);
-        }
       } else if (err instanceof Error) {
         setErrorInfo({ message: err.message });
       } else {
@@ -274,31 +191,11 @@ export function PairPage() {
     }
   };
 
-  let errorMessage = errorInfo?.message ?? "";
-  let errorHint = "请核对配对码或检查桌面端是否在线，并重新尝试。";
-
-  if (errorInfo?.code === "pairing_invalid_code" || errorInfo?.code === "invalid_code") {
-    errorMessage = "配对码无效或已被新码作废";
-    errorHint = "请在电脑桌面端查看当前有效的 6 位配对码或重新生成。";
-  } else if (errorInfo?.code === "pairing_expired_code" || errorInfo?.code === "expired_code") {
-    errorMessage = "配对码已过期，请在电脑端重新生成";
-    errorHint = "配对码有效时长有限，请在电脑端重新生成新配对码后再试。";
-  } else if (
-    errorInfo?.code === "pairing_rate_limited" ||
-    errorInfo?.code === "rate_limited" ||
-    lockoutCountdown > 0
-  ) {
-    errorMessage =
-      lockoutCountdown > 0
-        ? `请求过于频繁已被限流封锁，请在 ${lockoutCountdown} 秒后重试`
-        : "限流封锁已解除，可重新尝试配对";
-    errorHint =
-      lockoutCountdown > 0
-        ? `连续尝试失败次数过多，来源已被封锁，倒计时剩余 ${lockoutCountdown} 秒。`
-        : "封锁期已结束，请确认配对码无误后重新提交。";
-  } else if (errorInfo?.code) {
-    errorMessage = `[${errorInfo.code}] ${errorInfo.message}`;
-  }
+  const knownError = errorInfo?.code ? PAIRING_ERROR_COPY[errorInfo.code] : undefined;
+  const errorMessage =
+    knownError?.message ??
+    (errorInfo?.code ? `[${errorInfo.code}] ${errorInfo.message}` : (errorInfo?.message ?? ""));
+  const errorHint = knownError?.hint ?? "请核对配对码或检查桌面端是否在线，并重新尝试。";
 
   return (
     <main className="page" data-testid="pair-page">
@@ -310,7 +207,6 @@ export function PairPage() {
           </p>
         </header>
 
-        {/* D5: 令牌过期引导重新扫码配对 */}
         {isTokenExpired && (
           <section className="card field-error-card" role="alert" data-testid="expired-token-alert">
             <div className="error-title">登录令牌已过期</div>
@@ -321,7 +217,7 @@ export function PairPage() {
           </section>
         )}
 
-        {/* 扫码区域：支持 BarcodeDetector 才提供扫码入口，不支持则如实说明 */}
+        {/* 浏览器提供 BarcodeDetector 时才有扫码入口 */}
         <section className="scan-card" data-testid="scan-section">
           <h2 className="scan-title">扫码填入</h2>
           {isBarcodeSupported ? (
@@ -346,7 +242,7 @@ export function PairPage() {
                 />
                 {scannerError && (
                   <p className="field-error" data-testid="scanner-error">
-                    摄像头启动失败：{scannerError}
+                    扫码失败：{scannerError}
                   </p>
                 )}
                 <button
@@ -366,7 +262,7 @@ export function PairPage() {
           )}
         </section>
 
-        {/* V0.3.7 壳内桌面端地址输入：仅 Android 壳渲染；PWA 保持既有扫码/手动配对流程 */}
+        {/* 桌面端地址输入只在 Android 壳内渲染 */}
         {inAndroidShell ? (
           <section className="card ws-address-card" data-testid="ws-address-section">
             <h2 className="scan-title">桌面端连接地址</h2>
@@ -385,14 +281,14 @@ export function PairPage() {
               type="button"
               className="primary ws-address-save-btn"
               onClick={handleSaveAddress}
-              disabled={!wsAddressValid}
+              disabled={!parsedAddress.ok}
               data-testid="btn-save-ws-address"
             >
               保存并重连
             </button>
             {wsAddressSaved ? (
               <p className="hint" data-testid="ws-address-saved">
-                地址已保存，正在用新地址连接桌面端；若连接失败，顶部横幅会如实提示。
+                地址已保存，正在用新地址连接桌面端。
               </p>
             ) : null}
           </section>
@@ -447,14 +343,10 @@ export function PairPage() {
           <button
             type="submit"
             className="primary pair-submit-btn"
-            disabled={isSubmitting || !code.trim() || !deviceName.trim() || lockoutCountdown > 0}
+            disabled={isSubmitting || !code.trim() || !deviceName.trim()}
             data-testid="btn-submit-pair"
           >
-            {lockoutCountdown > 0
-              ? `限流等待中 (${lockoutCountdown}s)`
-              : isSubmitting
-              ? "正在配对…"
-              : "开始配对"}
+            {isSubmitting ? "正在配对…" : "开始配对"}
           </button>
         </form>
       </div>

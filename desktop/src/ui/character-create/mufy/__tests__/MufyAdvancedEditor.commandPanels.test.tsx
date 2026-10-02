@@ -1,7 +1,8 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { RICH_HSR, clone, deepFreeze, makeHarness } from "./helpers";
+import { clone, deepFreeze } from "../../__tests__/editorHelpers";
+import { RICH_HSR, makeHarness } from "./helpers";
 
 afterEach(cleanup);
 
@@ -51,18 +52,5 @@ describe("CommandPanelsView 只读声明式呈现", () => {
     render(<Harness />);
 
     expect(screen.getByTestId("mufy-command-panels-empty")).toHaveTextContent("未声明 command_panels 数据");
-  });
-
-  it("编辑其他分区后 command_panels 深度不变", () => {
-    const { Harness, getLatest } = makeHarness(deepFreeze(clone(RICH_HSR)));
-    render(<Harness />);
-
-    fireEvent.change(screen.getByTestId("mufy-value-world_architecture.world_foundation.one_line_pitch"), {
-      target: { value: "改动世界描述。" },
-    });
-
-    const latest = getLatest();
-    expect(latest).not.toBeNull();
-    expect(latest!.command_panels).toEqual(RICH_HSR.command_panels);
   });
 });

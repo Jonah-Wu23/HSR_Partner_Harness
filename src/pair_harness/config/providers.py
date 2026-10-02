@@ -1,13 +1,7 @@
-"""供应商预设与推理请求形态（B1）。
-
-按 Base URL 识别后端并应用对应请求形态。本模块的识别与档位语义参考
-DeepSeek 的主机识别和推理档位语义取自 DeepSeek-Reasonix。原代码采用
-MIT License，Copyright (c) 2026 Reasonix Contributors：
-https://github.com/esengine/DeepSeek-Reasonix/tree/main-v2/internal/provider/openai
-
-本文件于 2026 年改写为 Python，范围缩减为 DeepSeek 与通用 OpenAI 兼容
-端点。API Key 由环境变量传入。
-"""
+# 按 Base URL 识别供应商并给出推理请求形态。DeepSeek 主机识别与推理档位语义改写自
+# DeepSeek-Reasonix（MIT License，Copyright (c) 2026 Reasonix Contributors）：
+# https://github.com/esengine/DeepSeek-Reasonix/tree/main-v2/internal/provider/openai
+# 2026 年改写为 Python，范围缩减为 DeepSeek 与通用 OpenAI 兼容端点。
 
 from __future__ import annotations
 
@@ -49,17 +43,13 @@ def detect_provider(base_url: str) -> ProviderKind:
 
 @dataclass(frozen=True)
 class ReasoningPreset:
-    """某后端的推理请求形态预设（参考 Reasonix ``REASONING_PROVIDERS.zh-CN.md``）。
+    """某后端的推理档位预设（参考 Reasonix ``REASONING_PROVIDERS.zh-CN.md``）。
 
-    - ``thinking_control``：True 表示用 ``thinking.type`` 开关思考；
-    - ``effort_levels``：该后端支持的深度档位（不含开关类取值）；
-    - ``default_thinking``：默认是否开启思考（DeepSeek 默认开启）。
+    ``effort_levels`` 是该后端支持的深度档位。
     """
 
     kind: ProviderKind
-    thinking_control: bool
     effort_levels: tuple[str, ...]
-    default_thinking: bool = True
 
     def supports_effort(self, effort: str) -> bool:
         return effort in self.effort_levels
@@ -67,19 +57,15 @@ class ReasoningPreset:
 
 _DEEPSEEK_FLASH_PRESET = ReasoningPreset(
     kind=ProviderKind.DEEPSEEK,
-    thinking_control=True,
     effort_levels=("auto", "low", "high", "max"),
 )
 _DEEPSEEK_PRO_PRESET = ReasoningPreset(
     kind=ProviderKind.DEEPSEEK,
-    thinking_control=True,
     effort_levels=("auto", "high", "max"),
 )
 _OPENAI_COMPATIBLE_PRESET = ReasoningPreset(
     kind=ProviderKind.OPENAI_COMPATIBLE,
-    thinking_control=False,
     effort_levels=(),
-    default_thinking=False,
 )
 
 
@@ -90,10 +76,9 @@ def _is_flash_model(model: str) -> bool:
 def load_reasoning_preset(base_url: str, model: str = "") -> ReasoningPreset:
     """加载后端推理预设。
 
-    DeepSeek 按模型区分档位：``*-flash`` 支持 low（Reasonix 文档——
-    "the only official DeepSeek model with effort=low"），Pro 系列 low/medium
-    归一化为 high。无法判断型号时按 Flash 处理（本项目预设模型
-    deepseek-v4-flash）。
+    DeepSeek 按模型区分档位：``*-flash`` 支持 low（Reasonix 文档说明它是
+    唯一支持 effort=low 的官方 DeepSeek 模型），Pro 系列 low/medium 归一化
+    为 high。无法判断型号时按 Flash 处理（本项目预设模型 deepseek-v4-flash）。
     """
     if detect_provider(base_url) == ProviderKind.DEEPSEEK:
         if model and not _is_flash_model(model):
@@ -128,26 +113,6 @@ def normalize_effort(effort: str, preset: ReasoningPreset) -> str | None:
     return None
 
 
-def deepseek_request_extras(
-    *,
-    thinking: bool | None = None,
-    effort: str | None = None,
-    model: str = "",
-) -> dict[str, Any]:
-    """DeepSeek 请求形态的扩展字段（参考 Reasonix think.go/effort.go）。
-
-    - ``thinking``：True/False → ``{"thinking": {"type": "enabled"|"disabled"}}``；
-      None 采用预设默认（开启）。
-    - ``effort``：经 :func:`normalize_effort` 归一化后写入
-      ``reasoning_effort``；非法档位忽略。
-    """
-    preset = load_reasoning_preset("https://api.deepseek.com", model=model)
-    thinking_on = preset.default_thinking if thinking is None else thinking
-    extras: dict[str, Any] = {}
-    if preset.thinking_control:
-        extras["thinking"] = {"type": "enabled" if thinking_on else "disabled"}
-    if effort:
-        normalized = normalize_effort(effort, preset)
-        if normalized is not None and normalized != "auto":
-            extras["reasoning_effort"] = normalized
-    return extras
+def deepseek_request_extras(*, thinking: bool) -> dict[str, Any]:
+    """DeepSeek 用 ``thinking.type`` 开关思考的请求字段（参考 Reasonix think.go）。"""
+    return {"thinking": {"type": "enabled" if thinking else "disabled"}}

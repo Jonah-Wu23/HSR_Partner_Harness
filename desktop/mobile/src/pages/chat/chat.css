@@ -1,4 +1,4 @@
-/* V0.3.3 手机端聊天页与消息流视觉样式（OKLch 暖色暗色体系，触控目标 ≥44px，零 emoji，无 #5e6ad2） */
+/* 手机端聊天页与消息流样式：OKLch 暖色暗色体系，触控目标 ≥44px。 */
 @import "../../components/cards/cards.css";
 
 .mobile-chat-container {
@@ -13,6 +13,18 @@
   color: var(--fg);
   overflow: hidden;
   position: relative;
+}
+
+/* 软键盘占位时贴合可视视口（ChatPage 在动画帧里写入变量）。iOS Safari 会平移可视视口，
+   fixed 定位按 offsetTop 位移，让顶栏与输入区都留在可见区域；顶部安全区由容器自己留出。 */
+.mobile-chat-container[data-keyboard="open"] {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 30;
+  height: var(--chat-viewport-height);
+  max-height: none;
+  padding-top: var(--safe-top);
+  transform: translateY(var(--chat-viewport-top));
 }
 
 /* ========== 顶栏 ========== */
@@ -161,6 +173,28 @@
   position: relative;
 }
 
+/* 装载骨架：只做透明度动画，由合成器完成，不触发重绘。 */
+.mobile-chat-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.mobile-chat-skeleton-bubble {
+  width: 72%;
+  height: 56px;
+  border-radius: 14px;
+  background: var(--surface-2);
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+.mobile-chat-skeleton-bubble.is-user {
+  align-self: flex-end;
+  width: 48%;
+  height: 40px;
+}
+
 .mobile-chat-empty {
   display: flex;
   flex-direction: column;
@@ -214,13 +248,6 @@
   justify-content: center;
 }
 
-.mobile-msg-row-tool {
-  width: 100%;
-}
-
-.mobile-msg-tool-wrap {
-  width: 100%;
-}
 
 .mobile-msg-bubble {
   max-width: min(86%, 520px);
@@ -313,12 +340,8 @@
   outline: 2px solid var(--accent);
 }
 
-/* ========== 聊天输入区（V0.3.4：模式/目标切换 + 通用输入） ========== */
+/* ========== 聊天输入区：模式与发送目标切换、输入框 ========== */
 
-/* V0.3.9 V08：安全区留白只由 .app-shell 的 padding-bottom: var(--safe-bottom)
-   承担（styles.css）。此前这里再叠一次 max(10px, var(--safe-bottom))，iPhone
-   上底部出现双倍留白。跨文件协同：styles.css 归 V-D，若 V-D 改动
-   .app-shell 的安全区内边距，需要同步确认本处不再重复。 */
 .mobile-composer {
   background: var(--surface);
   border-top: 1px solid var(--border);
@@ -403,6 +426,18 @@
   word-break: break-word;
 }
 
+/* 装载 / 同步失败条上的重试按钮 */
+.mobile-open-retry-btn {
+  flex: none;
+  min-height: 36px;
+  padding: 0 12px;
+  background: transparent;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  color: var(--fg);
+  font-size: 13px;
+}
+
 .mobile-composer-error-close {
   display: inline-flex;
   align-items: center;
@@ -428,13 +463,14 @@
   min-width: 0;
 }
 
-/* V0.3.9 V08：长文本自增高——JS 按内容设置 height（上限
-   --mobile-composer-textarea-max，默认 160px），超过上限由 overflow-y 内部
-   滚动。font-size 16px 避免 iOS Safari 聚焦时自动放大页面。 */
+/* 长文本自增高：field-sizing 按内容撑高，不支持的引擎由 ChatComposer 在绘制前设置 height；
+   上限 160px（与 COMPOSER_MAX_TEXTAREA_HEIGHT_PX 一致），超过后内部滚动。
+   font-size 16px 避免 iOS Safari 聚焦时自动放大页面。 */
 .mobile-composer-textarea {
+  field-sizing: content;
   width: 100%;
   min-height: 44px;
-  max-height: var(--mobile-composer-textarea-max, 160px);
+  max-height: 160px;
   padding: 10px 12px;
   background: var(--surface-2);
   border: 1px solid var(--border);
@@ -444,7 +480,7 @@
   font-size: 16px;
   line-height: 1.4;
   resize: none;
-  overflow-y: hidden;
+  overflow-y: auto;
 }
 
 .mobile-composer-textarea:focus-visible {
@@ -470,10 +506,9 @@
   display: inline;
 }
 
-/* ========== V0.3.9 V07：页级播放错误与抢占反馈 ========== */
+/* ========== 页级朗读错误与打断提示 ========== */
 
-/* 朗读失败：气泡内提示受 tts_ready 与虚拟化渲染窗口限制，真实错误码与原文
-   必须在页级可见（pcm_overflow 等错误不因消息滚出窗口而消失）。 */
+/* 消息滚出虚拟列表窗口后气泡内的提示不可见，错误码与原文在页级展示。 */
 .mobile-playback-error {
   display: flex;
   align-items: flex-start;
@@ -537,7 +572,7 @@
   word-break: break-word;
 }
 
-/* ========== V0.3.9 V07：审批 resolve 的真实错误 / 幂等终态 ========== */
+/* ========== 审批提交错误与已被另一端裁决的通知 ========== */
 
 .mobile-approval-error {
   margin: 0 0 8px;
@@ -563,7 +598,7 @@
   word-break: break-word;
 }
 
-/* ========== 语音输入区（V0.3.5） ========== */
+/* ========== 语音输入区 ========== */
 
 .mobile-voice-bar {
   margin: 8px 0;
@@ -666,8 +701,8 @@
   font-weight: 600;
   cursor: pointer;
   user-select: none;
-  /* V0.3.9 P1：按住说话靠 pointer 事件维持采集时长，浏览器不得把手势抢去
-     滚动 / 缩放，否则长按过程中会被 pointercancel 提前打断。 */
+  /* 按住说话靠 pointer 事件维持采集，禁止浏览器把手势用于滚动或缩放，
+     否则长按过程中会被 pointercancel 打断。 */
   touch-action: none;
 }
 
@@ -760,7 +795,7 @@
   color: var(--fg);
 }
 
-/* ========== 消息朗读标记（V0.3.5） ========== */
+/* ========== 消息朗读标记 ========== */
 
 .mobile-msg-tts-badge {
   display: inline-flex;
@@ -796,15 +831,29 @@
   animation: mobile-pulse 1s ease-in-out infinite;
 }
 
-/* V0.3.8：朗读播放异常（resume 失败/结束信号超时等）如实呈现原始错误 */
+/* 朗读失败（resume 失败、结束信号超时等）的错误原文 */
 .mobile-msg-tts-error {
   margin: 6px 0 0;
   font-size: 12px;
   color: var(--danger);
 }
 
-/* 窄屏 (≤ 360px) 优化：核对项——审批三按钮同行不溢出、语音面板与状态条不撑破
-   视口、输入区左右留白与消息区一致（安全区仍由 .app-shell 承担）。 */
+/* 消息失败 / 取消状态及服务端原因 */
+.mobile-msg-status {
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+
+.mobile-msg-status-failed {
+  color: var(--danger);
+}
+
+.mobile-msg-status-cancelled {
+  color: var(--muted);
+}
+
+/* 窄屏（≤360px）：审批三按钮同行不溢出，语音面板与状态条不撑破视口，
+   输入区左右留白与消息区一致。 */
 @media (max-width: 360px) {
   .mobile-chat-header {
     padding: 0 8px;
@@ -847,12 +896,16 @@
   }
 }
 
-/* V0.3.8 T5：忙时排队中的用户消息行（可置顶/编辑/撤回）。 */
+/* 忙时排队的用户消息行（可置顶、编辑、撤回）。 */
 .queue-item {
   border: 1px dashed var(--border, #2c2c34);
   border-radius: 10px;
   padding: 10px 12px;
   margin: 6px 0;
+}
+
+.queue-item-failed {
+  border-color: var(--danger, #ff6b6b);
 }
 
 .queue-item-head {

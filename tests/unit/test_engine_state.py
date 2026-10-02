@@ -12,8 +12,6 @@ from pair_harness.core.engine_state import (
 def test_task_state_machine_allows_only_confirmed_transitions() -> None:
     lifecycle = TaskLifecycle("task")
     lifecycle.transition(TaskStatus.RUNNING)
-    lifecycle.transition(TaskStatus.AMENDMENT_PENDING)
-    lifecycle.transition(TaskStatus.RUNNING)
     lifecycle.transition(TaskStatus.COMPLETED)
 
     with pytest.raises(InvalidTaskTransition):
@@ -21,8 +19,7 @@ def test_task_state_machine_allows_only_confirmed_transitions() -> None:
 
 
 def test_global_state_allows_different_conversations_concurrently() -> None:
-    """V0.3.2 M4：并发单位是 conversation——不同聊天同时 active，
-    同一聊天第二个 start 被拒，finish 只清理自己的任务。"""
+    """不同聊天的任务同时 active，同一聊天第二个 start 被拒，finish 只清理自己的任务。"""
     state = GlobalEngineState()
     state.start(project_id="p1", conversation_id="c1", task_id="t1")
     second = state.start(project_id="p2", conversation_id="c2", task_id="t2")

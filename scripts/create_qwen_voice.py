@@ -1,33 +1,19 @@
-#!/usr/bin/env python3
-"""创建 Qwen 音色并写回 pair 配置（V0.3.2 M6 起复用共享 customization 客户端）。
-
-子命令：
-  clone   —— 声音复刻（voice-enrollment / create_voice，支持本地音频或公网 URL）
-  design  —— 声音设计（voice_prompt 描述，返回 preview_audio 供试听）
-  adopt   —— 把 voice_id 写回 config/pairs/*.yaml（只改对应行）
-
-请求构建、响应解析与错误映射统一来自
-``pair_harness.adapters.audio.qwen_voice_customization``，与桌面端
-``voice.provision`` 命令共用同一实现，避免两套漂移。契约固定为
-Qwen-Audio-TTS：model=voice-enrollment、action=create_voice、
-target_model=qwen-audio-3.0-tts-flash、复刻传 input.url、成功读
-output.voice_id；不提供 Qwen3-TTS 的 qwen-voice-enrollment /
-action=create / audio.data 形态。
-
-base URL 默认取 DASHSCOPE_BASE_URL 环境变量，未设置时回退到本项目
-专属地域端点（用户提供的 DashScope 地址）。
-"""
+# 创建 Qwen 音色并写回 pair 配置：clone 声音复刻、design 声音设计、adopt 把 voice_id 写回
+# config/pairs/*.yaml。请求与错误映射复用 pair_harness.adapters.audio.qwen_voice_customization，
+# 与桌面端 voice.provision 共用同一实现。base URL 默认取 DASHSCOPE_BASE_URL 环境变量。
 from __future__ import annotations
 
 import argparse
 import base64
 import os
 import sys
-import wave
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+# 脚本可在未安装包时直接运行，先把 src 加入导入路径。
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
@@ -41,34 +27,15 @@ from pair_harness.config.pairs import PairConfigError, adopt_voice_id  # noqa: E
 from pair_harness.config.voices import ANCIENT_MACHINE_PREVIEW_TEXT  # noqa: E402
 from pair_harness.voice_models import VOICE_TTS_MODEL  # noqa: E402
 
-
-def _load_dotenv(root: Path = ROOT) -> None:
-    """轻量加载项目 .env（KEY=VALUE，跳过注释），不覆盖已存在的环境变量。"""
-    env_path = root / ".env"
-    if not env_path.is_file():
-        return
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, _, value = stripped.partition("=")
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key:
-            os.environ.setdefault(key, value)
-
-
-_load_dotenv()
+load_dotenv(ROOT / ".env", encoding="utf-8-sig")
 
 DEFAULT_BASE_URL = os.environ.get(
     "DASHSCOPE_BASE_URL",
     "https://llm-lvsifcqt094yn1cm.cn-beijing.maas.aliyuncs.com/api/v1",
 )
 DEFAULT_TARGET_MODEL = VOICE_TTS_MODEL
-DEFAULT_SOURCE_DIR = ROOT / "assets" / "reference_voices" / "白厄"
 DEFAULT_DESIGN_PROMPT = ROOT / "config" / "voices" / "ancient_machine_prompt.txt"
 DEFAULT_PREVIEW_TEXT = ANCIENT_MACHINE_PREVIEW_TEXT
-SILENCE_SECONDS = 0.5
 
 
 class VoiceCliError(RuntimeError):
@@ -82,48 +49,6 @@ def _api_key() -> str:
             "缺少 DASHSCOPE_API_KEY 环境变量（请检查项目 .env 或系统环境）"
         )
     return key
-
-
-def data_uri_for(path: Path) -> str:
-    """向后兼容的 CLI 辅助入口，实际实现与桌面端共用。"""
-    return audio_file_to_data_uri(path)
-
-
-def pick_longest_wav(source_dir: Path) -> Path:
-    wavs = sorted(source_dir.glob("*.wav"))
-    if not wavs:
-        raise VoiceCliError(f"目录中没有 .wav 文件: {source_dir}")
-    return max(wavs, key=lambda p: p.stat().st_size)
-
-
-def concat_wavs(files: list[Path], out_path: Path, silence_s: float = SILENCE_SECONDS) -> Path:
-    """拼接多个 WAV（要求参数一致：声道数/采样宽度/采样率），段间插入静音。"""
-    if not files:
-        raise VoiceCliError("没有可拼接的 WAV 文件")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    first = wave.open(str(files[0]), "rb")
-    params = (first.getnchannels(), first.getsampwidth(), first.getframerate())
-    first.close()
-    for path in files:
-        w = wave.open(str(path), "rb")
-        got = (w.getnchannels(), w.getsampwidth(), w.getframerate())
-        w.close()
-        if got != params:
-            raise VoiceCliError(
-                f"WAV 参数不一致，无法拼接: {path.name} {got} != {params}"
-            )
-    channels, sampwidth, framerate = params
-    silence = b"\x00" * (channels * sampwidth * int(framerate * silence_s))
-    with wave.open(str(out_path), "wb") as out:
-        out.setnchannels(channels)
-        out.setsampwidth(sampwidth)
-        out.setframerate(framerate)
-        for index, path in enumerate(files):
-            if index:
-                out.writeframes(silence)
-            with wave.open(str(path), "rb") as w:
-                out.writeframes(w.readframes(w.getnframes()))
-    return out_path
 
 
 def _client(base_url: str) -> QwenVoiceCustomizationClient:
@@ -175,8 +100,7 @@ def cmd_clone(args: argparse.Namespace) -> None:
     print(f"[clone] target_model={args.target_model} prefix={prefix} source={source_label}")
     if args.target_model != DEFAULT_TARGET_MODEL:
         raise VoiceCliError(
-            f"target_model 固定为 {DEFAULT_TARGET_MODEL}（V0.3.2 冻结契约），"
-            f"得到 {args.target_model}"
+            f"target_model 固定为 {DEFAULT_TARGET_MODEL}，得到 {args.target_model}"
         )
     client = _client(args.base_url)
     try:
@@ -195,8 +119,7 @@ def cmd_design(args: argparse.Namespace) -> None:
     preview_text = args.preview_text or DEFAULT_PREVIEW_TEXT
     if args.target_model != DEFAULT_TARGET_MODEL:
         raise VoiceCliError(
-            f"target_model 固定为 {DEFAULT_TARGET_MODEL}（V0.3.2 冻结契约），"
-            f"得到 {args.target_model}"
+            f"target_model 固定为 {DEFAULT_TARGET_MODEL}，得到 {args.target_model}"
         )
     print(f"[design] model=voice-enrollment action=create_voice target_model={args.target_model} prefix={prefix}")
     client = _client(args.base_url)
@@ -216,8 +139,8 @@ def cmd_design(args: argparse.Namespace) -> None:
 def cmd_adopt(args: argparse.Namespace) -> None:
     if not args.pair.is_file():
         raise VoiceCliError(f"pair 文件不存在: {args.pair}")
-    old_line = adopt_voice_id(args.pair, args.role, args.voice_id, force=args.force)
-    print(f"[adopt] {args.role}.voice_id 已更新: {old_line.strip()!r} -> {args.voice_id}")
+    old_voice_id = adopt_voice_id(args.pair, args.role, args.voice_id, force=args.force)
+    print(f"[adopt] {args.role}.voice_id 已更新: {old_voice_id!r} -> {args.voice_id}")
     print(f"[adopt] 文件: {args.pair}")
 
 
@@ -238,10 +161,8 @@ def build_parser() -> argparse.ArgumentParser:
     clone = sub.add_parser("clone", help="声音复刻：上传参考音频创建音色")
     clone.add_argument("--prefix", default="phainon", help="音色前缀（小写字母数字 ≤10）")
     clone.add_argument("--target-model", default=DEFAULT_TARGET_MODEL)
-    clone.add_argument("--source-dir", type=Path, default=DEFAULT_SOURCE_DIR, help=argparse.SUPPRESS)
     clone.add_argument("--file", type=Path, help="本地 WAV/MP3/M4A 参考音频（转为 data URI 提交）")
     clone.add_argument("--url", default="", help="DashScope 服务端可下载的 HTTP(S) 音频 URL")
-    clone.add_argument("--concat", action="store_true", help=argparse.SUPPRESS)
     clone.set_defaults(func=cmd_clone)
 
     design = sub.add_parser("design", help="声音设计：用文字描述生成音色")

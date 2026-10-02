@@ -33,11 +33,11 @@ import "./character-library.css";
 interface CharacterLibraryPageProps {
   vm: CharacterLibraryViewModel;
   actions: HarnessActions;
-  /** V0.3.5：「配置音色」直达设置中心语音页并预选该卡（AppShell 注入）。 */
+  /** 「配置音色」直达设置中心语音页并预选该卡（AppShell 注入）。 */
   onConfigureCardVoice?: (cardId: string) => void;
-  /** V0.3.5：桌面后端，用于打开文件对话框。当前 AppShell 未注入，故为可选；注入后立即生效。 */
-  backend?: DesktopBackend;
-  /** V0.3.9 V04：返回聊天回调（优先返回正在运行的聊天） */
+  /** 桌面后端，用于打开文件对话框（AppShell 注入）。 */
+  backend: DesktopBackend;
+  /** 返回聊天回调（优先返回正在运行的聊天）。 */
   onReturnToChat?: () => void;
 }
 
@@ -98,13 +98,13 @@ export function CharacterLibraryPage({
     setNotice({
       open: true,
       title: `导入失败详情 · ${card.name}`,
-      message: "该角色卡在解析时中断：文件损坏或缺少必要规范字段。可点击删除移除该条目并重新尝试导入。",
+      message: "该角色卡解析失败，处于无效状态。可删除该条目后重新导入，导入时会显示具体错误。",
     });
   };
 
   const handleUseCard = async (cardId: string) => {
     await actions.selectActiveCard(cardId);
-    // V0.3.8 T6：reuse_active 复用同项目同角色卡的活跃会话，不重复建聊天。
+    // reuse_active 复用同项目同角色卡的活跃会话，不重复建聊天。
     await actions.createConversation(undefined, undefined, undefined, { reuseActive: true });
     actions.openChat();
   };
@@ -339,6 +339,7 @@ export function CharacterLibraryPage({
                       onDuplicate={(id) => void actions.duplicateCard(id)}
                       onExport={(c) => setExportCard(c)}
                       onArchive={(id) => void actions.archiveCard(id)}
+                      onUnarchive={(id) => void actions.unarchiveCard(id)}
                       onDeleteRequest={(c) => setDeletingCard(c)}
                       onViewError={(c) => showInvalidErrorNotice(c)}
                       onViewCompat={setCompatCard}
@@ -359,6 +360,7 @@ export function CharacterLibraryPage({
                   onDuplicate={(id) => void actions.duplicateCard(id)}
                   onExport={(c) => setExportCard(c)}
                   onArchive={(id) => void actions.archiveCard(id)}
+                  onUnarchive={(id) => void actions.unarchiveCard(id)}
                   onDeleteRequest={(c) => setDeletingCard(c)}
                   onViewError={(c) => showInvalidErrorNotice(c)}
                   onViewCompat={setCompatCard}
@@ -425,7 +427,7 @@ export function CharacterLibraryPage({
         </div>
       )}
 
-      {/* 兼容性详情弹窗（V6：导入报告的随时回看入口） */}
+      {/* 兼容性详情弹窗：随时回看导入报告 */}
       {compatCard && (
         <CharacterCompatModal
           cardId={compatCard.cardId}
@@ -435,7 +437,7 @@ export function CharacterLibraryPage({
         />
       )}
 
-      {/* 功能占位通知弹窗（保留给导入失败详情等） */}
+      {/* 导入失败详情通知弹窗 */}
       <CharacterNoticeModal
         title={notice.title}
         message={notice.message}

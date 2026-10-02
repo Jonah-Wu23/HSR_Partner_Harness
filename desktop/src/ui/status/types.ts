@@ -1,6 +1,6 @@
 /* 状态基座组件的视图类型。
    这些类型对应共享协议中的 connection.status / queue_item / error 分级，
-   逻辑线落地协议后由 presenters 映射到这里的形状，组件本身不猜后端字段。 */
+   由 presenters 映射到这里的形状，组件本身不猜后端字段。 */
 
 /** 连接状态机四态在界面上的三态表达（fatal 由 AppShell 整屏处理）。 */
 export type ConnectionViewStatus = "connected" | "connecting" | "disconnected";
@@ -33,7 +33,11 @@ export interface QueueItemView {
   summary: string;
   /** 排在第几（从 1 开始）。 */
   position: number;
-  /** 在等什么结束，例如「等待当前回复结束」。 */
+  /** 在等什么结束，例如「等待当前回复结束」；派发失败的项为空串。 */
   waitingFor: string;
   intent: QueueIntent;
+  /** 派发失败：不会再被自动派发，只能撤回。 */
+  failed: boolean;
+  /** 派发失败的原始原因；未失败为 null。 */
+  error: string | null;
 }

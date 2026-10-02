@@ -1,12 +1,7 @@
 import type { TurnMetric } from "../../contracts/protocol";
 
-/* V0.3.9 V03 诊断视图的适配层。
-   diagnostics.prompt_assembly 与 metrics.query 在 contract-v1 里冻结为命令，
-   但 contracts/protocol.ts 尚未给出结果类型（逻辑轨 L06/L07 提供）。
-   这里按契约 §5 的字段口径定义本地视图类型，并做严格适配：
-   缺字段一律保持 null 并在界面显示「无数据」；结构不符时抛出真实错误，
-   由调用方把原始错误交给抽屉展示，不吞异常、不合成成功。
-   逻辑轨冻结结果类型后，本文件替换为直接引用协议类型。 */
+/* diagnostics.prompt_assembly 与 metrics.query 结果的协议校验与视图类型。
+   可空字段缺失时为 null，界面显示「无数据」；结构不符时抛出错误，由调用方展示原文。 */
 
 /** 装配模块（diagnostics.prompt_assembly 单项）。 */
 export interface PromptAssemblyModule {
@@ -39,7 +34,7 @@ export interface MetricsQueryResult {
   next_cursor: string | null;
 }
 
-/** contract-v1 §5 要求的 TurnMetric 键集合；缺键即协议违规，适配层直接报错。 */
+/** TurnMetric 必须携带的键；缺键即协议违规，适配层直接报错。 */
 const TURN_METRIC_KEYS = [
   "metric_id",
   "account_id",
@@ -181,8 +176,8 @@ export function adaptMetricsQueryResult(raw: unknown): MetricsQueryResult {
     const metric = asRecord(item, what);
     const missing = TURN_METRIC_KEYS.filter((key) => !(key in metric));
     if (missing.length > 0) {
-      // 契约 §5：未观测字段必须为 null 且键仍存在；缺键是协议违规，如实暴露。
-      throw new Error(`${what} 缺少契约字段：${missing.join(", ")}`);
+      // 未观测字段为 null 但键仍存在；缺键是协议违规。
+      throw new Error(`${what} 缺少协议字段：${missing.join(", ")}`);
     }
     return metric as unknown as TurnMetric;
   });

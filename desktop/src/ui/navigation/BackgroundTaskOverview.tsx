@@ -2,14 +2,11 @@ import type { HarnessActions } from "../../contracts/actions";
 import type { ProjectViewModel } from "../../contracts/view-models";
 import { CloseIcon } from "../../assets/icons/icons";
 
-export interface BackgroundTaskOverviewItem {
-  taskId?: string;
+interface BackgroundTaskOverviewItem {
   projectId: string;
   projectName: string;
   conversationId: string;
   conversationTitle: string;
-  isRunning: boolean;
-  engineTurnId?: string | null;
 }
 
 export interface BackgroundTaskOverviewProps {
@@ -17,8 +14,6 @@ export interface BackgroundTaskOverviewProps {
   actions: HarnessActions;
   isOpen: boolean;
   onClose: () => void;
-  /** 待真实接线：待 logic store/presenter 暴露全量 active_tasks 后直接传入详细任务列表 */
-  activeTasksDetail?: BackgroundTaskOverviewItem[];
 }
 
 export function TaskOverviewIcon(props: React.SVGProps<SVGSVGElement>) {
@@ -29,37 +24,27 @@ export function TaskOverviewIcon(props: React.SVGProps<SVGSVGElement>) {
   );
 }
 
-/**
- * V0.3.9 V01：跨聊天后台任务总览组件。
- * 消费 presenters 已有 isBusy / activeTaskCount，展示跨项目/聊天的后台运行任务，
- * 并提供一键跳转至对应会话的入口。
- */
+/** 跨聊天后台任务总览：列出各项目下运行中的聊天，并提供跳转入口。 */
 export function BackgroundTaskOverview({
   projects,
   actions,
   isOpen,
   onClose,
-  activeTasksDetail,
 }: BackgroundTaskOverviewProps) {
   if (!isOpen) return null;
 
-  // 聚合各项目下正在运行的会话（消费 presenters.isBusy / conversation.isRunning）
-  const runningTasks: BackgroundTaskOverviewItem[] =
-    activeTasksDetail ??
-    projects.flatMap((project) =>
-      (project.conversations ?? [])
-        .filter((conv) => Boolean((conv as unknown as { isRunning?: boolean }).isRunning))
-        .map((conv) => ({
-          projectId: project.project_id,
-          projectName: project.name,
-          conversationId: conv.conversation_id,
-          conversationTitle: conv.title,
-          isRunning: true,
-        })),
-    );
+  const runningTasks: BackgroundTaskOverviewItem[] = projects.flatMap((project) =>
+    project.conversations
+      .filter((conv) => conv.isRunning)
+      .map((conv) => ({
+        projectId: project.project_id,
+        projectName: project.name,
+        conversationId: conv.conversation_id,
+        conversationTitle: conv.title,
+      })),
+  );
 
-  const totalActive =
-    projects.reduce((sum, p) => sum + (p.activeTaskCount || 0), 0) || runningTasks.length;
+  const totalActive = projects.reduce((sum, project) => sum + project.activeTaskCount, 0);
 
   return (
     <div className="task-overview-backdrop" onClick={onClose} role="presentation">

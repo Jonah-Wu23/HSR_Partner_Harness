@@ -23,10 +23,9 @@ describe("ConnectionDetails 组件", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(toggle).toHaveTextContent("展开");
     expect(screen.queryByTestId("lease-status-panel")).toBeNull();
-    expect(screen.queryByTestId("device-list-panel")).toBeNull();
   });
 
-  it("点击后展开，展示连接状态、租约面板与设备面板，再次点击收起", () => {
+  it("点击后展开，展示连接状态与租约面板，再次点击收起", () => {
     render(<ConnectionDetails />);
     const toggle = screen.getByTestId("btn-toggle-connection-details");
 
@@ -36,7 +35,6 @@ describe("ConnectionDetails 组件", () => {
 
     expect(screen.getByTestId("connection-state-line")).toHaveTextContent("连接状态：已连接");
     expect(screen.getByTestId("lease-status-panel")).toBeInTheDocument();
-    expect(screen.getByTestId("device-list-panel")).toBeInTheDocument();
 
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "false");

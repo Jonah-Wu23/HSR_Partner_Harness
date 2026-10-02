@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import type { HarnessActions } from "../../contracts/actions";
 import type { ApprovalViewModel } from "../../contracts/view-models";
 
@@ -9,9 +9,12 @@ interface ApprovalBarProps {
 }
 
 /** 审批条：请求批准三选一；帮我审核展示审查结论；完全允许不渲染。 */
-export function ApprovalBar({ approval, actions, currentConversationId }: ApprovalBarProps) {
-  // M1.5：不再用组件内 resolvedIds 长期隐藏审批；渲染完全来自 store 的
-  // pending/resolving 状态。errors 只保存请求失败的可见提示。
+export const ApprovalBar = memo(function ApprovalBar({
+  approval,
+  actions,
+  currentConversationId,
+}: ApprovalBarProps) {
+  // 渲染完全来自 store 的 pending 与 resolving 状态；errors 只保存请求失败的提示。
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   if (approval.mode === "full_auto") return null;
@@ -33,21 +36,16 @@ export function ApprovalBar({ approval, actions, currentConversationId }: Approv
     }
   };
 
-  // V0.3.9 V01：按当前聊天过滤待审批；跨聊天只显示计数与导航入口。不再使用全局 pending[0]。
+  // 按当前聊天过滤待审批；其他聊天只显示计数与跳转入口。
   const currentPending = currentConversationId
-    ? approval.pending.filter(
-        (p) => !p.conversation_id || p.conversation_id === currentConversationId,
-      )
+    ? approval.pending.filter((p) => p.conversation_id === currentConversationId)
     : approval.pending;
   const otherPending = currentConversationId
-    ? approval.pending.filter(
-        (p) => p.conversation_id && p.conversation_id !== currentConversationId,
-      )
+    ? approval.pending.filter((p) => p.conversation_id !== currentConversationId)
     : [];
 
   if (approval.mode === "review") {
-    // V0.2 问题 14：只有审查智能体真正被调用（reviewActive）或存在待审
-    // 操作时才显示审查状态；低风险直接放行、空闲与普通回复不显示。
+    // 只有审查智能体被调用（reviewActive）或存在待审操作时才显示审查状态。
     if (!approval.reviewActive && currentPending.length === 0 && otherPending.length === 0) return null;
     return (
       <div className="approval-bar" data-testid="approval-bar" aria-live="polite">
@@ -176,4 +174,4 @@ export function ApprovalBar({ approval, actions, currentConversationId }: Approv
       ) : null}
     </div>
   );
-}
+});

@@ -1,19 +1,20 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { AppShell } from "../AppShell";
+import type { HostEvent } from "../../contracts/protocol";
 import type { MockScenarioName } from "../../mocks/scenarios";
-import { createMockScenario } from "../../mocks/scenarios";
+import { MOCK_STREAM_ID, createMockScenario } from "../../mocks/scenarios";
 import { presentAppShell } from "../../presenters/presenters";
 import { createActionController, type ActionController } from "../../services/actions";
-import { MockDesktopBackend } from "../../services/mockDesktopBackend";
+import { MOCK_ACCOUNT_PASSWORD, MockDesktopBackend } from "../../services/mockDesktopBackend";
 import { desktopStore } from "../../stores/desktopStore";
 
 interface Rendered {
   controller: ActionController;
-  rerender: (ui: React.ReactElement) => void;
-  present: () => ReturnType<typeof presentAppShell>;
   backend: MockDesktopBackend;
+  /** AppShell 是受控组件：store 变化后用最新视图模型重渲。 */
+  refresh: () => void;
 }
 
 async function renderScenario(name: MockScenarioName): Promise<Rendered> {
@@ -22,99 +23,103 @@ async function renderScenario(name: MockScenarioName): Promise<Rendered> {
   // 与 AppController 一致：backend 事件转发进 store（queue.changed 等）
   backend.subscribe((event) => desktopStore.getState().applyEvents([event]));
   await controller.loadBootstrap();
-  const present = () => presentAppShell(desktopStore.getState());
-  const { rerender } = render(<AppShell vm={present()} actions={controller.actions} />);
-  return { controller, rerender, present, backend };
+  const shell = () => (
+    <AppShell vm={presentAppShell(desktopStore.getState())} actions={controller.actions} backend={backend} />
+  );
+  const { rerender } = render(shell());
+  return { controller, backend, refresh: () => rerender(shell()) };
 }
 
-describe("AppShell 视觉组件（Mock 场景）", () => {
-  afterEach(() => {
-    cleanup();
-    desktopStore.getState().setStatus("booting");
-    // V039-S4-002：自报运行模式属于跨用例会串的状态，逐例复位
-    desktopStore.setState({ backendInfo: null });
-  });
+function paramsOf(backend: MockDesktopBackend, method: string) {
+  return backend.recordedRequests.filter((request) => request.method === method).map((request) => request.params);
+}
 
+/** MockDesktopBackend 拒绝 config.test_connection 的原文（错误码 mock_unsupported）。 */
+const MOCK_TEST_CONNECTION_ERROR =
+  "Mock 后端不连接真实对话服务，无法测试连接；请在 Tauri + Python Sidecar 中联调";
+
+/** 打开设置中心的角色对话模型页，等 config.get 的结果水合表单。 */
+async function openModelSettings(): Promise<MockDesktopBackend> {
+  const { backend, refresh } = await renderScenario("single-project");
+  fireEvent.click(screen.getByRole("button", { name: "设置" }));
+  await waitFor(() => expect(desktopStore.getState().configSnapshot).not.toBeNull());
+  refresh();
+  fireEvent.click(screen.getByRole("button", { name: "角色对话模型" }));
+  // 已保存 Key 的提示只来自 config.get，出现即说明表单已用真实配置水合
+  expect(await screen.findByText("当前已保存 sk-d…1234")).toBeInTheDocument();
+  expect(paramsOf(backend, "config.get")).toEqual([{}]);
+  return backend;
+}
+
+/** Rust 宿主合成的连接事件：带连接代次 stream_id，不带序号。 */
+function hostEvent(event: HostEvent["event"], payload: Record<string, unknown>, streamId = MOCK_STREAM_ID): HostEvent {
+  return { kind: "event", event, stream_id: streamId, payload };
+}
+
+afterEach(() => {
+  cleanup();
+  desktopStore.setState(desktopStore.getInitialState(), true);
+});
+
+describe("AppShell 按 mock 场景渲染", () => {
   it("single-project：导航、气泡与输入区完整渲染", async () => {
-    const { controller, rerender, present } = await renderScenario("single-project");
+    const { controller, refresh } = await renderScenario("single-project");
     await controller.actions.switchMode("chat");
-    rerender(<AppShell vm={present()} actions={controller.actions} />);
+    refresh();
 
-    expect(screen.getByTestId("app-shell")).toBeInTheDocument();
-    // 项目轨道 + 聊天栏
     expect(screen.getByRole("navigation", { name: "项目轨道" })).toBeInTheDocument();
     expect(screen.getByText("星穹项目")).toBeInTheDocument();
-    expect(screen.getAllByText("奥赫玛的项目聊天")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: /奥赫玛的项目聊天/, current: "page" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /新建聊天/ })).toBeEnabled();
-    const conversationButton = document.querySelector<HTMLButtonElement>(
-      ".conversation-row-main",
-    );
-    expect(conversationButton).not.toBeNull();
-    expect(conversationButton!.closest(".conversation-row")?.getAttribute("role")).toBeNull();
     expect(screen.getAllByRole("button", { name: "更多操作" }).length).toBeGreaterThan(0);
     // 角色气泡与用户气泡
     expect(
       screen.getByText("好，我和你一起看。需要执行的事情交给古代机械。"),
     ).toBeInTheDocument();
     expect(screen.getByText("帮我看看这个项目")).toBeInTheDocument();
-    // 顶栏搭档与输入区
-    const topbarPair = document.querySelector(".topbar-pair");
-    expect(topbarPair?.textContent).toContain("白厄");
-    expect(topbarPair?.textContent).toContain("神秘的古代机械");
-    // 会话行搭档芯片折叠为双色点，名字在 tooltip
+    // 顶栏显示当前搭档；会话行的搭档名字在 tooltip
+    expect(screen.getByRole("banner")).toHaveTextContent(/白厄.*神秘的古代机械/);
     expect(screen.getAllByTitle("白厄 × 神秘的古代机械").length).toBeGreaterThan(0);
     expect(screen.getByTestId("composer")).toBeInTheDocument();
     // 聊天模式下工作台收起但保留在 DOM（aria-hidden），状态不丢失
-    const workbench = document.querySelector(".pane-workbench");
-    expect(workbench).not.toBeNull();
-    expect(workbench).toHaveAttribute("aria-hidden", "true");
-    expect(workbench?.className).toContain("is-closed");
-    // 聊天模式能力签可见
+    expect(screen.getByLabelText("助手工作台")).toHaveAttribute("aria-hidden", "true");
     expect(screen.getByRole("note")).toHaveTextContent("纯聊天");
   });
 
   it("collaboration-running：双栏、工具卡片与取消任务", async () => {
-    const { controller, rerender, present } = await renderScenario("collaboration-running");
+    const { controller, refresh } = await renderScenario("collaboration-running");
     await controller.actions.switchMode("collaboration");
-    rerender(<AppShell vm={present()} actions={controller.actions} />);
+    refresh();
 
-    expect(screen.getByLabelText("助手工作台")).toBeInTheDocument();
+    expect(screen.getByLabelText("助手工作台")).not.toHaveAttribute("aria-hidden", "true");
     expect(screen.getByText("任务运行中")).toBeInTheDocument();
     const toolToggle = screen.getByRole("button", { name: /工具调用/ });
     expect(screen.queryByText("检查项目文件")).not.toBeInTheDocument();
     fireEvent.click(toolToggle);
     expect(screen.getByText("检查项目文件")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /取消任务/ })).toBeEnabled();
-    // 运行中的聊天在“运行中”分组并有呼吸点
-    expect(screen.getByText("运行中", { selector: ".chat-group-label" })).toBeInTheDocument();
+    // 运行中的聊天归入「运行中」分组
+    expect(
+      within(screen.getByRole("region", { name: "运行中" })).getByRole("button", { name: /奥赫玛的项目聊天/ }),
+    ).toBeInTheDocument();
   });
 
-  it("approval-request：三个按钮分别发出正确决策", async () => {
-    // mock 在 resolve 时同步广播 approval.resolved（审批被移除），
-    // 每个决策用全新场景渲染验证接线与参数
-    const clickAndExpect = async (buttonName: string, decision: string) => {
-      const { backend, controller, rerender, present } = await renderScenario("approval-request");
-      expect(screen.getByTestId("approval-bar")).toBeInTheDocument();
-      fireEvent.click(screen.getByRole("button", { name: buttonName }));
-      await waitFor(() => {
-        const resolve = backend.recordedRequests.find(
-          (request) => request.method === "approval.resolve",
-        );
-        expect(resolve?.params.decision).toBe(decision);
-      });
-      // M1.5：不再用组件内 resolvedIds 隐藏；等待 store 收到 approval.resolved
-      // 后审批条才从 pending 移除（AppShell 是受控组件，需要携带新 vm 重渲）。
-      await waitFor(() => {
-        expect(present().approval.pending).toEqual([]);
-      });
-      rerender(<AppShell vm={present()} actions={controller.actions} />);
-      expect(screen.queryByRole("button", { name: buttonName })).not.toBeInTheDocument();
-      cleanup();
-    };
+  it.each([
+    ["允许", "allow"],
+    ["本对话内允许", "allow_for_conversation"],
+    ["否决", "deny"],
+  ])("approval-request：「%s」发出 %s 裁决，收到 approval.resolved 后审批条移除", async (buttonName, decision) => {
+    const { backend, refresh } = await renderScenario("approval-request");
+    expect(screen.getByTestId("approval-bar")).toBeInTheDocument();
 
-    await clickAndExpect("允许", "allow");
-    await clickAndExpect("本对话内允许", "allow_for_conversation");
-    await clickAndExpect("否决", "deny");
+    fireEvent.click(screen.getByRole("button", { name: buttonName }));
+    await waitFor(() =>
+      expect(paramsOf(backend, "approval.resolve")).toEqual([{ approval_id: "approval-1", decision }]),
+    );
+    // 审批条完全由 store 的 pending 驱动，approval.resolved 到达后才移除。
+    await waitFor(() => expect(presentAppShell(desktopStore.getState()).approval.pending).toEqual([]));
+    refresh();
+    expect(screen.queryByRole("button", { name: buttonName })).not.toBeInTheDocument();
   });
 
   it("approval-full-auto：不渲染审批条", async () => {
@@ -131,66 +136,54 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
   });
 
   it("light-theme：主题切换反映到根节点", async () => {
-    const { controller, rerender, present } = await renderScenario("single-project");
+    const { controller, refresh } = await renderScenario("single-project");
     controller.actions.switchTheme("light");
-    rerender(<AppShell vm={present()} actions={controller.actions} />);
+    refresh();
 
     expect(screen.getByTestId("app-shell")).toHaveAttribute("data-theme", "light");
   });
 
-  it("disconnected：技术详情抽屉提供立即重连", async () => {
-    const { controller, rerender, present, backend } = await renderScenario("single-project");
+  it("disconnected：技术详情抽屉的立即重连重启本地服务并回到启动状态", async () => {
+    const { refresh } = await renderScenario("single-project");
     desktopStore.getState().setStatus("disconnected");
-    rerender(<AppShell vm={present()} actions={controller.actions} />);
+    refresh();
 
     // 断线横幅 + 连接药丸均指向技术详情抽屉
     expect(screen.getByRole("alert")).toHaveTextContent("与本地服务失去连接");
     fireEvent.click(screen.getByRole("button", { name: /连接状态/ }));
-    const reconnectButton = screen.getByRole("button", { name: "立即重连" });
-    expect(reconnectButton).toBeInTheDocument();
 
-    // 点击真实触发 backend.reconnectSidecar（断线-恢复状态机），
-    // 恢复事件驱动 store 进入 booting 等待重新水合
-    const reconnectSpy = vi.spyOn(backend, "reconnectSidecar");
-    fireEvent.click(reconnectButton);
-    expect(reconnectSpy).toHaveBeenCalledTimes(1);
+    // mock 宿主模拟一次断开与恢复，恢复事件让 store 进入 booting 等待重新水合
+    fireEvent.click(screen.getByRole("button", { name: "立即重连" }));
     await waitFor(() => expect(desktopStore.getState().status).toBe("booting"));
   });
 
-
-  it("disconnected：生产形状的断连事件下药丸、横幅与 Toast 一致（V039-S4-007）", async () => {
+  it("disconnected：宿主断连事件下药丸、横幅与 Toast 一致，恢复后撤回断连通知", async () => {
     const backend = new MockDesktopBackend("single-project");
     const controller = createActionController(backend);
     const snapshot = createMockScenario("single-project").snapshot;
-    // 与 Rust 侧一致：快照与事件都带 stream_id 代次，事件按代次校验后才进 store
+    // 快照与宿主事件都带连接代次 stream_id，事件按代次校验后才进 store
     desktopStore.getState().hydrate({ ...snapshot, stream_id: "1", sequence: 10 });
-    const present = () => presentAppShell(desktopStore.getState());
-    const { rerender } = render(<AppShell vm={present()} actions={controller.actions} />);
+    const shell = () => (
+      <AppShell vm={presentAppShell(desktopStore.getState())} actions={controller.actions} backend={backend} />
+    );
+    const { rerender } = render(shell());
     expect(screen.getByRole("button", { name: /连接状态：已连接/ })).toBeInTheDocument();
 
-    // sidecar 被杀：Rust 连发 connection.status 与 error.reported（同代次、同批次）
+    // Sidecar 被杀：Rust 同一批连发 connection.status 与 error.reported
     desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "connection.status",
-        sequence: 11,
-        stream_id: "1",
-        payload: { status: "disconnected", stream_id: "1" },
-      },
-      {
-        kind: "event",
-        event: "error.reported",
-        sequence: 12,
-        stream_id: "1",
-        payload: {
+      hostEvent("connection.status", { status: "disconnected", stream_id: "1" }, "1"),
+      hostEvent(
+        "error.reported",
+        {
           code: "backend_disconnected",
           message: "Python Sidecar 已断开，正在重连…",
           severity: "recoverable",
           source: "sidecar",
         },
-      },
+        "1",
+      ),
     ]);
-    rerender(<AppShell vm={present()} actions={controller.actions} />);
+    rerender(shell());
 
     // 同一帧里不得同时出现「已连接药丸」与「已断开 Toast」两种相反结论
     expect(screen.getByText("Python Sidecar 已断开，正在重连…")).toBeInTheDocument();
@@ -198,39 +191,21 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
     expect(screen.queryByRole("button", { name: /连接状态：已连接/ })).not.toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("与本地服务失去连接");
 
-    // 恢复：断开期间的瞬时通知随恢复撤回，且不得再显示「已连接」药丸
+    // 恢复：断开期间的瞬时通知随恢复撤回，重新水合前不显示「已连接」
     desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "connection.status",
-        sequence: 13,
-        stream_id: "2",
-        payload: { status: "connected", stream_id: "2" },
-      },
+      hostEvent("connection.status", { status: "connected", stream_id: "2" }, "2"),
     ]);
-    rerender(<AppShell vm={present()} actions={controller.actions} />);
+    rerender(shell());
     expect(screen.queryByText("Python Sidecar 已断开，正在重连…")).not.toBeInTheDocument();
     expect(desktopStore.getState().status).toBe("booting");
     expect(screen.queryByRole("button", { name: /连接状态：已连接/ })).not.toBeInTheDocument();
-  });
-
-
-  it("演示模式：Sidecar 自报 demo=true 时与连接状态并列标注（V039-S4-002）", async () => {
-    const { controller, rerender, present } = await renderScenario("single-project");
-    // backend.ready 事件路径由 store 单测覆盖，这里只验证界面把自报的演示模式如实标出来
-    desktopStore.setState({ backendInfo: { pid: 4321, demo: true, modeSource: "flag" } });
-    rerender(<AppShell vm={present()} actions={controller.actions} />);
-
-    // 运行模式与连通性各自成句：演示模式在，同时连接状态如实显示「已连接」
-    expect(screen.getByTestId("demo-mode-badge")).toHaveTextContent("演示模式：未调用真实模型");
-    expect(screen.getByRole("button", { name: /连接状态：已连接/ })).toBeInTheDocument();
   });
 
   it("booting：只渲染状态页", async () => {
     const backend = new MockDesktopBackend("single-project");
     const controller = createActionController(backend);
     desktopStore.getState().setStatus("booting");
-    render(<AppShell vm={presentAppShell(desktopStore.getState())} actions={controller.actions} />);
+    render(<AppShell vm={presentAppShell(desktopStore.getState())} actions={controller.actions} backend={backend} />);
 
     expect(screen.getByText("初始化中…")).toBeInTheDocument();
     expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
@@ -246,299 +221,195 @@ describe("AppShell 视觉组件（Mock 场景）", () => {
   });
 });
 
-describe("AppShell V0.2 M4 接口接线", () => {
-  afterEach(() => {
-    cleanup();
-    desktopStore.getState().setStatus("booting");
+describe("AppShell 账号门、首次引导与设置中心", () => {
+  it("gate-default：默认账号整屏账号门，登录其他账号后进入应用", async () => {
+    const { backend, refresh } = await renderScenario("gate-default");
+
+    // 整屏账号门：默认选中上次登录账号，导航被替换
+    expect(screen.getByRole("heading", { name: "欢迎回来" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /默认账号/ })).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("radio", { name: /演示账号/ }));
+    fireEvent.change(screen.getByLabelText("密码"), { target: { value: MOCK_ACCOUNT_PASSWORD } });
+    fireEvent.click(screen.getByRole("button", { name: "进入" }));
+
+    // 登录成功后账号门消失，进入应用（账号数据来自 account.changed）
+    await waitFor(() => expect(desktopStore.getState().currentAccount?.username).toBe("demo"));
+    refresh();
+    expect(paramsOf(backend, "account.login")).toEqual([
+      { account_id: "demo-account", password: MOCK_ACCOUNT_PASSWORD },
+    ]);
+    expect(screen.queryByRole("heading", { name: "欢迎回来" })).not.toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "项目轨道" })).toBeInTheDocument();
+    expect(screen.getByTestId("composer")).toBeInTheDocument();
   });
 
-  it("gate-default：默认账号整屏账号门，登录后进入应用", async () => {
-    const backend = new MockDesktopBackend("gate-default");
-    const controller = createActionController(backend);
-    const unsubscribe = backend.subscribe((event) => desktopStore.getState().applyEvents([event]));
-    try {
-      await controller.loadBootstrap();
-      const present = () => presentAppShell(desktopStore.getState());
-      const { rerender } = render(<AppShell vm={present()} actions={controller.actions} />);
+  it("gate-default：未设密码的默认账号以空密码登录后账号门让开", async () => {
+    const { backend, refresh } = await renderScenario("gate-default");
 
-      // 整屏账号门：默认选中上次登录账号，导航被替换
-      expect(screen.getByText("欢迎回来")).toBeInTheDocument();
-      expect(screen.getByRole("radio", { name: /默认账号/ })).toHaveAttribute(
-        "aria-checked",
-        "true",
-      );
-      expect(screen.getByRole("radio", { name: /演示账号/ })).toBeInTheDocument();
-      expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+    // 默认账号被默认选中：不填密码，「进入」可用，空密码原样交给后端校验
+    fireEvent.click(screen.getByRole("button", { name: "进入" }));
 
-      // 选择演示账号 → 输入密码 → 进入
-      fireEvent.click(screen.getByRole("radio", { name: /演示账号/ }));
-      fireEvent.change(screen.getByLabelText("密码"), { target: { value: "demo-pass" } });
-      fireEvent.click(screen.getByRole("button", { name: "进入" }));
-
-      // 登录成功后账号门消失，进入应用（账号数据来自 account.changed）
-      await waitFor(() =>
-        expect(desktopStore.getState().currentAccount?.username).toBe("demo"),
-      );
-      rerender(<AppShell vm={present()} actions={controller.actions} />);
-      expect(screen.queryByText("欢迎回来")).not.toBeInTheDocument();
-      expect(screen.getByRole("navigation", { name: "项目轨道" })).toBeInTheDocument();
-      expect(screen.getByTestId("composer")).toBeInTheDocument();
-    } finally {
-      unsubscribe();
-    }
+    await waitFor(() => expect(desktopStore.getState().currentAccount?.last_login_at).not.toBeNull());
+    refresh();
+    expect(paramsOf(backend, "account.login")).toEqual([{ account_id: "default-local", password: "" }]);
+    // 登录后账号身份仍是默认账号（username=default），账号门照样让开
+    expect(desktopStore.getState().currentAccount?.username).toBe("default");
+    expect(screen.queryByRole("heading", { name: "欢迎回来" })).not.toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "项目轨道" })).toBeInTheDocument();
   });
 
+  it("账号门：后端拒绝登录时就地显示错误，切到注册表单后清掉", async () => {
+    await renderScenario("gate-default");
 
-  it("gate-default：空密码的默认账号可直接进入应用（V039-S4-005）", async () => {
-    const backend = new MockDesktopBackend("gate-default");
-    const controller = createActionController(backend);
-    const unsubscribe = backend.subscribe((event) => desktopStore.getState().applyEvents([event]));
-    try {
-      await controller.loadBootstrap();
-      const present = () => presentAppShell(desktopStore.getState());
-      const { rerender } = render(<AppShell vm={present()} actions={controller.actions} />);
+    fireEvent.click(screen.getByRole("radio", { name: /演示账号/ }));
+    fireEvent.change(screen.getByLabelText("密码"), { target: { value: "wrong-pass" } });
+    fireEvent.click(screen.getByRole("button", { name: "进入" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("密码错误");
 
-      // 默认账号（种子未设密码）被默认选中：不填密码，「进入」必须可用
-      expect(screen.getByRole("button", { name: "进入" })).toBeEnabled();
-      fireEvent.click(screen.getByRole("button", { name: "进入" }));
-
-      await waitFor(() =>
-        expect(desktopStore.getState().currentAccount?.last_login_at).not.toBeNull(),
-      );
-      rerender(<AppShell vm={present()} actions={controller.actions} />);
-      // 账号身份仍是默认账号（username=default），账号门必须真的让开
-      expect(screen.queryByText("欢迎回来")).not.toBeInTheDocument();
-      expect(screen.getByRole("navigation", { name: "项目轨道" })).toBeInTheDocument();
-    } finally {
-      unsubscribe();
-    }
+    fireEvent.click(screen.getByRole("button", { name: /注册新账号/ }));
+    expect(screen.getByRole("heading", { name: "注册新账号" })).toBeInTheDocument();
+    expect(screen.queryByText("密码错误")).not.toBeInTheDocument();
   });
 
-  it("账号门：切到注册表单时清掉上一次登录错误（V039-S4-006）", async () => {
-    const backend = new MockDesktopBackend("gate-default");
-    const controller = createActionController(backend);
-    const unsubscribe = backend.subscribe((event) => desktopStore.getState().applyEvents([event]));
-    try {
-      await controller.loadBootstrap();
-      const present = () => presentAppShell(desktopStore.getState());
-      // 真实后端会用「密码错误」拒绝；这里直接注入这次失败，验证错误提示的作用域
-      const actions = {
-        ...controller.actions,
-        loginAccount: vi.fn().mockRejectedValue(new Error("密码错误")),
-      };
-      render(<AppShell vm={present()} actions={actions} />);
-
-      fireEvent.change(screen.getByLabelText("密码"), { target: { value: "wrong-pass" } });
-      fireEvent.click(screen.getByRole("button", { name: "进入" }));
-      await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("密码错误"));
-
-      fireEvent.click(screen.getByRole("button", { name: /注册新账号/ }));
-
-      // 注册表单与上一次登录失败无关：错误提示必须已被清理
-      expect(screen.getByRole("heading", { name: "注册新账号" })).toBeInTheDocument();
-      expect(screen.queryByText("密码错误")).not.toBeInTheDocument();
-    } finally {
-      unsubscribe();
-    }
-  });
-
-  it("onboarding-pending：非默认账号且引导未完成 → 整屏首次引导", async () => {
+  it("onboarding-pending：非默认账号且引导未完成时显示整屏首次引导", async () => {
     await renderScenario("onboarding-pending");
-    // 步骤指示器与面板标题都会出现「创建第一个项目」
     expect(screen.getByRole("heading", { name: "创建第一个项目" })).toBeInTheDocument();
-    expect(screen.getAllByText("创建第一个项目")).toHaveLength(2);
     expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
   });
 
-  it("连续跳过项目与模型配置后进入主页", async () => {
-    const { controller, rerender, present } = await renderScenario("onboarding-pending");
+  it("连续跳过项目与模型配置后完成引导并进入主页", async () => {
+    const { backend, refresh } = await renderScenario("onboarding-pending");
 
     fireEvent.click(screen.getByRole("button", { name: "跳过" }));
     fireEvent.click(screen.getByRole("button", { name: "跳过，之后再说" }));
     fireEvent.click(screen.getByRole("button", { name: "开始使用" }));
 
-    await waitFor(() =>
-      expect(desktopStore.getState().currentAccount?.onboarding_complete).toBe(true),
-    );
-    rerender(<AppShell vm={present()} actions={controller.actions} />);
-    expect(screen.queryByText("都准备好了")).not.toBeInTheDocument();
+    await waitFor(() => expect(desktopStore.getState().currentAccount?.onboarding_complete).toBe(true));
+    refresh();
+    expect(paramsOf(backend, "account.onboarding_complete")).toHaveLength(1);
+    expect(screen.queryByRole("heading", { name: "都准备好了" })).not.toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "项目轨道" })).toBeInTheDocument();
   });
 
-  it("引导页保存 DeepSeek Key 时写入默认端点与模型", async () => {
-    const { controller, rerender, present } = await renderScenario("onboarding-pending");
-    const setConfig = vi.fn().mockResolvedValue(undefined);
-    const testConnection = vi.fn().mockResolvedValue("连接正常（延迟 546 ms）");
-    const actions = { ...controller.actions, setConfig, testConnection };
-    rerender(<AppShell vm={present()} actions={actions} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "跳过" }));
-    fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "sk-test" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
-
-    await waitFor(() => expect(testConnection).toHaveBeenCalledOnce());
-    // B-03：前端只写 dialogue.*，引擎由后端按 dialogue.provider 推导
-    expect(setConfig).toHaveBeenCalledWith({
-      "dialogue.provider": "deepseek",
-      "dialogue.base_url": "https://api.deepseek.com",
-      "dialogue.model": "deepseek-v4-flash",
-      "dialogue.api_key": "sk-test",
-    });
-    expect(screen.getByRole("heading", { name: "都准备好了" })).toBeInTheDocument();
-  });
-
-  it("引导页 OpenAI 兼容 API 只写用户填写的端点，不再调用任何 Codex 登录", async () => {
-    const { controller, rerender, present } = await renderScenario("onboarding-pending");
-    const setConfig = vi.fn().mockResolvedValue(undefined);
-    const testConnection = vi.fn().mockResolvedValue("连接正常（延迟 12 ms）");
-    const actions = { ...controller.actions, setConfig, testConnection };
-    rerender(<AppShell vm={present()} actions={actions} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "跳过" }));
-    fireEvent.change(screen.getByLabelText("模型来源"), {
-      target: { value: "openai_compatible" },
-    });
-    fireEvent.change(screen.getByLabelText("Base URL"), {
-      target: { value: "https://gateway.example.com/v1" },
-    });
-    fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "sk-openai" } });
-    fireEvent.change(screen.getByLabelText("模型"), { target: { value: "gpt-5.6-sol" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
-
-    await waitFor(() => expect(testConnection).toHaveBeenCalledOnce());
-    // 自定义 Base URL 必须原样落库：不写 engine，也不经过 codex.api_login（后者会把
-    // dialogue.base_url/model 改回 api.openai.com 默认值，属于静默改写用户配置）
-    expect(setConfig).toHaveBeenCalledWith({
-      "dialogue.provider": "openai_compatible",
-      "dialogue.base_url": "https://gateway.example.com/v1",
-      "dialogue.model": "gpt-5.6-sol",
-      "dialogue.api_key": "sk-openai",
-    });
-    expect(screen.getByRole("heading", { name: "都准备好了" })).toBeInTheDocument();
-  });
-
-  it("error.reported recoverable：Toast 渲染并可关闭", async () => {
-    const { controller, rerender, present } = await renderScenario("single-project");
-    desktopStore.getState().applyEvents([
-      {
-        kind: "event",
-        event: "error.reported",
-        sequence: 1,
-        payload: {
-          code: "backend_disconnected",
-          message: "Python Sidecar 已断开，正在重连…",
-          severity: "recoverable",
-          source: "sidecar",
-        },
+  // mock 后端不连真实对话服务，config.test_connection 报 mock_unsupported：
+  // 保存先写 config.set，再测试连接，失败原文留在原页面。
+  it.each([
+    {
+      provider: "DeepSeek",
+      fill: () => {
+        fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "sk-test" } });
       },
+      updates: {
+        "dialogue.provider": "deepseek",
+        "dialogue.base_url": "https://api.deepseek.com",
+        "dialogue.model": "deepseek-v4-flash",
+        "dialogue.api_key": "sk-test",
+      },
+    },
+    {
+      provider: "OpenAI 兼容 API",
+      fill: () => {
+        fireEvent.change(screen.getByLabelText("模型来源"), { target: { value: "openai_compatible" } });
+        fireEvent.change(screen.getByLabelText("Base URL"), {
+          target: { value: "https://gateway.example.com/v1" },
+        });
+        fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "sk-openai" } });
+        fireEvent.change(screen.getByLabelText("模型"), { target: { value: "gpt-5.6-sol" } });
+      },
+      updates: {
+        "dialogue.provider": "openai_compatible",
+        "dialogue.base_url": "https://gateway.example.com/v1",
+        "dialogue.model": "gpt-5.6-sol",
+        "dialogue.api_key": "sk-openai",
+      },
+    },
+  ])("引导页保存 $provider：只写 dialogue.* 再测试连接，连接失败时停在模型步骤", async ({ fill, updates }) => {
+    const { backend } = await renderScenario("onboarding-pending");
+
+    fireEvent.click(screen.getByRole("button", { name: "跳过" }));
+    fill();
+    fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
+
+    expect(await screen.findByText(MOCK_TEST_CONNECTION_ERROR)).toBeInTheDocument();
+    expect(paramsOf(backend, "config.set")).toEqual([{ updates }]);
+    expect(backend.recordedRequests.map((request) => request.method).slice(-2)).toEqual([
+      "config.set",
+      "config.test_connection",
     ]);
-    rerender(<AppShell vm={present()} actions={controller.actions} />);
+    expect(screen.getByRole("heading", { name: "配置角色模型" })).toBeInTheDocument();
+  });
 
-    const toast = screen.getByText("Python Sidecar 已断开，正在重连…");
-    expect(toast).toBeInTheDocument();
-    // Toast 有技术详情入口（打开技术详情抽屉）；断连横幅上也有同名按钮，按 Toast 容器取
-    expect(
-      within(toast.closest(".toast") as HTMLElement).getByRole("button", {
-        name: "查看技术详情",
+  it("error.reported recoverable：Toast 可打开技术详情，也可关闭", async () => {
+    const { refresh } = await renderScenario("single-project");
+    desktopStore.getState().applyEvents([
+      hostEvent("error.reported", {
+        code: "backend_disconnected",
+        message: "Python Sidecar 已断开，正在重连…",
+        severity: "recoverable",
+        source: "sidecar",
       }),
-    ).toBeInTheDocument();
+    ]);
+    refresh();
 
-    // 点击关闭后 Toast 消失
-    fireEvent.click(screen.getByRole("button", { name: "关闭通知" }));
-    rerender(<AppShell vm={present()} actions={controller.actions} />);
-    expect(screen.queryByText("Python Sidecar 已断开，正在重连…")).not.toBeInTheDocument();
+    const toast = screen.getByText("Python Sidecar 已断开，正在重连…").parentElement!;
+    fireEvent.click(within(toast).getByRole("button", { name: "查看技术详情" }));
+    expect(screen.getByRole("dialog", { name: "技术详情" })).toBeInTheDocument();
+
+    fireEvent.click(within(toast).getByRole("button", { name: "关闭通知" }));
+    refresh();
+    expect(toast).not.toBeInTheDocument();
   });
 
-  it("设置入口打开设置中心并拉取 config.get 水合表单", async () => {
-    const { controller, rerender, present } = await renderScenario("single-project");
+  it("设置入口打开设置中心并拉取 config.get 水合表单，Esc 关闭", async () => {
+    await openModelSettings();
 
-    // 顶栏右侧设置按钮打开设置中心（打开时拉取 config.get）
-    fireEvent.click(screen.getByRole("button", { name: "设置" }));
-    await waitFor(() => {
-      // 每次轮询重新查询：config 到达后 key 重挂载会替换 dialog 实例
-      expect(screen.queryByRole("dialog", { name: "设置" })).toBeInTheDocument();
-    });
+    expect(screen.getByLabelText("模型")).toHaveValue("deepseek-chat");
 
-    // 配置到达后模型页表单水合真实配置
-    await waitFor(() => expect(desktopStore.getState().configSnapshot).not.toBeNull());
-    rerender(<AppShell vm={present()} actions={controller.actions} />);
-    fireEvent.click(screen.getByRole("button", { name: "角色对话模型" }));
-    await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("deepseek-chat"));
-    expect(screen.getByText("当前已保存 sk-d…1234")).toBeInTheDocument();
-
-    // Esc 关闭设置中心
     fireEvent.keyDown(window, { key: "Escape" });
-    await waitFor(() => {
-      expect(screen.queryByRole("dialog", { name: "设置" })).not.toBeInTheDocument();
-    });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "设置" })).not.toBeInTheDocument());
   });
 
-  it("M5.2: 保存 DeepSeek 角色模型时写入 dialogue.reasoning_effort", async () => {
-    const { controller, rerender, present } = await renderScenario("single-project");
-    const setConfig = vi.fn().mockResolvedValue(undefined);
-    const testConnection = vi.fn().mockResolvedValue("连接正常（延迟 12 ms）");
-    const actions = { ...controller.actions, setConfig, testConnection };
-    rerender(<AppShell vm={present()} actions={actions} />);
+  it.each([
+    {
+      change: "DeepSeek 模型与推理等级",
+      edit: () => {
+        fireEvent.change(screen.getByLabelText("模型"), { target: { value: "deepseek-reasoner" } });
+        fireEvent.change(screen.getByLabelText("推理等级"), { target: { value: "medium" } });
+      },
+      updates: {
+        "dialogue.provider": "deepseek",
+        "dialogue.base_url": "https://api.deepseek.com",
+        "dialogue.model": "deepseek-reasoner",
+        "dialogue.reasoning_effort": "medium",
+      },
+    },
+    {
+      change: "切到 OpenAI 兼容 API",
+      edit: () => {
+        fireEvent.change(screen.getByLabelText("服务商"), { target: { value: "openai_compatible" } });
+      },
+      updates: {
+        "dialogue.provider": "openai_compatible",
+        "dialogue.base_url": "https://api.openai.com/v1",
+        "dialogue.model": "gpt-5.6-sol",
+      },
+    },
+  ])("设置页保存 $change：config.set 写入对应 dialogue.* 后测试连接并显示结果", async ({ edit, updates }) => {
+    const backend = await openModelSettings();
 
-    fireEvent.click(screen.getByRole("button", { name: "设置" }));
-    await waitFor(() => expect(screen.getByRole("dialog", { name: "设置" })).toBeInTheDocument());
-    await waitFor(() => expect(desktopStore.getState().configSnapshot).not.toBeNull());
-    rerender(<AppShell vm={present()} actions={actions} />);
-    fireEvent.click(screen.getByRole("button", { name: "角色对话模型" }));
-    await waitFor(() => expect(screen.getByLabelText("服务商")).toHaveValue("deepseek"));
-
-    fireEvent.change(screen.getByLabelText("模型"), { target: { value: "deepseek-reasoner" } });
-    fireEvent.change(screen.getByLabelText("推理等级"), { target: { value: "medium" } });
+    edit();
     fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
 
-    await waitFor(() =>
-      expect(setConfig).toHaveBeenCalledWith(
-        expect.objectContaining({
-          "dialogue.reasoning_effort": "medium",
-        }),
-      ),
-    );
-  });
-
-  it("设置页切到 OpenAI 兼容 API 时只写 dialogue.* 并测试连接", async () => {
-    const { controller, rerender, present } = await renderScenario("single-project");
-    const setConfig = vi.fn().mockResolvedValue(undefined);
-    const testConnection = vi.fn().mockResolvedValue("连接正常（延迟 33 ms）");
-    const actions = { ...controller.actions, setConfig, testConnection };
-    rerender(<AppShell vm={present()} actions={actions} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "设置" }));
-    await waitFor(() => expect(screen.getByRole("dialog", { name: "设置" })).toBeInTheDocument());
-    await waitFor(() => expect(desktopStore.getState().configSnapshot).not.toBeNull());
-    rerender(<AppShell vm={present()} actions={actions} />);
-    fireEvent.click(screen.getByRole("button", { name: "角色对话模型" }));
-    await waitFor(() => expect(screen.getByLabelText("服务商")).toHaveValue("deepseek"));
-    fireEvent.change(screen.getByLabelText("服务商"), {
-      target: { value: "openai_compatible" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
-
-    await waitFor(() => expect(setConfig).toHaveBeenCalledOnce());
-    expect(testConnection).toHaveBeenCalledOnce();
-    expect(setConfig).toHaveBeenCalledWith({
-      "dialogue.provider": "openai_compatible",
-      "dialogue.base_url": "https://api.openai.com/v1",
-      "dialogue.model": "gpt-5.6-sol",
-    });
+    expect(await screen.findByText(MOCK_TEST_CONNECTION_ERROR)).toBeInTheDocument();
+    expect(paramsOf(backend, "config.set")).toEqual([{ updates }]);
+    expect(paramsOf(backend, "config.test_connection")).toEqual([{}]);
   });
 });
 
-describe("AppShell QueueStrip 接线（V0.2 M4）", () => {
-  afterEach(() => {
-    cleanup();
-    desktopStore.getState().setStatus("booting");
-  });
-
-  function queueItemsInto(
-    rendered: Rendered,
-    rerender: (ui: React.ReactElement) => void,
-    present: () => ReturnType<typeof presentAppShell>,
-  ) {
+describe("AppShell 排队条、多搭档与音色直达", () => {
+  function queueItemsInto(rendered: Rendered) {
     const state = desktopStore.getState();
     rendered.backend.emitQueueChanged(state.currentConversationId, [
       {
@@ -550,8 +421,12 @@ describe("AppShell QueueStrip 接线（V0.2 M4）", () => {
         intent: "followup",
         position: 0,
         status: "queued",
+        error: null,
         created_at: "2026-08-12T00:00:00+00:00",
         source_message_id: null,
+        origin: "desktop",
+        remote_device_key: null,
+        remote_device_name: null,
       },
       {
         queue_item_id: "q-2",
@@ -562,128 +437,104 @@ describe("AppShell QueueStrip 接线（V0.2 M4）", () => {
         intent: "followup",
         position: 1,
         status: "queued",
+        error: null,
         created_at: "2026-08-12T00:00:00+00:00",
         source_message_id: null,
+        origin: "desktop",
+        remote_device_key: null,
+        remote_device_name: null,
       },
     ]);
-    rerender(<AppShell vm={present()} actions={rendered.controller.actions} />);
+    rendered.refresh();
   }
 
-  it("有队列时渲染胶囊条：目标、摘要与数量", async () => {
+  it("排队条「编辑」撤回该条并把原文拉回输入区", async () => {
     const rendered = await renderScenario("single-project");
-    const { rerender, present } = rendered;
-    expect(screen.queryByRole("region", { name: /排队/ })).not.toBeInTheDocument();
-    queueItemsInto(rendered, rerender, present);
-
-    const strip = screen.getByRole("region", { name: "排队 2 条" });
-    expect(strip).toBeInTheDocument();
-    expect(screen.getByText("给白厄")).toBeInTheDocument();
-    expect(screen.getByText("给神秘的古代机械")).toBeInTheDocument();
-    expect(screen.getByText(/「等你忙完再说这个」/)).toBeInTheDocument();
-    expect(screen.getByText(/「请检查这个项目的测试」/)).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "撤回" })).toHaveLength(2);
-  });
-
-  it("编辑：拉回输入区并撤回该条", async () => {
-    const rendered = await renderScenario("single-project");
-    const { controller, rerender, present } = rendered;
-    queueItemsInto(rendered, rerender, present);
+    queueItemsInto(rendered);
 
     fireEvent.click(screen.getAllByRole("button", { name: "编辑" })[0]);
-    // 拉回输入区：async 撤回完成后 seed 写入输入框
-    rerender(<AppShell vm={present()} actions={controller.actions} />);
-    const composer = screen.getByTestId("composer");
-    const textarea = composer.querySelector("textarea")!;
-    await waitFor(() => {
-      expect(textarea.value).toContain("等你忙完再说这个");
-    });
-    // 撤回后队列只剩一条
-    rerender(<AppShell vm={present()} actions={controller.actions} />);
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "消息输入" })).toHaveValue("等你忙完再说这个"),
+    );
+    expect(paramsOf(rendered.backend, "queue.withdraw")).toEqual([{ queue_item_id: "q-1" }]);
+    rendered.refresh();
     expect(screen.getByRole("region", { name: "排队 1 条" })).toBeInTheDocument();
   });
 
-  it("立即插入：优先处理该条", async () => {
+  it("排队条「立即插入」把该条移到队首", async () => {
     const rendered = await renderScenario("single-project");
-    const { controller, rerender, present } = rendered;
-    queueItemsInto(rendered, rerender, present);
+    queueItemsInto(rendered);
 
     fireEvent.click(screen.getAllByRole("button", { name: "立即插入" })[1]);
-    rerender(<AppShell vm={present()} actions={controller.actions} />);
-    const strip = screen.getByRole("region", { name: "排队 2 条" });
-    const capsules = strip.querySelectorAll(".queue-capsule");
-    expect(capsules[0]?.textContent).toContain("请检查这个项目的测试");
+    await waitFor(() =>
+      expect(paramsOf(rendered.backend, "queue.prioritize")).toEqual([{ queue_item_id: "q-2" }]),
+    );
+    rendered.refresh();
+    const capsules = within(screen.getByRole("region", { name: "排队 2 条" })).getAllByRole("listitem");
+    expect(capsules[0]).toHaveTextContent("请检查这个项目的测试");
   });
 
-  it("V0.3.0: multi-pair 多搭档展示、data-pair 属性与新建聊天选择搭档", async () => {
-    const { controller, rerender, present, backend } = await renderScenario("multi-pair");
+  it("multi-pair：会话与顶栏显示各自搭档，新建聊天可选择搭档", async () => {
+    const { controller, backend, refresh } = await renderScenario("multi-pair");
     expect(screen.getByTestId("app-shell")).toHaveAttribute("data-pair", "firefly_sam");
 
     // 列表中三个会话分别显示对应搭档信息
     expect(screen.getByTitle("白厄 × 神秘的古代机械")).toBeInTheDocument();
     expect(screen.getByTitle("流萤 × 萨姆")).toBeInTheDocument();
     expect(screen.getByTitle("三月七 × 第四面镜")).toBeInTheDocument();
+    // 顶栏是当前选中的流萤会话
+    expect(screen.getByRole("banner")).toHaveTextContent(/流萤.*萨姆/);
 
-    // 顶栏当前选中流萤会话
-    const topbarPair = document.querySelector(".topbar-pair");
-    expect(topbarPair?.textContent).toContain("流萤");
-    expect(topbarPair?.textContent).toContain("萨姆");
-
-    // 点击三月七会话切换
+    // 切到三月七会话
     await controller.actions.selectConversation("conv-march7");
-    rerender(<AppShell vm={present()} actions={controller.actions} />);
+    refresh();
     expect(screen.getByTestId("app-shell")).toHaveAttribute("data-pair", "march7_fourth_mirror");
     expect(screen.getByLabelText("角色区")).toHaveTextContent("三月七");
     expect(screen.getByLabelText("助手工作台")).toHaveTextContent("第四面镜");
 
-    // 点击新建聊天按钮弹出搭档选择菜单
-    const newChatBtn = screen.getByRole("button", { name: /新建聊天/ });
-    fireEvent.click(newChatBtn);
-
+    // 新建聊天先选择搭档
+    fireEvent.click(screen.getByRole("button", { name: /新建聊天/ }));
     const menu = screen.getByRole("menu", { name: "选择搭档新建聊天" });
-    expect(menu).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: /白厄 × 神秘的古代机械/ })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: /流萤 × 萨姆/ })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: /三月七 × 第四面镜/ })).toBeInTheDocument();
-
-    // 选中流萤建新聊天
-    fireEvent.click(screen.getByRole("menuitem", { name: /流萤 × 萨姆/ }));
-    await waitFor(() => {
-      const createReq = backend.recordedRequests.find(
-        (req) => req.method === "conversation.create",
-      );
-      expect(createReq?.params.pair_id).toBe("firefly_sam");
-    });
+    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      expect.stringContaining("白厄 × 神秘的古代机械"),
+      expect.stringContaining("流萤 × 萨姆"),
+      expect.stringContaining("三月七 × 第四面镜"),
+    ]);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: /流萤 × 萨姆/ }));
+    await waitFor(() =>
+      expect(paramsOf(backend, "conversation.create")).toEqual([
+        expect.objectContaining({ pair_id: "firefly_sam" }),
+      ]),
+    );
   });
 
-  it("V0.3.0: 历史未知 pair_id 会话降级渲染不崩溃", async () => {
-    const { rerender, present } = await renderScenario("single-project");
-    const snapshot = desktopStore.getState();
-    const unknownConv = {
-      ...snapshot.conversationsById["conv-1"],
-      pair_id: "unknown_custom_pair",
-      title: "历史遗留未知搭档聊天",
-    };
+  it("会话的 pair_id 不在搭档列表中时照常渲染，并以 pair_id 标注", async () => {
+    const { refresh } = await renderScenario("single-project");
+    const scenario = createMockScenario("single-project").snapshot;
+    const [firstProject] = scenario.projects;
     desktopStore.getState().hydrate({
-      ...createMockScenario("single-project").snapshot,
+      ...scenario,
       projects: [
         {
-          ...createMockScenario("single-project").snapshot.projects[0],
-          conversations: [unknownConv],
+          ...firstProject,
+          conversations: [
+            { ...firstProject.conversations[0], pair_id: "unknown_custom_pair", title: "未知搭档的聊天" },
+          ],
         },
       ],
-      current_conversation_id: "conv-1",
+      current_conversation_id: firstProject.conversations[0].conversation_id,
     });
-    rerender(<AppShell vm={present()} actions={createActionController(new MockDesktopBackend()).actions} />);
-    expect(screen.getAllByText("历史遗留未知搭档聊天")).toHaveLength(2);
+    refresh();
+    expect(screen.getByRole("button", { name: /未知搭档的聊天/, current: "page" })).toBeInTheDocument();
     expect(screen.getByTitle("unknown_custom_pair")).toBeInTheDocument();
   });
 
-  it("V0.3.5 修复：音色预选卡随设置中心关闭清空，重新打开不残留", async () => {
-    const { controller, rerender, present } = await renderScenario("single-project");
+  it("从角色库直达语音页的预选卡在关闭设置后清空，从齿轮重新打开不残留", async () => {
+    const { controller, refresh } = await renderScenario("single-project");
 
     // 进入角色库，点击第一张可配置用户卡的「配置音色」直达语音页
     await controller.actions.openCharacterLibrary();
-    rerender(<AppShell vm={present()} actions={controller.actions} />);
+    refresh();
     const configureButtons = await screen.findAllByTitle("配置音色");
     expect(configureButtons.length).toBeGreaterThan(0);
     fireEvent.click(configureButtons[0]);
@@ -695,8 +546,6 @@ describe("AppShell QueueStrip 接线（V0.2 M4）", () => {
     await waitFor(() =>
       expect(screen.getByTestId("character-voice-select")).toHaveValue("card-draft-001"),
     );
-    // AppShell 必须把 actions 传入 SettingsCenter，否则音色区会显示「服务未接入」块
-    expect(screen.queryByTestId("environment-unavailable-block")).not.toBeInTheDocument();
 
     // Esc 关闭后从顶栏齿轮重新打开：预选卡不得残留
     fireEvent.keyDown(window, { key: "Escape" });

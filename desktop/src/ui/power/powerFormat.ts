@@ -2,8 +2,7 @@ import type { PowerStatusPayload } from "../../contracts/protocol";
 
 /** 电源状态的纯展示工具：只做单位换算与契约字段的直读，不做语义猜测。 */
 
-/** 提示出现条件（契约冻结 §1.5/§2.1 + V10 边界）：
-    平台支持 且 远程服务开启 且 处于休眠风险，且用户未在本次持续期内关闭提示。 */
+/** 提示出现条件：平台支持、远程服务开启、处于休眠风险，且用户未在本次持续期内关闭提示。 */
 export function shouldShowPowerPrompt(
   status: PowerStatusPayload | null,
   dismissed: boolean,

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import sys
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 from pair_harness.adapters.codex.auth import CodexAuthService
 from pair_harness.adapters.demo import ScriptedCodingEngine, ScriptedDialogueModel
@@ -12,35 +13,20 @@ from pair_harness.adapters.dialogue.openai_compatible import OpenAICompatibleDia
 from pair_harness.adapters.reviewer import DialogueModelReviewer
 from pair_harness.app_paths import AppPaths
 from pair_harness.config.pairs import load_pair_config, load_prompt
-from pair_harness.config.providers import load_reasoning_preset
-from pair_harness.core.contracts import ApprovalDecision, ApprovalMode, MessageSource, ProjectRef
-from pair_harness.core.orchestrator import ConversationOrchestrator
+from pair_harness.core.context import ExecutionContext
+from pair_harness.core.contracts import (
+    ApprovalDecision,
+    ApprovalMode,
+    MessageSource,
+    PendingOperation,
+    ProjectRef,
+)
+from pair_harness.core.orchestrator import ApprovalCallback, ConversationOrchestrator
+from pair_harness.desktop_backend.engine_factory import build_coding_engine
 from pair_harness.settings import Settings
 from pair_harness.storage.sqlite_store import SQLiteStore
 
-
-def load_dotenv(path: Path) -> None:
-    """把仓库根 ``.env`` 的 KEY=VALUE 行载入进程环境（不覆盖已存在的值）。
-
-    B1：``.env`` 不参与打包分发，也不会被自动加载；真实联调与运行时
-    从这里读取密钥，已显式设置的环境变量优先。
-    """
-    if not path.is_file():
-        return
-    try:
-        dotenv_text = path.read_text(encoding="utf-8-sig")
-    except UnicodeDecodeError:
-        # Windows 用户可能把本地 .env 保存成 GBK；配置键本身仍按文本解析。
-        dotenv_text = path.read_text(encoding="gb18030")
-    for line in dotenv_text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = value
+DEFAULT_ACCOUNT_ID = "default-local"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -70,23 +56,49 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def run_demo(project_path: Path, text: str) -> int:
+def _console_approval(approve: bool) -> ApprovalCallback:
+    """按 ``--approve`` 裁决全部审批请求，并把每次裁决打印到终端。"""
+
+    async def approval_callback(
+        op: PendingOperation,
+        approval_id: str,
+        reason: str,
+        conversation_id: str,
+        task_id: str,
+    ) -> ApprovalDecision:
+        print(
+            f"[审批] {approval_id} {op.summary}（{reason}）"
+            f"→ {'允许' if approve else '拒绝'}"
+        )
+        return ApprovalDecision.ALLOW if approve else ApprovalDecision.DENY
+
+    return approval_callback
+
+
+async def run_demo(project_path: Path, text: str, approve: bool) -> int:
     project_path = project_path.resolve()
-    project = ProjectRef(
-        project_id="demo-project",
-        name=project_path.name,
-        root_path=str(project_path),
-    )
     orchestrator = ConversationOrchestrator(
-        pair_id="phainon_ancient_machine",
-        project=project,
         dialogue_model=ScriptedDialogueModel(),
         coding_engine=ScriptedCodingEngine(),
+        approval_callback=_console_approval(approve),
+    )
+    context = ExecutionContext(
+        account_id=DEFAULT_ACCOUNT_ID,
+        project=ProjectRef(
+            project_id="demo-project",
+            name=project_path.name,
+            root_path=str(project_path),
+        ),
+        conversation_id="demo-conversation",
+        pair_id="phainon_ancient_machine",
+        conversation_mode="collaboration",
         approval_mode=ApprovalMode.FULL_AUTO,
+        assistant_instructions="",
     )
     outcome = await orchestrator.handle_character_input(
-        conversation_id="demo-conversation",
+        conversation_id=context.conversation_id,
         text=text,
+        context=context,
     )
     for message in outcome.messages[:2]:
         print(f"{message.source} → {message.text}")
@@ -113,14 +125,14 @@ async def run_real(
     conversation_id: str,
     data_dir: Path | None,
 ) -> int:
-    """B1：真实后端单轮冒烟。
+    """真实后端单轮冒烟。
 
-    - 角色和古代机械共用同一供应商配置（任意 OpenAI Chat Completions 兼容端点）；
-    - 编程引擎统一为 reasonix acp，端点经 ``PAIR_HARNESS_DIALOGUE_BASE_URL``
+    - 角色和助手共用同一供应商配置（任意 OpenAI Chat Completions 兼容端点）；
+    - 编程引擎是 Reasonix ACP，端点经 ``PAIR_HARNESS_DIALOGUE_BASE_URL``
       写入账号私有的 Reasonix 配置；
-    - 状态库持久化：同一 ``--conversation`` 二次运行恢复旧聊天与 ACP 会话
-      （session/resume），新会话 id 另开会话（不继承旧会话）；
-    - 审批策略按 ``_engine_policy`` 映射（§14.6），三种模式逐一可验。
+    - 状态库持久化：同一 ``--conversation`` 二次运行恢复旧聊天与 ACP 会话，
+      新会话 id 另开会话；
+    - 审批模式随执行上下文交给编排器裁决，三种模式逐一可验。
     """
     project_path = project_path.resolve()
     settings = Settings.from_environment()
@@ -135,8 +147,6 @@ async def run_real(
     ]
     if missing:
         raise SystemExit(f"--real 缺少环境变量: {', '.join(missing)}（.env 或进程环境）")
-    assert settings.dialogue_base_url and settings.dialogue_api_key and settings.dialogue_model
-    from pair_harness.desktop_backend.engine_factory import build_coding_engine
 
     paths = AppPaths(Path(data_dir)).ensure() if data_dir else AppPaths.default().ensure()
     store = SQLiteStore(paths.database)
@@ -154,66 +164,59 @@ async def run_real(
     pair_config = load_pair_config(pair_id)
     assistant_instructions = load_prompt(pair_config.assistant.prompt)
 
-    preset = load_reasoning_preset(settings.dialogue_base_url, settings.dialogue_model)
     dialogue = OpenAICompatibleDialogueModel(
         base_url=settings.dialogue_base_url,
         api_key=settings.dialogue_api_key,
         model=settings.dialogue_model,
-        thinking=preset.default_thinking,
-        reasoning_effort=(
-            None
-            if project_record.reasoning_effort == "auto"
-            else project_record.reasoning_effort
-        ),
         temperature=1.0,
     )
     engine = build_coding_engine(
-        codex_auth=CodexAuthService(paths.database.parent, "default-local"),
+        codex_auth=CodexAuthService(paths.database.parent, DEFAULT_ACCOUNT_ID),
         model=settings.dialogue_model,
         base_url=settings.dialogue_base_url,
         api_key=settings.dialogue_api_key,
     )
     reviewer = DialogueModelReviewer(dialogue) if approval_mode == ApprovalMode.REVIEW else None
-
-    async def approval_callback(op, approval_id: str, reason: str) -> ApprovalDecision:
-        print(f"[审批] {approval_id} {op.summary}（{reason}）→ {'允许' if approve else '拒绝'}")
-        return ApprovalDecision.ALLOW if approve else ApprovalDecision.DENY
-
-    project = ProjectRef(
-        project_id=project_record.project_id,
-        name=project_record.name,
-        root_path=project_record.root_path,
+    # CLI 单账号运行：归属当前或默认本地账号
+    account_id = store.get_app_state("current_account_id") or DEFAULT_ACCOUNT_ID
+    context = ExecutionContext(
+        account_id=account_id,
+        project=ProjectRef(
+            project_id=project_record.project_id,
+            name=project_record.name,
+            root_path=project_record.root_path,
+        ),
+        conversation_id=stored_conversation_id,
+        pair_id=pair_id,
+        conversation_mode="collaboration",
+        approval_mode=approval_mode,
+        assistant_instructions=assistant_instructions,
     )
     try:
         store.create_conversation(
             conversation_id=stored_conversation_id,
-            project_id=project.project_id,
+            project_id=project_record.project_id,
             pair_id=pair_id,
             title="CLI 真实联调",
-            # CLI 单账号运行：归属默认本地账号
-            account_id=store.get_app_state("current_account_id") or "default-local",
+            account_id=account_id,
         )
         orchestrator = ConversationOrchestrator(
-            pair_id=pair_id,
-            project=project,
             dialogue_model=dialogue,
             coding_engine=engine,
             store=store,
-            approval_mode=approval_mode,
             reviewer=reviewer,
-            approval_callback=approval_callback,
-            assistant_instructions=assistant_instructions,
+            approval_callback=_console_approval(approve),
         )
         snapshot = store.load_conversation(stored_conversation_id)
-        if snapshot["messages"]:
+        if snapshot.messages:
             orchestrator.restore_conversation(snapshot)
             print(
                 f"[会话] 恢复旧聊天 {conversation_id}"
-                f"（{len(snapshot['messages'])} 条消息）"
+                f"（{len(snapshot.messages)} 条消息）"
             )
 
         outcome = await orchestrator.handle_character_input(
-            conversation_id=stored_conversation_id, text=text
+            conversation_id=stored_conversation_id, text=text, context=context
         )
         for message in outcome.messages:
             if message.source in (MessageSource.USER, MessageSource.CHARACTER, MessageSource.ASSISTANT):
@@ -228,7 +231,7 @@ async def run_real(
                 print(f"  error → {error}")
         return 0 if receipt is not None and receipt.status == "completed" else 1
     finally:
-        await engine.transport.close()
+        await engine.aclose()
         await dialogue.aclose()
         store.close()
 
@@ -237,9 +240,10 @@ def main(argv: list[str] | None = None) -> int:
     _configure_stdio_utf8()
     args = build_parser().parse_args(argv)
     if args.demo:
-        return asyncio.run(run_demo(Path(args.project), args.message))
+        return asyncio.run(run_demo(Path(args.project), args.message, args.approve))
     if args.real:
-        load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+        # .env 只在仓库内真实联调时使用，已设置的进程环境变量优先。
+        load_dotenv(Path(__file__).resolve().parents[2] / ".env", encoding="utf-8-sig")
         return asyncio.run(
             run_real(
                 project_path=Path(args.project),
@@ -257,9 +261,7 @@ def main(argv: list[str] | None = None) -> int:
 def _configure_stdio_utf8() -> None:
     """让 CLI 在 Windows GBK 与系统 UTF-8 模式下都使用稳定的 UTF-8 I/O。"""
     for stream in (sys.stdin, sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            reconfigure(encoding="utf-8", errors="replace")
+        stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 if __name__ == "__main__":

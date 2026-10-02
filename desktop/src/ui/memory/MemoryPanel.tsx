@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { HarnessActions } from "../../contracts/actions";
 import type { PairMemory } from "../../contracts/protocol";
@@ -6,11 +6,11 @@ import { useDesktopStore } from "../../stores/desktopStore";
 import { MemoryContentEditor, parseMemoryContent } from "./MemoryContentEditor";
 
 interface MemoryPanelProps {
-  /** 记忆命令入口（memory.list/create/update/delete）；未接入时不渲染操作能力。 */
-  actions?: HarnessActions;
+  /** 记忆命令入口（memory.list/create/update/delete）。 */
+  actions: HarnessActions;
 }
 
-/** 作用域五分量的展示顺序（契约 §1 冻结顺序：账号/项目/配对/角色/助手身份）。 */
+/** 作用域五分量的展示顺序：账号、项目、配对、角色、助手身份。 */
 const SCOPE_FIELDS: Array<{ key: keyof PairMemory["scope"]; label: string }> = [
   { key: "account_id", label: "账号" },
   { key: "project_id", label: "项目" },
@@ -19,7 +19,7 @@ const SCOPE_FIELDS: Array<{ key: keyof PairMemory["scope"]; label: string }> = [
   { key: "assistant_identity", label: "助手身份" },
 ];
 
-/** 记忆列表条目（内容原样展示，不筛选、不改写）。 */
+/** 记忆列表条目。 */
 function MemoryItem({
   memory,
   editing,
@@ -74,7 +74,7 @@ function MemoryItem({
         最近更新：{memory.updated_at || "未报告"}
       </div>
 
-      {/* 五分量作用域全部来自服务端下发，界面只展示，不拼接也不推断 */}
+      {/* 作用域五分量由服务端下发 */}
       <dl className="context-strip-scope-facts" data-testid={`memory-scope-${memory.memory_id}`}>
         {SCOPE_FIELDS.map((field) => (
           <div key={field.key} style={{ display: "flex", gap: "6px" }}>
@@ -156,9 +156,9 @@ function MemoryItem({
 /**
  * 设置中心「长期记忆」页。
  *
- * 作用域一律由服务端按会话权威解析（account/project/pair/character_ref/
- * assistant_identity 五分量），界面只传 conversation_id，不拼接作用域键；
- * 列表、增、改、删都走真实 memory.* 命令，失败原文如实上屏。
+ * 作用域（account/project/pair/character_ref/assistant_identity 五分量）由服务端
+ * 按会话解析，界面只传 conversation_id。读取失败由 listMemories 写入
+ * memoryPanel.error 后显示；新增、修改、删除失败显示后端错误原文。
  */
 export function MemoryPanel({ actions }: MemoryPanelProps) {
   const conversationId = useDesktopStore((state) => state.activeConversationId);
@@ -177,44 +177,15 @@ export function MemoryPanel({ actions }: MemoryPanelProps) {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  const listMemories = actions?.listMemories;
-  const createMemory = actions?.createMemory;
-  const updateMemory = actions?.updateMemory;
-  const deleteMemory = actions?.deleteMemory;
-
-  // 回调引用可能每次渲染变化；用 ref 持有，避免 effect 因引用变化反复重拉。
-  const listRef = useRef(listMemories);
-  listRef.current = listMemories;
-
   useEffect(() => {
-    // 换聊天时清掉上一份记录上的编辑/确认状态，避免张冠李戴。
+    // 换聊天时清掉上一份记录上的编辑与确认状态。
     setEditingId(null);
     setEditDraft("");
     setEditError(null);
     setConfirmDeleteId(null);
     if (!conversationId) return;
-    const list = listRef.current;
-    if (!list) return;
-    // 失败原文由 action 写入 store.memoryPanel.error 并在下方如实展示；
-    // 这里只避免未处理的 rejection，不改写失败、不合成成功。
-    void list({ conversationId }).catch(() => {});
-  }, [conversationId]);
-
-  /** 变更后重新读取服务端权威列表；失败同样只展示真实错误。 */
-  const refresh = () => {
-    if (!conversationId || !listRef.current) return Promise.resolve([]);
-    return listRef.current({ conversationId }).catch(() => []);
-  };
-
-  if (!listMemories) {
-    return (
-      <section className="settings-page" data-testid="memory-panel">
-        <p className="settings-hint">
-          当前环境未接入记忆命令（memory.list/create/update/delete），无法读取或修改长期记忆。
-        </p>
-      </section>
-    );
-  }
+    void actions.listMemories({ conversationId });
+  }, [conversationId, actions]);
 
   if (!conversationId) {
     return (
@@ -229,16 +200,18 @@ export function MemoryPanel({ actions }: MemoryPanelProps) {
   const listed = memories ?? [];
   const addParsed = parseMemoryContent(draft);
 
+  /** 变更后重新读取服务端列表。 */
+  const reload = () => void actions.listMemories({ conversationId });
+
   const runAdd = async () => {
-    if (!createMemory || !addParsed.ok) return;
+    if (!addParsed.ok) return;
     setAdding(true);
     setAddError(null);
     try {
-      await createMemory(addParsed.content, { conversationId });
+      await actions.createMemory(addParsed.content, { conversationId });
       setDraft("");
-      await refresh();
+      reload();
     } catch (error) {
-      // Let It Fail：后端真实错误原文上屏（如 memory.create 未实现时的 unknown_method）。
       setAddError(error instanceof Error ? error.message : String(error));
     } finally {
       setAdding(false);
@@ -246,15 +219,14 @@ export function MemoryPanel({ actions }: MemoryPanelProps) {
   };
 
   const runSave = async (memoryId: string) => {
-    if (!updateMemory) return;
     const parsed = parseMemoryContent(editDraft);
     if (!parsed.ok) return;
     setSavingId(memoryId);
     setEditError(null);
     try {
-      await updateMemory(memoryId, parsed.content, { conversationId });
+      await actions.updateMemory(memoryId, parsed.content, { conversationId });
       setEditingId(null);
-      await refresh();
+      reload();
     } catch (error) {
       setEditError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -263,13 +235,12 @@ export function MemoryPanel({ actions }: MemoryPanelProps) {
   };
 
   const runDelete = async (memoryId: string) => {
-    if (!deleteMemory) return;
     setDeletingId(memoryId);
     setConfirmDeleteId(null);
     setEditError(null);
     try {
-      await deleteMemory(memoryId, { conversationId });
-      await refresh();
+      await actions.deleteMemory(memoryId, { conversationId });
+      reload();
     } catch (error) {
       setEditError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -296,11 +267,7 @@ export function MemoryPanel({ actions }: MemoryPanelProps) {
             读取长期记忆失败：{memoryPanel.error}
           </p>
           <div className="settings-row">
-            <button
-              type="button"
-              className="btn btn-outline"
-              onClick={() => void refresh()}
-            >
+            <button type="button" className="btn btn-outline" onClick={reload}>
               重试
             </button>
           </div>
@@ -355,8 +322,7 @@ export function MemoryPanel({ actions }: MemoryPanelProps) {
 
       <h3 className="settings-subhead">新增记忆</h3>
       <p className="settings-hint">
-        内容是一个 JSON 对象，字段语义由模型与用户自行约定；这里不做字段预设，也不改写内容。
-        新增只在当前聊天的权威作用域内生效。
+        内容是一个 JSON 对象，字段由你与模型约定。新增的记忆写入当前聊天的作用域。
       </p>
       <MemoryContentEditor
         value={draft}
@@ -370,7 +336,7 @@ export function MemoryPanel({ actions }: MemoryPanelProps) {
           type="button"
           className="btn btn-primary"
           data-testid="memory-create-submit"
-          disabled={adding || !createMemory || !addParsed.ok}
+          disabled={adding || !addParsed.ok}
           onClick={() => void runAdd()}
         >
           {adding ? "正在写入…" : "新增记忆"}

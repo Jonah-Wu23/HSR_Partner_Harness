@@ -7,34 +7,90 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
+use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager, State};
+use time::macros::format_description;
+use time::OffsetDateTime;
 
 type PendingMap = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<Value>>>>;
 
-/// V0.3.2 M5：独立聊天窗口的元数据（label → 归属会话），用于改名同步标题。
+/// Windows 作业对象：句柄关闭时结束作业内全部进程。Sidecar 拉起的
+/// cloudflared、reasonix 自动进入同一作业，Sidecar 被强杀或崩溃后不会遗留。
+#[cfg(windows)]
+mod sidecar_job {
+    use std::os::windows::io::AsRawHandle;
+    use std::process::Child;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    pub struct KillOnCloseJob(HANDLE);
+
+    // 句柄只由持有它的 SidecarProcess 移动和关闭。
+    unsafe impl Send for KillOnCloseJob {}
+
+    impl KillOnCloseJob {
+        /// 新建 KILL_ON_JOB_CLOSE 作业并把 `child` 放进去。
+        pub fn assign(child: &Child) -> std::io::Result<Self> {
+            // SAFETY: 传入的指针均指向有效的局部值或为空，句柄由 Self 独占并在 Drop 关闭。
+            unsafe {
+                let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if handle.is_null() {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let job = Self(handle);
+                let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                if SetInformationJobObject(
+                    job.0,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+                        as *const core::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                ) == 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if AssignProcessToJobObject(job.0, child.as_raw_handle() as HANDLE) == 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(job)
+            }
+        }
+    }
+
+    impl Drop for KillOnCloseJob {
+        fn drop(&mut self) {
+            // SAFETY: 句柄由 CreateJobObjectW 返回且只在这里关闭一次。
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+/// Sidecar 子进程。Windows 下连同作业对象一起持有：整体丢弃时作业句柄关闭，
+/// Sidecar 及其仍在运行的子进程随之结束。
+struct SidecarProcess {
+    child: Child,
+    #[cfg(windows)]
+    _job: sidecar_job::KillOnCloseJob,
+}
+
+/// 独立聊天窗口归属的会话，会话改名时据此同步窗口标题。
 #[derive(Debug, Clone)]
 struct ChatWindowMeta {
     conversation_id: String,
-    #[allow(dead_code)]
-    project_id: String,
-}
-
-/// 桌面请求等待 Sidecar 响应的默认上限。
-const REQUEST_TIMEOUT_SECS: u64 = 30;
-
-/// 音色生成会串行调用多个真实远程接口，不适用普通请求的
-/// 30 秒上限。Sidecar 断开时 `fail_pending` 仍会立即释放等待方。
-fn request_timeout_secs(request: &Value) -> Option<u64> {
-    match request.get("method").and_then(Value::as_str) {
-        Some("voice.provision") => None,
-        _ => Some(REQUEST_TIMEOUT_SECS),
-    }
 }
 
 /// 自动重连退避起点（秒）：首次立即重试，失败后按 1s → 2s → 4s → 8s → 15s 递增。
@@ -80,7 +136,7 @@ struct BackendState {
     /// 用于发事件与重新 spawn（退避循环在后台线程运行）。
     app: tauri::AppHandle,
     debug_console: bool,
-    child: Mutex<Option<Child>>,
+    child: Mutex<Option<SidecarProcess>>,
     stdin: Mutex<Option<ChildStdin>>,
     pending: PendingMap,
     /// 当前连接代次；每次拉起 Sidecar 都会换成新的 stream_id。
@@ -96,10 +152,7 @@ struct BackendState {
     /// 连续异常退出计数：退避跨 EOF 周期延续，避免「启动即崩」的忙循环；
     /// 新进程吐出首条合法输出时清零，手动重连时也清零（重置退避）。
     crash_streak: Mutex<u32>,
-    /// 本进程侧的单调事件序号：跟踪 Sidecar 事件的最大序号，合成事件取其后续，
-    /// 保证前端序列号校验在断线-重连之间不断层。
-    last_sequence: AtomicU64,
-    /// V0.3.2 M5：独立聊天窗口登记表（窗口 label → 会话元数据）。
+    /// 独立聊天窗口登记表：窗口 label 到会话元数据。
     chat_windows: Mutex<HashMap<String, ChatWindowMeta>>,
 }
 
@@ -118,52 +171,18 @@ fn next_stream_id() -> u64 {
     NEXT_STREAM_ID.fetch_add(1, Ordering::SeqCst) + 1
 }
 
-/// V0.3.2 M5：进程内唯一的 v4 形态 UUID（窗口 label / view_id 用）。
-/// 窗口 label 只需在本进程生命周期内唯一；为避免引入新依赖，用时间戳 + 计数器
-/// 经 xorshift 混合生成，并按 RFC 4122 置版本与变体位。
-fn random_uuid_v4() -> String {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos() as u64)
-        .unwrap_or(0);
-    let count = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let mut state = nanos ^ count.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    let mut next_u64 = move || {
-        state ^= state >> 12;
-        state ^= state << 25;
-        state ^= state >> 27;
-        state.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    };
-    let a = next_u64();
-    let b = next_u64();
-    let c = next_u64();
-    let d = next_u64();
-    format!(
-        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        a as u32,
-        (b >> 48) as u16,
-        (b >> 32) & 0x0FFF,
-        (((c >> 48) as u16) & 0x3FFF) | 0x8000,
-        ((c & 0x0000_FFFF) << 32) | (d & 0xFFFF_FFFF),
-    )
-}
+/// URL query 组件编码集：A-Za-z0-9 与 -_.~ 原样保留，其余字节按百分号编码。
+const QUERY_COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~');
 
-/// V0.3.2 M5：URL query 组件百分号编码（保留非保留字符 A-Za-z0-9-_.~）。
 fn encode_query_component(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(byte as char)
-            }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    encoded
+    utf8_percent_encode(value, QUERY_COMPONENT).to_string()
 }
 
-/// V0.3.2 M5：聊天窗口标题（会话名 + 应用名）。
+/// 聊天窗口标题：会话名加应用名。
 fn chat_window_title(title: &str) -> String {
     format!("{title} · HSR Partner Harness")
 }
@@ -199,8 +218,7 @@ fn sidecar_stderr_log_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     Some(data_dir.join("sidecar.stderr.log"))
 }
 
-/// stderr 日志单文件上限：达到上限后在下一次会话开始时滚动，
-/// 避免同一文件跨批次无限追加（V039-S4-010）。
+/// stderr 日志单文件上限：达到上限后在下一次会话开始时滚动，避免同一文件无限追加。
 const SIDECAR_LOG_MAX_BYTES: u64 = 4 * 1024 * 1024;
 /// 保留的滚动副本数量（sidecar.stderr.log.1 … .N）。
 const SIDECAR_LOG_BACKUPS: u32 = 3;
@@ -237,56 +255,17 @@ fn rotate_sidecar_log(path: &Path, max_bytes: u64, backups: u32) -> std::io::Res
 }
 
 /// 会话起始标记：日志跨会话追加时，凭这一行把后续日志归属到具体会话与进程。
-fn sidecar_log_session_header(
-    stream_id: u64,
-    pid: u32,
-    mode: BackendMode,
-    timestamp: &str,
-) -> String {
-    format!(
-        "===== sidecar stderr session {timestamp} stream_id={stream_id} pid={pid} mode={} =====\n",
-        mode.as_str()
-    )
+fn sidecar_log_session_header(stream_id: u64, pid: u32, timestamp: &str) -> String {
+    format!("===== sidecar stderr session {timestamp} stream_id={stream_id} pid={pid} =====\n")
 }
 
-/// 日志时间戳取 UTC（带 Z 后缀），避免跨批次比对时依赖本机时区。
+/// 日志时间戳取 UTC 并带 Z 后缀，不受本机时区影响。
 fn utc_timestamp(now: SystemTime) -> String {
-    let elapsed = now.duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO);
-    let seconds = elapsed.as_secs();
-    let (year, month, day) = civil_from_days((seconds / 86_400) as i64);
-    let second_of_day = seconds % 86_400;
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
-        second_of_day / 3_600,
-        (second_of_day % 3_600) / 60,
-        second_of_day % 60,
-        elapsed.subsec_millis(),
-    )
-}
-
-/// 以 1970-01-01 为第 0 天的日序 → (年, 月, 日)。
-/// Howard Hinnant 的 civil_from_days，避免为一个时间戳引入新依赖。
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let shifted = days + 719_468;
-    let era = if shifted >= 0 {
-        shifted
-    } else {
-        shifted - 146_096
-    } / 146_097;
-    let day_of_era = shifted - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_index = (5 * day_of_year + 2) / 153;
-    let day = (day_of_year - (153 * month_index + 2) / 5 + 1) as u32;
-    let month = if month_index < 10 {
-        month_index + 3
-    } else {
-        month_index - 9
-    };
-    let year = if month <= 2 { year + 1 } else { year };
-    (year, month as u32, day)
+    let format =
+        format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z");
+    OffsetDateTime::from(now)
+        .format(format)
+        .expect("格式描述是编译期常量，只用到 OffsetDateTime 具备的日期与时间分量")
 }
 
 /// 打开会话日志并写入起始标记：先按上限滚动，再追加本次会话的标记行。
@@ -352,10 +331,9 @@ where
         .any(|arg| matches!(arg.as_str(), "--debug-console" | "--console"))
 }
 
-/// 手机远程 WS 服务器端口（默认 8765）。
-/// V0.4.0（D2）：默认绑定 127.0.0.1 回环监听；传入 `--lan` 时绑定 0.0.0.0 供局域网直连。
-/// 必须与前端 RemotePairingPanel 缺省端口及 sidecar 监听端口保持一致；
-/// sidecar 侧端口被占时降级为桌面专用并上报 `serve_start_failed`（见 `desktop_backend/__main__.py`）。
+/// 手机远程 WS 服务器端口，与前端 RemotePairingPanel 的缺省端口一致。
+/// Sidecar 默认监听 127.0.0.1，开启局域网直连后监听 0.0.0.0；端口被占用时
+/// Sidecar 只服务桌面端并上报 `serve_start_failed`（见 `desktop_backend/__main__.py`）。
 const REMOTE_SERVE_PORT: &str = "8765";
 
 fn pwa_static_dir(
@@ -398,256 +376,50 @@ fn configure_console(debug_console: bool) {
 #[cfg(not(windows))]
 fn configure_console(_debug_console: bool) {}
 
-fn env_flag(name: &str) -> Option<bool> {
-    match std::env::var(name).ok()?.to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
-    }
-}
-
-fn configured_env_file(app: &tauri::AppHandle, root: &Path) -> Option<PathBuf> {
-    let mut candidates = Vec::new();
+/// Sidecar 读取的 .env 路径：设置了 PAIR_HARNESS_ENV_FILE 就用它，安装版用
+/// %LOCALAPPDATA%\PairHarness\.env，源码运行用仓库根的 .env。文件不存在时
+/// Sidecar 按未配置处理。
+fn configured_env_file(packaged: bool) -> Result<PathBuf, String> {
     if let Some(value) = std::env::var_os("PAIR_HARNESS_ENV_FILE") {
-        candidates.push(PathBuf::from(value));
+        return Ok(PathBuf::from(value));
     }
-    candidates.push(root.join(".env"));
-    // 开发机直接运行 target/release EXE 时，Sidecar 的 runtime_root 位于
-    // resources 目录，不能再靠 current_dir 反推出仓库根目录。
-    candidates.push(repository_root().join(".env"));
-    if let Ok(current_dir) = std::env::current_dir() {
-        candidates.push(current_dir.join(".env"));
+    if packaged {
+        let local_app_data = std::env::var_os("LOCALAPPDATA")
+            .ok_or_else(|| "环境变量 LOCALAPPDATA 未设置，无法定位安装版的 .env".to_string())?;
+        return Ok(PathBuf::from(local_app_data)
+            .join("PairHarness")
+            .join(".env"));
     }
-    if let Ok(executable) = std::env::current_exe() {
-        if let Some(parent) = executable.parent() {
-            candidates.push(parent.join(".env"));
-        }
-    }
-    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-        candidates.push(
-            PathBuf::from(local_app_data)
-                .join("PairHarness")
-                .join(".env"),
-        );
-    }
-    if let Ok(config_dir) = app.path().app_config_dir() {
-        candidates.push(config_dir.join(".env"));
-    }
-    if let Ok(data_dir) = app.path().app_data_dir() {
-        candidates.push(data_dir.join(".env"));
-    }
-    candidates.into_iter().find(|path| path.is_file())
+    Ok(repository_root().join(".env"))
 }
 
-/// Sidecar 运行模式。真实模式是默认值；演示模式只能由显式请求触发
-/// （V039-S4-002：缺少 .env 时不得静默降级为演示数据）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BackendMode {
-    Real,
-    Demo,
-}
-
-impl BackendMode {
-    /// 传给 Sidecar 的命令行开关。
-    fn as_arg(self) -> &'static str {
-        match self {
-            BackendMode::Real => "--real",
-            BackendMode::Demo => "--demo",
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            BackendMode::Real => "real",
-            BackendMode::Demo => "demo",
-        }
-    }
-}
-
-/// PAIR_HARNESS_REAL 的取值 → 模式；反向取值同样是显式声明，指向另一个模式。
-fn mode_from_real_flag(value: bool) -> BackendMode {
-    if value {
-        BackendMode::Real
-    } else {
-        BackendMode::Demo
-    }
-}
-
-/// PAIR_HARNESS_DEMO 的取值 → 模式。
-fn mode_from_demo_flag(value: bool) -> BackendMode {
-    if value {
-        BackendMode::Demo
-    } else {
-        BackendMode::Real
-    }
-}
-
-/// 合并同一来源里的一对模式声明：都没声明得到 None；两条声明指向不同模式时报错，
-/// 不静默取其一。
-fn merge_mode_flags(real: Option<bool>, demo: Option<bool>) -> Result<Option<BackendMode>, String> {
-    let from_real = real.map(mode_from_real_flag);
-    let from_demo = demo.map(mode_from_demo_flag);
-    match (from_real, from_demo) {
-        (Some(left), Some(right)) if left != right => Err(format!(
-            "配置冲突：PAIR_HARNESS_REAL 与 PAIR_HARNESS_DEMO 指向不同模式（{} / {}）",
-            left.as_str(),
-            right.as_str()
-        )),
-        (Some(mode), _) | (_, Some(mode)) => Ok(Some(mode)),
-        (None, None) => Ok(None),
-    }
-}
-
-/// 命令行显式请求；命令行是最高优先级来源。
-fn cli_mode_request<I>(args: I) -> Result<Option<BackendMode>, String>
+/// 按出现顺序挑出桌面进程实参里的模式与局域网直连开关，原样转发给 Sidecar。
+/// Sidecar 负责检测冲突，并结合 PAIR_HARNESS_REAL、PAIR_HARNESS_DEMO、
+/// PAIR_HARNESS_LAN 环境变量与 .env 决定运行模式和是否开启局域网直连。
+fn forwarded_sidecar_flags<I>(args: I) -> Vec<String>
 where
     I: IntoIterator<Item = String>,
 {
-    let mut real = false;
-    let mut demo = false;
-    for arg in args {
-        match arg.as_str() {
-            "--real" => real = true,
-            "--demo" => demo = true,
-            _ => {}
-        }
-    }
-    merge_mode_flags(real.then_some(true), demo.then_some(true))
-}
-
-/// 进程环境变量里的显式请求。
-fn env_mode_request() -> Result<Option<BackendMode>, String> {
-    merge_mode_flags(env_flag("PAIR_HARNESS_REAL"), env_flag("PAIR_HARNESS_DEMO"))
-}
-
-/// .env 内容里的显式请求。对话配置（BASE_URL/API_KEY/MODEL）是否齐全不再参与
-/// 模式判定：缺配置必须由真实模式如实报错，而不是降级成演示数据。
-fn env_content_mode_request(contents: &str) -> Result<Option<BackendMode>, String> {
-    merge_mode_flags(
-        env_content_flag(contents, "PAIR_HARNESS_REAL"),
-        env_content_flag(contents, "PAIR_HARNESS_DEMO"),
-    )
-}
-
-/// 读取 .env 里的显式请求；文件不存在等同没有声明，读取失败如实报错。
-fn env_file_mode_request(path: Option<&Path>) -> Result<Option<BackendMode>, String> {
-    let Some(path) = path else {
-        return Ok(None);
-    };
-    match std::fs::read_to_string(path) {
-        Ok(contents) => env_content_mode_request(&contents),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("读取 {} 失败：{error}", path.display())),
-    }
-}
-
-fn env_content_flag(contents: &str, wanted_key: &str) -> Option<bool> {
-    for raw_line in contents.lines() {
-        let line = raw_line.trim();
-        let line = line.strip_prefix("export ").unwrap_or(line);
-        let Some((raw_key, raw_value)) = line.split_once('=') else {
-            continue;
-        };
-        if raw_key.trim() != wanted_key {
-            continue;
-        }
-        let value = raw_value
-            .trim()
-            .trim_matches(|ch| ch == '\'' || ch == '"')
-            .to_ascii_lowercase();
-        return match value.as_str() {
-            "1" | "true" | "yes" | "on" => Some(true),
-            "0" | "false" | "no" | "off" => Some(false),
-            _ => None,
-        };
-    }
-    None
-}
-
-/// 模式判定优先级：命令行 > 进程环境 > .env；三者都没有声明时默认真实模式。
-fn resolve_backend_mode(
-    cli: Option<BackendMode>,
-    env: Option<BackendMode>,
-    file: Option<BackendMode>,
-) -> BackendMode {
-    cli.or(env).or(file).unwrap_or(BackendMode::Real)
-}
-
-/// 从当前进程的实参、环境变量与已定位到的 .env 解析 Sidecar 模式。
-fn detect_backend_mode(env_file: Option<&Path>) -> Result<BackendMode, String> {
-    Ok(resolve_backend_mode(
-        cli_mode_request(std::env::args())?,
-        env_mode_request()?,
-        env_file_mode_request(env_file)?,
-    ))
-}
-
-/// 命令行显式请求局域网直连模式（--lan / --no-lan）。
-fn cli_lan_request<I>(args: I) -> Option<bool>
-where
-    I: IntoIterator<Item = String>,
-{
-    let mut result = None;
-    for arg in args {
-        match arg.as_str() {
-            "--lan" => result = Some(true),
-            "--no-lan" => result = Some(false),
-            _ => {}
-        }
-    }
-    result
-}
-
-/// 进程环境变量里的局域网直连显式声明（PAIR_HARNESS_LAN）。
-fn env_lan_request() -> Option<bool> {
-    env_flag("PAIR_HARNESS_LAN")
-}
-
-/// .env 内容里的局域网直连显式声明。
-fn env_content_lan_request(contents: &str) -> Option<bool> {
-    env_content_flag(contents, "PAIR_HARNESS_LAN")
-}
-
-/// 读取 .env 里的局域网直连显式声明；文件不存在返回 None，读取失败如实报错。
-fn env_file_lan_request(path: Option<&Path>) -> Result<Option<bool>, String> {
-    let Some(path) = path else {
-        return Ok(None);
-    };
-    match std::fs::read_to_string(path) {
-        Ok(contents) => Ok(env_content_lan_request(&contents)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("读取 {} 失败：{error}", path.display())),
-    }
-}
-
-/// 局域网直连判定优先级：命令行 > 进程环境 > .env；未声明时默认关闭（回环监听）。
-fn resolve_lan_mode(cli: Option<bool>, env: Option<bool>, file: Option<bool>) -> bool {
-    cli.or(env).or(file).unwrap_or(false)
-}
-
-/// 从当前进程实参、环境变量与已定位到的 .env 解析局域网直连模式。
-fn detect_lan_mode(env_file: Option<&Path>) -> Result<bool, String> {
-    Ok(resolve_lan_mode(
-        cli_lan_request(std::env::args()),
-        env_lan_request(),
-        env_file_lan_request(env_file)?,
-    ))
+    args.into_iter()
+        .skip(1)
+        .filter(|arg| matches!(arg.as_str(), "--real" | "--demo" | "--lan" | "--no-lan"))
+        .collect()
 }
 
 fn stream_id_value(stream_id: u64) -> String {
     stream_id.to_string()
 }
 
-/// 拉起一个 Sidecar 进程并取回它的 stdin/stdout 句柄（不启动读取线程）。
+/// 拉起一个 Sidecar 进程并取回它的 stdin/stdout 句柄，读取线程由调用方启动。
 ///
-/// M2.1：每次启动都生成新的 `stream_id` 并通过环境变量传给 Python，事件按代次隔离。
-/// M2.5：`runtime_root`（进程工作目录/可执行文件位置）与 `initial_project_root`
-/// （首次启动默认项目根，必须位于可写的 app_data_dir）分开，不再复用同一个 root。
+/// 每次启动使用调用方传入的新 `stream_id`，经环境变量交给 Python，事件按代次隔离。
+/// `runtime_root` 是进程工作目录，`initial_project_root` 是首次启动的默认项目根，
+/// 位于可写的 app_data_dir。
 fn launch_sidecar(
     app: &tauri::AppHandle,
     debug_console: bool,
     stream_id: u64,
-) -> Result<(Child, ChildStdin, ChildStdout), String> {
+) -> Result<(SidecarProcess, ChildStdin, ChildStdout), String> {
     let packaged = packaged_sidecar(app);
     let bundled_reasonix = packaged_reasonix(app);
     let runtime_root = std::env::var_os("PAIR_HARNESS_ROOT")
@@ -668,47 +440,27 @@ fn launch_sidecar(
     let program = packaged
         .clone()
         .unwrap_or_else(|| python_command(&runtime_root));
-    let env_file = configured_env_file(app, &runtime_root);
-    let mode = detect_backend_mode(env_file.as_deref())?;
-    let lan = detect_lan_mode(env_file.as_deref())?;
+    let env_file = configured_env_file(packaged.is_some())?;
     let stderr_log = sidecar_stderr_log_path(app);
     let mut command = Command::new(program);
     command.current_dir(&runtime_root);
-    if packaged.is_some() {
-        command
-            .arg(mode.as_arg())
-            .arg("--serve")
-            .arg(REMOTE_SERVE_PORT);
-        if lan {
-            command.arg("--lan");
-        }
-        command.arg("--project").arg(&initial_project_root);
-    } else {
-        command.args([
-            "-m",
-            "pair_harness.desktop_backend",
-            mode.as_arg(),
-            "--serve",
-            REMOTE_SERVE_PORT,
-        ]);
-        if lan {
-            command.arg("--lan");
-        }
-        command.arg("--project").arg(&initial_project_root);
+    if packaged.is_none() {
+        command.args(["-m", "pair_harness.desktop_backend"]);
     }
+    command
+        .args(forwarded_sidecar_flags(std::env::args()))
+        .arg("--serve")
+        .arg(REMOTE_SERVE_PORT)
+        .arg("--project")
+        .arg(&initial_project_root);
     command.env("PAIR_HARNESS_STREAM_ID", stream_id.to_string());
-    if lan {
-        command.env("PAIR_HARNESS_LAN", "1");
-    }
+    command.env("PAIR_HARNESS_ENV_FILE", env_file);
     if let Some(pwa_dir) = pwa_static_dir(
         packaged.is_some(),
         app.path().resource_dir().ok().as_deref(),
         &runtime_root,
     ) {
         command.env("PAIR_HARNESS_PWA_DIR", pwa_dir);
-    }
-    if let Some(env_file) = env_file {
-        command.env("PAIR_HARNESS_ENV_FILE", env_file);
     }
     if let Some(reasonix) = bundled_reasonix {
         command.env("PAIR_HARNESS_BUNDLED_REASONIX_BIN", reasonix);
@@ -726,13 +478,18 @@ fn launch_sidecar(
     let mut child = command
         .spawn()
         .map_err(|error| format!("启动 Python Sidecar 失败：{error}"))?;
+    #[cfg(windows)]
+    let job = match sidecar_job::KillOnCloseJob::assign(&child) {
+        Ok(job) => job,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("为 Python Sidecar 建立作业对象失败：{error}"));
+        }
+    };
     if let Some(stderr) = child.stderr.take() {
-        let header = sidecar_log_session_header(
-            stream_id,
-            child.id(),
-            mode,
-            &utc_timestamp(SystemTime::now()),
-        );
+        let header =
+            sidecar_log_session_header(stream_id, child.id(), &utc_timestamp(SystemTime::now()));
         drain_sidecar_stderr(stderr, stderr_log, header);
     }
     let stdin = child
@@ -743,16 +500,16 @@ fn launch_sidecar(
         .stdout
         .take()
         .ok_or_else(|| "Sidecar stdout 不可用".to_string())?;
-    Ok((child, stdin, stdout))
+    let process = SidecarProcess {
+        child,
+        #[cfg(windows)]
+        _job: job,
+    };
+    Ok((process, stdin, stdout))
 }
 
 impl BackendState {
-    /// 合成事件序号：取 Sidecar 已见最大序号的下一个，保证前端单调校验不断层。
-    fn next_event_sequence(&self) -> u64 {
-        self.last_sequence.fetch_add(1, Ordering::SeqCst) + 1
-    }
-
-    /// 断开广播：connection.status disconnected + error.reported（recoverable）。
+    /// 断开广播：connection.status disconnected，再发一条 recoverable 的 error.reported。
     fn publish_disconnected(&self, message: &str) {
         let stream_id = *self.current_stream_id.lock().unwrap();
         let _ = self.connection.send(false);
@@ -761,7 +518,6 @@ impl BackendState {
             json!({
                 "kind": "event",
                 "event": "connection.status",
-                "sequence": self.next_event_sequence(),
                 "stream_id": stream_id_value(stream_id),
                 "payload": {"status": "disconnected", "stream_id": stream_id_value(stream_id)}
             }),
@@ -771,7 +527,6 @@ impl BackendState {
             json!({
                 "kind": "event",
                 "event": "error.reported",
-                "sequence": self.next_event_sequence(),
                 "stream_id": stream_id_value(stream_id),
                 "payload": {
                     "code": "backend_disconnected",
@@ -792,7 +547,6 @@ impl BackendState {
             json!({
                 "kind": "event",
                 "event": "connection.status",
-                "sequence": self.next_event_sequence(),
                 "stream_id": stream_id_value(stream_id),
                 "payload": {"status": "connected", "stream_id": stream_id_value(stream_id)}
             }),
@@ -802,10 +556,10 @@ impl BackendState {
     /// 重新拉起 Sidecar：成功后新旧 stdin/child 已交换，失败返回原因。
     fn respawn(&self) -> Result<ChildStdout, String> {
         let stream_id = next_stream_id();
-        let (child, stdin, stdout) = launch_sidecar(&self.app, self.debug_console, stream_id)?;
+        let (process, stdin, stdout) = launch_sidecar(&self.app, self.debug_console, stream_id)?;
         *self.current_stream_id.lock().unwrap() = stream_id;
         *self.stdin.lock().unwrap() = Some(stdin);
-        *self.child.lock().unwrap() = Some(child);
+        *self.child.lock().unwrap() = Some(process);
         Ok(stdout)
     }
 
@@ -857,12 +611,12 @@ impl BackendState {
 
 fn spawn_backend(app: &tauri::AppHandle, debug_console: bool) -> Result<Arc<BackendState>, String> {
     let stream_id = next_stream_id();
-    let (child, stdin, stdout) = launch_sidecar(app, debug_console, stream_id)?;
+    let (process, stdin, stdout) = launch_sidecar(app, debug_console, stream_id)?;
     let (connection, _) = tokio::sync::watch::channel(true);
     let state = Arc::new(BackendState {
         app: app.clone(),
         debug_console,
-        child: Mutex::new(Some(child)),
+        child: Mutex::new(Some(process)),
         stdin: Mutex::new(Some(stdin)),
         pending: Arc::new(Mutex::new(HashMap::new())),
         current_stream_id: Mutex::new(stream_id),
@@ -871,7 +625,6 @@ fn spawn_backend(app: &tauri::AppHandle, debug_console: bool) -> Result<Arc<Back
         connection,
         last_error: Mutex::new(None),
         crash_streak: Mutex::new(0),
-        last_sequence: AtomicU64::new(0),
         chat_windows: Mutex::new(HashMap::new()),
     });
     start_reader(&state, stdout, stream_id);
@@ -880,8 +633,8 @@ fn spawn_backend(app: &tauri::AppHandle, debug_console: bool) -> Result<Arc<Back
 
 /// 读取线程：把 Sidecar 的 stdout JSONL 转发为 sidecar://event，EOF 时按退出原因处理。
 ///
-/// M2.1：每个读取线程绑定自己的 `stream_id`；一旦当前代次已经换成新进程，
-/// 旧 reader 必须立即退出，不能转发迟到事件或把新连接标成 disconnected。
+/// 每个读取线程绑定自己的 `stream_id`。当前代次换成新进程后，旧 reader 立即退出，
+/// 不转发迟到事件，也不会把新连接标成 disconnected。
 fn start_reader(state: &Arc<BackendState>, stdout: ChildStdout, stream_id: u64) {
     let state = Arc::clone(state);
     std::thread::spawn(move || {
@@ -902,7 +655,6 @@ fn start_reader(state: &Arc<BackendState>, stdout: ChildStdout, stream_id: u64) 
                     json!({
                         "kind": "event",
                         "event": "error.reported",
-                        "sequence": state.next_event_sequence(),
                         "stream_id": stream_id_value(stream_id),
                         "payload": {"code": "invalid_sidecar_json", "message": "Sidecar 输出不是合法 JSON"}
                     }),
@@ -911,9 +663,6 @@ fn start_reader(state: &Arc<BackendState>, stdout: ChildStdout, stream_id: u64) 
             };
             if *state.current_stream_id.lock().unwrap() != stream_id {
                 break;
-            }
-            if let Some(sequence) = value.get("sequence").and_then(Value::as_u64) {
-                let _ = state.last_sequence.fetch_max(sequence, Ordering::SeqCst);
             }
             let routed_to_pending = matches!(
                 value.get("kind").and_then(Value::as_str),
@@ -938,7 +687,6 @@ fn start_reader(state: &Arc<BackendState>, stdout: ChildStdout, stream_id: u64) 
                     }
                 }
             } else {
-                // V0.3.2 M5：会话改名时同步所有打开该会话的聊天窗口标题。
                 sync_chat_window_titles(&state, &value);
                 let _ = state.app.emit("sidecar://event", value);
             }
@@ -948,12 +696,13 @@ fn start_reader(state: &Arc<BackendState>, stdout: ChildStdout, stream_id: u64) 
             return;
         }
         fail_pending(&state.pending, "Python Sidecar 已断开");
+        // 取出的 SidecarProcess 在本语句结束时丢弃，作业对象随之结束遗留子进程。
         let exit_status = state
             .child
             .lock()
             .unwrap()
             .take()
-            .and_then(|mut child| child.wait().ok());
+            .and_then(|mut process| process.child.wait().ok());
         match classify_exit(state.shutdown.load(Ordering::SeqCst), exit_status) {
             ExitClass::Shutdown => {} // 主动关闭：不发事件也不重连
             ExitClass::CleanExit => {
@@ -990,8 +739,8 @@ fn fail_pending(pending: &PendingMap, message: &str) {
     }
 }
 
-/// V0.3.2 M5：conversation.changed 事件到达时，更新所有打开该会话的
-/// 独立聊天窗口标题（标签栏标题由前端各自消费事件更新）。
+/// conversation.changed 事件到达时，更新所有打开该会话的独立聊天窗口标题；
+/// 标签栏标题由前端各自消费事件更新。
 fn sync_chat_window_titles(state: &Arc<BackendState>, value: &Value) {
     if value.get("event").and_then(Value::as_str) != Some("conversation.changed") {
         return;
@@ -1035,9 +784,12 @@ fn encode_request_line(request: &Value) -> Result<Vec<u8>, String> {
     Ok(line)
 }
 
-#[tauri::command]
+/// 把桌面请求转发给 Sidecar 并等待对应响应。`timeout_secs` 为 Some(n) 时最多等 n 秒；
+/// 为 None 时一直等到 Sidecar 回复，Sidecar 断开时由 `fail_pending` 释放等待方。
+#[tauri::command(rename_all = "snake_case")]
 async fn desktop_request(
     request: Value,
+    timeout_secs: Option<u64>,
     state: State<'_, Arc<BackendState>>,
 ) -> Result<Value, String> {
     let id = request
@@ -1046,13 +798,11 @@ async fn desktop_request(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "桌面请求缺少 id".to_string())?
         .to_string();
-    let timeout_secs = request_timeout_secs(&request);
     let line = encode_request_line(&request)?;
     let (sender, receiver) = tokio::sync::oneshot::channel();
     state.pending.lock().unwrap().insert(id.clone(), sender);
 
-    // M1.6：阻塞 stdin 写入移出 Tokio worker。写入任务在 blocking 线程池里
-    // 持有 Mutex，避免事件循环被管道写入卡住。
+    // 阻塞的 stdin 写入放到 blocking 线程池执行，事件循环不会被管道写入卡住。
     let write_state = Arc::clone(&state);
     let write_result = match tokio::task::spawn_blocking(move || {
         let mut stdin = write_state.stdin.lock().unwrap();
@@ -1111,19 +861,21 @@ async fn sidecar_reconnect(state: State<'_, Arc<BackendState>>) -> Result<Value,
     if state.shutdown.load(Ordering::SeqCst) {
         return Err("应用正在退出，无法重连".to_string());
     }
-    // M2.3：手动重连先把当前连接状态置为 false，再启动新代次。
+    // 手动重连先把当前连接状态置为 false，再启动新代次，
     // 不能读取旧 watch 值提前返回成功。
     let _ = state.connection.send(false);
     // 让旧 reader 立刻失效，防止其迟到的 EOF 覆盖新连接状态。
     *state.current_stream_id.lock().unwrap() = u64::MAX;
     // 手动重连重置退避：即使此前连续崩溃，也立即尝试一次
     *state.crash_streak.lock().unwrap() = 0;
-    // 强制终止现有进程（若有）；其 EOF 或恢复循环负责立即重启
-    if let Some(mut child) = state.child.lock().unwrap().take() {
-        let _ = child.kill();
-        let _ = child.wait();
+    // 强制终止现有进程（若有），由恢复循环立即重启。
+    if let Some(mut process) = state.child.lock().unwrap().take() {
+        let _ = process.child.kill();
+        let _ = process.child.wait();
     }
     let _ = state.stdin.lock().unwrap().take();
+    // 旧 reader 已失效，EOF 时不会再清理挂起请求，这里立即释放等待方。
+    fail_pending(&state.pending, "Python Sidecar 已断开，正在重连");
     state.ensure_reconnect_loop();
 
     // 订阅在发送 false 之后进行；此时若已经变为 true，只能是新代次发布
@@ -1147,23 +899,21 @@ async fn sidecar_reconnect(state: State<'_, Arc<BackendState>>) -> Result<Value,
     Ok(json!({ "reconnected": true }))
 }
 
-/// V0.3.2 M5：打开独立聊天窗口。
+/// 打开独立聊天窗口。
 ///
-/// - 每次调用创建独立 WebviewWindow；label 用 `chat-{uuid}`（同一聊天允许
-///   开多个窗口，不能用 conversation_id 做 label）。
+/// - 每次调用创建新的 WebviewWindow，label 为 `chat-{uuid}`，同一聊天可以开多个窗口。
 /// - 窗口 URL 携带编码后的 conversation_id 与新 view_id，React 启动后调用
 ///   conversation.open 装载该聊天。
 /// - 新窗口与主窗口共享同一个 Rust BackendState、Python Sidecar 与事件广播。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 async fn open_chat_window(
     app: tauri::AppHandle,
     state: State<'_, Arc<BackendState>>,
     conversation_id: String,
-    project_id: String,
     title: String,
 ) -> Result<String, String> {
-    let window_id = random_uuid_v4();
-    let view_id = random_uuid_v4();
+    let window_id = uuid::Uuid::new_v4().to_string();
+    let view_id = uuid::Uuid::new_v4().to_string();
     let label = format!("chat-{window_id}");
     let url_path = format!(
         "index.html?conversation_id={}&view_id={}",
@@ -1181,13 +931,11 @@ async fn open_chat_window(
     .build()
     .map_err(|error| format!("创建聊天窗口失败：{error}"))?;
     let _ = window.show();
-    state.chat_windows.lock().unwrap().insert(
-        label.clone(),
-        ChatWindowMeta {
-            conversation_id,
-            project_id,
-        },
-    );
+    state
+        .chat_windows
+        .lock()
+        .unwrap()
+        .insert(label.clone(), ChatWindowMeta { conversation_id });
     Ok(label)
 }
 
@@ -1205,15 +953,16 @@ fn stop_backend(state: &BackendState) {
         }
     }
     let deadline = Instant::now() + Duration::from_secs(5);
-    if let Some(mut child) = state.child.lock().unwrap().take() {
-        // M2.4：先给 Python 有限时间优雅退出，超时再强制结束。
+    if let Some(mut process) = state.child.lock().unwrap().take() {
+        // 先给 Python 有限时间优雅退出，超时再强制结束；process 丢弃时
+        // 作业对象结束仍在运行的子进程。
         loop {
-            if let Ok(Some(_status)) = child.try_wait() {
+            if let Ok(Some(_status)) = process.child.try_wait() {
                 break;
             }
             if Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
+                let _ = process.child.kill();
+                let _ = process.child.wait();
                 break;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -1227,17 +976,15 @@ pub fn run() {
     configure_console(debug_console);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        // V0.3.7 契约 §9.2：Android 壳本地通知（任务完成/委派结果/审批请求
-        // 三类事件的壳内本地通知走此插件；桌面端注册但无 JS 调用方）。
+        // Android 壳用它发送任务完成、委派结果与审批请求的本地通知；桌面前端不调用。
         .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
-            // V0.3.7 契约 §9.1：Android 壳不运行 Python Sidecar（移动端无法承载）。
-            // 壳内前端加载 desktop/mobile 同一产物，经 wsClient 直连桌面端 --serve 的
-            // WS 通道，配对/鉴权与事件协议完全复用；desktop_request 等桌面命令在
-            // 移动目标下无 Sidecar 可用（state 未注册，try_state 返回 None）。
+            // Android 壳不运行 Python Sidecar。壳内前端加载 desktop/mobile 的同一产物，
+            // 经 wsClient 连接桌面端 --serve 的 WS 通道，复用配对、鉴权与事件协议。
+            // 移动目标不注册 BackendState，desktop_request 等桌面命令在这里不可用。
             #[cfg(mobile)]
             {
-                let _ = &debug_console; // 移动端不启动 Sidecar，调试开关仅作用于桌面目标
+                let _ = &debug_console; // 调试开关只作用于桌面目标
             }
             #[cfg(desktop)]
             {
@@ -1247,7 +994,7 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // V0.3.2 M5：聊天窗口销毁时从登记表移除（不影响其他窗口与 Sidecar）。
+            // 窗口销毁时从聊天窗口登记表移除。
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 if let Some(state) = window.app_handle().try_state::<Arc<BackendState>>() {
                     state.chat_windows.lock().unwrap().remove(window.label());
@@ -1262,9 +1009,8 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
-            // V0.3.2 M5：关闭任意聊天窗口只是销毁该窗口，不触发退出流程；
-            // 只有最后一个应用窗口退出（ExitRequested 且已无窗口）才进入退出，
-            // 在 Exit 时停止 Sidecar。仍存在窗口时拒绝退出请求（防御）。
+            // 关闭聊天窗口只销毁该窗口。仍有窗口时拒绝退出请求，最后一个窗口
+            // 关闭后才进入退出，并在 Exit 时停止 Sidecar。
             if let tauri::RunEvent::ExitRequested {
                 code: None,
                 ref api,
@@ -1287,12 +1033,10 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        backoff_delay, civil_from_days, classify_exit, cli_lan_request, cli_mode_request,
-        debug_console_requested, encode_request_line, env_content_lan_request,
-        env_content_mode_request, env_file_lan_request, env_file_mode_request, fail_pending,
-        open_sidecar_log, pwa_static_dir, request_timeout_secs, resolve_backend_mode,
-        resolve_lan_mode, rotate_sidecar_log, sidecar_log_backup_path, sidecar_log_session_header,
-        stream_id_value, utc_timestamp, BackendMode, ExitClass, PendingMap, REMOTE_SERVE_PORT,
+        backoff_delay, classify_exit, debug_console_requested, encode_request_line, fail_pending,
+        forwarded_sidecar_flags, open_sidecar_log, pwa_static_dir, rotate_sidecar_log,
+        sidecar_log_backup_path, sidecar_log_session_header, stream_id_value, utc_timestamp,
+        ExitClass, PendingMap, REMOTE_SERVE_PORT,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -1330,18 +1074,6 @@ mod tests {
     }
 
     #[test]
-    fn voice_provision_is_not_limited_by_the_default_request_timeout() {
-        assert_eq!(
-            request_timeout_secs(&json!({"method": "voice.provision"})),
-            None
-        );
-        assert_eq!(
-            request_timeout_secs(&json!({"method": "config.get"})),
-            Some(30)
-        );
-    }
-
-    #[test]
     fn debug_console_requires_explicit_flag() {
         assert!(!debug_console_requested([
             "hsr-partner-harness.exe".to_string()
@@ -1356,6 +1088,38 @@ mod tests {
         ]));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn closing_the_job_kills_processes_inside_it() {
+        use super::sidecar_job::KillOnCloseJob;
+        use std::process::{Command, Stdio};
+        use std::time::Instant;
+
+        let mut child = Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let job = KillOnCloseJob::assign(&child).unwrap();
+        assert!(child.try_wait().unwrap().is_none());
+
+        drop(job);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let exited = loop {
+            if child.try_wait().unwrap().is_some() {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        if !exited {
+            let _ = child.kill();
+        }
+        assert!(exited, "关闭作业句柄后作业内进程应被结束");
+    }
+
     #[tokio::test]
     async fn disconnected_sidecar_releases_pending_request() {
         let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -1367,7 +1131,7 @@ mod tests {
         assert_eq!(value["error"]["code"], "backend_disconnected");
     }
 
-    // ------------------------------------------------------------------ M2-5 退出分类与退避
+    // ------------------------------------------------------------------ 退出分类与退避
 
     #[test]
     fn normal_shutdown_never_reconnects() {
@@ -1436,7 +1200,7 @@ mod tests {
         assert_eq!(stream_id_value(42), "42");
     }
 
-    // ------------------------------------------------- V0.3.2 M5 聊天窗口辅助
+    // ------------------------------------------------- 聊天窗口辅助
 
     #[test]
     fn query_component_encodes_reserved_characters() {
@@ -1448,213 +1212,22 @@ mod tests {
     }
 
     #[test]
-    fn window_uuid_is_unique_and_v4_shaped() {
-        use super::random_uuid_v4;
-        let first = random_uuid_v4();
-        let second = random_uuid_v4();
-        assert_ne!(first, second);
-        // 8-4-4-4-12 十六进制段，版本 4、变体 8/9/a/b
-        let segments: Vec<&str> = first.split('-').collect();
+    fn sidecar_receives_mode_and_lan_flags_in_original_order() {
+        let args = [
+            "hsr-partner-harness.exe",
+            "--debug-console",
+            "--lan",
+            "--demo",
+            "--no-lan",
+            "--real",
+        ]
+        .map(String::from);
         assert_eq!(
-            segments
-                .iter()
-                .map(|segment| segment.len())
-                .collect::<Vec<_>>(),
-            vec![8, 4, 4, 4, 12]
+            forwarded_sidecar_flags(args),
+            ["--lan", "--demo", "--no-lan", "--real"]
         );
-        assert!(segments[2].starts_with('4'));
-        assert!(matches!(
-            segments[3].chars().next(),
-            Some('8') | Some('9') | Some('a') | Some('b')
-        ));
-        assert!(first.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-'));
-    }
-
-    // ------------------------------------------------- V039-S4-002 后端模式判定
-
-    #[test]
-    fn backend_mode_defaults_to_real_without_any_explicit_request() {
-        // 无 .env、无 --demo、无模式环境变量时必须是真实模式，不得静默跑演示数据
-        assert_eq!(resolve_backend_mode(None, None, None), BackendMode::Real);
-    }
-
-    #[test]
-    fn higher_priority_explicit_request_wins() {
-        assert_eq!(
-            resolve_backend_mode(
-                Some(BackendMode::Demo),
-                Some(BackendMode::Real),
-                Some(BackendMode::Real)
-            ),
-            BackendMode::Demo
-        );
-        assert_eq!(
-            resolve_backend_mode(None, Some(BackendMode::Demo), Some(BackendMode::Real)),
-            BackendMode::Demo
-        );
-        assert_eq!(
-            resolve_backend_mode(None, None, Some(BackendMode::Demo)),
-            BackendMode::Demo
-        );
-    }
-
-    #[test]
-    fn demo_mode_requires_an_explicit_command_line_flag() {
-        assert_eq!(
-            cli_mode_request(["--demo".to_string()]).unwrap(),
-            Some(BackendMode::Demo)
-        );
-        assert_eq!(
-            cli_mode_request(["--real".to_string()]).unwrap(),
-            Some(BackendMode::Real)
-        );
-        assert_eq!(
-            cli_mode_request(["hsr-partner-harness.exe".to_string()]).unwrap(),
-            None
-        );
-        // 同一来源里两条相反声明必须暴露为冲突，不能静默取其一
-        assert!(cli_mode_request(["--demo".to_string(), "--real".to_string()]).is_err());
-    }
-
-    #[test]
-    fn dialogue_config_alone_is_not_a_mode_declaration() {
-        // 只有对话配置、没有任何模式声明：不算显式请求（旧实现据此降级为演示）
-        assert_eq!(env_content_mode_request("PAIR_HARNESS_DIALOGUE_BASE_URL=https://example.test\nPAIR_HARNESS_DIALOGUE_API_KEY=secret\nPAIR_HARNESS_DIALOGUE_MODEL=model\n").unwrap(), None);
-        assert_eq!(env_content_mode_request("# 没有模式声明\n").unwrap(), None);
-        assert_eq!(
-            env_content_mode_request("PAIR_HARNESS_DEMO=1\n").unwrap(),
-            Some(BackendMode::Demo)
-        );
-        assert_eq!(
-            env_content_mode_request("PAIR_HARNESS_REAL=1\n").unwrap(),
-            Some(BackendMode::Real)
-        );
-        // 反向取值同样是显式声明，指向另一个模式
-        assert_eq!(
-            env_content_mode_request("PAIR_HARNESS_REAL=0\n").unwrap(),
-            Some(BackendMode::Demo)
-        );
-        assert_eq!(
-            env_content_mode_request("PAIR_HARNESS_DEMO=0\n").unwrap(),
-            Some(BackendMode::Real)
-        );
-        assert!(env_content_mode_request("PAIR_HARNESS_REAL=1\nPAIR_HARNESS_DEMO=1\n").is_err());
-    }
-
-    #[test]
-    fn missing_env_file_is_not_a_demo_signal() {
-        let base = std::env::temp_dir().join(format!("ph-env-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
-        let env_file = base.join(".env");
-
-        assert_eq!(env_file_mode_request(None).unwrap(), None);
-        assert_eq!(env_file_mode_request(Some(&env_file)).unwrap(), None);
-
-        std::fs::write(&env_file, "PAIR_HARNESS_DEMO=1\n").unwrap();
-        assert_eq!(
-            env_file_mode_request(Some(&env_file)).unwrap(),
-            Some(BackendMode::Demo)
-        );
-        std::fs::write(&env_file, "PAIR_HARNESS_DIALOGUE_MODEL=deepseek-chat\n").unwrap();
-        assert_eq!(env_file_mode_request(Some(&env_file)).unwrap(), None);
-
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    // ------------------------------------------------- V0.4.0（D2）局域网直连模式
-
-    #[test]
-    fn lan_mode_defaults_to_false_without_any_explicit_request() {
-        // 无 .env、无 --lan、无环境变量时默认关闭（回环监听）
-        assert_eq!(resolve_lan_mode(None, None, None), false);
-    }
-
-    #[test]
-    fn lan_mode_higher_priority_explicit_request_wins() {
-        assert_eq!(resolve_lan_mode(Some(true), Some(false), Some(false)), true);
-        assert_eq!(resolve_lan_mode(Some(false), Some(true), Some(true)), false);
-        assert_eq!(resolve_lan_mode(None, Some(true), Some(false)), true);
-        assert_eq!(resolve_lan_mode(None, Some(false), Some(true)), false);
-        assert_eq!(resolve_lan_mode(None, None, Some(true)), true);
-        assert_eq!(resolve_lan_mode(None, None, Some(false)), false);
-    }
-
-    #[test]
-    fn lan_mode_cli_request_respects_flag() {
-        assert_eq!(cli_lan_request(["--lan".to_string()]), Some(true));
-        assert_eq!(cli_lan_request(["--no-lan".to_string()]), Some(false));
-        assert_eq!(
-            cli_lan_request(["hsr-partner-harness.exe".to_string()]),
-            None
-        );
-        // 后出现的参数覆盖先出现的参数
-        assert_eq!(
-            cli_lan_request(["--lan".to_string(), "--no-lan".to_string()]),
-            Some(false)
-        );
-        assert_eq!(
-            cli_lan_request(["--no-lan".to_string(), "--lan".to_string()]),
-            Some(true)
-        );
-    }
-
-    #[test]
-    fn lan_mode_env_content_request_parses_values() {
-        assert_eq!(env_content_lan_request("# 没有局域网配置\n"), None);
-        assert_eq!(env_content_lan_request("PAIR_HARNESS_LAN=1\n"), Some(true));
-        assert_eq!(
-            env_content_lan_request("PAIR_HARNESS_LAN=true\n"),
-            Some(true)
-        );
-        assert_eq!(env_content_lan_request("PAIR_HARNESS_LAN=on\n"), Some(true));
-        assert_eq!(
-            env_content_lan_request("PAIR_HARNESS_LAN=yes\n"),
-            Some(true)
-        );
-        assert_eq!(
-            env_content_lan_request("export PAIR_HARNESS_LAN=\"true\"\n"),
-            Some(true)
-        );
-        assert_eq!(env_content_lan_request("PAIR_HARNESS_LAN=0\n"), Some(false));
-        assert_eq!(
-            env_content_lan_request("PAIR_HARNESS_LAN=false\n"),
-            Some(false)
-        );
-        assert_eq!(
-            env_content_lan_request("PAIR_HARNESS_LAN=off\n"),
-            Some(false)
-        );
-        assert_eq!(
-            env_content_lan_request("PAIR_HARNESS_LAN=no\n"),
-            Some(false)
-        );
-        assert_eq!(env_content_lan_request("PAIR_HARNESS_LAN=invalid\n"), None);
-    }
-
-    #[test]
-    fn lan_mode_env_file_request_reads_file() {
-        let base = std::env::temp_dir().join(format!("ph-lan-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
-        let env_file = base.join(".env");
-
-        assert_eq!(env_file_lan_request(None).unwrap(), None);
-        assert_eq!(env_file_lan_request(Some(&env_file)).unwrap(), None);
-
-        std::fs::write(&env_file, "PAIR_HARNESS_LAN=1\n").unwrap();
-        assert_eq!(env_file_lan_request(Some(&env_file)).unwrap(), Some(true));
-
-        std::fs::write(&env_file, "PAIR_HARNESS_LAN=0\n").unwrap();
-        assert_eq!(env_file_lan_request(Some(&env_file)).unwrap(), Some(false));
-
-        std::fs::write(&env_file, "PAIR_HARNESS_OTHER=1\n").unwrap();
-        assert_eq!(env_file_lan_request(Some(&env_file)).unwrap(), None);
-
-        // 路径为目录导致读取失败时如实报错
-        assert!(env_file_lan_request(Some(&base)).is_err());
-
-        let _ = std::fs::remove_dir_all(&base);
+        // argv[0] 是程序路径，不参与转发
+        assert!(forwarded_sidecar_flags(["--real".to_string()]).is_empty());
     }
 
     #[test]
@@ -1699,21 +1272,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    // ------------------------------------------------- V039-S4-010 stderr 日志取证
+    // ------------------------------------------------- stderr 日志
 
     #[test]
-    fn session_header_marks_stream_process_and_mode() {
+    fn session_header_marks_stream_and_process() {
         assert_eq!(
-            sidecar_log_session_header(7, 4242, BackendMode::Real, "2026-09-10T10:37:00.000Z"),
-            "===== sidecar stderr session 2026-09-10T10:37:00.000Z stream_id=7 pid=4242 mode=real =====\n"
+            sidecar_log_session_header(7, 4242, "2026-09-10T10:37:00.000Z"),
+            "===== sidecar stderr session 2026-09-10T10:37:00.000Z stream_id=7 pid=4242 =====\n"
         );
-        assert!(sidecar_log_session_header(8, 1, BackendMode::Demo, "T").contains("mode=demo"));
     }
 
     #[test]
     fn utc_timestamp_matches_unix_epoch_seconds() {
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        assert_eq!(civil_from_days(20_454), (2026, 1, 1));
         assert_eq!(
             utc_timestamp(UNIX_EPOCH + Duration::from_secs(1_789_036_620)),
             "2026-09-10T10:37:00.000Z"
@@ -1764,17 +1334,17 @@ mod tests {
         std::fs::create_dir_all(&base).unwrap();
         let log = base.join("sidecar.stderr.log");
 
-        for (index, mode) in [(1u64, BackendMode::Real), (2u64, BackendMode::Demo)] {
-            let header = sidecar_log_session_header(index, 100 + index as u32, mode, "T");
+        for index in [1u64, 2u64] {
+            let header = sidecar_log_session_header(index, 100 + index as u32, "T");
             let mut file = open_sidecar_log(&log, &header).unwrap();
             file.write_all(format!("body-{index}\n").as_bytes())
                 .unwrap();
         }
 
         let expected = concat!(
-            "===== sidecar stderr session T stream_id=1 pid=101 mode=real =====\n",
+            "===== sidecar stderr session T stream_id=1 pid=101 =====\n",
             "body-1\n",
-            "===== sidecar stderr session T stream_id=2 pid=102 mode=demo =====\n",
+            "===== sidecar stderr session T stream_id=2 pid=102 =====\n",
             "body-2\n",
         );
         assert_eq!(std::fs::read_to_string(&log).unwrap(), expected);

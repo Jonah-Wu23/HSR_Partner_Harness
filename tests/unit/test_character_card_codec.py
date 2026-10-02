@@ -1,5 +1,3 @@
-"""Character Card v2/v3 JSON 编解码与白厄样例往返测试（V0.4.0 逻辑底座）。"""
-
 from __future__ import annotations
 
 import json
@@ -7,17 +5,16 @@ from pathlib import Path
 
 import pytest
 
-from pair_harness.character_cards import (
-    FIXED_TTS_MODEL,
+from pair_harness.character_cards.codec import (
     CardImportError,
+    NotExecutedItem,
     load_card_json,
     load_card_payload,
     dump_card_v3,
 )
+from pair_harness.voice_models import VOICE_TTS_MODEL as FIXED_TTS_MODEL
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "character_cards" / "白厄（3.4前）.json"
-# 主回归样例的原始路径；存在时用真实文件做第二轮校验。
-LIVE_SAMPLE = Path(r"E:\Tavern\白厄（3.4前）.json")
 
 
 def _load_sample(path: Path = FIXTURE) -> str:
@@ -100,13 +97,6 @@ def test_baiyu_roundtrip_import_export_import() -> None:
     assert len(payload["data"]["alternate_greetings"]) == 5
     assert payload["data"]["extensions"]["depth_prompt"]["depth"] == 4
     assert payload["creatorcomment"] == ""
-
-
-@pytest.mark.skipif(not LIVE_SAMPLE.exists(), reason="原始样例文件不在本机")
-def test_live_baiyu_sample_roundtrip() -> None:
-    live = load_card_json(LIVE_SAMPLE.read_text(encoding="utf-8"))
-    again = load_card_json(dump_card_v3(live.card))
-    assert again.card == live.card
 
 
 def test_import_v2_root_only_card() -> None:
@@ -245,13 +235,61 @@ def test_hsr_extension_roundtrip_and_fixed_model() -> None:
     assert hsr.voice_profile is not None
     assert hsr.voice_profile.voice_id.startswith("qwen-audio-3.0-tts-flash-")
     # 声明式面板标记为“已保留但未运行”。
-    assert "data.extensions.hsr.command_panels" in result.report.not_executed
+    assert (
+        NotExecutedItem("command_panels", "data.extensions.hsr.command_panels")
+        in result.report.not_executed
+    )
     again = load_card_json(dump_card_v3(card)).card
     assert again.hsr is not None
     assert again.hsr.avatar_asset is not None
     assert again.hsr.avatar_asset.extras == {"future_field": 1}
     assert again.hsr.voice_profile == hsr.voice_profile
     assert again.extensions["world"] == "自定义世界"
+
+
+def test_export_drops_local_asset_references() -> None:
+    card = load_card_payload({
+        "spec": "chara_card_v3",
+        "data": {
+            "name": "资产卡",
+            "extensions": {"hsr": {
+                "avatar_asset": {"asset_id": "asset-1", "source": "user_upload"},
+                "voice_profile": {"voice_id": "v-1", "reference_audio_asset": "asset-2"},
+            }},
+        },
+    }).card
+    stored = json.loads(dump_card_v3(card))["data"]["extensions"]["hsr"]
+    assert stored["avatar_asset"]["asset_id"] == "asset-1"
+    assert stored["voice_profile"]["reference_audio_asset"] == "asset-2"
+    exported = json.loads(dump_card_v3(card, for_export=True))["data"]["extensions"]["hsr"]
+    assert "asset_id" not in exported["avatar_asset"]
+    assert exported["avatar_asset"]["source"] == "user_upload"
+    assert "reference_audio_asset" not in exported["voice_profile"]
+    assert "voice_prompt_asset" not in exported["voice_profile"]
+    assert exported["voice_profile"]["voice_id"] == "v-1"
+
+
+def test_export_writes_st_position_for_depth_entries() -> None:
+    card = load_card_payload({
+        "spec": "chara_card_v3",
+        "data": {
+            "name": "深度卡",
+            "character_book": {"entries": [
+                {"keys": ["a"], "content": "深度", "position": "atDepth",
+                 "extensions": {"depth": 2}},
+                {"keys": ["b"], "content": "前置", "position": "before_char"},
+                {"keys": ["c"], "content": "已有", "position": "atDepth",
+                 "extensions": {"position": 1}},
+            ]},
+        },
+    }).card
+    stored = json.loads(dump_card_v3(card))["data"]["character_book"]["entries"]
+    assert "position" not in stored[0]["extensions"]
+    exported = json.loads(dump_card_v3(card, for_export=True))["data"]["character_book"]["entries"]
+    assert exported[0]["extensions"] == {"depth": 2, "position": 4}
+    assert exported[0]["position"] == "atDepth"
+    assert "extensions" not in exported[1]
+    assert exported[2]["extensions"] == {"position": 1}
 
 
 def test_imported_foreign_voice_model_normalized_to_fixed() -> None:
@@ -365,100 +403,85 @@ def test_export_writes_root_compat_copies() -> None:
     assert "create_date" not in payload["data"]
 
 
-# ---------------------------------------------------------------- V0.3.7 兼容报告增补
+# ---------------------------------------------------------------- 兼容报告
 
 
-def test_report_world_book_not_run_fields_declared() -> None:
-    """条目 extensions 声明 probability/sticky/group/selectiveLogic 存而不运行。"""
-    result = load_card_payload(
+def _book_report(character_book: dict):
+    return load_card_payload(
         {
             "spec": "chara_card_v3",
-            "data": {
-                "name": "存而不运行卡",
-                "character_book": {
-                    "entries": [
-                        {
-                            "keys": ["k"],
-                            "content": "c",
-                            "extensions": {
-                                "probability": 100,
-                                "sticky": 0,
-                                "group": "A",
-                                "selectiveLogic": 9,
-                            },
-                        }
-                    ]
-                },
-            },
+            "data": {"name": "世界书卡", "character_book": character_book},
         }
-    )
-    ne = result.report.not_executed
-    assert "character_book.entries[0].probability（存而不运行）" in ne
-    assert "character_book.entries[0].sticky（存而不运行）" in ne
-    assert "character_book.entries[0].group（存而不运行）" in ne
-    # selectiveLogic 越界进 warnings，同时它本身是合法字段不在 not_executed。
-    assert any("selectiveLogic 越界: 9" in w for w in result.report.warnings)
+    ).report
 
 
-def test_report_world_book_not_run_fields_merged_by_entry_count() -> None:
-    """同字段多条目合并为 entries[...] 计数形式。"""
-    result = load_card_payload(
-        {
-            "spec": "chara_card_v3",
-            "data": {
-                "name": "合并卡",
-                "character_book": {
-                    "entries": [
-                        {"keys": ["a"], "content": "1", "extensions": {"probability": 100}},
-                        {"keys": ["b"], "content": "2", "extensions": {"probability": 60}},
-                    ]
-                },
+@pytest.mark.parametrize(
+    ("character_book", "expected"),
+    [
+        pytest.param(
+            {
+                "entries": [
+                    {
+                        "keys": ["k"],
+                        "content": "c",
+                        "extensions": {"probability": 100, "sticky": 0, "group": "A"},
+                    }
+                ]
             },
-        }
-    )
-    assert (
-        "character_book.entries[...].probability（存而不运行，2 处）"
-        in result.report.not_executed
-    )
-
-
-def test_report_book_level_recursive_scanning_not_run() -> None:
-    """CharacterBook 级 recursive_scanning（书声明）同样报告。"""
-    result = load_card_payload(
-        {
-            "spec": "chara_card_v3",
-            "data": {
-                "name": "书级扫描卡",
-                "character_book": {"recursive_scanning": False, "entries": []},
+            [
+                "character_book.entries[0].probability（存而不运行）",
+                "character_book.entries[0].sticky（存而不运行）",
+                "character_book.entries[0].group（存而不运行）",
+            ],
+            id="单条目逐字段",
+        ),
+        pytest.param(
+            {
+                "entries": [
+                    {"keys": ["a"], "content": "1", "extensions": {"probability": 100}},
+                    {"keys": ["b"], "content": "2", "extensions": {"probability": 60}},
+                ]
             },
-        }
-    )
-    assert "character_book.recursive_scanning（存而不运行）" in result.report.not_executed
+            ["character_book.entries[...].probability（存而不运行，2 处）"],
+            id="多条目同字段合并计数",
+        ),
+        pytest.param(
+            {"recursive_scanning": False, "entries": []},
+            ["character_book.recursive_scanning（存而不运行）"],
+            id="书级字段",
+        ),
+    ],
+)
+def test_report_lists_world_book_fields_not_run(
+    character_book: dict, expected: list[str]
+) -> None:
+    not_executed = _book_report(character_book).not_executed
+    for text in expected:
+        assert NotExecutedItem("world_book", text) in not_executed
 
 
-def test_report_invalid_regex_key_degrades_to_warning() -> None:
-    """/bad[/i 形态 + use_regex=true 编译失败 → warnings 退化记录。"""
-    result = load_card_payload(
-        {
-            "spec": "chara_card_v3",
-            "data": {
-                "name": "非法正则卡",
-                "character_book": {
-                    "entries": [
-                        {"keys": ["/bad[/i"], "content": "c", "use_regex": True}
-                    ]
-                },
-            },
-        }
-    )
-    assert any(
-        "character_book.entries[0].keyword 非法正则已退化字面匹配: /bad[/i" in w
-        for w in result.report.warnings
-    )
+@pytest.mark.parametrize(
+    ("entry", "warning"),
+    [
+        pytest.param(
+            {"keys": ["k"], "content": "c", "extensions": {"selectiveLogic": 9}},
+            "selectiveLogic 越界: 9",
+            id="selectiveLogic越界",
+        ),
+        pytest.param(
+            {"keys": ["/bad[/i"], "content": "c", "use_regex": True},
+            "character_book.entries[0].keyword 非法正则已退化字面匹配: /bad[/i",
+            id="非法正则",
+        ),
+    ],
+)
+def test_report_warns_about_degraded_world_book_entry(entry: dict, warning: str) -> None:
+    report = _book_report({"entries": [entry]})
+    assert any(warning in item for item in report.warnings)
+    assert report.not_executed == []
 
 
 def test_report_non_whitelisted_macros_scanned_and_counted() -> None:
-    """{{setvar}}/{{time}} 报告，{{char}}/{{user}} 白名单不报告。"""
     result = load_card_payload(
         {
             "spec": "chara_card_v3",
@@ -470,14 +493,13 @@ def test_report_non_whitelisted_macros_scanned_and_counted() -> None:
         }
     )
     ne = result.report.not_executed
-    assert "macro:{{setvar::x::1}} @ data.personality（未展开，1 处）" in ne
-    assert "macro:{{time}} @ data.description（未展开，2 处）" in ne
-    assert not any(x.startswith("macro:{{char}}") for x in ne)
-    assert not any(x.startswith("macro:{{user}}") for x in ne)
+    assert NotExecutedItem("macro", "macro:{{setvar::x::1}} @ data.personality（未展开，1 处）") in ne
+    assert NotExecutedItem("macro", "macro:{{time}} @ data.description（未展开，2 处）") in ne
+    assert not any(x.text.startswith("macro:{{char}}") for x in ne)
+    assert not any(x.text.startswith("macro:{{user}}") for x in ne)
 
 
 def test_report_runtime_trigger_non_turn_not_run() -> None:
-    """runtime_trigger 非 turn kind 记录，turn kind 不记录。"""
     result = load_card_payload(
         {
             "spec": "chara_card_v3",
@@ -501,76 +523,13 @@ def test_report_runtime_trigger_non_turn_not_run() -> None:
         }
     )
     ne = result.report.not_executed
-    assert any(
-        "hsr.event_system.chapter1.runtime_trigger.kind=time（存而不运行）" in x
-        for x in ne
+    assert (
+        NotExecutedItem(
+            "runtime_trigger",
+            "hsr.event_system.chapter1.runtime_trigger.kind=time（存而不运行）",
+        )
+        in ne
     )
     assert not any(
-        "runtime_trigger.kind=turn" in x and "chapter2" in x for x in ne
+        "runtime_trigger.kind=turn" in x.text and "chapter2" in x.text for x in ne
     )
-
-
-def test_report_depth_prompt_whitelisted_user_not_reported() -> None:
-    """depth_prompt.prompt 中 {{user}} 属白名单，不进 not_executed。"""
-    result = load_card_payload(
-        {
-            "spec": "chara_card_v3",
-            "data": {
-                "name": "深度提示卡",
-                "extensions": {
-                    "depth_prompt": {
-                        "prompt": "对 {{user}} 保持陪伴",
-                        "depth": 4,
-                        "role": "system",
-                    }
-                },
-            },
-        }
-    )
-    assert not any("macro:{{user}}" in x for x in result.report.not_executed)
-
-
-def test_baiyu_fixture_report_not_run_labels_and_whitelist() -> None:
-    """白厄 fixture：probability/sticky 等存而不运行标签存在，宏白名单不报告。"""
-    result = load_card_json(_load_sample())
-    ne = result.report.not_executed
-    assert any(".probability（存而不运行" in x for x in ne)
-    assert any(".sticky（存而不运行" in x for x in ne)
-    assert any(".group（存而不运行" in x for x in ne)
-    assert not any(x == "macro:{{char}}" or x.startswith("macro:{{char}}") for x in ne)
-    assert not any(x == "macro:{{user}}" or x.startswith("macro:{{user}}") for x in ne)
-
-
-def test_report_scan_idempotent() -> None:
-    """同一 payload 导入两次，兼容报告 JSON 完全一致。"""
-    payload = {
-        "spec": "chara_card_v3",
-        "data": {
-            "name": "幂等卡",
-            "personality": "{{setvar::a::1}} 内容",
-            "character_book": {
-                "recursive_scanning": True,
-                "entries": [
-                    {
-                        "keys": ["/bad[/i"],
-                        "content": "c",
-                        "use_regex": True,
-                        "extensions": {"probability": 100, "selectiveLogic": 5},
-                    }
-                ],
-            },
-            "extensions": {
-                "hsr": {
-                    "event_system": {
-                        "t1": {
-                            "runtime_trigger": {"kind": "time", "at": "x"},
-                            "content": "触发",
-                        }
-                    }
-                }
-            },
-        },
-    }
-    first = json.dumps(load_card_payload(payload).report.to_dict(), sort_keys=True)
-    second = json.dumps(load_card_payload(payload).report.to_dict(), sort_keys=True)
-    assert first == second

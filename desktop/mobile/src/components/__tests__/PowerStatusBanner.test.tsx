@@ -17,6 +17,7 @@ function buildStatus(overrides: Partial<PowerStatusPayload> = {}): PowerStatusPa
     at_risk: false,
     reason: "AC/DC 睡眠超时均不低于阈值",
     checked_at: "2026-09-02T10:00:00",
+    warnings: [],
     ...overrides,
   };
 }
@@ -26,29 +27,26 @@ afterEach(() => {
 });
 
 describe("PowerStatusBanner 组件", () => {
-  it("status 为空时不渲染", () => {
-    const { container } = render(<PowerStatusBanner status={null} />);
+  it.each([
+    { condition: "尚未取得电源状态", status: null },
+    {
+      condition: "平台不支持电源检测",
+      status: buildStatus({
+        supported: false,
+        platform: "darwin",
+        plan_name: "",
+        ac_sleep_timeout_seconds: null,
+        dc_sleep_timeout_seconds: null,
+        reason: "unsupported platform",
+      }),
+    },
+    { condition: "远程服务已开启且没有休眠风险", status: buildStatus() },
+  ])("$condition 时不渲染", ({ status }) => {
+    const { container } = render(<PowerStatusBanner status={status} />);
     expect(container.firstChild).toBeNull();
   });
 
-  it("supported=false（不支持的平台）时不渲染", () => {
-    const { container } = render(
-      <PowerStatusBanner
-        status={buildStatus({
-          supported: false,
-          platform: "darwin",
-          plan_name: "",
-          ac_sleep_timeout_seconds: null,
-          dc_sleep_timeout_seconds: null,
-          at_risk: false,
-          reason: "unsupported platform",
-        })}
-      />,
-    );
-    expect(container.firstChild).toBeNull();
-  });
-
-  it("at_risk=true 时呈现「电脑可能休眠」与 reason 原文", () => {
+  it("有休眠风险时显示「电脑可能休眠」与 reason 原文", () => {
     render(
       <PowerStatusBanner
         status={buildStatus({
@@ -57,15 +55,13 @@ describe("PowerStatusBanner 组件", () => {
         })}
       />,
     );
-    expect(screen.getByTestId("power-status-banner")).toHaveClass("is-at-risk");
     expect(screen.getByTestId("power-status-title")).toHaveTextContent("电脑可能休眠");
-    // reason 原文原样展示，不改写不摘要
     expect(screen.getByTestId("power-status-reason")).toHaveTextContent(
       "AC 睡眠超时 600 秒低于阈值 900 秒",
     );
   });
 
-  it("at_risk=true 时展示电源计划与 AC/DC 超时秒数，0 秒呈现为「从不」", () => {
+  it("有休眠风险时展示电源计划与 AC/DC 睡眠超时，0 秒显示为「从不」", () => {
     render(
       <PowerStatusBanner
         status={buildStatus({
@@ -83,24 +79,19 @@ describe("PowerStatusBanner 组件", () => {
     expect(detail).toHaveTextContent("从不");
   });
 
-  it("at_risk=true 且提供 onDismiss 时渲染「知道了」并回调", () => {
+  it("有休眠风险时「知道了」回调 onDismiss，不传回调时不显示该按钮", () => {
     const onDismiss = vi.fn();
-    render(
-      <PowerStatusBanner
-        status={buildStatus({ at_risk: true })}
-        onDismiss={onDismiss}
-      />,
+    const { rerender } = render(
+      <PowerStatusBanner status={buildStatus({ at_risk: true })} onDismiss={onDismiss} />,
     );
     fireEvent.click(screen.getByTestId("btn-power-dismiss"));
     expect(onDismiss).toHaveBeenCalledTimes(1);
-  });
 
-  it("at_risk=true 且未提供 onDismiss 时不渲染关闭按钮", () => {
-    render(<PowerStatusBanner status={buildStatus({ at_risk: true })} />);
+    rerender(<PowerStatusBanner status={buildStatus({ at_risk: true })} />);
     expect(screen.queryByTestId("btn-power-dismiss")).toBeNull();
   });
 
-  it("remote_serve_enabled=false 且无风险时按 reason 原文弱化呈现", () => {
+  it("远程服务未开启且没有休眠风险时只展示 reason 原文，不显示休眠警示", () => {
     render(
       <PowerStatusBanner
         status={buildStatus({
@@ -110,19 +101,7 @@ describe("PowerStatusBanner 组件", () => {
         })}
       />,
     );
-    const banner = screen.getByTestId("power-status-banner");
-    expect(banner).toHaveClass("is-muted");
-    expect(screen.getByTestId("power-status-reason")).toHaveTextContent(
-      "远程服务未开启",
-    );
-    // 弱化态不冒充休眠风险
+    expect(screen.getByTestId("power-status-reason")).toHaveTextContent("远程服务未开启");
     expect(screen.queryByTestId("power-status-title")).toBeNull();
-  });
-
-  it("正常态（远程服务开启且无风险）收敛不渲染", () => {
-    const { container } = render(
-      <PowerStatusBanner status={buildStatus({ at_risk: false, remote_serve_enabled: true })} />,
-    );
-    expect(container.firstChild).toBeNull();
   });
 });

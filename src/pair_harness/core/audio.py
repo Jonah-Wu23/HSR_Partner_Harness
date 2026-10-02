@@ -12,7 +12,7 @@ DASHSCOPE_CONFIG_LOCK = threading.Lock()
 
 
 class SpeechQueue:
-    """待朗读语音队列（V0.3.9 契约 §6：单调 epoch）。
+    """待朗读语音队列（单调 epoch）。
 
     playing 表示正在播放；播放期间暂停 VAD，停止或播完后恢复。
 
@@ -20,7 +20,7 @@ class SpeechQueue:
     递增 epoch：入队条目记录入队时刻的 epoch，pop_next 只返回当前 epoch 的
     条目，旧 epoch 的迟到条目直接丢弃。播放循环按 epoch 校验后才写播放器，
     保证旧 epoch 的迟到 PCM 永不写入。skip_current 递增 epoch 但把待播项
-    改挂到新 epoch——跳过只放弃当前句，不清空队列。
+    改挂到新 epoch：跳过只放弃当前句，不清空队列。
     """
 
     def __init__(self) -> None:

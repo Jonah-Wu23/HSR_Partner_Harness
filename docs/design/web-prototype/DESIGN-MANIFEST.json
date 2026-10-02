@@ -16,8 +16,7 @@
       "onboarding.html",
       "ui-design-plan.md",
       "voice-create.html",
-      "worldbook-editor.html",
-      "验收报告与修改计划.md"
+      "worldbook-editor.html"
     ],
     "html": [
       "avatar-flow.html",
@@ -36,8 +35,7 @@
     "assets": [
       "delivery-report-v0.4.0.md",
       "handoff-requirements.md",
-      "ui-design-plan.md",
-      "验收报告与修改计划.md"
+      "ui-design-plan.md"
     ]
   },
   "screens": [

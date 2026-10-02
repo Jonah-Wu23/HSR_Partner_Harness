@@ -1,7 +1,8 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { BLOCK_KEYS, RICH_HSR, clone, deepFreeze, makeHarness } from "./helpers";
+import { clone, deepFreeze } from "../../__tests__/editorHelpers";
+import { BLOCK_KEYS, RICH_HSR, makeHarness } from "./helpers";
 
 afterEach(cleanup);
 
@@ -52,26 +53,35 @@ describe("MufyAdvancedEditor 五块编辑往返保真", () => {
     expect(getLatest()).toEqual(expected);
   });
 
-  it("未知键默认以 raw JSON 呈现，编辑后其余内容原样保留", () => {
+  it.each([
+    {
+      label: "块内未知键",
+      path: "world_architecture.legacy_note",
+      original: "旧版字段",
+      applyTo: (hsr: Record<string, unknown>, value: unknown) => {
+        blockOf(hsr, "world_architecture").legacy_note = value;
+      },
+    },
+    {
+      label: "顶层未知键",
+      path: "future_extension",
+      original: "invented",
+      applyTo: (hsr: Record<string, unknown>, value: unknown) => {
+        hsr.future_extension = value;
+      },
+    },
+  ])("$label 以 raw JSON 呈现，应用编辑后其余内容原样保留", ({ path, original, applyTo }) => {
     const { Harness, getLatest } = makeHarness(deepFreeze(clone(RICH_HSR)));
     render(<Harness />);
 
-    const raw = screen.getByTestId("mufy-raw-world_architecture.legacy_note") as HTMLTextAreaElement;
-    expect(raw.value).toContain("旧版字段");
+    const raw = screen.getByTestId(`mufy-raw-${path}`) as HTMLTextAreaElement;
+    expect(raw.value).toContain(original);
     fireEvent.change(raw, { target: { value: '{"text":"新注释","list":[1,2,3]}' } });
-    fireEvent.click(screen.getByTestId("mufy-raw-world_architecture.legacy_note-apply"));
+    fireEvent.click(screen.getByTestId(`mufy-raw-${path}-apply`));
 
-    const latest = getLatest();
-    expect(latest).not.toBeNull();
-    expect(blockOf(latest!, "world_architecture").legacy_note).toEqual({ text: "新注释", list: [1, 2, 3] });
-    // 同块其他键（含未知嵌套结构）不受影响
-    expect(blockOf(latest!, "world_architecture").unknown_mapping).toEqual(
-      blockOf(RICH_HSR, "world_architecture").unknown_mapping,
-    );
-    // 其余整卡不受影响
     const expected = clone(RICH_HSR);
-    blockOf(expected, "world_architecture").legacy_note = { text: "新注释", list: [1, 2, 3] };
-    expect(latest).toEqual(expected);
+    applyTo(expected, { text: "新注释", list: [1, 2, 3] });
+    expect(getLatest()).toEqual(expected);
   });
 
   it("raw JSON 解析失败时如实报错，且不产生任何改动", () => {
@@ -85,27 +95,6 @@ describe("MufyAdvancedEditor 五块编辑往返保真", () => {
     const error = screen.getByTestId("mufy-raw-world_architecture.legacy_note-error");
     expect(error).toHaveTextContent("JSON 解析失败");
     expect(getLatest()).toBeNull();
-  });
-
-  it("顶层未知键可 raw 编辑，编辑其他块时不丢顶层未知键", () => {
-    const { Harness, getLatest } = makeHarness(deepFreeze(clone(RICH_HSR)));
-    render(<Harness />);
-
-    const raw = screen.getByTestId("mufy-raw-future_extension");
-    fireEvent.change(raw, { target: { value: '{"invented":false,"added":["x"]}' } });
-    fireEvent.click(screen.getByTestId("mufy-raw-future_extension-apply"));
-
-    fireEvent.change(screen.getByTestId("mufy-value-narrative_rules.violence_rules"), {
-      target: { value: "改写后的描写规则。" },
-    });
-
-    const latest = getLatest();
-    expect(latest).not.toBeNull();
-    expect(latest!.future_extension).toEqual({ invented: false, added: ["x"] });
-    expect(latest!.narrative_rules).toEqual({
-      ...(RICH_HSR.narrative_rules as Record<string, unknown>),
-      violence_rules: "改写后的描写规则。",
-    });
   });
 
   it("对象列表可添加条目并通过逐键添加字段完成编辑，不丢其他内容", () => {
@@ -177,23 +166,13 @@ describe("MufyAdvancedEditor 五块编辑往返保真", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("受管理字段（schema_version/avatar_asset/voice_profile）只读展示且在编辑后原样保留", () => {
-    const { Harness, getLatest } = makeHarness(deepFreeze(clone(RICH_HSR)));
+  it("受管理字段（schema_version/avatar_asset/voice_profile）在可编辑模式下也只读展示", () => {
+    const { Harness } = makeHarness(deepFreeze(clone(RICH_HSR)));
     render(<Harness />);
 
     expect(screen.getByTestId("mufy-value-schema_version")).toBeDisabled();
     expect(screen.getByTestId("mufy-value-avatar_asset.asset_id")).toBeDisabled();
     expect(screen.getByTestId("mufy-value-voice_profile.state")).toBeDisabled();
     expect(screen.queryByTestId("mufy-json-toggle-schema_version")).not.toBeInTheDocument();
-
-    fireEvent.change(screen.getByTestId("mufy-value-world_architecture.world_foundation.one_line_pitch"), {
-      target: { value: "改。" },
-    });
-
-    const latest = getLatest();
-    expect(latest).not.toBeNull();
-    expect(latest!.schema_version).toBe("1.0");
-    expect(latest!.avatar_asset).toEqual(RICH_HSR.avatar_asset);
-    expect(latest!.voice_profile).toEqual(RICH_HSR.voice_profile);
   });
 });

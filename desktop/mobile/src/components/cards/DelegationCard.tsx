@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { CheckIcon, ErrorIcon, SpinnerIcon, WarningIcon } from "./icons";
 
 export type DelegationStatus = "running" | "completed" | "failed" | "cancelled";
@@ -25,11 +26,10 @@ function StatusIcon({ status }: { status: DelegationStatus }) {
 }
 
 /**
- * V0.3.3 手机端委派任务执行卡片：
- * 展示「交给助手」委派任务的实时运行、完成、失败或取消状态。
- * 失败时如实展示真实错误，不合成成功。
+ * 手机端委派任务卡片：展示「交给助手」委派任务的运行、完成、失败或取消状态，
+ * 失败时展示错误原文。
  */
-export function DelegationCard({
+export const DelegationCard = memo(function DelegationCard({
   fromName = "用户",
   summary,
   status,
@@ -60,4 +60,4 @@ export function DelegationCard({
       ) : null}
     </article>
   );
-}
+});

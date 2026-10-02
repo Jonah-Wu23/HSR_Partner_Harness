@@ -3,29 +3,17 @@ import pytest
 from pair_harness.core.sandbox import ProjectSandbox, SandboxViolation
 
 
-def test_relative_path_inside_root_is_allowed(tmp_path) -> None:
-    sandbox = ProjectSandbox(tmp_path)
-    resolved = sandbox.resolve_write_path("src/main.py")
-    assert resolved == (tmp_path / "src" / "main.py").resolve()
+@pytest.mark.parametrize("absolute", [False, True], ids=["relative", "absolute"])
+def test_path_inside_root_is_allowed(tmp_path, absolute: bool) -> None:
+    target = tmp_path / "src" / "main.py"
+    path = str(target) if absolute else "src/main.py"
+    assert ProjectSandbox(tmp_path).resolve_write_path(path) == target.resolve()
 
 
-def test_dotdot_escape_is_rejected(tmp_path) -> None:
-    sandbox = ProjectSandbox(tmp_path)
+@pytest.mark.parametrize("path", ["../outside.txt", "C:/Windows/system32"])
+def test_path_outside_root_is_rejected(tmp_path, path: str) -> None:
     with pytest.raises(SandboxViolation):
-        sandbox.resolve_write_path("../outside.txt")
-
-
-def test_absolute_path_outside_root_is_rejected(tmp_path) -> None:
-    sandbox = ProjectSandbox(tmp_path)
-    with pytest.raises(SandboxViolation):
-        sandbox.resolve_write_path("C:/Windows/system32")
-
-
-def test_absolute_path_inside_root_is_allowed(tmp_path) -> None:
-    sandbox = ProjectSandbox(tmp_path)
-    target = tmp_path / "inside.txt"
-    resolved = sandbox.resolve_write_path(str(target))
-    assert resolved == target.resolve()
+        ProjectSandbox(tmp_path).resolve_write_path(path)
 
 
 def test_symlink_pointing_outside_is_rejected(tmp_path) -> None:
@@ -39,14 +27,3 @@ def test_symlink_pointing_outside_is_rejected(tmp_path) -> None:
         pytest.skip("当前环境不支持创建符号链接")
     with pytest.raises(SandboxViolation):
         sandbox.resolve_write_path("link.txt")
-
-
-def test_enforce_cwd_defaults_to_root(tmp_path) -> None:
-    sandbox = ProjectSandbox(tmp_path)
-    assert sandbox.enforce_cwd(None) == tmp_path.resolve()
-
-
-def test_enforce_cwd_rejects_outside_path(tmp_path) -> None:
-    sandbox = ProjectSandbox(tmp_path)
-    with pytest.raises(SandboxViolation):
-        sandbox.enforce_cwd(str(tmp_path.parent))

@@ -3,6 +3,7 @@ import { navigate } from "../../lib/router";
 import { useMobileStore } from "../../lib/mobileStore";
 import { NotificationPreferences } from "../../components/NotificationPreferences";
 import { PowerStatusBanner } from "../../components/PowerStatusBanner";
+import { formatLocalDateTime } from "../../components/formatTime";
 import { ConversationBadgeRow } from "./ConversationBadges";
 import { ConnectionDetails } from "./ConnectionDetails";
 import {
@@ -11,45 +12,27 @@ import {
 } from "./useConversationBadges";
 import "./ChatListPage.css";
 
-function formatDateTime(isoString?: string | null): string {
-  if (!isoString) return "";
-  try {
-    const date = new Date(isoString);
-    if (isNaN(date.getTime())) return isoString;
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, "0");
-    const d = String(date.getDate()).padStart(2, "0");
-    const hh = String(date.getHours()).padStart(2, "0");
-    const mm = String(date.getMinutes()).padStart(2, "0");
-    return `${y}-${m}-${d} ${hh}:${mm}`;
-  } catch {
-    return isoString;
-  }
-}
-
 /**
- * V0.3.3 手机端会话列表页。
+ * 手机端会话列表页。
  *
- * 状态处理：
- * 1. 未水合 (!bootstrapped)：
- *    - 若连接处于异常态 (unreachable / auth_failed / disconnected)，展示真实错误与重试/重新配对入口；
- *    - 否则展示骨架屏 (Skeleton)。
- * 2. 零项目空态 (bootstrapped && projects.length === 0)：引导回桌面端创建项目。
- * 3. 项目分组渲染：按项目展示会话（过滤 archived），点击进入对应聊天。
+ * 1. 首次同步完成前：连接异常（unreachable / auth_failed / disconnected）时展示原因与重试或重新配对入口；
+ *    连接正常但同步失败时展示原始错误与重新同步入口；其余情况展示骨架屏。
+ * 2. 没有项目时引导回桌面端创建项目。
+ * 3. 按项目分组展示未归档的会话，点击进入对应聊天。
  */
 export function ChatListPage() {
   const projects = useMobileStore((state) => state.projects);
   const bootstrapped = useMobileStore((state) => state.bootstrapped);
   const connection = useMobileStore((state) => state.connection);
   const reconnect = useMobileStore((state) => state.reconnect);
+  const syncError = useMobileStore((state) => state.syncError);
+  const retrySync = useMobileStore((state) => state.retrySync);
   const powerStatus = useMobileStore((state) => state.powerStatus);
-  // V0.3.9 V01：会话行徽章数据源（缺数据源时字段为 null，不渲染伪造零值）。
   const badgeSource = useConversationBadgeSource();
   const [repairError, setRepairError] = useState<string | null>(null);
   const [repairing, setRepairing] = useState(false);
 
-  // 「知道了」只收敛当前这条警示：电脑状态再次变化（新事件携带新 checked_at）时重新出现，
-  // 不永久吞掉真实状态。
+  // 「知道了」只收起当前这条警示；电脑状态再次变化（新的 checked_at）时重新出现。
   const [dismissedCheckedAt, setDismissedCheckedAt] = useState<string | null>(null);
   const visiblePowerStatus =
     powerStatus && (!dismissedCheckedAt || powerStatus.checked_at !== dismissedCheckedAt)
@@ -64,7 +47,7 @@ export function ChatListPage() {
   return (
     <main className="page" data-testid="chat-list-page">
       <div className="chat-list-container">
-        {/* V0.3.7 电源状态条（V11）：层级与 ConnectionBanner 对齐，置于页面所有内容之上。 */}
+        {/* 电源状态条置于页面所有内容之上。 */}
         {visiblePowerStatus ? (
           <div className="chat-list-power">
             <PowerStatusBanner
@@ -127,6 +110,25 @@ export function ChatListPage() {
                   </button>
                 )}
               </section>
+            ) : syncError ? (
+              <section className="card error-state-card" data-testid="chat-list-sync-error">
+                <h2 className="error-state-title">数据同步失败</h2>
+                <p className="error-state-desc" data-testid="chat-list-sync-error-text">
+                  {syncError}
+                </p>
+                <button
+                  type="button"
+                  className="primary chat-list-retry-btn"
+                  onClick={() => {
+                    retrySync().catch((error: unknown) => {
+                      console.error("重新同步失败", error);
+                    });
+                  }}
+                  data-testid="chat-list-btn-resync"
+                >
+                  重新同步
+                </button>
+              </section>
             ) : (
               <div
                 className="skeleton-wrapper"
@@ -162,9 +164,7 @@ export function ChatListPage() {
         {bootstrapped && projects.length > 0 && (
           <div className="project-list" data-testid="chat-list-content">
             {projects.map((project) => {
-              const activeConversations = (project.conversations ?? []).filter(
-                (c) => !c.archived,
-              );
+              const activeConversations = project.conversations.filter((c) => !c.archived);
               return (
                 <section
                   key={project.project_id}
@@ -183,9 +183,7 @@ export function ChatListPage() {
                   ) : (
                     <div className="conversation-group">
                       {activeConversations.map((conversation) => {
-                        const timeText = formatDateTime(
-                          conversation.updated_at || conversation.created_at,
-                        );
+                        const timeText = formatLocalDateTime(conversation.updated_at, "minute");
                         const isCollab = conversation.last_mode === "collaboration";
                         return (
                           <a
@@ -236,12 +234,10 @@ export function ChatListPage() {
           </div>
         )}
 
-        {/* V0.3.9 V06：连接详情抽屉（租约 + 远程设备），默认收起，显式点开才读取。 */}
+        {/* 连接详情抽屉，默认收起。 */}
         {bootstrapped ? <ConnectionDetails /> : null}
 
-        {/* V0.3.7 通知偏好（V8/V9）：Android 壳内可编辑；PWA 下组件如实说明
-            「仅 Android 壳可用」，不渲染任何伪造开关。同步失败时依旧可查看，
-            通知能力属壳本地能力，不依赖桌面端连接。 */}
+        {/* 通知偏好是壳内本地能力，同步失败时也可查看。 */}
         <NotificationPreferences />
       </div>
     </main>

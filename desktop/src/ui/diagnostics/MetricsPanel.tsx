@@ -14,27 +14,22 @@ import {
 export type DiagnosticsLoadState = "idle" | "loading" | "loaded" | "failed";
 
 export interface MetricsPanelProps {
-  /** metrics.query 结果。null/缺省 = 未读取或无数据；[] = 服务端返回真实零条。 */
+  /** metrics.query 结果。null/缺省 = 未读取；[] = 服务端返回真实零条。 */
   metrics?: TurnMetric[] | null;
   state?: DiagnosticsLoadState;
-  /** 查询失败原文；如实上屏，不吞异常。 */
+  /** 查询失败原文。 */
   error?: string | null;
   /** 分页游标；为 null 表示没有更多。 */
   nextCursor?: string | null;
-  /** 显式只读查询（打开诊断抽屉即用户显式请求）。 */
-  onLoad?: () => void;
-  onLoadMore?: () => void;
+  /** 读取或刷新指标（metrics.query）。 */
+  onLoad: () => void;
+  /** 按 nextCursor 读取下一页。 */
+  onLoadMore: () => void;
 }
 
 function MetricRow({ metric }: { metric: TurnMetric }) {
   const [open, setOpen] = useState(false);
-  const failure =
-    metric.status === "failed"
-      ? {
-          type: metric.failure_type ?? "未报告失败类型",
-          message: metric.failure_message ?? "未报告失败信息",
-        }
-      : null;
+  const failed = metric.status === "failed";
 
   return (
     <>
@@ -75,11 +70,11 @@ function MetricRow({ metric }: { metric: TurnMetric }) {
         <td data-testid={`diag-toolrounds-${metric.metric_id}`}>{formatMetricNumber(metric.tool_rounds)}</td>
         <td>{formatMetricNumber(metric.compression_count)}</td>
         <td>{formatMetricNumber(metric.approval_count)}</td>
-        <td className={failure ? "diag-metric-failure" : undefined}>
-          {failure ? (
+        <td className={failed ? "diag-metric-failure" : undefined}>
+          {failed ? (
             <>
-              <span>{failure.type}</span>
-              <span className="diag-metric-sub">{failure.message}</span>
+              <span>{formatOptionalText(metric.failure_type)}</span>
+              <span className="diag-metric-sub">{formatOptionalText(metric.failure_message)}</span>
             </>
           ) : (
             "—"
@@ -129,7 +124,7 @@ function MetricRow({ metric }: { metric: TurnMetric }) {
 }
 
 /**
- * V0.3.9 V03 指标视图：消费 metrics.query 结果，渲染 TurnMetric 全字段。
+ * 指标视图：消费 metrics.query 结果，渲染 TurnMetric 全字段。
  * 未观测字段（null）显示「无数据」，真实零值显示 0；缺键由适配层直接报错。
  * 空结果分两种：null = 尚未读取/无数据，[] = 服务端返回真实零条。
  */
@@ -141,7 +136,6 @@ export function MetricsPanel({
   onLoad,
   onLoadMore,
 }: MetricsPanelProps) {
-  // metrics 为 null/undefined = 尚未读取，[] = 服务端返回的真实零条。
   const read = metrics !== null && metrics !== undefined;
   const rows = metrics ?? [];
   const failed = state === "failed";
@@ -152,14 +146,12 @@ export function MetricsPanel({
         <div className="diag-panel-title">
           <h3>回合指标</h3>
           <p className="diag-panel-hint">
-            metrics.query 显式只读查询。未观测字段显示「无数据」，真实零值显示 0；应用不估算 token。
+            metrics.query 显式只读查询。未观测字段显示「无数据」，真实零值显示 0。
           </p>
         </div>
-        {onLoad ? (
-          <button type="button" className="btn btn-outline diag-btn" onClick={onLoad}>
-            {state === "loading" ? "正在读取…" : metrics ? "刷新指标" : "读取指标"}
-          </button>
-        ) : null}
+        <button type="button" className="btn btn-outline diag-btn" onClick={onLoad}>
+          {state === "loading" ? "正在读取…" : metrics ? "刷新指标" : "读取指标"}
+        </button>
       </div>
 
       {error ? (
@@ -174,7 +166,7 @@ export function MetricsPanel({
         </p>
       ) : null}
 
-      {/* 结论行：失败时不得给出「0 条」这类成功语义；读取中也不提前下结论。 */}
+      {/* 结论行：失败时只报告失败，读取中不下结论。 */}
       {failed ? (
         hasRows ? (
           <p className="diag-panel-hint" role="status" data-testid="diag-metrics-stale">
@@ -229,13 +221,9 @@ export function MetricsPanel({
             </table>
           </div>
           {nextCursor ? (
-            onLoadMore ? (
-              <button type="button" className="btn btn-outline diag-btn" onClick={onLoadMore}>
-                加载更多（cursor: {nextCursor}）
-              </button>
-            ) : (
-              <p className="diag-panel-hint">还有更多记录（cursor: {nextCursor}），当前未提供加载动作。</p>
-            )
+            <button type="button" className="btn btn-outline diag-btn" onClick={onLoadMore}>
+              加载更多（cursor: {nextCursor}）
+            </button>
           ) : null}
         </>
       ) : null}

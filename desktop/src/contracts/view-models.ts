@@ -2,20 +2,18 @@ import type {
   QueueItem,
   ActiveTask,
   ApprovalMode,
+  CharacterCardSource,
   ConversationRecord,
   Message,
   PairRecord,
   PairSummary,
   PendingApproval,
   ProjectRecord,
+  ReasoningEffort,
   ToolRun,
   VoiceState,
-  ConversationSummary,
-  PairMemory,
-  TurnMetric,
 } from "./protocol";
-// V0.2 M4：视图类型按视觉线冻结的形状走（ui/*/types.ts 是唯一权威），
-// 这里只做类型级引用（import type 编译期擦除，无运行时依赖）。
+// 视图类型以 ui/*/types.ts 为准，这里只做类型级引用。
 import type { ToastItem, QueueItemView } from "../ui/status/types";
 import type { DelegationCardView } from "../ui/workspace/DelegationCard";
 import type { VoiceMiniPlayerView } from "../ui/composer/VoiceMiniPlayer";
@@ -27,35 +25,35 @@ import type {
   VoicePageView,
 } from "../ui/settings/types";
 
-export interface ProjectViewModel extends ProjectRecord {
+export type { PromptAssemblyModule, PromptAssemblyView } from "../ui/diagnostics/types";
+
+export interface ProjectViewModel extends Omit<ProjectRecord, "conversations"> {
+  conversations: ConversationViewModel[];
   isCurrent: boolean;
-  /** V0.3.2 M5：该项目下任一聊天有活动任务即为真（多活动任务集合推导）。 */
+  /** 该项目下任一聊天有活动任务。 */
   isBusy: boolean;
-  /** V0.3.2 M5：该项目下运行中的聊天数（项目级活动标记可附数量）。 */
+  /** 该项目下运行中的聊天数。 */
   activeTaskCount: number;
 }
 
 export interface ConversationViewModel extends ConversationRecord {
   isCurrent: boolean;
-  /** V0.3.2 M5：该聊天在 activeTasksByConversation 中（运行中）。 */
+  /** 该聊天有活动任务。 */
   isRunning: boolean;
-  /** 兼容旧字段：与 isRunning 同值（任务源聊天标记）。 */
-  isTaskOrigin: boolean;
 }
 
-/** V0.3.2 M5：聊天标签视图——标题随 conversation.changed 实时更新，
-    状态点反映该聊天自己的运行/排队/待审批状态。 */
+/** 聊天标签视图：标题随 conversation.changed 更新，状态点只反映该聊天自己的运行、排队与待审批。 */
 export interface ChatTabsViewModel {
   conversationId: string;
   title: string;
   isRunning: boolean;
-  /** queueItemsByConversation 有未撤回项。 */
+  /** 该聊天有排队中或执行中的队列项。 */
   isQueued: boolean;
-  /** approvals 中存在该聊天的待审批项。 */
+  /** 该聊天有待审批项。 */
   isWaitingApproval: boolean;
   isActive: boolean;
-  /** 由容器（AppShell）注入的关闭回调；presenters 保持纯数据投影。 */
-  onClose?: () => void;
+  /** 已用缓存切到该聊天，正在等待 conversation.open 的权威结果。 */
+  isSyncing: boolean;
 }
 
 export interface NavigationViewModel {
@@ -70,100 +68,50 @@ export interface ConversationTimelineViewModel {
   conversationId: string;
   messages: Message[];
   isStreaming: boolean;
-  /** V0.3.8 T5（C3）：忙时排队中的用户消息（完整文本，消息流尾部呈现）。 */
+  /** 忙时排队的用户消息全文，显示在消息流尾部。 */
   queueItems: QueueItem[];
 }
 
-/** V0.3.2 M1：工作台统一时间线条目——助手 segment 与工具卡按真实事件顺序混排。 */
+/** 工作台时间线条目：助手 segment 与工具卡按 timeline_order 混排。 */
 export type WorkbenchItem =
-  | { kind: "message"; order: number | null; message: Message }
-  | { kind: "tool"; order: number | null; run: ToolRun };
+  | { kind: "message"; order: number; message: Message }
+  | { kind: "tool"; order: number; run: ToolRun };
 
 export interface AssistantWorkbenchViewModel {
   conversationId: string;
   messages: Message[];
   toolRuns: ToolRun[];
-  /** V0.3.2 M1：统一混排时间线（Workspace 唯一渲染来源）。 */
+  /** Workspace 的渲染来源。 */
   items: WorkbenchItem[];
   busy: boolean;
   activeTask: ActiveTask | null;
 }
 
-export type SummaryTriggerReason = "message_count" | "byte_size" | "manual";
-
-export interface SummaryTriggerInfo {
-  reason: SummaryTriggerReason;
-  observed: number | null;
-  threshold: number | null;
-}
-
+/** summary.failed 留下的重新生成目标。 */
 export interface SummaryRegenerateTarget {
   summary_id: string;
   conversation_id: string;
-  reason: "failed_record" | "user_request";
-}
-
-export interface PromptAssemblyModule {
-  name: string;
-  char_start: number | null;
-  char_end: number | null;
-  hash: string | null;
-  summary: string | null;
-  memory_injected: boolean | null;
-  hidden_content: string | null;
-}
-
-export interface PromptAssemblyView {
-  conversation_id: string | null;
-  modules: PromptAssemblyModule[];
-  diagnostics: string[];
-  generated_at: string | null;
 }
 
 export interface WorkspaceViewModel {
   mode: "chat" | "collaboration";
   character: ConversationTimelineViewModel;
   assistant: AssistantWorkbenchViewModel;
-  /** V0.2 M4：委派卡（角色区与工作台之间的视觉桥梁）；无委派时为 null。 */
+  /** 角色发起的委派卡；无委派时为 null。 */
   delegation: DelegationCardView | null;
-  /** V0.3.9 V02：当前聊天摘要列表（按 conversation_id） */
-  summaries?: ConversationSummary[] | null;
-  /** V0.3.9 V02：当前生效的长期记忆（按 conversation_id 作用域解析） */
-  memories?: PairMemory[] | null;
-  /** V0.3.9 V02：摘要触发详情，键为 summary_id */
-  summaryTriggers?: Record<string, SummaryTriggerInfo> | null;
-  /** V0.3.9 V02：真实存在的恢复目标 */
-  summaryRegenerateTarget?: SummaryRegenerateTarget | null;
-  /** V0.3.9 V03：回合指标列表 */
-  metrics?: TurnMetric[] | null;
-  /** V0.3.9 V03：提示词装配诊断视图 */
-  promptAssembly?: PromptAssemblyView | null;
 }
 
 export interface ComposerViewModel {
   target: "character" | "assistant";
-  draft: string;
   enabled: boolean;
   approvalMode: ApprovalMode;
-  reasoningEffort: string;
+  reasoningEffort: ReasoningEffort;
   asrPartial: string;
 }
 
 export interface ApprovalViewModel {
   mode: ApprovalMode;
   pending: Array<PendingApproval & { resolving: boolean }>;
-  /** V0.3.5：已决审批记录（含 resolved_by/decision），供 UI 表达双端仲裁结果。 */
-  resolved: Array<{
-    approval_id: string;
-    conversation_id?: string;
-    decision: string;
-    resolved_by: string | null;
-    task_id?: string;
-    actor?: string | null;
-    resolved_reason?: string | null;
-    error_code?: string | null;
-    resolved_at?: string | null;
-  }>;
   reviewActive: boolean;
   reviewText: string | null;
 }
@@ -172,39 +120,35 @@ export interface VoiceViewModel extends VoiceState {
   canPushToTalk: boolean;
 }
 
-/** V0.2 M4：账号门（当前账号为默认账号 username=default 时非空）。 */
+/** 账号门：当前账号是默认账号（username=default）时非空。 */
 export interface AccountGateViewModel {
   accounts: AccountListItem[];
   error: string | null;
   busy: boolean;
 }
 
-/** V0.2 M4：设置中心四个页 + 测试结果（modelTest/voicePreview 初值 idle）。 */
+/** 设置中心各页数据与测试结果。 */
 export interface SettingsViewModel {
   account: AccountPageView;
   model: CharacterModelPageView;
   voice: VoicePageView;
-  /** V0.3.5：语音页「角色音色」区数据（卡列表 + 账号语音配置完备性）。 */
+  /** 语音页「角色音色」区数据。 */
   characterVoice: CharacterCardVoicePageViewModel;
   modelTest: TestResult;
   voicePreview: TestResult;
 }
 
-/* ------------------------------------------------------------------ *
- * V0.3.3 角色卡与手机远程视图（线缆类型见 contracts/protocol.ts，
- * 本文件为 camelCase 视图模型，由 store/presenters 投影维护）。
- * ------------------------------------------------------------------ */
+/* 角色卡与手机远程的 camelCase 视图模型；线缆类型见 contracts/protocol.ts。 */
 
 /** 主工作区视图：聊天 / 角色库 / 角色创作。 */
 export type MainView = "chat" | "characters" | "characterCreate";
 
-/** 角色卡列表项。archived 不由 card.list 直接携带——
-    由 actions 层对 include_archived 两次结果做差集推导。 */
+/** 角色卡列表项（card.list 摘要的 camelCase 投影）。 */
 export interface CharacterCardSummaryView {
   cardId: string;
   name: string;
   state: "draft" | "saved" | "imported" | "invalid";
-  source: "builtin" | "user_created" | "imported_json" | "imported_png";
+  source: CharacterCardSource;
   updatedAt: string;
   hasAvatar: boolean;
   voiceState: "voice_unconfigured" | "voice_creating" | "voice_ready" | "voice_failed";
@@ -222,7 +166,9 @@ export interface CharacterLibraryViewModel {
 }
 
 export interface CharacterCreateViewModel {
-  /** 正在编辑的草稿/卡 id；全新未保存为 null。 */
+  /** 打开创作页时请求读取的卡 id；新建为 null。读取失败后按它重试。 */
+  requestedCardId: string | null;
+  /** 已载入的草稿/卡 id；全新未保存或尚未读取完成为 null。 */
   cardId: string | null;
   /** card.get 载入的 v3 JSON（编辑已有卡时非空）。 */
   card: Record<string, unknown> | null;
@@ -231,48 +177,31 @@ export interface CharacterCreateViewModel {
   error: string | null;
 }
 
-/** V0.3.5：语音设置页「角色音色」区单张卡状态。 */
+/** 语音设置页「角色音色」区的单张卡；参考音频与音色详情由该区经 card.get 读取。 */
 export interface CharacterCardVoiceView {
   cardId: string;
   name: string;
   state: "draft" | "saved" | "imported" | "invalid";
-  source: "builtin" | "user_created" | "imported_json" | "imported_png";
+  source: CharacterCardSource;
   hasAvatar: boolean;
   voiceState: "voice_unconfigured" | "voice_creating" | "voice_ready" | "voice_failed";
   active: boolean;
   readOnly: boolean;
-  /** 是否已绑定参考音频。 */
-  hasReferenceAudio: boolean;
-  /** 参考音频格式摘要（时长/大小/mime）。 */
-  referenceAudio?: {
-    assetId: string;
-    durationSeconds: number;
-    sizeBytes: number;
-    mimeType: string;
-  } | null;
-  /** 就绪音色 id。 */
-  voiceId?: string | null;
-  /** 最近一次创建失败错误。 */
-  lastError?: string | null;
 }
 
-/** V0.3.5：语音设置页「角色音色」区视图模型。 */
+/** 语音设置页「角色音色」区视图模型。 */
 export interface CharacterCardVoicePageViewModel {
-  /** 账号 DashScope 配置是否完整。 */
+  /** 当前账号已保存 DashScope Key 与服务地址。 */
   voiceConfigured: boolean;
-  /** 可选角色卡列表（含内置/自定义/导入）。 */
+  /** 可选角色卡（内置、自建与导入）。 */
   cards: CharacterCardVoiceView[];
-  /** 当前选中的卡 id；null 表示未选择。 */
-  selectedCardId: string | null;
-  /** 当前选中卡的参考音频/音色状态。 */
-  selectedCard: CharacterCardVoiceView | null;
 }
 
 export interface RemoteDeviceView {
   deviceName: string;
   issuedAt: string;
   lastUsedAt: string;
-  expiresAt?: string;
+  expiresAt: string;
   revoked: boolean;
 }
 
@@ -283,7 +212,9 @@ export interface TunnelViewModel {
   publicUrl: string | null;
   hostname: string | null;
   error: string | null;
-  loading?: boolean;
+  /** 停止隧道或查询状态的请求失败原文；隧道状态本身不因此改变。 */
+  requestError: string | null;
+  loading: boolean;
 }
 
 export interface RemotePairingViewModel {
@@ -294,67 +225,55 @@ export interface RemotePairingViewModel {
   devices: RemoteDeviceView[];
   loading: boolean;
   error: string | null;
-  /** V0.3.4：Sidecar --serve 实际监听地址（serve.started 事件上报），
-      二维码按它生成；null 表示没有可用的局域网接入地址（未上报 / 上报为 null）。 */
+  /** Sidecar --serve 上报的监听地址，二维码按它生成；null 表示没有可用的局域网接入地址。 */
   serveAddress: {
     host: string;
     port: number;
     mode?: "loopback" | "lan" | null;
     tls?: boolean | null;
   } | null;
-  /** V039-S4-004：serve.started 上报的监听端口（host 为 null 时端口依然真实）。 */
+  /** serve.started 上报的监听端口（host 为 null 时端口依然真实）。 */
   servePort?: number | null;
-  /** V0.4.0：serve.started 上报的运行模式（loopback / lan）。 */
+  /** serve.started 上报的运行模式。 */
   serveMode?: "loopback" | "lan" | null;
-  /** V039-S4-004：服务已监听但无可用局域网地址时，服务端给出的真实原因码
-      （如 no_lan_address）；未上报该字段即 null，不本地推断。 */
+  /** 服务已监听但无可用局域网地址时服务端给出的原因码，如 no_lan_address。 */
   serveUnavailableReason?: string | null;
-  /** V039-S4-004：error.reported(serve_start_failed) 的真实报文（启动失败原因）。 */
+  /** error.reported(serve_start_failed) 的报文。 */
   serveFailure?: string | null;
-  /** V0.4.0：Cloudflare Quick Tunnel 公网隧道状态。 */
-  tunnel?: TunnelViewModel;
-  /** R1-001：Sidecar 每次配对成功（remote.paired）推进 1；面板据变化重拉
-      设备列表，不再依赖面板打开时的一次性 remote.list_devices 拉取。 */
+  /** Cloudflare Quick Tunnel 公网隧道状态。 */
+  tunnel: TunnelViewModel;
+  /** 每次配对成功（remote.paired）加 1，面板据此重拉设备列表。 */
   devicesRevision?: number;
 }
 
 export interface AppShellViewModel {
   status: "booting" | "ready" | "disconnected" | "error";
+  /** 序号缺口后正在重新同步快照；界面保持可用。 */
+  resyncing: boolean;
   theme: "dark" | "light";
-  currentPairId: string;
+  /** 当前搭档 id；快照装载前为 null。 */
+  currentPairId: string | null;
   navigation: NavigationViewModel | null;
   workspace: WorkspaceViewModel | null;
-  /** V0.3.2 M5：本窗口聊天标签（顺序即标签顺序；无标签为空数组）。 */
+  /** 本窗口聊天标签，顺序即标签顺序。 */
   chatTabs: ChatTabsViewModel[];
   composer: ComposerViewModel;
   approval: ApprovalViewModel;
   voice: VoiceViewModel;
   error: string | null;
-  /** V0.2 M4：排队条（当前会话未撤回的队列项映射）。 */
+  /** 当前聊天未撤回的队列项。 */
   queueItems: QueueItemView[];
-  /** V0.2 M4：Toast 队列（store 透传）。 */
   toasts: ToastItem[];
-  /** V0.2 M4：语音迷你播放条（tts playing/synthesizing/failed 时非空）。 */
+  /** 语音迷你播放条；朗读空闲时为 null。 */
   voiceMiniPlayer: VoiceMiniPlayerView | null;
-  /** V0.2 M4：账号门；非默认账号时为 null。 */
+  /** 账号门；非默认账号时为 null。 */
   accountGate: AccountGateViewModel | null;
-  /** V0.2 M4：首次引导（非默认账号且 onboarding_complete=false）。 */
+  /** 非默认账号且引导未完成时显示首次引导。 */
   onboarding: boolean;
-  /** V0.2 M4：设置中心数据源（configSnapshot 映射）。 */
   settings: SettingsViewModel;
-  /** V0.3.3：主工作区视图切换。 */
   mainView: MainView;
-  /** V0.3.3：角色库页数据。 */
   characterLibrary: CharacterLibraryViewModel;
-  /** V0.3.3：角色创作页数据。 */
   characterCreate: CharacterCreateViewModel;
-  /** V0.3.3：设置中心「远程设备」页数据源。 */
+  /** 设置中心「远程设备」页数据。 */
   remotePairing: RemotePairingViewModel;
-  /** V0.3.9 V02/V03：当前聊天摘要、记忆、诊断视图模型 */
-  summaries?: ConversationSummary[] | null;
-  memories?: PairMemory[] | null;
-  summaryTriggers?: Record<string, SummaryTriggerInfo> | null;
-  summaryRegenerateTarget?: SummaryRegenerateTarget | null;
-  metrics?: TurnMetric[] | null;
-  promptAssembly?: PromptAssemblyView | null;
 }

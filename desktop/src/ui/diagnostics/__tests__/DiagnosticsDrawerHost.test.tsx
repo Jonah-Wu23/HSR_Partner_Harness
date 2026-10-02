@@ -1,11 +1,11 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import type { DesktopCommand, DesktopEvent, TurnMetric } from "../../../contracts/protocol";
+import type { TurnMetric } from "../../../contracts/protocol";
 import { createMockScenario } from "../../../mocks/scenarios";
-import type { DesktopBackend } from "../../../services/backend";
 import { createActionController } from "../../../services/actions";
 import { desktopStore } from "../../../stores/desktopStore";
+import { fakeBackend, unexpectedCommand } from "../../../test/fakeBackend";
 import { DiagnosticsDrawerHost } from "../DiagnosticsDrawerHost";
 
 afterEach(cleanup);
@@ -46,56 +46,32 @@ function metricRecord(metricId: string): TurnMetric {
   };
 }
 
-/** 只实现 request 的假后端：按命令与 cursor 返回真实形状的应答。 */
-function fakeBackend(
-  respond: (command: DesktopCommand) => unknown,
-): { backend: DesktopBackend } {
-  const backend = {
-    async request<T>(command: DesktopCommand): Promise<T> {
-      return respond(command) as T;
-    },
-    openChatWindow: vi.fn(),
-    pickFolder: vi.fn(),
-    pickFile: vi.fn(),
-    saveFile: vi.fn(),
-    subscribe: (_listener: (event: DesktopEvent) => void) => () => {},
-    reconnectSidecar: vi.fn(),
-  } as unknown as DesktopBackend;
-  return { backend };
-}
-
-describe("DiagnosticsDrawerHost 指标分页（V0.3.9 V03）", () => {
+describe("DiagnosticsDrawerHost 指标分页", () => {
   beforeEach(() => {
-    desktopStore.setState({
-      turnMetrics: [],
-      metricsCursor: null,
-      metricsLoading: false,
-      metricsError: null,
-      promptAssembly: null,
-      promptAssemblyLoading: false,
-      promptAssemblyError: null,
-      promptAssemblyRevealed: false,
-    });
+    desktopStore.setState(desktopStore.getInitialState(), true);
     desktopStore.getState().hydrate(createMockScenario("single-project").snapshot);
   });
 
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it("加载更多追加第二页而同屏保留第一页，刷新仍整体替换", async () => {
+  it("加载更多按游标追加第二页并保留第一页，刷新整体替换", async () => {
     const pageOne = [metricRecord("m1"), metricRecord("m2")];
     const pageTwo = [metricRecord("m3"), metricRecord("m4")];
-    const { backend } = fakeBackend((command) => {
+    const { backend, commands } = fakeBackend((command) => {
       if (command.method === "metrics.query") {
         return command.params.cursor
           ? { metrics: pageTwo, next_cursor: null }
           : { metrics: pageOne, next_cursor: "c1" };
       }
       if (command.method === "diagnostics.prompt_assembly") {
-        return { modules: [], diagnostics: [], generated_at: "2026-01-01T00:00:00Z" };
+        return {
+          conversation_id: "conv-1",
+          source: "none",
+          modules: [],
+          reason: "character_card_unbound",
+          diagnostics: ["未绑定角色卡：会话未选择角色卡，无装配模块"],
+          generated_at: "2026-01-01T00:00:00+00:00",
+        };
       }
-      return {};
+      return unexpectedCommand(command);
     });
     const { actions } = createActionController(backend);
 
@@ -123,5 +99,12 @@ describe("DiagnosticsDrawerHost 指标分页（V0.3.9 V03）", () => {
       expect(screen.getByTestId("diag-metrics-count")).toHaveTextContent("共 2 条指标记录。"),
     );
     expect(screen.queryByTestId("diag-metric-m3")).not.toBeInTheDocument();
+    expect(
+      commands.filter((command) => command.method === "metrics.query").map((command) => command.params),
+    ).toEqual([
+      { conversation_id: "conv-1" },
+      { cursor: "c1", conversation_id: "conv-1" },
+      { conversation_id: "conv-1" },
+    ]);
   });
 });

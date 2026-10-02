@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -17,67 +16,78 @@ from .pwa_static import add_static_routes
 
 logger = logging.getLogger(__name__)
 
-# 把 response / protocol_error 写回发起连接（同步入队，由连接自己的写任务下发）。
-ReplySink = Callable[[dict], None]
-
-# 不需要 token 即可调用的命令白名单（配对握手）。批 3 由主控同步进 commands.py。
+# 不需要令牌即可调用的命令（配对握手）。
 UNAUTHENTICATED_METHODS: frozenset[str] = frozenset({"remote.pair"})
 
 
 @dataclass(frozen=True)
 class AuthDecision:
     allowed: bool
-    reason: str = ""         # 拒绝原因，进审计日志
-    device_name: str = ""    # 允许时的设备名
+    reason: str = ""  # 拒绝原因，原样作为 unauthorized 回执的 message
+    device_name: str = ""
+    # 令牌键（令牌的 SHA-256 摘要），作为设备身份随命令下传；无令牌时为 None。
+    device_key: str | None = None
 
 
 class RemoteAuthenticator(Protocol):
-    def authorize(
-        self, token: str | None, method: str, *, origin: str = "remote"
-    ) -> AuthDecision: ...
+    def authorize(self, token: str | None, method: str) -> AuthDecision: ...
 
 
-def _extract_frame_id(payload: Any) -> str | None:
-    """从已解析的帧里提取请求 id；解析失败或非对象时返回 None。"""
-    if not isinstance(payload, dict):
-        return None
+@dataclass(frozen=True)
+class RemoteServe:
+    """WS 服务器监听成功后的接入信息，随 serve.started 与 app.bootstrap 下发。"""
+
+    port: int
+    lan: bool
+    # 局域网模式下探测不到本机局域网地址时为 None
+    host: str | None
+
+    def payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "host": self.host,
+            "port": self.port,
+            "mode": "lan" if self.lan else "loopback",
+            "tls": False,
+        }
+        if self.host is None:
+            payload["reason"] = "no_lan_address"
+        return payload
+
+
+def _frame_id(payload: dict[str, Any]) -> str | None:
     candidate = payload.get("id")
     if isinstance(candidate, str) and candidate:
         return candidate
     return None
 
-class _RemoteConnection:
-    """管理一条远端 WS 连接：上行队列 + 扇出订阅 + 下行写任务。"""
 
-    def __init__(self, fanout: EventFanout, ws: Any) -> None:
+class _RemoteConnection:
+    """一条远端 WS 连接：下行队列、事件扇出订阅与写任务。"""
+
+    def __init__(self, fanout: EventFanout, ws: web.WebSocketResponse) -> None:
         self._fanout = fanout
         self._ws = ws
-        # V0.3.5：连接唯一 key；手机语音会话绑定它，断开时按 key 清理。
+        # 连接唯一 key；手机语音会话与控制租约绑定它，断开时按 key 清理。
         self.key = uuid.uuid4().hex
         self._queue: asyncio.Queue[dict] = asyncio.Queue()
         self._subscription: Any = None
         self._closed = False
-        # 该连接是否已完成一次带 token 的鉴权并订阅 fanout
-        self.authenticated = False
-        # 完成鉴权后该连接使用的 token 原文；撤销联动按它定位连接（V0.3.4 缺陷 7）
-        self.token: str | None = None
+        # 首次业务鉴权后固定的设备身份（令牌键）；None 表示尚未鉴权。
+        self.device_key: str | None = None
         self._writer_task = asyncio.create_task(self._writer_loop())
 
     async def _writer_loop(self) -> None:
-        """消费下行队列并把每个 envelope 编码成 WS 文本帧下发。"""
-        try:
-            while True:
-                envelope = await self._queue.get()
-                try:
-                    await self._ws.send_str(encode_message(envelope))
-                except Exception:  # noqa: BLE001 - 对端断开只隔离本条连接
-                    self._teardown()
-                    return
-        except asyncio.CancelledError:
-            return
+        while True:
+            envelope = await self._queue.get()
+            try:
+                await self._ws.send_str(encode_message(envelope))
+            except ConnectionError:
+                # 对端已断开，只停掉本条连接。
+                self._teardown()
+                return
 
     def send(self, envelope: dict) -> None:
-        """同步入队（作为 dispatch reply_sink 与 fanout 订阅写回调共用）。"""
+        """同步入队，供 dispatch 回写与事件扇出共用。"""
         if self._closed:
             return
         self._queue.put_nowait(envelope)
@@ -95,31 +105,26 @@ class _RemoteConnection:
             self._subscription = None
 
     def detach(self) -> None:
-        """同步退订并停写（幂等）：撤销联动时立即切断事件下发。"""
+        """同步退订并停写（幂等），撤销时立即切断事件下发。"""
         self._teardown()
 
     async def close(self, *, code: int = 1000, message: bytes = b"") -> None:
         self._teardown()
-        task = self._writer_task
-        if not task.done() and task is not asyncio.current_task():
-            task.cancel()
+        if not self._writer_task.done():
+            self._writer_task.cancel()
+            await asyncio.wait({self._writer_task})
+        # 关闭前发出已入队的帧：鉴权失败断开时，客户端要先收到带原因的
+        # 错误回执，才能区分令牌过期与撤销。
+        while not self._queue.empty():
             try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
-        # 真正断开底层 WS，让对端与 handler 循环感知连接已关闭。
-        if self._ws is not None:
-            try:
-                await self._ws.close(code=code, message=message)
-            except Exception:  # noqa: BLE001 - 对端已断开时关闭即无事可做
-                pass
+                await self._ws.send_str(encode_message(self._queue.get_nowait()))
+            except ConnectionError:
+                break
+        await self._ws.close(code=code, message=message)
 
 
 class WSServerMode:
-    """WS 服务器模式：同一 aiohttp 应用承载 PWA 静态路由与 GET /ws 升级。
-
-    构造参数冻结；dispatch 由批 3 主控接到 SidecarRouter.dispatch 扩展签名。
-    """
+    """同一 aiohttp 应用承载 PWA 静态路由与 GET /ws 升级。"""
 
     def __init__(
         self,
@@ -129,21 +134,19 @@ class WSServerMode:
         fanout: EventFanout,
         static_root: Path | None,
         port: int,
+        on_disconnect: Callable[[str], None],
         host: str = "127.0.0.1",
-        on_disconnect: Callable[[str], None] | None = None,
     ) -> None:
         self.dispatch = dispatch
         self.authenticator = authenticator
         self.fanout = fanout
         self.static_root = static_root
         self.port = port
-        # V0.3.5：连接断开回调（清理该连接未完成的手机语音转写会话）。
+        # 连接断开回调，按连接 key 清理手机语音会话与控制租约。
         self.on_disconnect = on_disconnect
-        # V0.4.0（D2）：默认绑定 127.0.0.1 回环；--lan 时显式传入 0.0.0.0。
+        # 默认只监听回环；局域网直连时传入 0.0.0.0。
         self._host = host
-        self._app: web.Application | None = None
         self._runner: web.AppRunner | None = None
-        self._site: web.TCPSite | None = None
         self._connections: set[_RemoteConnection] = set()
 
     def _build_app(self) -> web.Application:
@@ -154,20 +157,14 @@ class WSServerMode:
         return app
 
     async def start(self) -> None:
-        app = self._build_app()
-        self._app = app
-        runner = web.AppRunner(app)
-        self._runner = runner
+        runner = web.AppRunner(self._build_app())
+        await runner.setup()
         try:
-            await runner.setup()
-            site = web.TCPSite(runner, self._host, self.port)
-            await site.start()
+            await web.TCPSite(runner, self._host, self.port).start()
         except BaseException:
             await runner.cleanup()
-            self._runner = None
-            self._app = None
             raise
-        self._site = site
+        self._runner = runner
 
     async def stop(self) -> None:
         for conn in set(self._connections):
@@ -176,34 +173,27 @@ class WSServerMode:
         if self._runner is not None:
             await self._runner.cleanup()
             self._runner = None
-        self._site = None
-        self._app = None
 
-    def close_connections_for_token(self, token: str, device_name: str = "") -> int:
-        """撤销联动：立即断开仍以该 token 鉴权的已建立连接，返回断开数。
-
-        先同步退订（事件扇出立即停止），再调度真正的 WS 关闭；
-        ``device_name`` 仅用于日志。必须在事件循环线程内调用。
-        """
-        matched = [conn for conn in self._connections if conn.token == token]
+    def close_connections_for_device(self, device_key: str, device_name: str) -> int:
+        """断开以该令牌键鉴权的已建立连接，返回断开数。必须在事件循环线程内调用。"""
+        matched = [conn for conn in self._connections if conn.device_key == device_key]
         for conn in matched:
-            self._connections.discard(conn)
-            conn.detach()
+            self._disconnect_unauthorized(conn, b"token revoked")
         if matched:
             logger.info(
-                "撤销 token：断开 %d 条已建立连接 device=%r",
-                len(matched),
-                device_name,
+                "设备已撤销，断开 %d 条已建立连接 device=%r", len(matched), device_name
             )
-            loop = asyncio.get_running_loop()
-            for conn in matched:
-                loop.create_task(conn.close(code=4401, message=b"token revoked"))
         return len(matched)
 
+    def _disconnect_unauthorized(self, conn: _RemoteConnection, message: bytes) -> None:
+        """令牌失效的连接：同步退订（事件扇出立即停止），再调度 4401 关闭。"""
+        self._connections.discard(conn)
+        conn.detach()
+        asyncio.get_running_loop().create_task(conn.close(code=4401, message=message))
+
     async def _handle_ws(self, request: web.Request) -> web.WebSocketResponse:
-        # V0.3.8 T1（契约 §14.3）：heartbeat=30s——服务端周期 ping，客户端
-        # （WebView/浏览器）自动回 pong；半开连接（对端掐网不回 RST）在
-        # 2×heartbeat 内暴露并按既有断连流程清理，不再向死 socket 静默写事件。
+        # 服务端每 30 秒 ping 一次，客户端自动回 pong；对端断网不回 RST 的
+        # 半开连接在两个心跳周期内暴露并按断连流程清理。
         ws = web.WebSocketResponse(heartbeat=30.0, receive_timeout=75.0)
         await ws.prepare(request)
         conn = _RemoteConnection(self.fanout, ws)
@@ -215,91 +205,81 @@ class WSServerMode:
                 elif raw.type == WSMsgType.ERROR:
                     logger.warning("远程 WS 连接出错：%s", ws.exception())
                     break
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - 单条连接异常不传播影响服务器与其他连接
-            logger.exception("远程 WS 连接处理异常，隔离该连接")
         finally:
             self._connections.discard(conn)
             await conn.close()
-            # 契约 §5.3：连接断开时自动取消该连接未完成的语音会话。
-            if self.on_disconnect is not None:
-                try:
-                    self.on_disconnect(conn.key)
-                except Exception:  # noqa: BLE001 - 清理失败不影响连接关闭
-                    logger.exception("远程断开清理回调失败 key=%s", conn.key)
+            self.on_disconnect(conn.key)
         return ws
 
     def _handle_frame(self, conn: _RemoteConnection, text: str) -> None:
         try:
             payload = json.loads(text)
-        except (TypeError, ValueError) as exc:
-            detail = getattr(exc, "msg", None) or str(exc)
-            conn.send(protocol_error("invalid_json", f"JSON 解析失败：{detail}"))
+        except json.JSONDecodeError as exc:
+            conn.send(protocol_error("invalid_json", f"JSON 解析失败：{exc.msg}"))
             return
         if not isinstance(payload, dict):
+            conn.send(protocol_error("invalid_message", "协议消息必须是 JSON 对象"))
+            return
+        request_id = _frame_id(payload)
+        method = payload.get("method")
+        if not isinstance(method, str):
+            conn.send(
+                protocol_error(
+                    "invalid_message", "request.method 必须是字符串", request_id=request_id
+                )
+            )
+            return
+        auth = payload.get("auth")
+        if auth is None:
+            token = None
+        elif isinstance(auth, dict) and isinstance(auth.get("token"), str):
+            token = auth["token"]
+        else:
             conn.send(
                 protocol_error(
                     "invalid_message",
-                    "协议消息必须是 JSON 对象",
-                    request_id=_extract_frame_id(payload),
+                    "auth 必须是包含字符串 token 的对象",
+                    request_id=request_id,
                 )
             )
             return
 
-        method = payload.get("method")
-        auth = payload.get("auth")
-        token = auth.get("token") if isinstance(auth, Mapping) else None
-
-        try:
-            # 鉴权接口按协议固定携带 origin；实现内部异常由下方统一按
-            # 未授权拒绝。不做 TypeError 探测降级——那会把实现内部的
-            # TypeError 误判成旧签名并二次执行鉴权，产生重复审计。
-            decision = self.authenticator.authorize(token, method, origin="remote")
-        except Exception:  # noqa: BLE001 - 鉴权实现异常按未授权拒绝，不让服务器崩溃
-            logger.exception("远程鉴权接口异常，拒绝该请求")
-            conn.send(
-                response_error(_extract_frame_id(payload), "unauthorized", "鉴权不可用")
-            )
-            return
-
+        decision = self.authenticator.authorize(token, method)
         if not decision.allowed:
             err_code = (
                 "forbidden_scope"
                 if decision.reason == "forbidden_scope"
                 else "unauthorized"
             )
-            conn.send(
-                response_error(_extract_frame_id(payload), err_code, decision.reason)
-            )
+            conn.send(response_error(request_id, err_code, decision.reason))
             logger.warning("远程鉴权拒绝 method=%r reason=%r", method, decision.reason)
+            if conn.device_key is not None and err_code == "unauthorized":
+                # 已鉴权连接的令牌失效（过期、撤销）：退订并断开。
+                self._disconnect_unauthorized(conn, decision.reason.encode("utf-8"))
             return
 
-        # 连接首次业务鉴权后固定 token；后续请求不能切换设备身份，
+        # 连接首次业务鉴权后固定设备身份，后续请求不能切换令牌，
         # 否则撤销定位与实际请求身份会分叉。
-        if conn.authenticated and method not in UNAUTHENTICATED_METHODS:
-            if token != conn.token:
+        if method not in UNAUTHENTICATED_METHODS:
+            if conn.device_key is None:
+                conn.device_key = decision.device_key
+                conn.subscribe()
+                logger.info("远程连接鉴权完成 device=%r", decision.device_name)
+            elif decision.device_key != conn.device_key:
                 conn.send(
                     response_error(
-                        _extract_frame_id(payload),
+                        request_id,
                         "connection_identity_mismatch",
                         "已鉴权连接不能切换 token，请重新连接",
                     )
                 )
                 return
-        elif method not in UNAUTHENTICATED_METHODS:
-            conn.authenticated = True
-            conn.token = token if isinstance(token, str) else None
-            conn.subscribe()
-            logger.info("远程连接鉴权完成 device=%r", decision.device_name)
 
-        # V0.3.5：远程命令标记 origin=remote 并携带连接 key，供审批
-        # 仲裁与手机语音会话归属使用。V0.3.9 §5：鉴权决定里的设备名一并
-        # 注入，回合指标据此如实呈现来源设备。
         self.dispatch(
             text,
             conn.send,
             origin="remote",
             connection_key=conn.key,
+            device_key=decision.device_key,
             device_name=decision.device_name,
         )

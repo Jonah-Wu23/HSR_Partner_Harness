@@ -11,41 +11,15 @@ import pytest
 from aiohttp import WSMsgType
 
 from pair_harness.desktop_backend.event_fanout import EventFanout
+from pair_harness.desktop_backend.pairing import PairingService, token_key
 from pair_harness.desktop_backend.router import JsonlWriter
-from pair_harness.desktop_backend.ws_server import (
-    UNAUTHENTICATED_METHODS,
-    AuthDecision,
-    WSServerMode,
-)
+from pair_harness.desktop_backend.ws_server import WSServerMode
 
 
-class StubAuthenticator:
-    """测试用桩鉴权：实现 RemoteAuthenticator Protocol。"""
+class EchoDispatch:
+    """经构造参数注入的 dispatch：记录传输层注入的身份，并经 reply_sink 回写 response。"""
 
-    def __init__(self, valid_tokens: str | set[str] = "phone-token") -> None:
-        self.valid_tokens = (
-            {valid_tokens} if isinstance(valid_tokens, str) else set(valid_tokens)
-        )
-        self.calls: list[tuple[str | None, Any, str]] = []
-
-    def authorize(
-        self, token: str | None, method: str, origin: str = "remote"
-    ) -> AuthDecision:
-        self.calls.append((token, method, origin))
-        if method == "forbidden.method":
-            return AuthDecision(allowed=False, reason="forbidden_scope")
-        if method in UNAUTHENTICATED_METHODS:
-            return AuthDecision(allowed=True, reason="", device_name="pairing")
-        if token in self.valid_tokens:
-            return AuthDecision(allowed=True, reason="", device_name="my-phone")
-        return AuthDecision(allowed=False, reason="missing_or_invalid_token")
-
-
-class FakeDispatch:
-    """假 dispatch：记录调用，并经 reply_sink 回写 response（与批 3 扩展签名一致）。"""
-
-    def __init__(self, auto_reply: bool = True) -> None:
-        self.auto_reply = auto_reply
+    def __init__(self) -> None:
         self.invoked: list[dict[str, Any]] = []
 
     def __call__(
@@ -53,21 +27,33 @@ class FakeDispatch:
         line: str,
         reply_sink: Any,
         *,
-        origin: str = "desktop",
-        connection_key: str | None = None,
-        device_name: str | None = None,
+        origin: str,
+        connection_key: str | None,
+        device_key: str | None,
+        device_name: str | None,
     ) -> None:
         payload = json.loads(line)
         payload["_origin"] = origin
         payload["_connection_key"] = connection_key
+        payload["_device_key"] = device_key
         payload["_device_name"] = device_name
         self.invoked.append(payload)
-        if self.auto_reply and reply_sink is not None and payload.get("id"):
-            self._reply(reply_sink, payload["id"], {"echo": payload["method"]})
+        reply_sink(
+            {
+                "kind": "response",
+                "id": payload["id"],
+                "ok": True,
+                "result": {"echo": payload["method"]},
+            }
+        )
 
-    @staticmethod
-    def _reply(reply_sink: Any, rid: str, result: Any) -> None:
-        reply_sink({"kind": "response", "id": rid, "ok": True, "result": result})
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
 
 
 class Harness:
@@ -76,14 +62,19 @@ class Harness:
         server: WSServerMode,
         base: str,
         fanout: EventFanout,
-        fake: FakeDispatch,
-        auth: StubAuthenticator,
+        dispatch: EchoDispatch,
+        pairing: PairingService,
+        clock: _Clock,
     ) -> None:
         self.server = server
         self.base = base
         self.fanout = fanout
-        self.fake = fake
-        self.auth = auth
+        self.dispatch = dispatch
+        self.pairing = pairing
+        self.clock = clock
+
+    def token(self, device_name: str = "my-phone") -> str:
+        return self.pairing.claim(self.pairing.issue_code(), device_name=device_name)
 
 
 def _free_port() -> int:
@@ -93,26 +84,25 @@ def _free_port() -> int:
 
 
 async def _start(
-    static_root: Any,
+    static_root: Any = None,
     *,
-    authenticator: StubAuthenticator | None = None,
-    on_disconnect: Any = None,
+    on_disconnect: Any = lambda _key: None,
 ) -> Harness:
-    stdout = io.StringIO()
-    fanout = EventFanout(JsonlWriter(stdout))
-    fake = FakeDispatch()
-    auth = authenticator or StubAuthenticator()
+    fanout = EventFanout(JsonlWriter(io.StringIO()))
+    dispatch = EchoDispatch()
+    clock = _Clock()
+    pairing = PairingService(clock=clock)
     port = _free_port()
     server = WSServerMode(
-        dispatch=fake,
-        authenticator=auth,
+        dispatch=dispatch,
+        authenticator=pairing,
         fanout=fanout,
         static_root=static_root,
         port=port,
         on_disconnect=on_disconnect,
     )
     await server.start()
-    return Harness(server, f"http://127.0.0.1:{port}", fanout, fake, auth)
+    return Harness(server, f"http://127.0.0.1:{port}", fanout, dispatch, pairing, clock)
 
 
 def _req(method: str, rid: str, token: str | None = None) -> dict[str, Any]:
@@ -137,11 +127,13 @@ async def _recv_text(
             return obj
 
 
-async def _auth_ws(session: aiohttp.ClientSession, base: str, rid: str) -> aiohttp.ClientWebSocketResponse:
-    """建立连接并完成一次带 token 鉴权请求，返回已订阅的连接。"""
-    ws = await session.ws_connect(base + "/ws")
-    await ws.send_str(json.dumps(_req("chat.submit", rid, token="phone-token")))
-    await _recv_text(ws, rid)
+async def _auth_ws(
+    session: aiohttp.ClientSession, h: Harness, rid: str, token: str
+) -> aiohttp.ClientWebSocketResponse:
+    """建立连接并完成一次带 token 的请求，返回已订阅事件的连接。"""
+    ws = await session.ws_connect(h.base + "/ws")
+    await ws.send_str(json.dumps(_req("chat.submit", rid, token=token)))
+    assert (await _recv_text(ws, rid))["ok"] is True
     return ws
 
 
@@ -158,148 +150,186 @@ def _event(sequence: int) -> dict[str, Any]:
 # ------------------------------------------------------------------ 鉴权门
 
 
-@pytest.mark.asyncio
-async def test_unauthenticated_command_rejected() -> None:
-    h = await _start(None)
+@pytest.mark.parametrize("method", ["chat.submit", "ping"])
+async def test_command_without_token_rejected(method: str) -> None:
+    h = await _start()
     try:
         async with aiohttp.ClientSession() as session:
             async with await session.ws_connect(h.base + "/ws") as ws:
-                await ws.send_str(json.dumps(_req("chat.submit", "r1")))
+                await ws.send_str(json.dumps(_req(method, "r1")))
                 resp = await _recv_text(ws, "r1")
         assert resp["ok"] is False
-        assert resp["error"]["code"] == "unauthorized"
-        assert resp["id"] == "r1"
-        assert h.fake.invoked == []  # 鉴权步已拦截，未进入 dispatch
+        assert resp["error"] == {"code": "unauthorized", "message": "missing_token"}
+        assert h.dispatch.invoked == []
     finally:
         await h.server.stop()
 
 
-@pytest.mark.asyncio
-async def test_remote_pair_passes_to_dispatch() -> None:
-    h = await _start(None)
+async def test_remote_pair_passes_to_dispatch_without_token() -> None:
+    h = await _start()
     try:
         async with aiohttp.ClientSession() as session:
             async with await session.ws_connect(h.base + "/ws") as ws:
-                await ws.send_str(json.dumps(_req("remote.pair", "r2")))  # 无 token
+                await ws.send_str(json.dumps(_req("remote.pair", "r2")))
                 resp = await _recv_text(ws, "r2")
         assert resp["ok"] is True
-        assert h.fake.invoked and h.fake.invoked[-1]["method"] == "remote.pair"
+        assert h.dispatch.invoked[-1]["method"] == "remote.pair"
+        assert h.dispatch.invoked[-1]["_device_key"] is None
     finally:
         await h.server.stop()
 
 
-@pytest.mark.asyncio
-async def test_authenticated_command_dispatched_and_response_back_on_same_connection() -> None:
-    h = await _start(None)
+async def test_authenticated_command_dispatched_with_transport_identity() -> None:
+    h = await _start()
+    token = h.token("my-phone")
     try:
         async with aiohttp.ClientSession() as session:
             async with await session.ws_connect(h.base + "/ws") as ws:
-                await ws.send_str(json.dumps(_req("chat.submit", "r3", token="phone-token")))
+                await ws.send_str(json.dumps(_req("chat.submit", "r3", token=token)))
                 resp = await _recv_text(ws, "r3")
-        assert resp["ok"] is True
-        assert h.fake.invoked and h.fake.invoked[-1]["method"] == "chat.submit"
         assert resp["result"] == {"echo": "chat.submit"}
-        # V0.3.9 §5：鉴权决定里的设备名随命令注入 dispatch，供指标如实呈现。
-        assert h.fake.invoked[-1]["_device_name"] == "my-phone"
+        dispatched = h.dispatch.invoked[-1]
+        assert dispatched["_origin"] == "remote"
+        assert dispatched["_device_key"] == token_key(token)
+        assert dispatched["_device_name"] == "my-phone"
+        assert dispatched["_connection_key"]
     finally:
         await h.server.stop()
 
 
-@pytest.mark.asyncio
-async def test_authenticated_connection_cannot_switch_token() -> None:
-    auth = StubAuthenticator({"phone-token", "other-token"})
-    h = await _start(None, authenticator=auth)
+async def test_control_plane_method_rejected_with_forbidden_scope() -> None:
+    h = await _start()
+    token = h.token()
     try:
         async with aiohttp.ClientSession() as session:
             async with await session.ws_connect(h.base + "/ws") as ws:
-                await ws.send_str(
-                    json.dumps(_req("chat.submit", "first", token="phone-token"))
-                )
+                await ws.send_str(json.dumps(_req("remote.issue_code", "c1", token=token)))
+                resp = await _recv_text(ws, "c1")
+        assert resp["error"] == {"code": "forbidden_scope", "message": "forbidden_scope"}
+        assert h.dispatch.invoked == []
+    finally:
+        await h.server.stop()
+
+
+async def test_authenticated_connection_cannot_switch_token() -> None:
+    h = await _start()
+    first_token = h.token("phone-a")
+    other_token = h.token("phone-b")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with await session.ws_connect(h.base + "/ws") as ws:
+                await ws.send_str(json.dumps(_req("chat.submit", "first", token=first_token)))
                 assert (await _recv_text(ws, "first"))["ok"] is True
 
-                await ws.send_str(
-                    json.dumps(_req("chat.submit", "second", token="other-token"))
-                )
+                await ws.send_str(json.dumps(_req("chat.submit", "second", token=other_token)))
                 switched = await _recv_text(ws, "second")
 
         assert switched["ok"] is False
         assert switched["error"]["code"] == "connection_identity_mismatch"
-        assert [frame["id"] for frame in h.fake.invoked] == ["first"]
+        assert [frame["id"] for frame in h.dispatch.invoked] == ["first"]
     finally:
         await h.server.stop()
 
 
-@pytest.mark.asyncio
-async def test_invalid_json_frame_returns_protocol_error() -> None:
-    h = await _start(None)
+@pytest.mark.parametrize("reason", ["expired_token", "revoked_token"])
+async def test_token_failure_on_authenticated_connection_unsubscribes_and_closes(
+    reason: str,
+) -> None:
+    """已鉴权连接的令牌失效后，先收到带原因的拒绝，随后退订并以 4401 断开。"""
+    h = await _start()
+    token = h.token("my-phone")
+    try:
+        async with aiohttp.ClientSession() as session:
+            ws = await _auth_ws(session, h, "auth-1", token)
+            assert len(h.fanout._subscriptions) == 1
+
+            if reason == "expired_token":
+                h.clock.now += 8 * 86400
+            else:
+                h.pairing.revoke_device("my-phone")
+            await ws.send_str(json.dumps(_req("chat.submit", "after", token=token)))
+            rejected = await _recv_text(ws, "after")
+            assert rejected["error"] == {"code": "unauthorized", "message": reason}
+
+            closing = await ws.receive(timeout=8)
+            assert closing.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING)
+            assert ws.close_code == 4401
+            assert len(h.fanout._subscriptions) == 0
+    finally:
+        await h.server.stop()
+
+
+@pytest.mark.parametrize(
+    ("frame", "code"),
+    [
+        ("this is not json {", "invalid_json"),
+        (json.dumps([1, 2, 3]), "invalid_message"),
+        (json.dumps({"kind": "request", "id": "x", "method": 1}), "invalid_message"),
+        (
+            json.dumps(
+                {"kind": "request", "id": "x", "method": "chat.submit", "auth": {"token": 1}}
+            ),
+            "invalid_message",
+        ),
+    ],
+)
+async def test_malformed_frame_returns_protocol_error(frame: str, code: str) -> None:
+    h = await _start()
     try:
         async with aiohttp.ClientSession() as session:
             async with await session.ws_connect(h.base + "/ws") as ws:
-                await ws.send_str("this is not json {")
-                msg = await ws.receive(timeout=8)
-                assert msg.type == WSMsgType.TEXT
-                obj = json.loads(msg.data)
-                assert obj["kind"] == "error"
-                assert obj["error"]["code"] == "invalid_json"
-        assert h.fake.invoked == []
+                await ws.send_str(frame)
+                obj = await _recv_text(ws)
+        assert obj["kind"] == "error"
+        assert obj["error"]["code"] == code
+        assert h.dispatch.invoked == []
     finally:
         await h.server.stop()
 
 
-@pytest.mark.asyncio
-async def test_non_object_frame_returns_protocol_error() -> None:
-    h = await _start(None)
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with await session.ws_connect(h.base + "/ws") as ws:
-                await ws.send_str(json.dumps([1, 2, 3]))
-                msg = await ws.receive(timeout=8)
-                assert msg.type == WSMsgType.TEXT
-                obj = json.loads(msg.data)
-                assert obj["kind"] == "error"
-                assert obj["error"]["code"] == "invalid_message"
-        assert h.fake.invoked == []
-    finally:
-        await h.server.stop()
+# ------------------------------------------------------------------ 事件扇出与断开
 
 
-# ------------------------------------------------------------------ 事件扇出
-
-
-@pytest.mark.asyncio
 async def test_events_fanout_and_continuity_after_client_disconnect() -> None:
-    """冒烟：两台已鉴权客户端收到同一序号事件；断一台后另一台继续收后续事件。"""
-    h = await _start(None)
+    """两台已鉴权客户端收到同一事件；断开一台后另一台继续收后续事件。"""
+    h = await _start()
+    token_a = h.token("phone-a")
+    token_b = h.token("phone-b")
     try:
         async with aiohttp.ClientSession() as session:
-            ws_a = await _auth_ws(session, h.base, "auth-a")
-            ws_b = await _auth_ws(session, h.base, "auth-b")
+            ws_a = await _auth_ws(session, h, "auth-a", token_a)
+            ws_b = await _auth_ws(session, h, "auth-b", token_b)
 
             h.fanout.publish(_event(0))
             ev_a = await _recv_text(ws_a)
             ev_b = await _recv_text(ws_b)
-            assert ev_a["kind"] == "event" and ev_a["sequence"] == 0
-            assert ev_b == ev_a  # 同一序号事件流
+            assert ev_a["sequence"] == 0
+            assert ev_b == ev_a
 
-            # 主动断开 A，B 继续收后续事件
             await ws_a.close()
             h.fanout.publish(_event(1))
-            ev_b1 = await _recv_text(ws_b)
-            assert ev_b1["kind"] == "event" and ev_b1["sequence"] == 1
+            assert (await _recv_text(ws_b))["sequence"] == 1
             await ws_b.close()
     finally:
         await h.server.stop()
 
 
-@pytest.mark.asyncio
-async def test_disconnect_unsubscribes_connection() -> None:
-    h = await _start(None)
+async def test_disconnect_unsubscribes_and_reports_connection_key() -> None:
+    """连接断开时退订事件，并以 dispatch 时注入的连接 key 调用清理回调。"""
+    disconnected: list[str] = []
+    h = await _start(on_disconnect=disconnected.append)
+    token = h.token()
     try:
         async with aiohttp.ClientSession() as session:
-            ws_a = await _auth_ws(session, h.base, "auth-a")
-            await ws_a.close()
-            await asyncio.sleep(0.2)
-            assert len(h.fanout._subscriptions) == 0
+            ws = await _auth_ws(session, h, "dc-1", token)
+            key_at_dispatch = h.dispatch.invoked[-1]["_connection_key"]
+            await ws.close()
+            for _ in range(50):
+                if disconnected:
+                    break
+                await asyncio.sleep(0.1)
+        assert disconnected == [key_at_dispatch]
+        assert len(h.fanout._subscriptions) == 0
     finally:
         await h.server.stop()
 
@@ -307,7 +337,6 @@ async def test_disconnect_unsubscribes_connection() -> None:
 # ------------------------------------------------------------------ 静态资源
 
 
-@pytest.mark.asyncio
 async def test_static_traversal_rejected(tmp_path: Any) -> None:
     static_root = tmp_path / "static"
     static_root.mkdir()
@@ -332,7 +361,6 @@ async def test_static_traversal_rejected(tmp_path: Any) -> None:
         await h.server.stop()
 
 
-@pytest.mark.asyncio
 async def test_static_serves_index_and_file(tmp_path: Any) -> None:
     static_root = tmp_path / "static"
     static_root.mkdir()
@@ -352,136 +380,11 @@ async def test_static_serves_index_and_file(tmp_path: Any) -> None:
         await h.server.stop()
 
 
-@pytest.mark.asyncio
 async def test_no_static_root_returns_404() -> None:
-    h = await _start(None)
+    h = await _start()
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(h.base + "/") as r:
                 assert r.status == 404
     finally:
         await h.server.stop()
-
-
-@pytest.mark.asyncio
-async def test_disconnect_invokes_on_disconnect_with_connection_key() -> None:
-    """契约 §5.3：连接断开时以连接 key 调用清理回调（手机语音会话取消）。"""
-    import aiohttp
-
-    disconnected: list[str] = []
-    harness = await _start(None, on_disconnect=disconnected.append)
-    session = aiohttp.ClientSession()
-    try:
-        ws = await session.ws_connect(harness.base + "/ws")
-        await ws.send_str(json.dumps(_req("card.list", "dc-1", token="phone-token")))
-        await _recv_text(ws, "dc-1")
-        # 已鉴权连接的命令携带服务端注入的连接 key（非 None）。
-        assert harness.fake.invoked[-1]["_connection_key"] is not None
-        key_at_dispatch = harness.fake.invoked[-1]["_connection_key"]
-        await ws.close()
-        # 服务端 handler 收尾后触发断开回调。
-        for _ in range(50):
-            if disconnected:
-                break
-            await asyncio.sleep(0.1)
-        assert disconnected == [key_at_dispatch]
-    finally:
-        await session.close()
-        await harness.server.stop()
-
-# ------------------------------------------------------------ V0.3.8 T1 心跳
-
-
-@pytest.mark.asyncio
-async def test_ping_command_dispatched_after_auth() -> None:
-    """契约 §14.3：ping 走鉴权门（不在白名单豁免集），认证后转发 dispatch。"""
-    import tempfile
-    from pathlib import Path
-
-    with tempfile.TemporaryDirectory() as tmp:
-        harness = await _start(Path(tmp))
-        try:
-            session = aiohttp.ClientSession()
-            ws = await session.ws_connect(harness.base + "/ws")
-            await ws.send_str(json.dumps(_req("ping", "p-1", token="phone-token")))
-            reply = await _recv_text(ws, "p-1")
-            assert reply["ok"] is True
-            assert any(
-                payload["method"] == "ping" for payload in harness.fake.invoked
-            )
-            await ws.close()
-            await session.close()
-        finally:
-            await harness.server.stop()
-
-
-def test_ping_not_in_unauthenticated_methods() -> None:
-    """心跳不豁免鉴权：未认证连接的 ping 必须被拒绝。"""
-    assert "ping" not in UNAUTHENTICATED_METHODS
-
-
-def test_ws_response_configures_heartbeat() -> None:
-    """契约 §14.3：服务端 WebSocketResponse 开启 heartbeat（半开连接暴露）。"""
-    import inspect
-
-    from pair_harness.desktop_backend.ws_server import WSServerMode
-
-    source = inspect.getsource(WSServerMode._handle_ws)
-    assert "heartbeat=30.0" in source
-
-
-# ------------------------------------------------------------ V0.4.0 T1 & T4
-
-
-def test_ws_server_default_host_is_loopback() -> None:
-    """T1 / D2: WSServerMode 默认绑定 127.0.0.1，允许指定 host。"""
-    server_default = WSServerMode(
-        dispatch=lambda *a, **k: None,
-        authenticator=StubAuthenticator(),
-        fanout=EventFanout(JsonlWriter(io.StringIO())),
-        static_root=None,
-        port=8765,
-    )
-    assert server_default._host == "127.0.0.1"
-
-    server_lan = WSServerMode(
-        dispatch=lambda *a, **k: None,
-        authenticator=StubAuthenticator(),
-        fanout=EventFanout(JsonlWriter(io.StringIO())),
-        static_root=None,
-        port=8765,
-        host="0.0.0.0",
-    )
-    assert server_lan._host == "0.0.0.0"
-
-
-@pytest.mark.asyncio
-async def test_ws_server_forwards_remote_origin_and_handles_forbidden_scope() -> None:
-    """T4: WebSocket 帧鉴权转发 origin='remote'；forbidden_scope 返回对应错误码。"""
-    import tempfile
-    from pathlib import Path
-
-    auth = StubAuthenticator()
-    with tempfile.TemporaryDirectory() as tmp:
-        harness = await _start(Path(tmp), authenticator=auth)
-        try:
-            session = aiohttp.ClientSession()
-            ws = await session.ws_connect(harness.base + "/ws")
-
-            # 1. 正常业务方法鉴权 -> 转发 origin="remote"
-            await ws.send_str(json.dumps(_req("chat.submit", "m-1", token="phone-token")))
-            reply1 = await _recv_text(ws, "m-1")
-            assert reply1["ok"] is True
-            assert ("phone-token", "chat.submit", "remote") in auth.calls
-
-            # 2. 控制面受限方法 -> 返回 forbidden_scope
-            await ws.send_str(json.dumps(_req("forbidden.method", "m-2", token="phone-token")))
-            reply2 = await _recv_text(ws, "m-2")
-            assert reply2["ok"] is False
-            assert reply2["error"]["code"] == "forbidden_scope"
-            assert "forbidden_scope" in reply2["error"]["message"]
-
-            await ws.close()
-            await session.close()
-        finally:
-            await harness.server.stop()

@@ -1,35 +1,24 @@
-"""角色提示词装配器（V0.3.7 两段式装配纯模块）。
-
-契约出处：
-
-- 装配顺序：``docs/character-card/角色卡数据契约.md`` §9；
-- V0.3.5 装配子集：``docs/plans/V0.3.5-契约冻结.md`` §4.2；
-- V0.3.7 装配扩展：``docs/plans/V0.3.7-契约冻结.md`` §4（两段式装配、
-  HSR 分节渲染、世界书与深度注入、确定性触发、装配诊断、数据宏展开）。
-
-装配职责只到「定序 + 小节标题 + 结构化呈现」：标准字段按作者原文装配，
-``data.extensions.hsr`` 内容块渲染为确定性的分节行文本；数据宏
-（``{{char}}``/``{{user}}``）在装配时单遍展开，白名单之外的宏进入未展开
-清单。不改写、不摘要、不补全、不解析作者内容，不做任何语义猜测。
-
-- **基座装配** ``assemble_character_prompt``（静态段）：标准字段 + HSR 五块
-  + 数据宏展开 + 装配诊断；世界书与 ``depth_prompt`` 不进基座。
-- **回合装配** ``assemble_turn_prompt``（现算段）：基座之上叠加世界书激活
-  结果、``depth_prompt`` 深度注入与确定性触发，产出完整 ``AssembledPrompt``。
-"""
+# 角色提示词两段式装配：基座装配标准字段与 HSR 内容块，回合装配叠加世界书、depth_prompt、
+# 摘要、记忆与确定性触发。装配顺序见 docs/character-card/角色卡数据契约.md，作者内容只定序、
+# 加小节标题与展开数据宏，不改写、不摘要、不做语义猜测。
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 
 from pair_harness.character_cards.activation import (
     ActivatedEntry,
+    ActivationResult,
     activate_world_book,
     collect_turn_triggers,
 )
 from pair_harness.character_cards.macros import expand_data_macros
-from pair_harness.character_cards.models import CharacterBook, CharacterCard
+from pair_harness.character_cards.models import (
+    CharacterBook,
+    CharacterCard,
+    parse_depth_prompt,
+)
 
 from .memory import PairMemory, active_memories
 from .summary import ConversationSummary
@@ -37,7 +26,7 @@ from .summary import ConversationSummary
 
 @dataclass(frozen=True)
 class DepthInjection:
-    """深度注入条目（V0.3.7 契约 §4.2/§4.4）。
+    """深度注入条目。
 
     - ``depth``：距对话末尾第 N 条之前插入；0 = 追加到最后；
     - ``role``：system | user | assistant；
@@ -84,7 +73,7 @@ class AssembledPrompt:
 
     - ``depth_injections``：深度注入条目（不在 system_text 中，由对话适配器
       splice 进对话消息列表）；基座装配恒为空元组；
-    - ``diagnostics``：装配级诊断（§4.6：scan_depth/scanned_message_count/
+    - ``diagnostics``：装配级诊断（scan_depth/scanned_message_count/
       budget_total/budget_used/overflow_entries/not_run_fields/
       unexpanded_macros/warnings/activated_count 与 depth_injections 计数；
       预算口径另见 budget_constant_used/budget_prunable_used/
@@ -98,8 +87,8 @@ class AssembledPrompt:
     diagnostics: dict = field(default_factory=dict)
 
 
-# 标准字段装配规格：(字段名, kind, 小节标题)；元组顺序即装配顺序，对应
-# 角色卡数据契约 §9 第 1、2 步与第 5 步（世界书与 depth_prompt 由回合装配处理）。
+# 标准字段装配规格：(字段名, kind, 小节标题)；元组顺序即装配顺序（世界书与
+# depth_prompt 由回合装配处理）。
 _STANDARD_SPECS = (
     ("description", "description", "角色设定"),
     ("personality", "personality", "性格"),
@@ -108,8 +97,8 @@ _STANDARD_SPECS = (
     ("post_history_instructions", "post_history_instructions", "历史后指令"),
 )
 
-# HSR 高级扩展装配规格：(块名, kind, 小节标题)；元组顺序即契约 §9 第 6、7 步
-# 的拼接顺序。``card.hsr`` 为 None 或块为空 dict 时不产生模块。
+# HSR 高级扩展装配规格：(块名, kind, 小节标题)；元组顺序即拼接顺序。
+# ``card.hsr`` 为 None 或块为空 dict 时不产生模块。
 _HSR_SPECS = (
     ("world_architecture", "hsr.world_architecture", "世界架构"),
     ("character_architecture", "hsr.character_architecture", "角色架构"),
@@ -120,9 +109,6 @@ _HSR_SPECS = (
 
 # 框架引导模板（装配框架，不是人设合成）。
 _FRAME_TEMPLATE = "你扮演 {name}。"
-
-# atDepth / depth_prompt 角色数值映射（契约 §4.2，对齐 ST extension_prompt_roles）。
-_ROLE_MAP = {0: "system", 1: "user", 2: "assistant"}
 
 
 def _entry_ref(entry) -> str:
@@ -136,10 +122,7 @@ def _entry_ref(entry) -> str:
 
 def _book_index(book: CharacterBook, target) -> int:
     """book.entries 中目标条目的身份下标（书内下标，用于 source_field）。"""
-    for i, entry in enumerate(book.entries):
-        if entry is target:
-            return i
-    return book.entries.index(target)
+    return next(i for i, entry in enumerate(book.entries) if entry is target)
 
 
 def _collect_unexpanded(
@@ -179,12 +162,12 @@ def _build_system(
 
 
 def assemble_character_prompt(card: CharacterCard) -> AssembledPrompt:
-    """基座装配（V0.3.7 契约 §4.1 静态段，纯函数，无副作用）。
+    """基座装配（静态段，纯函数）。
 
     - 标准字段 + HSR 五块按顺序装配；每个模块内容经数据宏单遍展开，
       未展开宏聚合进 ``diagnostics.unexpanded_macros``；
     - ``first_mes`` 同样展开（白名单宏）；
-    - 世界书与 ``depth_prompt`` 不进基座（归回合装配，边界由测试锁定）；
+    - 世界书与 ``depth_prompt`` 不进基座，归回合装配；
     - 每个模块记录在最终 ``system_text`` 中的字符区间。
     """
     modules: list[AssemblyModule] = []
@@ -240,31 +223,31 @@ def assemble_character_prompt(card: CharacterCard) -> AssembledPrompt:
 
 def assemble_turn_prompt(
     card: CharacterCard,
-    scan_texts,
+    scan_texts: Sequence[str],
     *,
     turn_index: int = 0,
     context_tokens: int = 8192,
-    base: "AssembledPrompt | None" = None,
+    base: AssembledPrompt | None = None,
     summary: ConversationSummary | None = None,
-    memories: "Iterable[PairMemory]" = (),
+    memories: Iterable[PairMemory] = (),
 ) -> AssembledPrompt:
-    """回合装配（V0.3.7 契约 §4.1 现算段，不缓存；V0.3.9 契约 §2 顺序）。
+    """回合装配（现算段，不缓存）。
 
     - ``base`` 复用参数：传入调用方缓存基座时不重算；缺省内部现算；
-    - 世界书：``card.character_book`` 非 None 时 ``activate_world_book``，
+    - 世界书：激活 ``card.character_book``（没有世界书时按空书计算诊断），
       before_char/after_char 条目成为 world_book.* 模块，atDepth 条目成为
       ``DepthInjection``（不进 system_text）；
-    - ``depth_prompt``：非 None 且 prompt 非空 → ``DepthInjection``；
-      ``entries`` 数组变体（v2 多条注入）存而不运行；
-    - V0.3.9 装配顺序（契约 §2）：角色框架、标准角色字段、world book
-      before/after、HSR 扩展、聊天摘要、配对记忆、事件触发、最近原文与
-      depth 注入、任务进度/结果及项目运行上下文。摘要与记忆只接受
-      ``completed`` 摘要与 ``active`` 记忆，内容按模型产出原样呈现，
-      不做改写、摘要或关键词筛选；
+    - ``depth_prompt``：prompt 非空 → ``DepthInjection``；``entries`` 数组
+      变体（v2 多条注入）存而不运行；
+    - 装配顺序：角色框架、标准角色字段、world book before/after、HSR 扩展、
+      聊天摘要、配对记忆、事件触发，随后由对话适配器追加最近原文与 depth
+      注入、任务进度或结果及项目运行上下文。摘要与记忆只接受 ``completed``
+      摘要与 ``active`` 记忆，内容按模型产出原样呈现，不做改写、摘要或
+      关键词筛选；
     - 确定性触发：``collect_turn_triggers`` 命中条目 → ``hsr.event_trigger``
       模块置于 system_text 最末；
     - 装配级 ``diagnostics`` 聚合激活诊断、未展开宏、深度注入计数与
-      摘要/记忆注入事实（只含 id 与字符数，不含隐藏内容）。
+      摘要、记忆注入事实（只含 id 与字符数，不含隐藏内容）。
     """
     if base is None:
         base = assemble_character_prompt(card)
@@ -272,43 +255,38 @@ def assemble_turn_prompt(
     unexpanded_macros = list(base.diagnostics.get("unexpanded_macros", []))
     depth_injections: list[DepthInjection] = []
     not_run_labels = set(base.diagnostics.get("not_run_fields", []))
+    scan_texts = list(scan_texts)
 
-    scan_texts = [] if scan_texts is None else list(scan_texts)
-
-    # ---- 世界书激活（契约 §3，§4.3） ----
-    activation = None
-    book = card.character_book
-    if book is not None:
-        activation = activate_world_book(
-            book, scan_texts, context_tokens=context_tokens
-        )
-        before_mods = _world_book_modules(
-            card, book, activation.before_char, "before_char", unexpanded_macros
-        )
-        after_mods = _world_book_modules(
-            card, book, activation.after_char, "after_char", unexpanded_macros
-        )
-        modules[0:0] = before_mods
-        modules = _insert_after_scenario(modules, after_mods)
-        for group in activation.depth_entries:
-            depth_injections.append(
-                DepthInjection(
-                    depth=group.depth,
-                    role=group.role,
-                    text=_join_entry_contents(
-                        card,
-                        book,
-                        group.entries,
-                        "data.character_book.entries",
-                        unexpanded_macros,
-                    ),
-                )
+    # ---- 世界书激活 ----
+    book = card.character_book if card.character_book is not None else CharacterBook()
+    activation = activate_world_book(book, scan_texts, context_tokens=context_tokens)
+    before_mods = _world_book_modules(
+        card, book, activation.before_char, "before_char", unexpanded_macros
+    )
+    after_mods = _world_book_modules(
+        card, book, activation.after_char, "after_char", unexpanded_macros
+    )
+    modules[0:0] = before_mods
+    modules = _insert_after_scenario(modules, after_mods)
+    for group in activation.depth_entries:
+        depth_injections.append(
+            DepthInjection(
+                depth=group.depth,
+                role=group.role,
+                text=_join_entry_contents(
+                    card,
+                    book,
+                    group.entries,
+                    "data.character_book.entries",
+                    unexpanded_macros,
+                ),
             )
+        )
 
-    # ---- depth_prompt 深度注入（契约 §4.4） ----
+    # ---- depth_prompt 深度注入 ----
     _apply_depth_prompt(card, depth_injections, unexpanded_macros, not_run_labels)
 
-    # ---- 聊天摘要与配对记忆（V0.3.9 契约 §2：HSR 之后、事件触发之前） ----
+    # ---- 聊天摘要与配对记忆（HSR 之后、事件触发之前） ----
     summary_module = _summary_module(summary)
     if summary_module is not None:
         modules.append(summary_module)
@@ -316,7 +294,7 @@ def assemble_turn_prompt(
     if memory_module is not None:
         modules.append(memory_module)
 
-    # ---- 确定性触发（契约 §6.1，模块置于最末） ----
+    # ---- 确定性触发（模块置于最末） ----
     hsr = card.hsr
     event_system = hsr.event_system if hsr is not None else {}
     effective_turn = turn_index if turn_index > 0 else 0
@@ -340,8 +318,6 @@ def assemble_turn_prompt(
 
     diagnostics = _assemble_diagnostics(
         activation,
-        scan_texts,
-        context_tokens,
         unexpanded_macros,
         depth_injections,
         not_run_labels,
@@ -369,7 +345,7 @@ def _world_book_modules(
 
     - ``content``：桶内条目 content 宏展开后按拼接序以 ``"\n"`` 连接；
     - 模块诊断聚合 matched_keys/tokens_estimate/position/insertion_order/
-      entry_refs；空桶返回空列表（不出模块，契约 §4.3）。
+      entry_refs；空桶返回空列表（不出模块）。
     """
     if not activated:
         return []
@@ -432,7 +408,7 @@ def _join_entry_contents(
 def _insert_after_scenario(
     modules: list[AssemblyModule], new_mods: list[AssemblyModule]
 ) -> list[AssemblyModule]:
-    """把 world_book.after 模块插入「场景之后、系统提示之前」（契约 §4.3）。
+    """把 world_book.after 模块插入「场景之后、系统提示之前」。
 
     ``new_mods`` 为空时原样返回；插入点按 kind 定位：场景后，其次系统提示前，
     否则落在首个 HSR 块之前（模块列表最前部）。
@@ -454,25 +430,16 @@ def _insert_after_scenario(
     return modules
 
 
-def _normalize_depth_role(role) -> str:
-    """depth_prompt role 归一化：字符串三值、数值 0/1/2、其余按 system。"""
-    if role in ("system", "user", "assistant"):
-        return role
-    if isinstance(role, int) and not isinstance(role, bool) and role in (0, 1, 2):
-        return _ROLE_MAP[role]
-    return "system"
-
-
 def _apply_depth_prompt(
     card: CharacterCard,
     depth_injections: list[DepthInjection],
     unexpanded_macros: list,
     not_run_labels: set,
 ) -> None:
-    """depth_prompt 深度注入（契约 §4.4）。
+    """depth_prompt 深度注入。
 
-    - ``extensions.depth_prompt`` 为 dict 且 prompt 非空 → 生成 DepthInjection
-      （depth 缺省 4、role 缺省 system，数值 role 0/1/2 → system/user/assistant）；
+    - ``extensions.depth_prompt`` 的 prompt 非空 → 生成 DepthInjection；
+      字段在角色卡导入时已校验，这里按 :func:`parse_depth_prompt` 解析；
     - dict 含 ``entries`` 数组变体（v2 多条注入）→ 存而不运行，
       记入 ``diagnostics.not_run_fields``。
     """
@@ -482,17 +449,18 @@ def _apply_depth_prompt(
     if isinstance(dp.get("entries"), list):
         not_run_labels.add("depth_prompt.entries（存而不运行）")
         return
-    prompt = dp.get("prompt")
-    if not isinstance(prompt, str) or not prompt.strip():
+    parsed = parse_depth_prompt(dp)
+    if not parsed.prompt.strip():
         return
-    depth = dp.get("depth", 4)
-    if not isinstance(depth, int) or isinstance(depth, bool):
-        depth = 4
-    role = _normalize_depth_role(dp.get("role", "system"))
     text = _collect_unexpanded(
-        prompt, card.name, "data.extensions.depth_prompt.prompt", unexpanded_macros
+        parsed.prompt,
+        card.name,
+        "data.extensions.depth_prompt.prompt",
+        unexpanded_macros,
     )
-    depth_injections.append(DepthInjection(depth=depth, role=role, text=text))
+    depth_injections.append(
+        DepthInjection(depth=parsed.depth, role=parsed.role, text=text)
+    )
 
 
 def _collect_trigger_texts(
@@ -501,7 +469,7 @@ def _collect_trigger_texts(
     turn_index: int,
     unexpanded_macros: list,
 ) -> list[str]:
-    """确定性触发条目内容（契约 §6.1）。
+    """确定性触发条目内容。
 
     ``collect_turn_triggers`` 命中的条目：含字符串 ``content`` 字段取之，
     否则渲染剔除 ``runtime_trigger`` 后的整个 dict（``_block_lines`` 嵌套
@@ -526,7 +494,7 @@ def _collect_trigger_texts(
 
 
 def _summary_module(summary: ConversationSummary | None) -> AssemblyModule | None:
-    """聊天摘要模块（V0.3.9 契约 §2）。
+    """聊天摘要模块。
 
     只注入 ``completed`` 且含模型产出内容的摘要；内容按模型结构确定性
     渲染，不改写、不摘要。渲染为空（例如空对象）时不产生模块。
@@ -548,7 +516,7 @@ def _summary_module(summary: ConversationSummary | None) -> AssemblyModule | Non
 def _memory_module(
     memories: Iterable[PairMemory],
 ) -> tuple[AssemblyModule | None, tuple[str, ...]]:
-    """配对记忆模块（V0.3.9 契约 §2）。
+    """配对记忆模块。
 
     只注入 ``active`` 记忆，按入参顺序拼接；每条内容按模型结构确定性
     渲染，代码不筛选、不改写。渲染为空的记录不产生内容，也不计入
@@ -578,50 +546,34 @@ def _memory_module(
 
 
 def _assemble_diagnostics(
-    activation,
-    scan_texts: list,
-    context_tokens: int,
+    activation: ActivationResult,
     unexpanded_macros: list,
     depth_injections: list[DepthInjection],
     not_run_labels: set,
     *,
-    summary_module: AssemblyModule | None = None,
-    memory_module: AssemblyModule | None = None,
-    memory_ids: tuple[str, ...] = (),
+    summary_module: AssemblyModule | None,
+    memory_module: AssemblyModule | None,
+    memory_ids: tuple[str, ...],
 ) -> dict:
-    """装配级诊断（契约 §4.6；V0.3.9 §5 诊断口径）。
+    """装配级诊断。
 
-    无世界书时提供确定性事实默认（契约 §3.1 空结果形状），字段齐备。
-    摘要/记忆只记录注入事实与 id/字符数，不携带隐藏内容。
+    世界书字段直接取自激活诊断；摘要与记忆只记录注入事实与 id、字符数，
+    不携带隐藏内容。
     """
-    if activation is not None:
-        ad = activation.diagnostics
-        diagnostics = {
-            "scan_depth": ad.scan_depth,
-            "scanned_message_count": ad.scanned_message_count,
-            "budget_total": ad.budget_total,
-            "budget_used": ad.budget_used,
-            "budget_constant_used": ad.budget_constant_used,
-            "budget_prunable_used": ad.budget_prunable_used,
-            "budget_limit_reached": ad.budget_limit_reached,
-            "overflow_entries": list(ad.overflow_entries),
-            "warnings": list(ad.warnings),
-            "activated_count": ad.activated_count,
-        }
-        not_run_labels.update(ad.not_run_fields)
-    else:
-        diagnostics = {
-            "scan_depth": 2,
-            "scanned_message_count": len(scan_texts),
-            "budget_total": round(0.25 * context_tokens),
-            "budget_used": 0,
-            "budget_constant_used": 0,
-            "budget_prunable_used": 0,
-            "budget_limit_reached": False,
-            "overflow_entries": [],
-            "warnings": [],
-            "activated_count": 0,
-        }
+    ad = activation.diagnostics
+    diagnostics = {
+        "scan_depth": ad.scan_depth,
+        "scanned_message_count": ad.scanned_message_count,
+        "budget_total": ad.budget_total,
+        "budget_used": ad.budget_used,
+        "budget_constant_used": ad.budget_constant_used,
+        "budget_prunable_used": ad.budget_prunable_used,
+        "budget_limit_reached": ad.budget_limit_reached,
+        "overflow_entries": list(ad.overflow_entries),
+        "warnings": list(ad.warnings),
+        "activated_count": ad.activated_count,
+    }
+    not_run_labels.update(ad.not_run_fields)
     diagnostics["not_run_fields"] = sorted(not_run_labels)
     diagnostics["unexpanded_macros"] = unexpanded_macros
     diagnostics["depth_injections"] = len(depth_injections)
@@ -647,7 +599,7 @@ def _assemble_diagnostics(
 
 
 def _render_block_text(value: object) -> str:
-    """把结构块渲染为确定性分节行文本（V0.3.7 契约 §4.7）。
+    """把结构块渲染为确定性分节行文本。
 
     - 顶层为 dict：每个键升级为 ``### {键名}`` 小节行，后接该键值的既有
       渲染（键序不变、不翻译、不删除任何键，只排版不改写原文）；
@@ -663,7 +615,7 @@ def _render_block_text(value: object) -> str:
 
 
 def _render_nested_block(value: object) -> str:
-    """把结构值渲染为无小节头的嵌套行文本（世界书/触发 dict 用，契约 §6.1）。"""
+    """把结构值渲染为无小节头的嵌套行文本（世界书与触发 dict 用）。"""
     return "\n".join(_block_lines(value, ""))
 
 

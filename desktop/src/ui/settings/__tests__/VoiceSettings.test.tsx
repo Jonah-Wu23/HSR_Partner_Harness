@@ -1,11 +1,13 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createActionController } from "../../../services/actions";
+import { MockDesktopBackend } from "../../../services/mockDesktopBackend";
 import { SettingsCenter } from "../SettingsCenter";
 import type { VoicePageView } from "../types";
 
 afterEach(cleanup);
 
-function createMockVoiceProps(overrides: Partial<VoicePageView> = {}) {
+function voicePageProps(overrides: Partial<VoicePageView> = {}) {
   const defaultVoice: VoicePageView = {
     enabled: true,
     assistantVoiceEnabled: false,
@@ -30,7 +32,7 @@ function createMockVoiceProps(overrides: Partial<VoicePageView> = {}) {
     onClose: vi.fn(),
     account: { displayName: "测试用户" },
     model: {
-      provider: "DeepSeek",
+      provider: "deepseek",
       model: "deepseek-chat",
       baseUrl: "https://api.deepseek.com",
       apiKeyMasked: "sk-····",
@@ -47,6 +49,7 @@ function createMockVoiceProps(overrides: Partial<VoicePageView> = {}) {
       loading: false,
       error: null,
       serveAddress: null,
+      tunnel: { state: "off", publicUrl: null, hostname: null, error: null, requestError: null, loading: false },
     },
     onIssuePairingCode: vi.fn(),
     onListRemoteDevices: vi.fn(),
@@ -60,35 +63,17 @@ function createMockVoiceProps(overrides: Partial<VoicePageView> = {}) {
     onTestModel: vi.fn(),
     onSaveVoice: vi.fn(),
     onPreviewVoice: vi.fn(),
+    onProvisionVoices: vi.fn(),
+    onPickFile: vi.fn(),
+    actions: createActionController(new MockDesktopBackend()).actions,
   };
 
   return props;
 }
 
-describe("VoiceSettings (V0.3.3 角色语音与助手无 TTS 改造)", () => {
-  it("渲染后断言查询不到任何助手语音入口文案（萨姆 / 神秘的古代机械 / 助手语音 / 古代机械）", () => {
-    const props = createMockVoiceProps();
-    render(<SettingsCenter {...props} />);
-
-    expect(screen.queryByText(/萨姆/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/神秘的古代机械/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/助手语音/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/古代机械/)).not.toBeInTheDocument();
-  });
-
-  it("仅保留 3 位角色侧说话方（白厄、流萤、三月七），助手侧第四面镜不再出现", () => {
-    const props = createMockVoiceProps();
-    render(<SettingsCenter {...props} />);
-
-    expect(screen.getByText("白厄")).toBeInTheDocument();
-    expect(screen.getByText("流萤")).toBeInTheDocument();
-    expect(screen.getByText("三月七")).toBeInTheDocument();
-    expect(screen.queryByText("第四面镜")).not.toBeInTheDocument();
-    expect(screen.getByText(/3 次声音复刻/)).toBeInTheDocument();
-  });
-
-  it("展示角色音色四态（未配置 / 创建中 / 已绑定 / 失败）与试听", () => {
-    const props = createMockVoiceProps({
+describe("设置中心语音页", () => {
+  it("展示各说话方的音色状态与错误原文，已绑定的音色可按 voice_id 试听", () => {
+    const props = voicePageProps({
       speakers: [
         {
           speakerId: "phainon",
@@ -119,16 +104,23 @@ describe("VoiceSettings (V0.3.3 角色语音与助手无 TTS 改造)", () => {
     expect(screen.getByText("失败")).toBeInTheDocument();
     expect(screen.getByText("未配置")).toBeInTheDocument();
     expect(screen.getByText("百炼 API 402: 余额不足")).toBeInTheDocument();
-    // V0.3.4：助手侧（第四面镜）不再出现在专属音色列表
-    expect(screen.queryByText("第四面镜")).not.toBeInTheDocument();
 
-    const previewBtn = screen.getByRole("button", { name: "试听" });
-    fireEvent.click(previewBtn);
+    fireEvent.click(screen.getByRole("button", { name: "试听" }));
     expect(props.onPreviewVoice).toHaveBeenCalledWith("voice-phainon-01", "白厄");
   });
 
-  it("DashScope 账号未配置阻断态：展示提示并禁用生成按钮", () => {
-    const props = createMockVoiceProps({
+  it.each([
+    ["account", "sk-····1234", "当前账号已保存 sk-····1234", "当前账号 BYOK 已配置"],
+    ["development_env", "", "开发环境 .env Key 可用，尚未保存到当前账号", "开发环境 .env 凭据可用（未保存到账号）"],
+  ] as const)("凭据来源 %s 时如实标注 Key 的保存位置", (credentialSource, apiKeyMasked, keyNote, switchNote) => {
+    render(<SettingsCenter {...voicePageProps({ credentialSource, apiKeyMasked })} />);
+
+    expect(screen.getByText(keyNote)).toBeInTheDocument();
+    expect(screen.getByText(switchNote)).toBeInTheDocument();
+  });
+
+  it("DashScope 账号未配置时提示并禁用生成", () => {
+    const props = voicePageProps({
       baseUrl: "",
       apiKeyMasked: "",
       credentialSource: "not_configured",
@@ -137,95 +129,69 @@ describe("VoiceSettings (V0.3.3 角色语音与助手无 TTS 改造)", () => {
     render(<SettingsCenter {...props} />);
 
     expect(screen.getByText(/语音服务账号未配置/)).toBeInTheDocument();
-    const generateBtn = screen.getByRole("button", { name: /生成.*专属音色/ });
-    expect(generateBtn).toBeDisabled();
+    expect(screen.getByRole("button", { name: "生成 3 个专属音色" })).toBeDisabled();
   });
 
-  it("只读展示固定语音模型 ASR 与 TTS", () => {
-    const props = createMockVoiceProps();
-    render(<SettingsCenter {...props} />);
+  it("保存新 Key 与服务地址，保存后清空 Key 输入框", async () => {
+    const onSaveVoice = vi.fn().mockResolvedValue(undefined);
+    render(<SettingsCenter {...voicePageProps()} onSaveVoice={onSaveVoice} />);
 
-    expect(screen.getByText("qwen-audio-3.0-asr-flash-streaming")).toBeInTheDocument();
-    expect(screen.getByText("qwen-audio-3.0-tts-flash")).toBeInTheDocument();
-    expect(screen.queryByLabelText("ASR 模型")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("TTS 模型")).not.toBeInTheDocument();
-  });
+    const keyInput = screen.getByPlaceholderText("留空保留当前 sk-····1234");
+    fireEvent.change(keyInput, { target: { value: "user-key" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存语音配置" }));
 
-  it("音色生成失败后显示失败状态并允许重试", async () => {
-    const onProvisionVoices = vi.fn().mockRejectedValue(new Error("真实生成失败"));
-    const props = { ...createMockVoiceProps(), onProvisionVoices };
-    render(<SettingsCenter {...props} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "生成 3 个专属音色" }));
-
-    await waitFor(() => {
-      expect(screen.getByRole("alert")).toHaveTextContent("真实生成失败");
+    expect(onSaveVoice).toHaveBeenCalledWith({
+      apiKey: "user-key",
+      baseUrl: "https://dashscope.aliyuncs.com/api/v1",
     });
-    expect(screen.getAllByText("失败")).toHaveLength(3);
-    expect(screen.getByRole("button", { name: "重试失败项" })).toBeEnabled();
+    await waitFor(() => expect(keyInput).toHaveValue(""));
   });
 
-  it("同一时刻不会重复提交音色生成", async () => {
+  // 开关只提交变化的那一项：带上服务地址会让后端重建语音运行时并打断朗读。
+  it.each([
+    [/语音功能/, { enabled: false }],
+    [/语音自动聆听/, { vadEnabled: false }],
+  ])("切换 %s 开关只提交该项", (label, expected) => {
+    const onSaveVoice = vi.fn().mockResolvedValue(undefined);
+    render(<SettingsCenter {...voicePageProps()} onSaveVoice={onSaveVoice} />);
+
+    fireEvent.click(screen.getByLabelText(label));
+    expect(onSaveVoice).toHaveBeenCalledWith(expected);
+  });
+
+  it("语音总开关关闭时语音自动聆听不可用", () => {
+    render(<SettingsCenter {...voicePageProps({ enabled: false, vadEnabled: false, vadStatus: "unavailable" })} />);
+    expect(screen.getByLabelText(/语音自动聆听/)).toBeDisabled();
+  });
+
+  it("生成专属音色提交全部未生成的说话方，进行中不会重复提交", async () => {
     let resolveProvision: ((value: { results: [] }) => void) | undefined;
     const onProvisionVoices = vi.fn(
       () => new Promise<{ results: [] }>((resolve) => { resolveProvision = resolve; }),
     );
-    const props = { ...createMockVoiceProps(), onProvisionVoices };
-    render(<SettingsCenter {...props} />);
+    render(<SettingsCenter {...voicePageProps()} onProvisionVoices={onProvisionVoices} />);
 
     const button = screen.getByRole("button", { name: "生成 3 个专属音色" });
     fireEvent.click(button);
+    expect(button).toHaveTextContent("正在生成…");
     fireEvent.click(button);
 
     expect(onProvisionVoices).toHaveBeenCalledTimes(1);
+    expect(onProvisionVoices).toHaveBeenCalledWith(["phainon", "firefly", "march7"], false);
     resolveProvision?.({ results: [] });
+    expect(await screen.findByRole("button", { name: "生成 3 个专属音色" })).toBe(button);
   });
 
-  it("保留 VAD 用户语音输入开关", () => {
-    const onSaveVoice = vi.fn();
-    const props = { ...createMockVoiceProps(), onSaveVoice };
-    render(<SettingsCenter {...props} />);
+  it("音色生成失败后显示失败状态并允许重试", async () => {
+    const onProvisionVoices = vi.fn().mockRejectedValue(new Error("百炼 API 402: 余额不足"));
+    render(<SettingsCenter {...voicePageProps()} onProvisionVoices={onProvisionVoices} />);
 
-    const vadSwitch = screen.getByLabelText(/语音自动聆听/);
-    expect(vadSwitch).toBeInTheDocument();
-    expect(vadSwitch).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "生成 3 个专属音色" }));
 
-    fireEvent.click(vadSwitch);
-    expect(onSaveVoice).toHaveBeenCalledWith(
-      expect.objectContaining({
-        vadEnabled: false,
-      }),
-    );
-  });
-
-  it("传入 characterVoice 时渲染「为角色创建音色」区", () => {
-    const props = {
-      ...createMockVoiceProps(),
-      characterVoice: {
-        voiceConfigured: true,
-        cards: [
-          {
-            cardId: "card-saved-002",
-            name: "卡芙卡",
-            state: "saved" as const,
-            source: "user_created" as const,
-            hasAvatar: true,
-            voiceState: "voice_unconfigured" as const,
-            active: true,
-            readOnly: false,
-            hasReferenceAudio: false,
-            referenceAudio: null,
-            voiceId: null,
-            lastError: null,
-          },
-        ],
-        selectedCardId: null,
-        selectedCard: null,
-      },
-    };
-    render(<SettingsCenter {...props} />);
-
-    expect(screen.getByTestId("character-voice-section")).toBeInTheDocument();
-    expect(screen.getByText("为角色创建音色")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent("百炼 API 402: 余额不足");
+    });
+    expect(screen.getAllByText("失败")).toHaveLength(3);
+    expect(screen.getByRole("button", { name: "重试失败项" })).toBeEnabled();
   });
 });

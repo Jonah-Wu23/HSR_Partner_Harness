@@ -4,7 +4,7 @@
   align-items: center;
   justify-content: center;
   gap: 12px;
-  /* V0.3.9 V08：100vh 为回退，dvh 跟随真实可视高度（含移动端工具栏/键盘）。 */
+  /* 100vh 供不支持 dvh 的引擎使用，dvh 跟随移动端工具栏与键盘的可视高度。 */
   min-height: 100vh;
   min-height: 100dvh;
   padding: 24px;

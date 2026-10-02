@@ -40,13 +40,13 @@ export interface Message {
   origin?: MessageOrigin;
   delegation_id?: string | null;
   status?: MessageStatus;
-  /** V0.3.2 M1：助手 segment 归属的任务与统一时间线序号；旧记录为空。 */
+  /** 助手 segment 归属的任务。 */
   task_id?: string | null;
-  timeline_order?: number | null;
+  /** 同一聊天内消息与工具记录共用的时间线序号，界面只按它排序。 */
+  timeline_order: number;
   /**
-   * V0.3.7 移动端朗读可用性（服务端权威，随 message.created 下发）：
-   * 角色自然语言回复产生时服务端能否真实合成语音（账号专属音色已生成
-   * 且凭据齐备）。undefined/旧消息与 false 一律不得展示朗读入口。
+   * 角色自然语言回复产生时服务端能否真实合成语音（账号专属音色已生成且凭据齐备），
+   * 随 message.created 下发。缺省与 false 都不展示朗读入口。
    */
   tts_ready?: boolean;
 }
@@ -63,14 +63,14 @@ export interface ToolRun {
   title: string;
   summary: string;
   details: string;
-  /** V0.3.2 M1：首次观察到工具事件时分配一次，更新沿用原序号。 */
-  timeline_order?: number | null;
+  /** 首次观察到工具事件时分配，更新沿用原序号。 */
+  timeline_order: number;
 }
 
 export type ApprovalMode = "request_approval" | "review" | "full_auto";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export type ConversationMode = "chat" | "collaboration";
-export type TaskStatus = "pending" | "running" | "amendment_pending" | "completed" | "failed" | "cancelled";
+export type TaskStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
 export type TurnStatus =
   | "queued"
@@ -102,9 +102,15 @@ export interface QueueItem {
   text: string;
   intent: QueueIntent;
   position: number;
-  status: "queued" | "processing" | "withdrawn";
+  status: "queued" | "processing" | "withdrawn" | "failed";
+  /** 派发失败的原始原因；其余状态为 null。 */
+  error: string | null;
   created_at: string;
   source_message_id: string | null;
+  /** 提交来源，派发出的回合沿用。 */
+  origin: "desktop" | "remote";
+  remote_device_key: string | null;
+  remote_device_name: string | null;
 }
 
 export interface ProjectRuntimeContext {
@@ -125,22 +131,12 @@ export interface AccountRecord {
   theme: "dark" | "light";
 }
 
-export type ErrorSeverity = "fatal" | "recoverable" | "info";
-export type ErrorSource =
-  | "voice.asr"
-  | "voice.tts"
-  | "dialogue.deepseek"
-  | "codex"
-  | "sidecar";
-
-export type ConnectionStatus = "connected" | "connecting" | "disconnected";
-
 export interface ProjectRecord {
   project_id: string;
   name: string;
   root_path: string;
   approval_mode: ApprovalMode;
-  reasoning_effort: string;
+  reasoning_effort: ReasoningEffort;
   archived: boolean;
   created_at: string | null;
   last_opened_at: string | null;
@@ -157,7 +153,7 @@ export interface ConversationRecord {
   archived: boolean;
   created_at: string;
   updated_at: string;
-  /** V0.3.5 迁移 v10：本聊天绑定的角色卡 id；null 表示使用内置角色。 */
+  /** 本聊天绑定的角色卡 id；null 表示使用内置角色。 */
   character_card_id?: string | null;
 }
 
@@ -190,25 +186,25 @@ export type PairSummary = PairRecord;
 
 export const PAIR_NOT_FOUND = "PAIR_NOT_FOUND";
 
-/** V0.3.5 角色卡导入导出错误码。 */
+/** 角色卡导入导出错误码。 */
 export const CARD_IMPORT_FAILED = "card_import_failed";
 export const CARD_READ_ONLY = "card_read_only";
 export const CARD_PUBLISH_INVALID = "card_publish_invalid";
 export const CARD_AVATAR_UNSUPPORTED = "card_avatar_unsupported";
 export const CARD_AVATAR_TOO_LARGE = "card_avatar_too_large";
 
-/** V0.3.7 PNG 导出与电源状态错误码（契约冻结 §1.3/§1.5）。 */
+/** PNG 导出与电源状态错误码。 */
 export const CARD_EXPORT_FAILED = "card_export_failed";
 export const POWER_STATUS_UNAVAILABLE = "power_status_unavailable";
 
-/** V0.3.5 角色卡音色错误码。 */
+/** 角色卡音色错误码。 */
 export const VOICE_NOT_CONFIGURED = "voice_not_configured";
 export const VOICE_REFERENCE_MISSING = "voice_reference_missing";
 export const VOICE_REFERENCE_INVALID = "voice_reference_invalid";
 export const VOICE_CARD_PROVISION_IN_PROGRESS = "voice_card_provision_in_progress";
 export const VOICE_CARD_NOT_READY = "voice_card_not_ready";
 
-/** V0.3.5 手机语音与审批仲裁错误码。 */
+/** 手机语音与审批仲裁错误码。 */
 export const VOICE_AUDIO_SEQ_GAP = "voice_audio_seq_gap";
 export const VOICE_TRANSCRIPT_EMPTY = "voice_transcript_empty";
 export const APPROVAL_ALREADY_RESOLVED = "approval_already_resolved";
@@ -233,7 +229,7 @@ export interface PendingApproval {
   reason: string;
   requested_at?: string;
   expires_at?: string;
-  /** V0.3.2 M5：审批归属的任务 id（approval.requested/resolved 载荷新增）。 */
+  /** 审批归属的任务 id。 */
   task_id?: string;
 }
 
@@ -249,7 +245,7 @@ export interface VoiceState {
   tts: string;
   asr_partial: string;
   error: string | null;
-  /** V0.2 M4：待播队列条数（不含正在播放的当前条），VoiceMiniPlayer 的 queuedCount。 */
+  /** 待播队列条数（不含正在播放的当前条）。 */
   speech_queue_len: number;
 }
 
@@ -270,54 +266,58 @@ export interface DesktopSnapshot {
   tool_runs: ToolRun[];
   turns: Turn[];
   queue_items: QueueItem[];
+  /** 全局当前聊天的活动任务。 */
   active_task: ActiveTask | null;
-  /** V0.3.2 M5：全账号活动任务全量集合（同聊天一次只有一个活动任务）；
-      旧协议快照缺省时前端回退用 active_task 建立单条目集合。 */
-  active_tasks?: ActiveTask[];
+  /** 全账号活动任务集合，同一聊天同时只有一个活动任务。 */
+  active_tasks: ActiveTask[];
   busy: boolean;
   approvals: PendingApproval[];
-  summaries?: ConversationSummary[];
-  memories?: PairMemory[];
-  remote_control?: RemoteControlState;
+  remote_control: RemoteControlState;
   voice: VoiceState;
   pair: PairRecord;
   pairs: PairSummary[];
   sequence: number;
-  /** M2.1：快照所属连接代次；旧代次快照不能覆盖新代次状态。 */
-  stream_id?: string | number;
+  /** 快照所属连接代次；旧代次快照不能覆盖新代次状态。 */
+  stream_id: string;
 }
 
-/** V0.3.2 M5：conversation.open 的只读装载结果——只装载指定聊天，
-    不改变后端全局当前聊天，也不影响其他窗口的导航状态。 */
+/** conversation.open 的只读装载结果：只装载指定聊天，不改变后端全局当前聊天。 */
 export interface ConversationOpenResult {
   conversation: ConversationRecord;
-  project: (Omit<ProjectRecord, "conversations"> & { conversations?: ConversationRecord[] }) | null;
+  project: Omit<ProjectRecord, "conversations">;
   pair: PairRecord;
   messages: Message[];
   tool_runs: ToolRun[];
   turns: Turn[];
   queue_items: QueueItem[];
   active_task: ActiveTask | null;
-  approvals?: PendingApproval[];
-  summaries?: ConversationSummary[];
-  memories?: PairMemory[];
-  remote_control?: RemoteControlState;
   /** 响应生成时最近已发出的同连接事件序号，用于重放等待期间的实时事件。 */
   sequence: number;
-  stream_id?: string | number;
+  stream_id: string;
 }
 
-/** V0.3.8 T6（契约冻结 §14.2）：conversation.create 的 result——bootstrap
-    快照 + reused。params 可选 reuse_active（默认 false）：true 时同项目 +
-    同角色卡已有活跃会话则复用（不新建、不重复开场白、不改标题），
-    无角色卡的普通会话不参与复用。 */
+/** conversation.create 的结果：bootstrap 快照加 reused。请求带 reuse_active=true 时，
+    同项目同角色卡已有活跃会话则复用它；无角色卡的普通会话不参与复用。 */
 export type ConversationCreateResult = DesktopSnapshot & { reused: boolean };
+
+/** task.cancel：cancelled=false 表示服务端没有取消任何任务（任务不在运行或已结束）。 */
+export interface TaskCancelResult {
+  cancelled: boolean;
+}
+
+/** config.test_connection：ok 是连通结论，message 是服务端给出的说明原文。 */
+export interface ConfigTestConnectionResult {
+  ok: boolean;
+  message: string;
+  provider?: string;
+  base_url?: string;
+  model?: string;
+}
 
 export type DesktopCommandMethod =
   | "ping"
   | "app.bootstrap"
   | "app.shutdown"
-  | "app.reconnect"
   | "project.create"
   | "project.select"
   | "project.update_settings"
@@ -359,11 +359,10 @@ export type DesktopCommandMethod =
   | "card.update"
   | "card.duplicate"
   | "card.archive"
+  | "card.unarchive"
   | "card.delete"
   | "card.select_active"
-  /* V0.3.7：card.peek_import 为规范名；card.peek_import_json 保留为同一 handler 的别名（deprecated）。 */
   | "card.peek_import"
-  | "card.peek_import_json"
   | "card.import_json"
   | "card.import_png"
   | "card.export_json"
@@ -404,7 +403,7 @@ export interface DesktopCommand {
   id: string;
   method: DesktopCommandMethod;
   params: Record<string, unknown>;
-  /** V0.3.2 M5：发起请求的前端窗口视图命名空间。旧调用可省略。 */
+  /** 发起请求的前端窗口视图命名空间。 */
   view_id?: string;
 }
 
@@ -453,7 +452,6 @@ export type DesktopEventName =
   | "remote.control_changed"
   | "remote.paired"
   | "conversation.card_missing"
-  | "connection.status"
   | "error.reported"
   | "diagnostic.warning"
   | "serve.started"
@@ -462,14 +460,30 @@ export type DesktopEventName =
   | "tunnel.stopped"
   | "tunnel.failed";
 
+/** Sidecar 发出的事件；按 (stream_id, sequence) 去重和查缺。 */
 export interface DesktopEvent<T = Record<string, unknown>> {
   kind: "event";
   event: DesktopEventName;
   sequence: number;
-  /** M2.1：连接代次标识；业务事件按 (stream_id, sequence) 去重和查缺。 */
-  stream_id?: string | number;
+  /** 连接代次标识。 */
+  stream_id?: string;
   payload: T;
 }
+
+/**
+ * Rust 宿主合成的事件：连接断开与恢复、断开原因和非法输出报告，不带序号。
+ * Sidecar 自己发出的 error.reported 带序号，属于 DesktopEvent。
+ */
+export interface HostEvent {
+  kind: "event";
+  event: "connection.status" | "error.reported";
+  sequence?: never;
+  stream_id?: string;
+  payload: Record<string, unknown>;
+}
+
+/** 桌面窗口订阅流：Sidecar 事件与宿主事件，按信封是否带 sequence 区分。 */
+export type DesktopStreamEvent = DesktopEvent | HostEvent;
 
 export interface MessageCreatedPayload {
   message: Message;
@@ -490,12 +504,13 @@ export interface MessageDeltaPayload {
   started?: boolean;
   completed?: boolean;
   reasoning_streaming?: boolean;
-  /** V0.3.2 M1：助手 segment 的段号与工作台序号。 */
+  /** 助手 segment 的段号。 */
   segment_index?: number | null;
-  timeline_order?: number | null;
+  /** 所属消息的时间线序号。 */
+  timeline_order: number;
 }
 
-/** V0.3.2 M6：voice.provision_changed 事件载荷（不含 Key/Authorization）。 */
+/** voice.provision_changed 事件载荷（不含 Key/Authorization）。 */
 export interface VoiceProvisionEventPayload {
   account_id: string;
   speaker_id: string;
@@ -506,31 +521,38 @@ export interface VoiceProvisionEventPayload {
   voice_id?: string | null;
 }
 
-/* ------------------------------------------------------------------ *
- * V0.3.5 角色卡导入/导出/头像/音色与手机语音：线缆类型严格按契约冻结文档。
- * 字段保持 snake_case（与线缆一致）；camelCase 视图模型在 view-models.ts。
- * ------------------------------------------------------------------ */
+/* 角色卡导入、导出、头像、音色与手机语音的线缆类型。
+   字段保持 snake_case；camelCase 视图模型在 view-models.ts。 */
 
-/** 角色卡导入兼容报告（对应 character_cards/codec.py 的 CompatReport）。 */
+/** 已保留但不运行条目的类别（character_cards/codec.py 的 NotExecutedCategory）。 */
+export type NotExecutedCategory = "world_book" | "macro" | "runtime_trigger" | "command_panels";
+
+/** 一条已保留但不运行的内容；text 是字段路径与说明。 */
+export interface NotExecutedItemPayload {
+  category: NotExecutedCategory;
+  text: string;
+}
+
+/** 角色卡兼容报告（character_cards/codec.py 的 CompatReport）。 */
 export interface CompatReportPayload {
   applied: string[];
   preserved: string[];
-  not_executed: string[];
+  not_executed: NotExecutedItemPayload[];
   normalized_from_root: string[];
   warnings: string[];
   errors: string[];
 }
 
-/** card.peek_import 的预览载荷（V0.3.7 起 JSON/PNG 双格式共用，format 区分）。 */
+/** card.peek_import 的预览载荷，JSON 与 PNG 共用，format 区分。 */
 export interface CardImportPreviewPayload {
   name: string;
   spec_version: string;
-  /** V0.3.7：预览格式；真实后端按文件签名分派（PNG 签名优先，不信任扩展名）。 */
-  format?: "json" | "png";
+  /** 后端按文件签名分派格式，不看扩展名。 */
+  format: "json" | "png";
   avatar_available: boolean;
-  /** V0.3.7：PNG 分支携带 IHDR 宽高（像素）；JSON 分支与解析失败时为 null。 */
-  avatar_width?: number | null;
-  avatar_height?: number | null;
+  /** PNG 分支携带 IHDR 宽高（像素）；JSON 分支与解析失败时为 null。 */
+  avatar_width: number | null;
+  avatar_height: number | null;
   greeting_count: number;
   world_book_entries: number;
   tags: string[];
@@ -631,15 +653,20 @@ export interface VoiceMobileTtsEndPayload {
   message_id: string;
 }
 
-/** V0.3.9 审批终态；来源缺失保持 null，不由前端伪造。 */
+/**
+ * 审批终态；approval_already_resolved 的 error.details 与之同形。
+ * request_reason 是触发审批的理由；resolution_reason 是终态原因（取消、超时、
+ * 审查结论），用户裁决时为 null。来源缺失保持 null。
+ */
 export interface ApprovalResolvedPayload {
   approval_id: string;
   conversation_id: string;
-  task_id: string | null;
+  task_id: string;
   decision: "allow" | "allow_for_conversation" | "deny" | "timeout";
-  resolved_by: "desktop" | "remote" | "system" | "reviewer" | null;
-  actor: "user" | "reviewer" | "system" | null;
-  reason: string | null;
+  resolved_by: "desktop" | "remote" | "system" | null;
+  actor: "user" | "reviewer" | "system";
+  request_reason: string;
+  resolution_reason: string | null;
   resolved_at: string;
   error_code: "approval_timeout" | null;
 }
@@ -656,9 +683,9 @@ export interface MemoryScope { account_id: string; project_id: string; pair_id: 
 /**
  * memory.list 条目与 memory.updated / memory.deleted 事件载荷的真实线缆形状。
  *
- * 来源：`application_service._memory_payload`（写命令与事件共用）与
- * `core.memory.memory_event_payload`，两处都把五分量作用域作为**扁平字段**下发，
- * 线缆上没有嵌套 scope 对象。做会话解析（携带 conversation_id）时载荷再带该字段。
+ * 来源：`application_service._memory_payload`（读写命令与事件共用），五分量作用域
+ * 作为**扁平字段**下发，线缆上没有嵌套 scope 对象。做会话解析（携带 conversation_id）
+ * 时载荷再带该字段。
  */
 export interface MemoryWirePayload {
   memory_id: string;
@@ -757,14 +784,10 @@ export interface RemoteControlState {
 
 export interface VoiceMobileTtsFailedPayload { conversation_id: string; message_id: string; error_code: string | null; error: string; }
 
-/* ------------------------------------------------------------------ *
- * V0.3.7 PNG 双向兼容与电源状态（契约见 docs/plans/V0.3.7-契约冻结.md §1/§2）。
- * ------------------------------------------------------------------ */
-
 /** card.import_png 的结果（与 card.import_json 同形）。 */
 export type CardImportPngResult = CardImportJsonResult;
 
-/** card.export_png 的结果（§1.3：只写 ccv3 块，图像块为头像原始字节）。 */
+/** card.export_png 的结果：只写 ccv3 块，图像块为头像原始字节。 */
 export interface CardExportPngResult {
   exported: boolean;
   path: string;
@@ -775,7 +798,7 @@ export interface CardExportPngResult {
   extensions: string[];
 }
 
-/** power.get_status 的结果；power.status_changed 事件载荷与其完全同形（§1.5/§2.1）。
+/** power.get_status 的结果，power.status_changed 事件载荷与它同形。
     Windows 读取成功时两个超时字段为秒数（0 表示「从不」），非 Windows 为 null。 */
 export interface PowerStatusPayload {
   supported: boolean;
@@ -788,21 +811,15 @@ export interface PowerStatusPayload {
   at_risk: boolean;
   reason: string;
   checked_at: string;
+  warnings: string[];
 }
 
-/* ------------------------------------------------------------------ *
- * V0.3.3 角色卡与手机远程：与 Sidecar card.* / remote.* 命令对齐的线缆类型。
- * 字段保持 snake_case（与线缆一致）；camelCase 视图模型在 view-models.ts。
- * ------------------------------------------------------------------ */
+/* card.* 与 remote.* 命令的线缆类型。 */
 
-/** 角色卡生命周期（character_cards/states.py CharacterCardState）。 */
+/** 角色卡生命周期（character_cards 表 state 列）。 */
 export type CharacterCardState = "draft" | "saved" | "imported" | "invalid";
-/** 角色卡来源。 */
-export type CharacterCardSource =
-  | "builtin"
-  | "user_created"
-  | "imported_json"
-  | "imported_png";
+/** 角色卡来源（character_cards 表 source 列；JSON 与 PNG 导入同为 tavern_import）。 */
+export type CharacterCardSource = "builtin" | "user_created" | "tavern_import";
 /** 角色卡音色绑定状态（CharacterVoiceState）。 */
 export type CharacterVoiceState =
   | "voice_unconfigured"
@@ -821,6 +838,8 @@ export interface CardSummaryPayload {
   voice_state: CharacterVoiceState;
   active: boolean;
   read_only: boolean;
+  /** 是否在归档集合中；只有 include_archived=true 时才会列出已归档的卡。 */
+  archived: boolean;
 }
 
 export interface CardListResult {
@@ -828,7 +847,7 @@ export interface CardListResult {
 }
 
 /** card.get：card 为酒馆 v3 JSON 对象（未知扩展原样保留在 data.extensions）；
-    V0.3.5 新增 avatar 字段，有头像时返回 base64 数据，否则 null。 */
+    有头像时 avatar 为 base64 数据，否则为 null。 */
 export interface CardGetResult {
   card_id: string;
   state: CharacterCardState;
@@ -838,6 +857,8 @@ export interface CardGetResult {
   card: Record<string, unknown>;
   read_only: boolean;
   avatar: CardAvatarPayload | null;
+  /** 后端对已存储的卡跑导入时同一套静态兼容扫描得到的报告。 */
+  compat_report: CompatReportPayload;
 }
 
 export interface CardCreateDraftResult {
@@ -855,6 +876,7 @@ export interface CardDuplicateResult {
   name: string;
 }
 
+/** card.archive 与 card.unarchive 的结果；archived 为命令执行后的归档状态。 */
 export interface CardArchiveResult {
   card_id: string;
   archived: boolean;
@@ -866,10 +888,8 @@ export interface CardDeleteResult {
 }
 
 /**
- * V039-S4-004：Sidecar --serve 的地址上报载荷。
- *
- * `serve.started` 事件与 `remote.issue_code` 返回的 `serve_address` 同形：
- * `host` 为 null 表示服务确已在监听、但没有可用的局域网地址（原因见 `reason`）。
+ * Sidecar --serve 的地址上报载荷，`serve.started` 事件与 `remote.issue_code` 的
+ * `serve_address` 同形。`host` 为 null 表示服务已在监听但没有可用的局域网地址，原因见 `reason`。
  */
 export interface ServeAddressPayload {
   host: string | null;
@@ -879,12 +899,12 @@ export interface ServeAddressPayload {
   reason?: string | null;
 }
 
-/** remote.issue_code：配对码一次性、短期有效（当前 ttl 300 秒）。
-    返回体同时带上当前 serve 地址，避免只依赖一次性的 serve.started 事件。 */
+/** remote.issue_code：配对码一次性、短期有效。返回体同时带上当前 serve 地址
+    （远程服务尚未监听时为 null），不只依赖一次性的 serve.started 事件。 */
 export interface RemoteIssueCodeResult {
   code: string;
   ttl_seconds: number;
-  serve_address?: ServeAddressPayload | null;
+  serve_address: ServeAddressPayload | null;
 }
 
 export interface RemotePairResult {
@@ -895,7 +915,8 @@ export interface RemoteDevice {
   device_name: string;
   issued_at: string;
   last_used_at: string;
-  expires_at?: string;
+  /** 签发后 30 天与最近使用后 7 天中较早的一个。 */
+  expires_at: string;
   revoked: boolean;
 }
 
@@ -909,7 +930,7 @@ export interface RemoteRevokeResult {
   revoked_tokens: number;
 }
 
-/* —— V0.4.0 公网隧道（Cloudflare Quick Tunnel）契约 —— */
+/* 公网隧道（Cloudflare Quick Tunnel）。 */
 
 export type TunnelState = "off" | "downloading" | "starting" | "ready" | "failed";
 

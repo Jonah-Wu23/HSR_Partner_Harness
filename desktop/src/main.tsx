@@ -8,10 +8,10 @@ import { MockDesktopBackend } from "./services/mockDesktopBackend";
 import { TauriDesktopBackend } from "./services/tauriDesktopBackend";
 
 function isTauriRuntime(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  return "__TAURI_INTERNALS__" in window;
 }
 
-/** 渲染期兜底：任何未捕获异常都显示可恢复的错误页，而不是整窗白屏。 */
+/** 渲染期未捕获的异常显示带原文与重试按钮的错误页。 */
 class ErrorBoundary extends Component<
   { children: ReactNode },
   { error: Error | null; retryKey: number }
@@ -27,7 +27,7 @@ class ErrorBoundary extends Component<
   }
 
   private handleRetry = () => {
-    // M5.5：重试通过 key 重挂整棵子树，清掉失败子树里的本地状态。
+    // 重试通过 key 重挂整棵子树，清掉失败子树里的本地状态。
     this.setState((state) => ({ error: null, retryKey: state.retryKey + 1 }));
   };
 
@@ -65,11 +65,10 @@ class ErrorBoundary extends Component<
   }
 }
 
-/** V0.3.2 M5：独立聊天窗口的启动参数——Rust open_chat_window 创建窗口时在
-    URL query 携带 conversation_id 与 view_id；view_id 由 store 初始化时读取，
-    这里只取 conversation_id 驱动首次 conversation.open 装载。 */
+/** 独立聊天窗口的启动参数：Rust open_chat_window 创建窗口时在 URL query 携带
+    conversation_id 与 view_id；view_id 由 store 初始化时读取，这里只取 conversation_id
+    驱动首次 conversation.open 装载。 */
 function readInitialConversationId(): string | null {
-  if (typeof window === "undefined") return null;
   const value = new URLSearchParams(window.location.search).get("conversation_id");
   return value && value.length > 0 ? value : null;
 }
@@ -77,8 +76,8 @@ function readInitialConversationId(): string | null {
 const backend: DesktopBackend = isTauriRuntime()
   ? new TauriDesktopBackend()
   : new MockDesktopBackend("single-project");
-// 仅浏览器 Mock 模式把实例挂到 window，供视觉验收在无头浏览器里驱动 mock 状态
-// （如 setVoiceConfigured / setScenario）；生产 Tauri 运行时不会执行这一分支。
+// 浏览器 Mock 模式把实例挂到 window，供无头浏览器检查界面时驱动 mock 状态
+// （如 setVoiceConfigured、setScenario）；Tauri 运行时不走这一分支。
 if (!isTauriRuntime()) {
   (window as unknown as { __mockBackend?: MockDesktopBackend }).__mockBackend =
     backend as MockDesktopBackend;

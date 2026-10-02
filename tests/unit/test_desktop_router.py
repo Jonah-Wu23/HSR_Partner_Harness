@@ -3,13 +3,12 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+from datetime import datetime, timezone
 
-import pytest
-
+from pair_harness.desktop_backend.commands import DESKTOP_COMMANDS
 from pair_harness.desktop_backend.router import JsonlWriter, SidecarRouter
 
 
-@pytest.mark.asyncio
 async def test_sidecar_router_accepts_cancel_while_chat_request_is_running() -> None:
     chat_started = asyncio.Event()
     cancel_seen = asyncio.Event()
@@ -66,25 +65,23 @@ async def test_sidecar_router_accepts_cancel_while_chat_request_is_running() -> 
     }
 
 
-@pytest.mark.asyncio
-async def test_protocol_whitelist_and_dispatch_reach_onboarding_complete() -> None:
-    class Service:
+async def test_protocol_whitelist_matches_service_handlers(service) -> None:
+    """协议白名单里的方法都有处理器，处理器也都能经协议调用。"""
+    assert set(service._handlers) == DESKTOP_COMMANDS
+
+
+async def test_router_reports_unserializable_response_instead_of_timeout() -> None:
+    """响应不可序列化时回执 encode_error，调用方不会等到超时。"""
+
+    class UnserializableService:
         async def handle_command(self, command):
-            assert command.method == "account.onboarding_complete"
-            return {"account": {"onboarding_complete": True}}
+            return {"leaked": datetime.now(timezone.utc)}
 
     output = io.StringIO()
-    router = SidecarRouter(Service(), JsonlWriter(output))  # type: ignore[arg-type]
-    await router.handle_line(
-        json.dumps(
-            {
-                "kind": "request",
-                "id": "ob-1",
-                "method": "account.onboarding_complete",
-                "params": {},
-            }
-        )
-    )
-    response = json.loads(output.getvalue())
-    assert response["id"] == "ob-1"
-    assert response["ok"] is True
+    router = SidecarRouter(UnserializableService(), JsonlWriter(output))  # type: ignore[arg-type]
+    await router.handle_line('{"kind":"request","id":"r-1","method":"ping","params":{}}')
+    frame = json.loads(output.getvalue())
+    assert frame["id"] == "r-1"
+    assert frame["ok"] is False
+    assert frame["error"]["code"] == "encode_error"
+    assert "datetime" in frame["error"]["message"]

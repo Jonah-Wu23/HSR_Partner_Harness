@@ -1,10 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import type { HarnessActions } from "../contracts/actions";
 import type { DesktopBackend } from "../services/backend";
 import { createEventBatcher } from "../services/eventBatcher";
-import { presentAppShell } from "../presenters/presenters";
+import { createAppShellPresenter } from "../presenters/presenters";
 import {
   desktopStore,
   selectDesktopRenderState,
@@ -16,10 +16,10 @@ interface AppControllerProps {
   backend: DesktopBackend;
   actions: HarnessActions;
   loadBootstrap: () => Promise<void>;
-  /** V0.3.2 M5：conversation.open 装载（独立聊天窗口启动时使用）。 */
-  conversationOpen?: (conversationId: string) => Promise<void>;
-  /** V0.3.2 M5：本窗口启动 URL 携带的会话 id（独立聊天窗口）。 */
-  initialConversationId?: string | null;
+  /** conversation.open 装载，独立聊天窗口启动时使用。 */
+  conversationOpen: (conversationId: string) => Promise<void>;
+  /** 独立聊天窗口启动 URL 携带的会话 id；主窗口为 null。 */
+  initialConversationId: string | null;
 }
 
 export function AppController({
@@ -31,6 +31,8 @@ export function AppController({
 }: AppControllerProps) {
   const recoveringRef = useRef(false);
   const storeState = useDesktopStore(useShallow(selectDesktopRenderState));
+  // 投影按区域缓存：未变化的区域沿用上次的视图模型对象，对应的 memo 组件跳过渲染。
+  const [present] = useState(createAppShellPresenter);
 
   useEffect(() => {
     const batcher = createEventBatcher((events) => {
@@ -43,25 +45,16 @@ export function AppController({
       }
     });
     const unsubscribe = backend.subscribe(batcher.push);
+    // 窗口失焦时结束进行中的按键说话，没有按键说话时不发请求。
     const stopPushToTalkOnBlur = () => {
-      void actions.stopPushToTalk();
+      if (desktopStore.getState().voice.ptt) void actions.stopPushToTalk();
     };
     window.addEventListener("blur", stopPushToTalkOnBlur);
     const booting = loadBootstrap();
-    if (initialConversationId && conversationOpen) {
-      // V0.3.2 M5：独立聊天窗口——bootstrap 拿到账号目录后，按 URL 参数
-      // 只读装载目标聊天并打开其标签。失败如实以可恢复错误提示。
-      void booting
-        .then(() => conversationOpen(initialConversationId))
-        .catch((error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error);
-          desktopStore.getState().pushToast({
-            id: `conversation-open-failed:${message}`,
-            kind: "error",
-            text: `打开聊天失败：${message}`,
-            hasDetails: true,
-          });
-        });
+    if (initialConversationId) {
+      // 独立聊天窗口：bootstrap 拿到账号目录后，按 URL 参数只读装载目标聊天并打开其标签；
+      // 失败由请求层提示。
+      void booting.then(() => conversationOpen(initialConversationId));
     }
     return () => {
       unsubscribe();
@@ -70,7 +63,5 @@ export function AppController({
     };
   }, [actions, backend, loadBootstrap, conversationOpen, initialConversationId]);
 
-  const viewModel = presentAppShell(storeState);
-
-  return <AppShell vm={viewModel} actions={actions} backend={backend} />;
+  return <AppShell vm={present(storeState)} actions={actions} backend={backend} />;
 }

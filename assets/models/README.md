@@ -14,4 +14,4 @@
 sha256  2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f  silero_vad_v5.onnx
 ```
 
-- 运行时依赖：onnxruntime（`pip install -e ".[voice]"` 自动安装）。VAD 资源与依赖齐备时启用语音检测；其余环境使用按键说话（PTT）模式，其他功能照常运行。
+- 运行时依赖：onnxruntime（`pip install -e ".[voice]"` 自动安装）。模型文件缺失、损坏或依赖未安装时，语音运行时不启动并报告原始错误，文字聊天等其他功能照常运行。

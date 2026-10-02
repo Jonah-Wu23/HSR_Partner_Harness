@@ -2,7 +2,12 @@ import pytest
 
 from pair_harness.core.contracts import CharacterTurn, ProjectRef, TaskRequestDraft
 from pair_harness.core.orchestrator import ConversationOrchestrator
-from tests.fakes import FixedDialogueModel, RecordingCodingEngine
+from tests.fakes import (
+    FixedDialogueModel,
+    RecordingCodingEngine,
+    deny_approval,
+    make_context,
+)
 
 
 @pytest.mark.asyncio
@@ -15,14 +20,16 @@ async def test_engine_events_are_rebound_to_origin_conversation() -> None:
         CharacterTurn(speech="完成。"),
     )
     orchestrator = ConversationOrchestrator(
-        pair_id="phainon_ancient_machine",
-        project=ProjectRef(project_id="p", name="p", root_path="C:\\work"),
         dialogue_model=dialogue,
         coding_engine=RecordingCodingEngine(),
+        approval_callback=deny_approval,
     )
+    project = ProjectRef(project_id="p", name="p", root_path="C:\\work")
 
     outcome = await orchestrator.handle_character_input(
-        conversation_id="origin-chat", text="请执行"
+        conversation_id="origin-chat",
+        text="请执行",
+        context=make_context(project, conversation_id="origin-chat"),
     )
 
     assert {event.conversation_id for event in outcome.engine_events} == {"origin-chat"}

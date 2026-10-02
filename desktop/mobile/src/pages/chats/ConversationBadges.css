@@ -1,4 +1,4 @@
-/* V0.3.9 V01：会话行徽章。状态色沿用 styles.css 语义令牌，窄屏下允许换行。 */
+/* 会话行徽章。状态色沿用 styles.css 语义令牌，窄屏下允许换行。 */
 
 .conversation-badges {
   display: flex;
@@ -40,30 +40,6 @@
 .conv-badge.is-queued {
   background: var(--surface-2);
   color: var(--fg);
-}
-
-/* 未读：强调但不高过待审批。 */
-.conv-badge.is-unread {
-  background: var(--accent);
-  border-color: transparent;
-  color: var(--accent-fg);
-  font-weight: 600;
-}
-
-/* 最近终态：按状态取色（-status-<state>）。 */
-.conv-badge.badge-status-failed {
-  border-color: var(--danger);
-  color: var(--danger);
-}
-
-.conv-badge.badge-status-cancelled {
-  border-color: var(--muted);
-  color: var(--muted);
-}
-
-.conv-badge.badge-status-completed {
-  border-color: var(--ok);
-  color: var(--ok);
 }
 
 /* 窄屏（≤360px）：徽章更紧凑，保证会话行仍可点。 */

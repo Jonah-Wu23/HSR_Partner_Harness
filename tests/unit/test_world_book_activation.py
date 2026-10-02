@@ -1,18 +1,17 @@
-"""世界书运行时激活引擎测试（V0.3.7 契约 §3、§6、§12 锚点）。"""
-
 from __future__ import annotations
 
 import random
 
-from pair_harness.character_cards import (
+import pytest
+
+from pair_harness.character_cards.activation import (
     ActivatedEntry,
-    CharacterBook,
-    WorldBookEntry,
     activate_world_book,
     collect_turn_triggers,
     iter_runtime_trigger_declarations,
     token_estimate,
 )
+from pair_harness.character_cards.models import CharacterBook, WorldBookEntry
 
 
 def _entry(**kwargs: object) -> WorldBookEntry:
@@ -124,33 +123,7 @@ def test_matched_keys_recorded() -> None:
     assert result.before_char[0].matched_keys == ["星", "夜"]
 
 
-# ---------------------------------------------------------------- 常驻与禁用
-
-
-def test_constant_unconditional_and_budget_exempt() -> None:
-    book = _book([
-        _entry(entry_id=1, keys=[], content="恒定超长内容内容内容", insertion_order=200,
-               constant=True, comment="恒定条目"),
-        _entry(entry_id=2, keys=["x"], content="短", insertion_order=100, comment="小序条目"),
-    ], token_budget=3)
-    result = activate_world_book(book, _texts("x"))
-    # constant 无条件激活（不做关键字匹配、不受预算排除）；非恒定条目溢出排除。
-    assert [e.entry.entry_id for e in result.before_char] == [1]
-    assert result.diagnostics.overflow_entries == ["小序条目"]
-
-
-def test_constant_exempt_from_budget_after_overflow_point() -> None:
-    book = _book([
-        _entry(entry_id=1, keys=["x"], content="长长长长长", insertion_order=200,
-               comment="大序非恒定"),
-        _entry(entry_id=2, keys=["x"], content="短", insertion_order=100,
-               constant=True, comment="恒定条目"),
-    ], token_budget=3)
-    result = activate_world_book(book, _texts("x"))
-    # 大序非恒定条目先触发溢出；其后 constant 条目仍激活。
-    assert [e.entry.entry_id for e in result.before_char] == [2]
-    assert result.diagnostics.overflow_entries == ["大序非恒定"]
-    assert result.diagnostics.activated_count == 1
+# ---------------------------------------------------------------- 禁用
 
 
 def test_enabled_false_skipped() -> None:
@@ -245,18 +218,21 @@ def test_position_dispatch_and_unsupported_excluded() -> None:
     assert "不支持位置(5)" in labels
 
 
-# ---------------------------------------------------------------- 顺序
-
-
-def test_activation_priority_consumes_budget() -> None:
+def test_st_extensions_position_overrides_top_level() -> None:
+    # ST 导出：顶层只写 before_char/after_char，真实位置在 extensions.position。
     book = _book([
-        _entry(entry_id=1, keys=["x"], content="甲", insertion_order=200, comment="大序"),
-        _entry(entry_id=2, keys=["x"], content="乙乙乙乙乙", insertion_order=100, comment="小序"),
-    ], token_budget=3)
+        _entry(entry_id=1, keys=["x"], content="深度", position="after_char",
+               extensions={"position": 4, "depth": 2, "role": 0}),
+        _entry(entry_id=2, keys=["x"], content="作者注释", position="after_char",
+               extensions={"position": 2}),
+    ])
     result = activate_world_book(book, _texts("x"))
-    # 激活优先序：大 order 先耗预算，小 order 条目整体溢出排除。
-    assert [e.entry.entry_id for e in result.before_char] == [1]
-    assert result.diagnostics.overflow_entries == ["小序"]
+    assert result.after_char == []
+    assert [(g.depth, g.role) for g in result.depth_entries] == [(2, "system")]
+    assert "不支持位置(2)" in result.diagnostics.not_run_fields
+
+
+# ---------------------------------------------------------------- 顺序
 
 
 def test_join_order_small_insertion_first() -> None:
@@ -273,38 +249,240 @@ def test_join_order_small_insertion_first() -> None:
 # ---------------------------------------------------------------- 预算
 
 
-def test_budget_declared_and_default_2048() -> None:
-    book = _book([_entry(keys=["x"], content="c")], token_budget=100)
-    result = activate_world_book(book, _texts("x"))
-    assert result.diagnostics.budget_total == 100
-    book_default = _book([_entry(keys=["x"], content="c")], token_budget=None)
-    result_default = activate_world_book(book_default, _texts("x"))
-    assert result_default.diagnostics.budget_total == 2048  # round(0.25 * 8192)
-    # context_tokens 可覆盖冻结预算基准。
-    result_custom = activate_world_book(book_default, _texts("x"), context_tokens=8000)
-    assert result_custom.diagnostics.budget_total == 2000
+@pytest.mark.parametrize(
+    ("token_budget", "context_tokens", "expected"),
+    [(100, 8192, 100), (None, 8192, 2048), (None, 8000, 2000)],
+)
+def test_budget_total_declared_or_derived_from_context(
+    token_budget: int | None, context_tokens: int, expected: int
+) -> None:
+    # 书未声明预算时取 round(0.25 * context_tokens)。
+    book = _book([_entry(keys=["x"], content="c")], token_budget=token_budget)
+    result = activate_world_book(book, _texts("x"), context_tokens=context_tokens)
+    assert result.diagnostics.budget_total == expected
 
 
-def test_budget_overflow_excludes_entry_and_records_ref() -> None:
-    book = _book([
-        _entry(entry_id=1, keys=["x"], content="长长长长长", insertion_order=200,
-               comment="先触发溢出"),
-        _entry(keys=["x"], content="后", insertion_order=100,
-               entry_id="id2", comment=""),
-    ], token_budget=1)
-    result = activate_world_book(book, _texts("x"))
-    # 首个条目 step_cost 即达预算，其后所有非 constant 条目一并排除。
-    assert result.before_char == []
-    assert result.diagnostics.overflow_entries == ["先触发溢出", "id2"]
-    assert result.diagnostics.budget_used == 0
+def _gate(entries: list[WorldBookEntry], budget: int):
+    result = activate_world_book(_book(entries, token_budget=budget), _texts("x"))
+    injected = [e.entry.entry_id for e in result.before_char]
+    return result.diagnostics, injected
 
 
-def test_budget_used_is_injected_content_estimate() -> None:
-    book = _book([
-        _entry(entry_id=1, keys=["x"], content="甲", insertion_order=100),
-    ], token_budget=1000)
-    result = activate_world_book(book, _texts("x"))
-    assert result.diagnostics.budget_used == token_estimate("甲") == 1
+def _assert_budget_warning(d) -> None:
+    """有排除时告警排除条数；只有 constant 使累计超限时告警来源；其余不告警。"""
+    if d.overflow_entries:
+        assert len(d.warnings) == 1
+        assert f"已排除 {len(d.overflow_entries)} 条" in d.warnings[0]
+    elif d.budget_used > d.budget_total:
+        assert len(d.warnings) == 1
+        assert "constant" in d.warnings[0]
+    else:
+        assert d.warnings == []
+
+
+# 激活序为 insertion_order 降序；某条非 constant 条目的候选累计估算达到限额
+# 时，它与其后所有非 constant 条目一并排除，排除清单记 comment，缺省记 entry_id。
+@pytest.mark.parametrize(
+    ("entries", "budget", "injected", "overflow"),
+    [
+        pytest.param(
+            [
+                _entry(entry_id=1, keys=["x"], content="甲", insertion_order=200, comment="大序"),
+                _entry(entry_id=2, keys=["x"], content="乙乙乙乙乙", insertion_order=100,
+                       comment="小序"),
+            ],
+            3, [1], ["小序"], id="大序先占预算",
+        ),
+        pytest.param(
+            [
+                _entry(entry_id=1, keys=["x"], content="长长长长长", insertion_order=200,
+                       comment="先触发溢出"),
+                _entry(entry_id="id2", keys=["x"], content="后", insertion_order=100),
+            ],
+            1, [], ["先触发溢出", "id2"], id="首条即溢出",
+        ),
+        # 十二条 "a" 的单条估算之和是 12，门控按拼接文本估算只放行四条。
+        pytest.param(
+            [
+                _entry(entry_id=i, keys=["x"], content="a", insertion_order=100 + i)
+                for i in range(12)
+            ],
+            3, [8, 9, 10, 11], [str(i) for i in range(7, -1, -1)], id="拼接累计到限额",
+        ),
+        pytest.param(
+            [
+                _entry(entry_id=1, keys=[], content="常", insertion_order=300, constant=True),
+                _entry(entry_id=2, keys=[], content="常", insertion_order=200, constant=True),
+                _entry(entry_id=3, keys=["x"], content="甲", insertion_order=100),
+                _entry(entry_id=4, keys=["x"], content="乙", insertion_order=90),
+            ],
+            3, [2, 1], ["3", "4"], id="constant占满后非constant全排除",
+        ),
+    ],
+)
+def test_budget_overflow_excludes_entry_and_later_non_constant(
+    entries: list[WorldBookEntry], budget: int, injected: list, overflow: list[str]
+) -> None:
+    d, actual = _gate(entries, budget)
+    assert actual == injected
+    assert d.overflow_entries == overflow
+    assert d.budget_limit_reached is True
+    assert d.budget_prunable_used <= d.budget_total
+    assert d.activated_count == len(injected)
+    _assert_budget_warning(d)
+
+
+# constant 条目无条件注入、不受限额排除，但文本计入累计门控；两个分量分别
+# 是 constant 与非 constant 条目并入前后累计估算之差的和。
+@pytest.mark.parametrize(
+    ("entries", "budget", "injected", "overflow", "constant_used", "prunable_used"),
+    [
+        pytest.param(
+            [
+                _entry(entry_id=1, keys=[], content="恒定超长内容内容内容", insertion_order=200,
+                       constant=True),
+                _entry(entry_id=2, keys=["x"], content="短", insertion_order=100,
+                       comment="小序条目"),
+            ],
+            3, [1], ["小序条目"], 10, 0, id="constant先入挤出非constant",
+        ),
+        pytest.param(
+            [
+                _entry(entry_id=1, keys=["x"], content="长长长长长", insertion_order=200,
+                       comment="大序非恒定"),
+                _entry(entry_id=2, keys=["x"], content="短", insertion_order=100,
+                       constant=True),
+            ],
+            3, [2], ["大序非恒定"], 1, 0, id="溢出点之后constant仍注入",
+        ),
+        pytest.param(
+            [
+                _entry(entry_id=1, keys=["x"], content="甲乙", insertion_order=300),
+                _entry(entry_id=2, keys=[], content="常驻内容", insertion_order=200,
+                       constant=True),
+                _entry(entry_id=3, keys=["x"], content="丙丁", insertion_order=100,
+                       comment="小序非恒定"),
+            ],
+            3, [2, 1], ["小序非恒定"], 5, 2, id="两类边际分开计量",
+        ),
+        pytest.param(
+            [_entry(entry_id=1, keys=[], content="长" * 50, insertion_order=100, constant=True)],
+            4, [1], [], 50, 0, id="constant单独超限",
+        ),
+    ],
+)
+def test_constant_entries_bypass_budget_but_count_in_gate(
+    entries: list[WorldBookEntry],
+    budget: int,
+    injected: list,
+    overflow: list[str],
+    constant_used: int,
+    prunable_used: int,
+) -> None:
+    d, actual = _gate(entries, budget)
+    assert actual == injected
+    assert d.overflow_entries == overflow
+    assert d.budget_limit_reached is bool(overflow)
+    assert d.budget_constant_used == constant_used
+    assert d.budget_prunable_used == prunable_used
+    assert d.budget_used == constant_used + prunable_used
+    _assert_budget_warning(d)
+
+
+# budget_used 是门控按激活序拼接（"\n" 分隔）的累计文本估算，不是单条估算之和，
+# 也不是装配器按桶拼接后的体积。
+@pytest.mark.parametrize(
+    ("entries", "budget", "used", "constant_used"),
+    [
+        pytest.param(
+            [
+                _entry(entry_id=1, keys=["x"], content="a", insertion_order=200),
+                _entry(entry_id=2, keys=["x"], content="b", insertion_order=100),
+            ],
+            100, 1, 0, id="英文拼接估算低于单条之和",
+        ),
+        pytest.param(
+            [
+                _entry(entry_id=1, keys=["x"], content="甲", insertion_order=200),
+                _entry(entry_id=2, keys=["x"], content="乙", insertion_order=100),
+            ],
+            4, 3, 0, id="按候选累计总量比较限额",
+        ),
+        pytest.param(
+            [
+                _entry(entry_id=1, keys=[], content="a" * 99, insertion_order=200,
+                       constant=True),
+                _entry(entry_id=2, keys=["x"], content="b", insertion_order=100),
+            ],
+            27, 26, 25, id="constant后的拼接增量",
+        ),
+        pytest.param(
+            [
+                _entry(entry_id=1, keys=["x"], content="甲", insertion_order=200),
+                _entry(entry_id=2, keys=["x"], content="", insertion_order=100),
+            ],
+            100, 2, 0, id="空正文条目的分隔符计入",
+        ),
+        pytest.param(
+            [
+                _entry(entry_id=1, keys=[], content="", insertion_order=200, constant=True),
+                _entry(entry_id=2, keys=["x"], content="甲", insertion_order=100),
+            ],
+            100, 1, 0, id="首条空正文不加分隔符",
+        ),
+        pytest.param(
+            [
+                _entry(entry_id=1, keys=["x"], content="甲", insertion_order=200,
+                       position="before_char"),
+                _entry(entry_id=2, keys=["x"], content="乙", insertion_order=100,
+                       position="after_char"),
+            ],
+            100, 3, 0, id="跨桶按单一序列累计",
+        ),
+    ],
+)
+def test_budget_used_is_joined_activation_text_estimate(
+    entries: list[WorldBookEntry], budget: int, used: int, constant_used: int
+) -> None:
+    result = activate_world_book(_book(entries, token_budget=budget), _texts("x"))
+    d = result.diagnostics
+    assert d.activated_count == len(entries)
+    assert d.overflow_entries == []
+    assert d.budget_limit_reached is False
+    assert d.budget_used == used
+    assert d.budget_constant_used == constant_used
+    assert d.budget_prunable_used == used - constant_used
+    assert d.warnings == []
+
+
+def test_budget_accounting_holds_across_generated_books() -> None:
+    """确定性生成的混合书上，预算记账的可复算关系始终成立。"""
+    rng = random.Random(20260910)
+    contents = ["甲", "甲乙丙", "a", "b", "ab", "星", "", "晚安"]
+    for _ in range(60):
+        entries = [
+            _entry(
+                entry_id=i,
+                keys=["x"] if rng.random() < 0.8 else [],
+                content=rng.choice(contents),
+                constant=rng.random() < 0.3,
+                insertion_order=rng.choice([90, 100, 200, 300]),
+                position=rng.choice(["before_char", "after_char", "atDepth"]),
+            )
+            for i in range(rng.randint(1, 7))
+        ]
+        budget = rng.choice([1, 2, 3, 5, 20, 100])
+        result = activate_world_book(_book(entries, token_budget=budget), _texts("x"))
+        d = result.diagnostics
+        injected = list(result.before_char) + list(result.after_char)
+        for group in result.depth_entries:
+            injected += list(group.entries)
+        injected_refs = {str(e.entry.entry_id) for e in injected}
+        assert d.activated_count == len(injected)
+        assert d.budget_prunable_used <= d.budget_total
+        assert d.budget_used == d.budget_constant_used + d.budget_prunable_used
+        assert not injected_refs & set(d.overflow_entries)
+        assert d.budget_limit_reached is bool(d.overflow_entries)
 
 
 # ---------------------------------------------------------------- token 估算
@@ -347,6 +525,15 @@ def test_scan_depth_default_two() -> None:
     assert result.diagnostics.scan_depth == 2
 
 
+def test_scan_depth_zero_scans_no_messages() -> None:
+    book = _book([
+        _entry(entry_id=1, keys=["新"], content="A"),
+        _entry(entry_id=2, constant=True, content="常驻"),
+    ], scan_depth=0)
+    result = activate_world_book(book, _texts("旧消息", "新消息"))
+    assert [e.entry.entry_id for e in result.before_char] == [2]
+
+
 def test_depth_aggregation_defaults_and_role_map() -> None:
     book = _book([
         _entry(entry_id=1, keys=["x"], content="默认深度", position="atDepth"),
@@ -370,293 +557,6 @@ def test_depth_aggregation_defaults_and_role_map() -> None:
     assert groups[(2, "system")] == [5]
     assert any("非法" in w for w in result.diagnostics.warnings)
 
-
-# ---------------------------------------------------------------- 预算口径（V039-S4-017）
-
-
-def test_budget_english_counterexample_marginal_not_per_entry() -> None:
-    """最小反例：两英文单字符条目的边际之和是 1，而单条估算之和是 2。
-
-    token_estimate 对非 CJK 取 ceil(len/4)，单条估算之和会高于拼接文本的
-    整体估算。分量必须按边际归因，才能与 budget_used 对齐。
-    """
-    book = _book([
-        _entry(entry_id=0, keys=["x"], content="a", insertion_order=200),
-        _entry(entry_id=1, keys=["x"], content="b", insertion_order=100),
-    ], token_budget=100)
-    result = activate_world_book(book, _texts("x"))
-    d = result.diagnostics
-    assert [a.text for a in result.before_char] == ["b", "a"]  # 拼接序小序在前
-    assert token_estimate("a\nb") == 1
-    assert token_estimate("a") + token_estimate("b") == 2      # 单条之和
-    assert d.budget_used == 1
-    assert d.budget_prunable_used == 1
-    assert d.overflow_entries == []
-    assert d.warnings == []
-
-
-def test_budget_marginal_is_reproducible_from_warning_numbers() -> None:
-    """分量可从门控累计过程逐步复算：英文常量 + 英文非恒定，超限时告警。
-
-    该用例同时验证「constant 免裁剪仍计入累计门控」：总量超限来自 constant。
-    """
-    # 预算 27 = 常量边际 25 + 拼接后的 "b" 增量 2：门控恰好未触发（阈值是
-    # 候选累计值 >= budget_total），可同时验证常量边际与紧随其后的增量。
-    book = _book([
-        _entry(entry_id=1, keys=[], content="a" * 99, insertion_order=200,
-               constant=True),
-        _entry(entry_id=2, keys=["x"], content="b", insertion_order=100),
-    ], token_budget=27)
-    result = activate_world_book(book, _texts("x"))
-    d = result.diagnostics
-    step1 = token_estimate("a" * 99)
-    step2 = token_estimate("a" * 99 + "\n" + "b")
-    assert step1 == 25 and step2 == 26           # 单条估算 25 会低估拼接后的 26
-    assert d.budget_constant_used == step1 == 25
-    assert d.budget_prunable_used == step2 - step1 == 1
-    assert d.budget_used == step2 == 26
-    assert d.budget_used <= d.budget_total
-    assert d.budget_limit_reached is False
-    assert d.warnings == []
-    assert [e.entry.entry_id for e in result.before_char] == [2, 1]  # 拼接序小序在前
-
-
-def test_budget_marginal_sum_within_limit_under_rounding() -> None:
-    """逐条取整不会让受门控边际之和越过限额（单条估算之和则可能）。
-
-    预算 3、十二条 "a"：单条估算之和为 12（远超限额），而门控接受的边际之和
-    为 2；第 5 条起被排除，限额恰好生效。
-    """
-    book = _book([
-        _entry(entry_id=i, keys=["x"], content="a", insertion_order=100 + i)
-        for i in range(12)
-    ], token_budget=3)
-    result = activate_world_book(book, _texts("x"))
-    d = result.diagnostics
-    assert token_estimate("a") * 12 == 12 > d.budget_total   # 单条之和无上界
-    assert d.activated_count == 4
-    assert d.budget_prunable_used == 2 <= d.budget_total
-    assert d.budget_used == 2
-    assert d.budget_limit_reached is True
-    # 激活序为 insertion_order 降序，故注入的是 8–11 四条；桶内拼接序升序，
-    # 故注入集按 8,9,10,11 输出；排除清单按激活序记录其余 8 条。
-    assert [e.entry.entry_id for e in result.before_char] == [8, 9, 10, 11]
-    assert sorted(d.overflow_entries, key=int) == [str(i) for i in range(0, 8)]
-
-
-def test_budget_used_splits_into_constant_and_prunable() -> None:
-    """常量边际与非恒定边际分开计量，且能还原实际注入体积。
-
-    constant 条目不受预算裁剪（契约 §3.5），但其文本计入累计门控：注入集内
-    既有 constant 也有非恒定条目，两个分量各自负责本分区的边际。
-    """
-    book = _book([
-        _entry(entry_id=1, keys=["x"], content="甲乙", insertion_order=300,
-               comment="大序非恒定"),
-        _entry(entry_id=2, keys=[], content="常驻内容", insertion_order=200,
-               constant=True, comment="恒定条目"),
-        _entry(entry_id=3, keys=["x"], content="丙丁", insertion_order=100,
-               comment="小序非恒定"),
-    ], token_budget=3)
-    result = activate_world_book(book, _texts("x"))
-    d = result.diagnostics
-    # 激活序：甲乙（估 2 < 3，注入）→ 常驻内容（constant，注入）→ 丙丁（估 8 ≥ 3，排除）。
-    assert [e.entry.entry_id for e in result.before_char] == [2, 1]
-    assert d.budget_total == 3
-    assert d.budget_prunable_used == token_estimate("甲乙") == 2
-    assert d.budget_constant_used == token_estimate("甲乙\n常驻内容") - 2
-    assert d.budget_used == token_estimate("甲乙\n常驻内容")
-    assert d.budget_prunable_used <= d.budget_total
-    assert d.budget_limit_reached is True
-    # overflow_entries 只列确实未注入的条目（恒定条目不在其中）。
-    assert d.overflow_entries == ["小序非恒定"]
-    injected = {e.entry.entry_id for e in result.before_char}
-    assert 3 not in injected
-
-
-def test_budget_limit_reached_when_total_stays_within_limit() -> None:
-    """限额已生效但注入量本身未超限时，仍必须有可判告警与排除清单。
-
-    注入文本 "常\n常" 估 3 == 限额 3；紧随其后的非恒定条目在门控处被排除，
-    单看 budget_used/budget_total 判不出限额已生效，必须依赖
-    budget_limit_reached 与 warnings。
-    """
-    book = _book([
-        _entry(entry_id=1, keys=[], content="常", insertion_order=300,
-               constant=True),
-        _entry(entry_id=2, keys=[], content="常", insertion_order=200,
-               constant=True),
-        _entry(entry_id=3, keys=["x"], content="甲", insertion_order=100),
-        _entry(entry_id=4, keys=["x"], content="乙", insertion_order=90),
-    ], token_budget=3)
-    result = activate_world_book(book, _texts("x"))
-    d = result.diagnostics
-    assert d.budget_used == token_estimate("常\n常") == 3
-    assert d.budget_used == d.budget_total
-    # 两条常量的边际：首条 1、第二条（拼接后）2，合计 3。
-    assert d.budget_constant_used == 3
-    assert d.budget_prunable_used == 0
-    assert d.budget_limit_reached is True
-    assert len(d.warnings) == 1
-    assert "已排除 2 条未注入条目" in d.warnings[0]
-    # 溢出清单只列确实未进入提示词的条目（此处条目 3、4）；拼接序为
-    # insertion_order 升序，故注入集为 [2, 1]。
-    assert [e.entry.entry_id for e in result.before_char] == [2, 1]
-    assert d.overflow_entries == ["3", "4"]
-
-
-def test_budget_constant_alone_exceeds_limit() -> None:
-    """constant 单独超限：受门控边际为 0，超限量全部来自 constant。"""
-    book = _book([
-        _entry(entry_id=1, keys=[], content="长" * 50, insertion_order=100,
-               constant=True),
-    ], token_budget=4)
-    result = activate_world_book(book, _texts("x"))
-    d = result.diagnostics
-    assert d.budget_used == d.budget_constant_used == 50
-    assert d.budget_prunable_used == 0
-    assert d.budget_limit_reached is False
-    assert d.overflow_entries == []
-    assert d.warnings and "constant" in d.warnings[0]
-    assert [e.entry.entry_id for e in result.before_char] == [1]
-
-
-def test_budget_within_limit_produces_no_warning() -> None:
-    """预算内不产生任何告警（告警只在真实超限或被排除时出现）。"""
-    book = _book([
-        _entry(entry_id=1, keys=["x"], content="甲", insertion_order=100),
-        _entry(entry_id=2, keys=[], content="恒定", insertion_order=90,
-               constant=True),
-    ], token_budget=100)
-    result = activate_world_book(book, _texts("x"))
-    d = result.diagnostics
-    assert d.budget_used <= d.budget_total
-    assert d.warnings == []
-    assert d.budget_limit_reached is False
-
-
-def test_budget_diagnostic_defaults_without_book() -> None:
-    """无世界书（book=None）时新字段取确定性默认，形状与有书一致。"""
-    result = activate_world_book(None, _texts("x"))
-    d = result.diagnostics
-    assert d.budget_constant_used == 0
-    assert d.budget_prunable_used == 0
-    assert d.budget_limit_reached is False
-    assert d.budget_used == 0
-    assert d.overflow_entries == []
-    assert d.warnings == []
-
-
-def test_budget_keeps_empty_content_entries_as_activated() -> None:
-    """空正文条目照常激活：进桶、计入 activated_count，自身长度 0。
-
-    冻结门控按插入序逆序求值：先入累计的是「甲」，空正文条目随后并入时累计
-    文本从 "甲" 变为 "甲\n"（多出分隔符），因此它的边际并不为 0——空正文条目
-    不能假定为不改变注入内容。
-    """
-    book = _book([
-        _entry(entry_id=1, keys=["x"], content="甲", insertion_order=200),
-        _entry(entry_id=2, keys=["x"], content="", insertion_order=100),
-    ], token_budget=100)
-    result = activate_world_book(book, _texts("x"))
-    d = result.diagnostics
-    # 两条都激活：空正文条目仍在桶内（拼接序小序在前）、计入 activated_count。
-    assert [e.entry.entry_id for e in result.before_char] == [2, 1]
-    assert d.activated_count == 2
-    # 边际归因："甲" 先并入（累计 "甲"，边际 1），空正文条目再并入
-    # （累计 "甲\n"，边际 1）；它自身长度仍为 0。
-    assert token_estimate("") == 0
-    assert token_estimate("甲\n") > token_estimate("甲")
-    assert d.budget_constant_used == 0
-    assert d.budget_prunable_used == 2
-    assert d.budget_used == token_estimate("甲\n") == 2
-    assert d.budget_limit_reached is False
-    assert d.overflow_entries == []
-    assert d.warnings == []
-
-
-def test_budget_used_is_activation_order_estimate_not_assembled_text() -> None:
-    """budget_used 是冻结契约的激活序累计估算，不等于各模块文本的估算之和。
-
-    「甲」在 before_char、「乙」在 after_char：门控按单一序列累计 "甲\n乙"
-    （估 3），装配器则分成两个桶各自拼接，两模块估算之和为 2。
-    """
-    book = _book([
-        _entry(entry_id=1, keys=["x"], content="甲", insertion_order=200,
-               position="before_char"),
-        _entry(entry_id=2, keys=["x"], content="乙", insertion_order=100,
-               position="after_char"),
-    ], token_budget=100)
-    result = activate_world_book(book, _texts("x"))
-    d = result.diagnostics
-    assert d.budget_used == token_estimate("甲\n乙") == 3
-    module_sum = token_estimate("甲") + token_estimate("乙")
-    assert module_sum == 2
-    assert d.budget_used != module_sum
-    assert d.budget_prunable_used == 3      # 分量跟随门控累计口径
-    assert d.overflow_entries == []
-
-
-def test_budget_used_follows_frozen_first_entry_rule_with_leading_empty() -> None:
-    """冻结门控以「累计文本是否为空」判定序列首条。
-
-    激活序首条正文为空时累计文本仍为空串（估 0），紧随其后的「甲」同样按首条
-    处理、不加分隔符，因此本夹具下门控累计（估 1）恰好等于装配侧模块估算之和。
-    门控累计与装配体积的一般差异（跨桶各自拼接）由
-    ``test_budget_used_is_activation_order_estimate_not_assembled_text`` 覆盖。
-    """
-    # 空正文条目为 constant 且 insertion_order 更大，故它就是激活序首条
-    # （累计序列首位）；空 keys 的非 constant 条目会被候选筛选跳过。
-    book = _book([
-        _entry(entry_id=1, keys=[], content="", insertion_order=200,
-               constant=True),
-        _entry(entry_id=2, keys=["x"], content="甲", insertion_order=100),
-    ], token_budget=100)
-    result = activate_world_book(book, _texts("x"))
-    d = result.diagnostics
-    injected_texts = [a.text for a in result.before_char]
-    assert injected_texts == ["甲", ""]
-    assembled_module_estimate = sum(token_estimate(t) for t in injected_texts if t)
-    assert d.budget_used == token_estimate("甲") == 1
-    assert assembled_module_estimate == token_estimate("甲") == 1
-    assert d.budget_prunable_used == 1
-    assert d.budget_limit_reached is False
-
-
-def test_budget_accounting_holds_across_generated_books() -> None:
-    """跨混合语料/空正文/常量组合核对预算记账（确定性生成，非实现复述）。
-
-    断言的是可复算关系：budget_used 等于门控接受的累计拼接文本估算；两个
-    分量是边际归因之和；受门控边际之和不超过限额；激活计数等于实际注入集
-    大小；被排除条目不在注入集内。
-    """
-    rng = random.Random(20260910)
-    contents = ["甲", "甲乙丙", "a", "b", "ab", "星", "", "晚安"]
-    for _ in range(60):
-        entries = [
-            _entry(
-                entry_id=i,
-                keys=["x"] if rng.random() < 0.8 else [],
-                content=rng.choice(contents),
-                constant=rng.random() < 0.3,
-                insertion_order=rng.choice([90, 100, 200, 300]),
-                position=rng.choice(["before_char", "after_char", "atDepth"]),
-            )
-            for i in range(rng.randint(1, 7))
-        ]
-        budget = rng.choice([1, 2, 3, 5, 20, 100])
-        result = activate_world_book(_book(entries, token_budget=budget), _texts("x"))
-        d = result.diagnostics
-        injected = list(result.before_char) + list(result.after_char)
-        for group in result.depth_entries:
-            injected += list(group.entries)
-        injected_ids = {e.entry.entry_id for e in injected}
-        assert d.activated_count == len(injected)
-        assert d.budget_prunable_used <= d.budget_total
-        for ref in d.overflow_entries:
-            assert ref not in {str(i) for i in injected_ids}
-        if d.budget_limit_reached:
-            assert d.overflow_entries
 
 # ---------------------------------------------------------------- 存而不运行字段
 
@@ -744,17 +644,3 @@ def test_collect_turn_triggers_once_semantics() -> None:
     assert names(collect_turn_triggers(event_system, 3)) == {"a", "b"}
     # 第 4 回合：仅 b（>=3）命中。
     assert names(collect_turn_triggers(event_system, 4)) == {"b"}
-
-
-def test_budget_uses_candidate_total_not_duplicated_accumulation() -> None:
-    # Codex Review P1 回归：预算判断必须以「候选拼接文本」的总估算为比较
-    # 值（此处候选 "甲\n乙" 估 3 < 预算 4），不得再叠加旧 budget_used——
-    # 旧实现 1 + 候选总 3 ≥ 4 会把仍在预算内的第二条误排除。
-    book = _book([
-        _entry(entry_id=1, keys=["x"], content="甲", insertion_order=200),
-        _entry(entry_id=2, keys=["x"], content="乙", insertion_order=100),
-    ], token_budget=4)
-    result = activate_world_book(book, _texts("x"))
-    # 桶内拼接序为 insertion_order 升序：小序 2 在前。
-    assert [e.entry.entry_id for e in result.before_char] == [2, 1]
-    assert result.diagnostics.overflow_entries == []

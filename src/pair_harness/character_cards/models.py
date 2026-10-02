@@ -1,26 +1,11 @@
-"""内部角色卡数据契约（V0.4.0 逻辑底座）。
-
-本模块是纯数据模型，不依赖 SQLite、Sidecar、React 状态或当前配对系统。
-
-契约原则（与 AGENTS.md 一致）：
-
-- 酒馆标准已有的数据只保存在标准字段，唯一权威位置；
-- 酒馆标准没有覆盖的内容进入 ``data.extensions.hsr``，同样唯一；
-- 未识别但合法的第三方扩展原样保留，不做语义猜测、不执行任何内容；
-- 世界书关键词只用于角色卡内容激活，代码不得据此猜测用户意图或任务成败。
-
-各字段的权威位置、类型、默认值、必填性与导入导出方式见
-``docs/character-card/角色卡数据契约.md``。
-"""
+# 内部角色卡模型。酒馆标准字段与 data.extensions.hsr 各有唯一权威位置，未识别的合法扩展原样保留；
+# 字段类型、默认值与导入导出方式见 docs/character-card/角色卡数据契约.md。
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-# 固定语音产品常量：TTS、声音复刻、声音设计永久绑定该模型，
-# 用户、界面、配置文件与导入的角色卡都不能修改。
-FIXED_TTS_MODEL = "qwen-audio-3.0-tts-flash"
-FIXED_ASR_MODEL = "qwen-audio-3.0-asr-flash-streaming"
+from pair_harness.voice_models import VOICE_TTS_MODEL
 
 # HSR 扩展当前契约版本。
 HSR_SCHEMA_VERSION = "1.0"
@@ -69,18 +54,14 @@ class CharacterBook:
 
 @dataclass
 class AvatarAsset:
-    """``data.extensions.hsr.avatar_asset``：内部头像资产引用。
-
-    只保存引用与来源信息，不把图片二进制写进角色卡 JSON；
-    头像字节由 PNG 编解码（``png.py``）与受管理资产目录持有。
-    """
+    """``data.extensions.hsr.avatar_asset``：头像资产引用，图片字节存于受管理资产目录。"""
 
     asset_id: str = ""
     source: str = "none"  # none | png_import | user_upload | json_avatar_field
     source_ref: str = ""
     mime_type: str = "image/png"
     exported_in_png: bool = True
-    # 未来契约版本新增的未知字段原样保留。
+    # 未知字段原样保留。
     extras: dict = field(default_factory=dict)
 
 
@@ -88,14 +69,12 @@ class AvatarAsset:
 class VoiceProfile:
     """``data.extensions.hsr.voice_profile``：角色与音色的绑定数据。
 
-    永远不保存明文 API Key；Key 属于本地账号的凭据存储。
-    ``target_model`` 固定为 :data:`FIXED_TTS_MODEL`，导入外部卡时
-    即使含其他模型字段也不得改变该值。
+    不保存 API Key。``target_model`` 固定为产品常量，导入外部卡时不受卡内取值影响。
     """
 
     state: str = "voice_unconfigured"  # CharacterVoiceState 值
     voice_id: str = ""
-    target_model: str = FIXED_TTS_MODEL
+    target_model: str = VOICE_TTS_MODEL
     creation_mode: str = ""  # clone | design | ""
     prefix: str = ""
     reference_audio_asset: str = ""
@@ -103,7 +82,7 @@ class VoiceProfile:
     voice_prompt_asset: str = ""
     last_error: str = ""
     updated_at: str = ""
-    # 未来契约版本新增的未知字段原样保留。
+    # 未知字段原样保留。
     extras: dict = field(default_factory=dict)
 
 
@@ -111,9 +90,8 @@ class VoiceProfile:
 class HsrExtension:
     """``data.extensions.hsr``：酒馆标准未覆盖的 HSR 高级扩展。
 
-    内容块（world_architecture 等）是角色作者的结构化自由内容，
-    本层只约定键名与粗类型（对象/数组），不解释其语义、不检测意图；
-    运行时按确定顺序装配为角色提示词模块。
+    内容块（world_architecture 等）是角色作者的结构化自由内容，这里只约定
+    键名与粗类型，运行时按确定顺序装配为角色提示词模块。
     """
 
     schema_version: str = HSR_SCHEMA_VERSION
@@ -126,18 +104,50 @@ class HsrExtension:
     command_panels: list = field(default_factory=list)
     avatar_asset: AvatarAsset | None = None
     voice_profile: VoiceProfile | None = None
-    # 未来版本新增的未知 hsr 字段原样保留。
+    # 未知 hsr 字段原样保留。
     extras: dict = field(default_factory=dict)
+
+
+# depth_prompt.role 的数值写法（SillyTavern extension_prompt_roles）。
+DEPTH_PROMPT_ROLES = {0: "system", 1: "user", 2: "assistant"}
+
+
+@dataclass(frozen=True)
+class DepthPrompt:
+    """``data.extensions.depth_prompt`` 的单条注入；depth 缺省 4，role 缺省 system。"""
+
+    prompt: str
+    depth: int
+    role: str
+
+
+def parse_depth_prompt(raw: dict) -> DepthPrompt:
+    """校验并解析单条 depth_prompt，字段类型或取值非法时抛 ValueError。"""
+    prompt = raw.get("prompt", "")
+    if not isinstance(prompt, str):
+        raise ValueError(
+            f"depth_prompt.prompt 必须是字符串，得到 {type(prompt).__name__}"
+        )
+    depth = raw.get("depth", 4)
+    if not isinstance(depth, int) or isinstance(depth, bool):
+        raise ValueError(f"depth_prompt.depth 必须是整数，得到 {depth!r}")
+    role = raw.get("role", "system")
+    if isinstance(role, int) and not isinstance(role, bool):
+        role = DEPTH_PROMPT_ROLES.get(role, role)
+    if role not in DEPTH_PROMPT_ROLES.values():
+        raise ValueError(
+            "depth_prompt.role 必须是 system、user、assistant 或 0、1、2，"
+            f"得到 {role!r}"
+        )
+    return DepthPrompt(prompt=prompt, depth=depth, role=role)
 
 
 @dataclass
 class CharacterCard:
     """内部角色卡规范模型。
 
-    导入 v2/v3 JSON 或 PNG 时归一化到本模型；导出生成 v3 JSON/PNG。
-    每个字段只有一个权威位置：标准字段在本模型成员中，
-    第三方扩展在 :attr:`extensions`，HSR 扩展在 :attr:`hsr`，
-    根级未知字段在 :attr:`root_extras`。
+    标准字段在本模型成员中，第三方扩展在 :attr:`extensions`，HSR 扩展在
+    :attr:`hsr`，根级未知字段在 :attr:`root_extras`。
     """
 
     name: str
@@ -170,14 +180,10 @@ class CharacterCard:
 
     @property
     def depth_prompt(self) -> dict | None:
-        """SillyTavern depth prompt（权威位置：``data.extensions.depth_prompt``）。
-
-        以扩展数据为唯一存储位置，这里只提供类型化读取视图，
-        不在标准字段中复制一份。
-        """
+        """SillyTavern depth prompt 的只读视图，数据存于 ``extensions["depth_prompt"]``。"""
         value = self.extensions.get("depth_prompt")
         return value if isinstance(value, dict) else None
 
     def greeting_count(self) -> int:
-        """首句 + 备选问候总数（导入结果展示用）。"""
+        """首句与备选问候总数。"""
         return (1 if self.first_mes else 0) + len(self.alternate_greetings)

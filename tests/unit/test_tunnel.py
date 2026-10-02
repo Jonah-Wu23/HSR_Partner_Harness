@@ -1,470 +1,346 @@
-"""Cloudflare Quick Tunnel (T5 / D1) 单元测试。
-
-测试覆盖：
-1. detect_platform_asset 平台架构探测与校验和匹配；
-2. verify_file_hash SHA256 哈希比对；
-3. default_download_file 下载与哈希校验（包括失败清理）；
-4. TunnelManager 状态机维护（off / downloading / starting / ready / failed）；
-5. 二进制按需下载、校验、去重；
-6. 主机名提取正则与生命周期事件（tunnel.started / tunnel.stopped / tunnel.failed）；
-7. 进程异常退出检测与优雅停机。
-"""
-
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import sys
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp import web
 
 from pair_harness.desktop_backend.events import EventEmitter
 from pair_harness.desktop_backend.tunnel import (
-    CLOUDFLARED_ASSETS,
     TunnelError,
     TunnelManager,
-    _HOSTNAME_REGEX,
     detect_platform_asset,
     verify_file_hash,
 )
+from pair_harness.desktop_backend.ws_server import RemoteServe
+from tests.service_helpers import EventLog, call, expect_service_error, wait_until
+
+HOSTNAME = "test-random-tunnel.trycloudflare.com"
 
 
 # ============================================================
-# 1. 平台检测测试
+# 官方资产与哈希校验
 # ============================================================
 
 
-class TestPlatformDetection:
-    def test_detect_windows_amd64(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sys, "platform", "win32")
-        monkeypatch.setattr("platform.machine", lambda: "AMD64")
-        filename, url, sha256 = detect_platform_asset()
-        assert filename == "cloudflared-windows-amd64.exe"
-        assert "cloudflared-windows-amd64.exe" in url
-        assert sha256 == CLOUDFLARED_ASSETS["win32-x64"]["sha256"]
-
-    def test_detect_windows_x86(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sys, "platform", "win32")
-        monkeypatch.setattr("platform.machine", lambda: "i386")
-        filename, url, sha256 = detect_platform_asset()
-        assert filename == "cloudflared-windows-386.exe"
-        assert sha256 == CLOUDFLARED_ASSETS["win32-x86"]["sha256"]
-
-    def test_detect_linux_amd64(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sys, "platform", "linux")
-        monkeypatch.setattr("platform.machine", lambda: "x86_64")
-        filename, url, sha256 = detect_platform_asset()
-        assert filename == "cloudflared-linux-amd64"
-        assert sha256 == CLOUDFLARED_ASSETS["linux-x64"]["sha256"]
-
-    def test_detect_linux_arm64(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sys, "platform", "linux")
-        monkeypatch.setattr("platform.machine", lambda: "aarch64")
-        filename, url, sha256 = detect_platform_asset()
-        assert filename == "cloudflared-linux-arm64"
-        assert sha256 == CLOUDFLARED_ASSETS["linux-arm64"]["sha256"]
-
-    def test_detect_darwin_unsupported(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """darwin 官方资产是 .tgz 压缩包且产品未承诺 macOS 分发，探测直接响亮报错。"""
-        monkeypatch.setattr(sys, "platform", "darwin")
-        monkeypatch.setattr("platform.machine", lambda: "arm64")
-        with pytest.raises(TunnelError) as exc:
-            detect_platform_asset()
-        assert exc.value.code == "unsupported_platform"
-        assert "macOS" in str(exc.value)
-
-    def test_detect_unsupported_platform(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sys, "platform", "freebsd")
-        with pytest.raises(TunnelError) as exc:
-            detect_platform_asset()
-        assert exc.value.code == "unsupported_platform"
+@pytest.mark.parametrize(
+    ("platform_name", "machine", "filename"),
+    [
+        ("win32", "AMD64", "cloudflared-windows-amd64.exe"),
+        ("win32", "x86", "cloudflared-windows-386.exe"),
+        ("linux", "x86_64", "cloudflared-linux-amd64"),
+        ("linux", "aarch64", "cloudflared-linux-arm64"),
+    ],
+)
+def test_detect_platform_asset(
+    monkeypatch: pytest.MonkeyPatch, platform_name: str, machine: str, filename: str
+) -> None:
+    monkeypatch.setattr(sys, "platform", platform_name)
+    monkeypatch.setattr("platform.machine", lambda: machine)
+    detected, url, _sha256 = detect_platform_asset()
+    assert detected == filename
+    assert url.endswith(f"/{filename}")
 
 
-# ============================================================
-# 2. 文件哈希比对与正则测试
-# ============================================================
+@pytest.mark.parametrize(
+    ("platform_name", "machine", "code"),
+    [
+        ("darwin", "arm64", "unsupported_platform"),
+        ("freebsd", "amd64", "unsupported_platform"),
+        ("win32", "ARM64", "unsupported_architecture"),
+    ],
+)
+def test_detect_platform_asset_rejects_unsupported(
+    monkeypatch: pytest.MonkeyPatch, platform_name: str, machine: str, code: str
+) -> None:
+    monkeypatch.setattr(sys, "platform", platform_name)
+    monkeypatch.setattr("platform.machine", lambda: machine)
+    with pytest.raises(TunnelError) as exc:
+        detect_platform_asset()
+    assert exc.value.code == code
 
 
-class TestHashAndRegex:
-    def test_verify_file_hash_match(self, tmp_path: Path) -> None:
-        test_file = tmp_path / "sample.bin"
-        content = b"cloudflared binary content"
-        test_file.write_bytes(content)
-        expected = hashlib.sha256(content).hexdigest()
-        assert verify_file_hash(test_file, expected) is True
-        assert verify_file_hash(test_file, expected.upper()) is True
-
-    def test_verify_file_hash_mismatch(self, tmp_path: Path) -> None:
-        test_file = tmp_path / "sample.bin"
-        test_file.write_bytes(b"some content")
-        assert verify_file_hash(test_file, "0000000000000000000000000000000000000000000000000000000000000000") is False
-
-    def test_verify_file_hash_nonexistent(self, tmp_path: Path) -> None:
-        test_file = tmp_path / "missing.bin"
-        assert verify_file_hash(test_file, "dummy") is False
-
-    def test_hostname_regex_matches_trycloudflare(self) -> None:
-        sample_log = (
-            "2026-09-11T12:00:00Z INF +--------------------------------------------------------------------------------------------+\n"
-            "2026-09-11T12:00:00Z INF |  Your quick Tunnel has been created! Visit it at (it may take some time to be reachable):  |\n"
-            "2026-09-11T12:00:00Z INF |  https://sweet-apple-tree-123.trycloudflare.com                                           |\n"
-            "2026-09-11T12:00:00Z INF +--------------------------------------------------------------------------------------------+\n"
-        )
-        match = _HOSTNAME_REGEX.search(sample_log)
-        assert match is not None
-        assert match.group(1) == "sweet-apple-tree-123.trycloudflare.com"
+def test_verify_file_hash(tmp_path: Path) -> None:
+    content = b"cloudflared binary content"
+    digest = hashlib.sha256(content).hexdigest()
+    path = tmp_path / "cloudflared.bin"
+    assert verify_file_hash(path, digest) is False
+    path.write_bytes(content)
+    assert verify_file_hash(path, digest) is True
+    assert verify_file_hash(path, digest.upper()) is True
+    assert verify_file_hash(path, "0" * 64) is False
 
 
 # ============================================================
-# 3. TunnelManager 状态机与生命周期测试
+# TunnelManager 生命周期
 # ============================================================
 
 
-class _MockStream:
+async def _unexpected_download(url: str, dest: Path) -> None:
+    raise AssertionError(f"校验通过时不应下载：{url}")
+
+
+class _OutputStream:
+    """按行回放 cloudflared 输出；进程退出后返回 EOF。"""
+
     def __init__(self, lines: list[bytes]) -> None:
-        self._lines = list(lines)
+        self.lines = list(lines)
         self._wakeup = asyncio.Event()
+        self._eof = False
 
-    def append_lines(self, lines: list[bytes]) -> None:
-        """模拟进程在读取过程中继续产出日志（唤醒阻塞中的 readline）。"""
-        self._lines.extend(lines)
+    def feed(self, lines: list[bytes]) -> None:
+        self.lines.extend(lines)
+        self._wakeup.set()
+
+    def close(self) -> None:
+        self._eof = True
         self._wakeup.set()
 
     async def readline(self) -> bytes:
         while True:
-            if self._lines:
-                return self._lines.pop(0)
-            # 保持连接阻塞直到新日志到达或读取任务被取消
+            if self.lines:
+                return self.lines.pop(0)
+            if self._eof:
+                return b""
             await self._wakeup.wait()
             self._wakeup.clear()
 
 
-class _MockProcess:
-    def __init__(self, stderr_lines: list[bytes], stdout_lines: list[bytes] | None = None) -> None:
-        self.stderr = _MockStream(stderr_lines)
-        self.stdout = _MockStream(stdout_lines or [])
-        # R1-004 后 _run_tunnel_flow 会记录子进程 pid，mock 与真实 Process 同形
-        self.pid = 424242
+class _FakeCloudflared:
+    """按 cloudflared 协议回放的子进程：在 --metrics 地址提供 /quicktunnel，输出按行回放。
+
+    hostname 为 None 时表示申请主机名失败，metrics 服务不监听。
+    """
+
+    pid = 4242
+
+    def __init__(
+        self, args: tuple[str, ...], *, hostname: str | None, stderr: list[bytes]
+    ) -> None:
+        self.args = list(args)
+        self.stderr = _OutputStream(stderr)
+        self.stdout = _OutputStream([])
         self.returncode: int | None = None
-        self._exit_future: asyncio.Future[int] = asyncio.get_running_loop().create_future()
-        self.killed = False
         self.terminated = False
+        self._hostname = hostname
+        self._exited = asyncio.Event()
+        self._metrics: web.AppRunner | None = None
+
+    def arg(self, flag: str) -> str:
+        return self.args[self.args.index(flag) + 1]
+
+    async def serve_metrics(self) -> None:
+        if self._hostname is None:
+            return
+        hostname = self._hostname
+
+        async def quicktunnel(request: web.Request) -> web.Response:
+            return web.json_response({"hostname": hostname})
+
+        app = web.Application()
+        app.router.add_get("/quicktunnel", quicktunnel)
+        self._metrics = web.AppRunner(app)
+        await self._metrics.setup()
+        host, port = self.arg("--metrics").rsplit(":", 1)
+        await web.TCPSite(self._metrics, host, int(port)).start()
 
     async def wait(self) -> int:
-        return await asyncio.shield(self._exit_future)
+        await self._exited.wait()
+        assert self.returncode is not None
+        return self.returncode
+
+    def exit(self, code: int) -> None:
+        if self.returncode is not None:
+            return
+        self.returncode = code
+        self.stderr.close()
+        self.stdout.close()
+        self._exited.set()
 
     def terminate(self) -> None:
         self.terminated = True
-        if not self._exit_future.done():
-            self.returncode = 0
-            self._exit_future.set_result(0)
+        self.exit(1)
 
     def kill(self) -> None:
-        self.killed = True
-        if not self._exit_future.done():
-            self.returncode = -9
-            self._exit_future.set_result(-9)
+        self.exit(-9)
 
-    def trigger_crash(self, code: int = 1) -> None:
-        self.returncode = code
-        if not self._exit_future.done():
-            self._exit_future.set_result(code)
+    async def close(self) -> None:
+        if self._metrics is not None:
+            await self._metrics.cleanup()
 
 
-class TestTunnelManager:
-    @pytest.mark.asyncio
-    async def test_initial_status_is_off(self, tmp_path: Path) -> None:
-        events: list[dict[str, Any]] = []
-        emitter = EventEmitter(sink=lambda ev: events.append(ev))
-        audit_records: list[tuple[str, str]] = []
-        mgr = TunnelManager(
-            data_dir=tmp_path,
-            emitter=emitter,
-            audit_logger=lambda ev, d: audit_records.append((ev, d)),
-        )
-        assert mgr.status() == {
-            "state": "off",
-            "public_url": None,
-            "hostname": None,
-            "error": None,
-        }
+@pytest.fixture
+async def cloudflared(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[dict]:
+    """替换子进程启动为回放的 cloudflared。
 
-    @pytest.mark.asyncio
-    async def test_start_downloads_and_runs_process(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        events: list[dict[str, Any]] = []
-        emitter = EventEmitter(sink=lambda ev: events.append(ev))
-        audit_records: list[tuple[str, str]] = []
+    官方二进制的 SHA-256 无法在离线测试中复现，校验结果在这里固定为通过；
+    TunnelManager 没有资产表与进程工厂的注入点。
+    """
+    state: dict = {"hostname": HOSTNAME, "stderr": [], "spawned": []}
 
-        _, _, expected_sha256 = detect_platform_asset()
+    async def create_subprocess_exec(*args: str, **kwargs) -> _FakeCloudflared:
+        proc = _FakeCloudflared(args, hostname=state["hostname"], stderr=state["stderr"])
+        await proc.serve_metrics()
+        state["spawned"].append(proc)
+        return proc
 
-        async def fake_downloader(url: str, dest: Path, sha: str) -> None:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(b"valid binary content")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_subprocess_exec)
+    monkeypatch.setattr(
+        "pair_harness.desktop_backend.tunnel.verify_file_hash", lambda path, sha256: True
+    )
+    yield state
+    for proc in state["spawned"]:
+        await proc.close()
 
-        monkeypatch.setattr(
-            "pair_harness.desktop_backend.tunnel.verify_file_hash",
-            lambda p, s: True,
-        )
 
-        mock_proc = _MockProcess(
-            stderr_lines=[
-                b"2026-09-11 INF Connecting to Cloudflare...\n",
-                b"2026-09-11 INF https://test-random-tunnel.trycloudflare.com\n",
-            ]
-        )
+def _manager(tmp_path: Path, log: EventLog, downloader=_unexpected_download) -> TunnelManager:
+    return TunnelManager(data_dir=tmp_path, emitter=EventEmitter(log), downloader=downloader)
 
-        async def fake_create_subprocess_exec(*args, **kwargs):
-            return mock_proc
 
-        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+async def _wait_state(mgr: TunnelManager, state: str) -> None:
+    await wait_until(lambda: mgr.state == state, message=f"隧道未进入 {state}：{mgr.status()}")
 
-        mgr = TunnelManager(
-            data_dir=tmp_path,
-            emitter=emitter,
-            audit_logger=lambda ev, d: audit_records.append((ev, d)),
-            downloader=fake_downloader,
-        )
 
-        res = await mgr.start(local_port=8765)
-        assert res == {"status": "starting"}
+async def test_start_reads_hostname_from_metrics_and_stop_terminates(
+    tmp_path: Path, cloudflared: dict
+) -> None:
+    cloudflared["stderr"] = [
+        b"2026-09-11T08:00:00Z INF Requesting new quick Tunnel on trycloudflare.com...\n"
+    ]
+    log = EventLog()
+    mgr = _manager(tmp_path, log)
+    off = {"state": "off", "public_url": None, "hostname": None, "error": None}
+    assert mgr.status() == off
 
-        # 等待 ready 终态
-        for _ in range(50):
-            if mgr.state == "ready":
-                break
-            await asyncio.sleep(0.05)
+    assert await mgr.start(local_port=8765) == {"status": "starting"}
+    await _wait_state(mgr, "ready")
+    public_url = f"https://{HOSTNAME}"
+    assert mgr.status() == {
+        "state": "ready",
+        "public_url": public_url,
+        "hostname": HOSTNAME,
+        "error": None,
+    }
+    proc = cloudflared["spawned"][0]
+    assert proc.arg("--url") == "http://127.0.0.1:8765"
+    assert log.payloads("tunnel.started") == [{"public_url": public_url, "hostname": HOSTNAME}]
 
-        assert mgr.state == "ready"
-        assert mgr.public_url == "https://test-random-tunnel.trycloudflare.com"
-        assert mgr.hostname == "test-random-tunnel.trycloudflare.com"
+    assert await mgr.stop(reason="user_requested") == {"status": "stopping"}
+    assert proc.terminated is True
+    assert mgr.status() == off
+    assert log.payloads("tunnel.stopped") == [{"reason": "user_requested"}]
 
-        # 验证派发了 tunnel.started 事件
-        started_events = [e for e in events if e.get("event") == "tunnel.started"]
-        assert len(started_events) == 1
-        assert started_events[0]["payload"]["public_url"] == "https://test-random-tunnel.trycloudflare.com"
 
-        # 验证审计日志（精确相等断言，避免 URL 子串清洗告警）
-        assert any(
-            r[0] == "tunnel_started"
-            and r[1] == "hostname=test-random-tunnel.trycloudflare.com"
-            for r in audit_records
-        )
+async def test_process_exit_before_hostname_fails(tmp_path: Path, cloudflared: dict) -> None:
+    """cloudflared 申请主机名失败后退出：日志里的 URL 不参与判定，隧道如实进入 failed。"""
+    cloudflared["hostname"] = None
+    cloudflared["stderr"] = [
+        b'2026-09-11T08:00:00Z ERR failed to request quick Tunnel: Post '
+        b'"https://api.trycloudflare.com/tunnel": dial tcp: i/o timeout\n'
+    ]
+    log = EventLog()
+    mgr = _manager(tmp_path, log)
+    await mgr.start(local_port=8765)
+    await wait_until(lambda: cloudflared["spawned"], message="cloudflared 未启动")
+    assert mgr.state == "starting"
 
-        # 停止隧道
-        stop_res = await mgr.stop(reason="user_requested")
-        assert stop_res == {"status": "stopping"}
-        assert mgr.state == "off"
-        assert mgr.public_url is None
+    cloudflared["spawned"][0].exit(1)
+    await _wait_state(mgr, "failed")
+    assert "退出码 1" in mgr.error
+    assert log.payloads("tunnel.started") == []
+    assert log.payloads("tunnel.failed") == [{"error": mgr.error}]
 
-        # 验证派发了 tunnel.stopped 事件
-        stopped_events = [e for e in events if e.get("event") == "tunnel.stopped"]
-        assert len(stopped_events) == 1
-        assert stopped_events[0]["payload"]["reason"] == "user_requested"
-        assert mock_proc.terminated is True
 
-    @pytest.mark.asyncio
-    async def test_download_failure_transitions_to_failed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        events: list[dict[str, Any]] = []
-        emitter = EventEmitter(sink=lambda ev: events.append(ev))
+async def test_external_kill_after_ready_fails(tmp_path: Path, cloudflared: dict) -> None:
+    log = EventLog()
+    mgr = _manager(tmp_path, log)
+    await mgr.start(local_port=8765)
+    await _wait_state(mgr, "ready")
 
-        async def failing_downloader(url: str, dest: Path, sha: str) -> None:
-            raise RuntimeError("网络超时无法连接 GitHub")
+    cloudflared["spawned"][0].exit(137)
+    await _wait_state(mgr, "failed")
+    assert "137" in mgr.error
+    assert log.payloads("tunnel.failed") == [{"error": mgr.error}]
 
-        monkeypatch.setattr(
-            "pair_harness.desktop_backend.tunnel.verify_file_hash",
-            lambda p, s: False,
-        )
 
-        mgr = TunnelManager(
-            data_dir=tmp_path,
-            emitter=emitter,
-            audit_logger=lambda ev, d: None,
-            downloader=failing_downloader,
-        )
+async def test_output_keeps_draining_after_ready(tmp_path: Path, cloudflared: dict) -> None:
+    """就绪后持续读走 cloudflared 输出，避免管道写满让子进程阻塞。"""
+    mgr = _manager(tmp_path, EventLog())
+    await mgr.start(local_port=8765)
+    await _wait_state(mgr, "ready")
 
-        await mgr.start(local_port=8765)
+    proc = cloudflared["spawned"][0]
+    proc.stderr.feed(
+        [f"2026-09-11T08:00:00Z INF request #{i} served\n".encode() for i in range(64)]
+    )
+    await wait_until(lambda: not proc.stderr.lines, message="就绪后的输出没有被读走")
+    assert mgr.state == "ready"
 
-        for _ in range(50):
-            if mgr.state == "failed":
-                break
-            await asyncio.sleep(0.05)
 
-        assert mgr.state == "failed"
-        assert "网络超时" in (mgr.error or "")
+async def test_download_failure_fails_tunnel(tmp_path: Path) -> None:
+    async def offline_download(url: str, dest: Path) -> None:
+        # urllib 的网络错误都是 OSError
+        raise OSError("网络不可达")
 
-        failed_events = [e for e in events if e.get("event") == "tunnel.failed"]
-        assert len(failed_events) == 1
-        assert "网络超时" in failed_events[0]["payload"]["error"]
+    log = EventLog()
+    mgr = _manager(tmp_path, log, downloader=offline_download)
+    await mgr.start(local_port=8765)
+    await _wait_state(mgr, "failed")
+    assert "cloudflared 下载失败" in mgr.error
+    assert "网络不可达" in mgr.error
+    assert log.payloads("tunnel.failed") == [{"error": mgr.error}]
 
-    @pytest.mark.asyncio
-    async def test_child_process_external_crash_triggers_failed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        events: list[dict[str, Any]] = []
-        emitter = EventEmitter(sink=lambda ev: events.append(ev))
 
-        monkeypatch.setattr("pair_harness.desktop_backend.tunnel.verify_file_hash", lambda p, s: True)
+async def test_downloaded_binary_failing_hash_check_is_deleted(tmp_path: Path) -> None:
+    """下载内容与官方 SHA-256 不符时删除文件并失败，不启动子进程。"""
+    downloads: list[str] = []
 
-        mock_proc = _MockProcess(
-            stderr_lines=[
-                b"2026-09-11 INF https://crash-test.trycloudflare.com\n",
-            ]
-        )
-        monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=mock_proc))
+    async def tampered_download(url: str, dest: Path) -> None:
+        downloads.append(url)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"not the official cloudflared")
 
-        mgr = TunnelManager(
-            data_dir=tmp_path,
-            emitter=emitter,
-            audit_logger=lambda ev, d: None,
-            downloader=AsyncMock(),
-        )
-
-        await mgr.start(local_port=8765)
-        for _ in range(50):
-            if mgr.state == "ready":
-                break
-            await asyncio.sleep(0.05)
-        assert mgr.state == "ready"
-
-        # 模拟外部崩溃
-        mock_proc.trigger_crash(code=137)
-        for _ in range(50):
-            if mgr.state == "failed":
-                break
-            await asyncio.sleep(0.05)
-
-        assert mgr.state == "failed"
-        assert "137" in (mgr.error or "")
-        failed_events = [e for e in events if e.get("event") == "tunnel.failed"]
-        assert len(failed_events) == 1
-
-    @pytest.mark.asyncio
-    async def test_readers_drain_logs_after_ready_until_exit(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Codex Review ④ 回归：就绪后消费任务保持排空 PIPE 直至进程退出。
-
-        旧实现在 tunnel.started 后立即取消读取任务，cloudflared 持续写日志
-        会撑满管道缓冲并阻塞在写入上，隧道假死且外部强杀无法及时检出。
-        """
-        events: list[dict[str, Any]] = []
-        emitter = EventEmitter(sink=lambda ev: events.append(ev))
-
-        monkeypatch.setattr("pair_harness.desktop_backend.tunnel.verify_file_hash", lambda p, s: True)
-
-        mock_proc = _MockProcess(
-            stderr_lines=[
-                b"2026-09-11 INF https://drain-test.trycloudflare.com\n",
-            ]
-        )
-        monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=mock_proc))
-
-        mgr = TunnelManager(
-            data_dir=tmp_path,
-            emitter=emitter,
-            audit_logger=lambda ev, d: None,
-            downloader=AsyncMock(),
-        )
-
-        await mgr.start(local_port=8765)
-        for _ in range(50):
-            if mgr.state == "ready":
-                break
-            await asyncio.sleep(0.05)
-        assert mgr.state == "ready"
-
-        # 就绪后 cloudflared 继续写日志（超过管道缓冲的量级）
-        mock_proc.stderr.append_lines(
-            [
-                ("2026-09-11 INF request #%d served" % i).encode() + "\n".encode()
-                for i in range(64)
-            ]
-        )
-
-        # 模拟外部崩溃：进程退出时日志管道必须已被持续排空
-        mock_proc.trigger_crash(code=1)
-        for _ in range(50):
-            if mgr.state == "failed":
-                break
-            await asyncio.sleep(0.05)
-
-        assert mgr.state == "failed"
-        # 就绪后的 64 行日志全部被消费任务读走：读取任务在监视期未被取消
-        assert len(mock_proc.stderr._lines) == 0
-        failed_events = [e for e in events if e.get("event") == "tunnel.failed"]
-        assert len(failed_events) == 1
+    log = EventLog()
+    mgr = _manager(tmp_path, log, downloader=tampered_download)
+    await mgr.start(local_port=8765)
+    await _wait_state(mgr, "failed")
+    assert downloads == [detect_platform_asset()[1]]
+    assert not mgr.binary_path.exists()
+    assert mgr.error == "下载后的 cloudflared 哈希校验失败"
+    assert log.payloads("tunnel.failed") == [{"error": mgr.error}]
 
 
 # ============================================================
-# 4. ApplicationService 隧道控制命令与停机联动测试
+# 应用服务的隧道命令
 # ============================================================
 
 
-class TestTunnelServiceIntegration:
-    @pytest.mark.asyncio
-    async def test_tunnel_commands_scope_enforcement(self, tmp_path: Path) -> None:
-        """T4: 控制面方法限回环，remote origin 调用抛出 forbidden_scope。"""
-        from pair_harness.desktop_backend.application_service import build_demo_service, ServiceError
-        from pair_harness.desktop_backend.commands import DesktopCommand
-
-        service = build_demo_service(
-            database=tmp_path / "test.db",
-            project_root=tmp_path,
-        )
-        try:
-            # 1. 桌面 origin 访问 status 成功
-            status_res = await service.handle_command(
-                DesktopCommand("s-1", "remote.tunnel_status", {}, origin="desktop")
-            )
-            assert status_res["state"] == "off"
-
-            # 2. 远程 origin 访问一律被拒
-            for method in ("remote.tunnel_status", "remote.tunnel_start", "remote.tunnel_stop"):
-                with pytest.raises(ServiceError) as exc:
-                    await service.handle_command(
-                        DesktopCommand("s-2", method, {}, origin="remote")
-                    )
-                assert exc.value.code == "forbidden_scope"
-        finally:
-            await service.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_service_shutdown_stops_tunnel(self, tmp_path: Path) -> None:
-        """Sidecar 退出时联动关闭隧道，不留孤儿进程。"""
-        from pair_harness.desktop_backend.application_service import build_demo_service
-
-        service = build_demo_service(
-            database=tmp_path / "test.db",
-            project_root=tmp_path,
-        )
-        stopped_reasons: list[str] = []
-        original_stop = service.tunnel_manager.stop
-
-        async def fake_stop(*, reason: str = "user_requested"):
-            stopped_reasons.append(reason)
-            return await original_stop(reason=reason)
-
-        service.tunnel_manager.stop = fake_stop  # type: ignore
-
-        await service.shutdown()
-        assert "sidecar_exit" in stopped_reasons
+async def test_tunnel_start_requires_registered_serve(service) -> None:
+    """--serve 未成功监听时 remote.tunnel_start 如实拒绝，不回退默认端口。"""
+    assert (await call(service, "status", "remote.tunnel_status"))["state"] == "off"
+    await expect_service_error(
+        lambda: call(service, "start", "remote.tunnel_start"), "serve_not_started"
+    )
 
 
-# ============================================================
-# R1-004: 隧道模块日志级别
-# ============================================================
+async def test_service_shutdown_stops_running_tunnel(service) -> None:
+    """Sidecar 退出时关闭隧道并上报 sidecar_exit。"""
+    release = asyncio.Event()
 
+    async def pending_download(url: str, dest: Path) -> None:
+        await release.wait()
 
-class TestLoggingLevel:
-    def test_tunnel_logger_configured_info_at_startup(self) -> None:
-        """R1-004：Sidecar 启动配置后 tunnel 模块固定 INFO，过程日志进 stderr。"""
-        import logging
+    # 替换网络下载边界，隧道停在 downloading
+    service.tunnel_manager.downloader = pending_download
+    service.attach_remote_serve(RemoteServe(port=8765, lan=False, host="127.0.0.1"))
+    await call(service, "start", "remote.tunnel_start")
+    await wait_until(
+        lambda: service.tunnel_manager.state == "downloading", message="隧道未开始下载"
+    )
 
-        from pair_harness.desktop_backend.__main__ import _configure_logging
-
-        logger = logging.getLogger("pair_harness.desktop_backend.tunnel")
-        previous = logger.level
-        try:
-            _configure_logging()
-            assert logger.getEffectiveLevel() == logging.INFO
-        finally:
-            logger.setLevel(previous)
+    await service.shutdown()
+    assert service.event_log.payloads("tunnel.stopped") == [{"reason": "sidecar_exit"}]

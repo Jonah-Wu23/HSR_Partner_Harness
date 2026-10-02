@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 
-/** V0.3.3 手机端 hash 路由：# list / # pair / # chat/:id。 */
+/** 手机端 hash 路由：# list / # pair / # chat/:id。 */
 
 export type MobileRoute =
   | { name: "list" }
@@ -39,9 +39,20 @@ function emitChange(): void {
   listeners.forEach((listener) => listener());
 }
 
-export function navigate(route: MobileRoute): void {
+/**
+ * 应用内导航。默认压入新历史条目；replace 替换当前条目，用于路由守卫这类
+ * 纠正性跳转，返回键不会回到被纠正的页面再被弹回（避免循环）。
+ */
+export function navigate(route: MobileRoute, options?: { replace?: boolean }): void {
   const hash = routeToHash(route);
   if (typeof window !== "undefined" && window.location.hash !== hash) {
+    if (options?.replace) {
+      // replaceState 不触发 hashchange，这里直接更新 currentRoute。
+      window.history.replaceState(window.history.state, "", hash);
+      currentRoute = route;
+      emitChange();
+      return;
+    }
     // hash 赋值触发 hashchange，由监听器统一更新 currentRoute。
     pushedByApp = true;
     window.location.hash = hash;

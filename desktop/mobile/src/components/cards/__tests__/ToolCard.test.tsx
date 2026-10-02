@@ -17,40 +17,17 @@ describe("ToolCard", () => {
     title: "git status",
     summary: "检查工作区状态",
     details: "On branch main\nnothing to commit",
+    timeline_order: 1,
   };
 
-  it("渲染已完成状态与标题", () => {
-    render(<ToolCard run={baseRun} />);
-    expect(screen.getByTestId("tool-card")).toHaveAttribute("data-tool-status", "succeeded");
-    expect(screen.getByText("已完成")).toBeInTheDocument();
-    expect(screen.getByText("工具调用")).toBeInTheDocument();
-  });
-
-  it("渲染运行中状态", () => {
-    const runningRun: ToolRun = { ...baseRun, status: "running" };
-    render(<ToolCard run={runningRun} />);
-    expect(screen.getByTestId("tool-card")).toHaveAttribute("data-tool-status", "running");
-    expect(screen.getByText("运行中")).toBeInTheDocument();
-  });
-
-  it("渲染失败状态并展示真实错误", () => {
-    const failedRun: ToolRun = {
-      ...baseRun,
-      status: "failed",
-      summary: "命令执行失败",
-      details: "Error: exit code 1: file not found",
-    };
-    render(<ToolCard run={failedRun} defaultExpanded />);
-    expect(screen.getByTestId("tool-card")).toHaveAttribute("data-tool-status", "failed");
-    expect(screen.getByText("失败")).toBeInTheDocument();
-    expect(screen.getByText("Error: exit code 1: file not found")).toBeInTheDocument();
-  });
-
-  it("渲染已否决状态", () => {
-    const deniedRun: ToolRun = { ...baseRun, status: "denied" };
-    render(<ToolCard run={deniedRun} />);
-    expect(screen.getByTestId("tool-card")).toHaveAttribute("data-tool-status", "denied");
-    expect(screen.getByText("已否决")).toBeInTheDocument();
+  it.each([
+    { status: "running", label: "运行中" },
+    { status: "succeeded", label: "已完成" },
+    { status: "failed", label: "失败" },
+    { status: "denied", label: "已否决" },
+  ] as const)("$status 状态显示「$label」", ({ status, label }) => {
+    render(<ToolCard run={{ ...baseRun, status }} />);
+    expect(screen.getByRole("button", { name: `工具调用：${label}` })).toBeInTheDocument();
   });
 
   it("默认折叠，点击头部展开/收起明细", () => {

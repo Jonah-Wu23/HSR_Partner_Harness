@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { HarnessActions } from "../../contracts/actions";
 import type {
@@ -103,8 +103,7 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
   const [pendingArchiveProject, setPendingArchiveProject] = useState<ProjectViewModel | null>(null);
 
   const currentProject = navigation.projects.find((project) => project.isCurrent) ?? null;
-  // presenters 在运行时将 conversations 标注为 ConversationViewModel，接口未重声明，这里显式收窄。
-  const conversations = (currentProject?.conversations ?? []) as ConversationViewModel[];
+  const conversations = currentProject?.conversations ?? [];
 
   const filtered = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -144,15 +143,20 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
 
   const shouldVirtualize = flatRows.length > 40;
   const chatScrollRef = useRef<HTMLDivElement>(null);
+  // getItemKey 只随行列表变化，虚拟器据此复用已测量的行高。
+  const getRowKey = useCallback(
+    (index: number) => {
+      const row = flatRows[index];
+      return row.kind === "header" ? `h-${row.id}` : row.conversation.conversation_id;
+    },
+    [flatRows],
+  );
   const virtualizer = useVirtualizer({
     count: flatRows.length,
     getScrollElement: () => chatScrollRef.current,
-    estimateSize: (index) => (flatRows[index]?.kind === "header" ? 28 : 64),
+    estimateSize: (index) => (flatRows[index].kind === "header" ? 28 : 64),
     overscan: 6,
-    getItemKey: (index) => {
-      const row = flatRows[index];
-      return row?.kind === "header" ? `h-${row.id}` : row?.conversation.conversation_id ?? index;
-    },
+    getItemKey: getRowKey,
   });
 
   const pathBroken = currentProject !== null && !currentProject.path_available;
@@ -171,16 +175,9 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
   };
 
   const renderRow = (conversation: ConversationViewModel) => {
-    const extendedConv = conversation as ConversationViewModel & {
-      unreadCount?: number;
-      isCompleted?: boolean;
-    };
-    const hasUnread = typeof extendedConv.unreadCount === "number" && extendedConv.unreadCount > 0;
     const editing = editingId === conversation.conversation_id;
     const convPairId = conversation.pair_id;
-    const matchedPair =
-      navigation.pairs?.find((p) => p.pair_id === convPairId) ??
-      (convPairId === navigation.currentPair?.pair_id ? navigation.currentPair : null);
+    const matchedPair = navigation.pairs.find((p) => p.pair_id === convPairId) ?? null;
     const avatars = convPairId ? getPairAvatars(convPairId) : null;
     const pairTitle = matchedPair
       ? `${matchedPair.character.name} × ${matchedPair.assistant.name}`
@@ -236,26 +233,14 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
               type="button"
               className="conversation-row-main"
               onClick={() =>
-                // V0.3.2 M5：点击聊天打开（或聚焦）本窗口标签；不再直接用全局
-                // conversation.select 驱动其他窗口的导航。
+                // 点击聊天打开或聚焦本窗口标签，不改其他窗口的导航。
                 void actions.openConversationTab(conversation.conversation_id)
               }
               aria-current={conversation.isCurrent ? "page" : undefined}
             >
               <div className="conv-title-row">
                 {conversation.isRunning ? <span className="conv-running-dot" aria-hidden /> : null}
-                {extendedConv.isCompleted && !conversation.isRunning ? (
-                  <span className="conv-completed-dot" aria-hidden title="任务已完成" />
-                ) : null}
                 <span className="conv-title">{conversation.title}</span>
-                {hasUnread ? (
-                  <span
-                    className="conv-unread-badge"
-                    aria-label={`${extendedConv.unreadCount} 条未读`}
-                  >
-                    {extendedConv.unreadCount! > 99 ? "99+" : extendedConv.unreadCount}
-                  </span>
-                ) : null}
               </div>
               {meta}
             </button>
@@ -287,15 +272,11 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
     );
   };
 
-  const pairsList = navigation.pairs?.length ? navigation.pairs : (navigation.currentPair ? [navigation.currentPair] : []);
-  const currentSelectedConv = (currentProject?.conversations ?? []).find(
+  const pairsList = navigation.pairs;
+  const currentSelectedConv = conversations.find(
     (c) => c.conversation_id === navigation.currentConversationId,
   );
-  const defaultPairId =
-    currentSelectedConv?.pair_id ||
-    navigation.currentPair?.pair_id ||
-    pairsList[0]?.pair_id ||
-    "phainon_ancient_machine";
+  const defaultPairId = currentSelectedConv?.pair_id ?? navigation.currentPair.pair_id;
 
   const pairMenuItems = pairsList.map((pair) => {
     const avatars = getPairAvatars(pair.pair_id);
@@ -489,7 +470,6 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
           >
             {virtualizer.getVirtualItems().map((vItem) => {
               const row = flatRows[vItem.index];
-              if (!row) return null;
               return (
                 <div
                   key={vItem.key}

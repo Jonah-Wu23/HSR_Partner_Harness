@@ -1,14 +1,5 @@
-"""Cloudflare Quick Tunnel 隧道管理模块（D1）。
-
-托管官方 cloudflared 临时隧道子进程生命周期：按需下载二进制到用户数据目录
-并校验官方哈希、解析分配的 trycloudflare.com 主机名、维护五态（off / downloading /
-starting / ready / failed）并派发 tunnel.* 事件与审计记录。
-Sidecar 退出时联动有序关闭，不留孤儿进程。
-
-支持平台仅 Windows 与 Linux。官方 darwin 资产是 .tgz 压缩包，需要解压流程，
-产品未承诺 macOS 分发，未经真实验证不提供该路径：darwin 上探测直接报
-unsupported_platform，响亮失败。
-"""
+# Cloudflare Quick Tunnel 管理：按需下载官方 cloudflared 并校验 SHA-256，托管隧道子进程，
+# 经 tunnel.* 事件广播状态。只支持 Windows 与 Linux 的官方单文件资产。
 
 from __future__ import annotations
 
@@ -17,18 +8,21 @@ import hashlib
 import logging
 import os
 import platform
-import re
+import socket
 import sys
 import urllib.request
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+import aiohttp
+
 from .events import EventEmitter
 
 logger = logging.getLogger(__name__)
 
-# 官方发布的 cloudflared 版本与 SHA256 校验和（留证来源：https://github.com/cloudflare/cloudflared/releases/tag/2026.9.0）
+# 官方发布的 cloudflared 版本与 SHA256 校验和，来源：
+# https://github.com/cloudflare/cloudflared/releases/tag/2026.9.0
 CLOUDFLARED_VERSION = "2026.9.0"
 
 CLOUDFLARED_ASSETS: dict[str, dict[str, str]] = {
@@ -54,7 +48,18 @@ CLOUDFLARED_ASSETS: dict[str, dict[str, str]] = {
     },
 }
 
-_HOSTNAME_REGEX = re.compile(r"https://([a-zA-Z0-9-]+\.trycloudflare\.com)")
+# (sys.platform, platform.machine() 小写) → 资产键
+_ASSET_KEYS: dict[tuple[str, str], str] = {
+    ("win32", "amd64"): "win32-x64",
+    ("win32", "x86"): "win32-x86",
+    ("linux", "x86_64"): "linux-x64",
+    ("linux", "aarch64"): "linux-arm64",
+}
+
+# 等待 cloudflared 分配 Quick Tunnel 主机名的上限（秒）。
+HOSTNAME_TIMEOUT_SECONDS = 30.0
+# metrics 服务尚未监听时轮询 /quicktunnel 的间隔（秒）。
+METRICS_POLL_INTERVAL_SECONDS = 0.25
 
 
 class TunnelError(RuntimeError):
@@ -66,53 +71,37 @@ class TunnelError(RuntimeError):
 
 
 def detect_platform_asset() -> tuple[str, str, str]:
-    """探测当前操作系统的 cloudflared 架构资产，返回 (filename, url, sha256)。"""
-    plat = sys.platform
-    arch = platform.machine().lower()
-    if plat == "win32":
-        key = "win32-arm64" if "arm" in arch else ("win32-x86" if "32" in arch or "86" in arch and "64" not in arch else "win32-x64")
-        if key not in CLOUDFLARED_ASSETS:
-            key = "win32-x64"
-    elif plat == "darwin":
+    """返回当前平台与架构的 cloudflared 资产 (filename, url, sha256)。"""
+    if sys.platform not in ("win32", "linux"):
         raise TunnelError(
-            "macOS 平台暂不受支持：官方 darwin 资产为 .tgz 压缩包，"
-            "本产品未承诺 macOS 分发，未提供解压与校验路径",
-            code="unsupported_platform",
+            f"不支持的操作系统平台：{sys.platform}", code="unsupported_platform"
         )
-    elif plat.startswith("linux"):
-        key = "linux-arm64" if "arm" in arch or "aarch64" in arch else "linux-x64"
-    else:
-        raise TunnelError(f"不支持的操作系统平台: {plat}", code="unsupported_platform")
-
-    asset = CLOUDFLARED_ASSETS.get(key)
-    if not asset:
-        raise TunnelError(f"未找到适配当前架构的 cloudflared: {key}", code="unsupported_architecture")
+    arch = platform.machine().lower()
+    key = _ASSET_KEYS.get((sys.platform, arch))
+    if key is None:
+        raise TunnelError(
+            f"cloudflared 没有适配 {sys.platform}/{arch} 的官方资产",
+            code="unsupported_architecture",
+        )
+    asset = CLOUDFLARED_ASSETS[key]
     return asset["filename"], asset["url"], asset["sha256"]
 
 
 def verify_file_hash(path: Path, expected_sha256: str) -> bool:
-    """校验本地文件的 SHA256 哈希。"""
+    """校验本地文件的 SHA256；文件不存在时返回 False。"""
     if not path.is_file():
         return False
     hasher = hashlib.sha256()
-    try:
-        with open(path, "rb") as f:
-            while chunk := f.read(65536):
-                hasher.update(chunk)
-    except OSError:
-        return False
+    with open(path, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
     return hasher.hexdigest().lower() == expected_sha256.lower()
 
 
-async def default_download_file(url: str, dest_path: Path, expected_sha256: str) -> None:
-    """按块下载文件至 .part 临时文件并严格校验哈希，成功后原子重命名。"""
+async def default_download_file(url: str, dest_path: Path) -> None:
+    """按块下载到 .part 临时文件，完成后原子替换目标文件。"""
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     part_path = dest_path.with_suffix(".part")
-    if part_path.exists():
-        part_path.unlink(missing_ok=True)
-
-    hasher = hashlib.sha256()
-    loop = asyncio.get_running_loop()
 
     def _sync_download() -> None:
         req = urllib.request.Request(
@@ -122,34 +111,58 @@ async def default_download_file(url: str, dest_path: Path, expected_sha256: str)
             with urllib.request.urlopen(req, timeout=60.0) as resp, open(part_path, "wb") as f:
                 while chunk := resp.read(65536):
                     f.write(chunk)
-                    hasher.update(chunk)
-        except Exception:
-            if part_path.exists():
-                part_path.unlink(missing_ok=True)
+        except BaseException:
+            part_path.unlink(missing_ok=True)
             raise
 
-    await loop.run_in_executor(None, _sync_download)
-
-    actual_sha256 = hasher.hexdigest().lower()
-    if actual_sha256 != expected_sha256.lower():
-        if part_path.exists():
-            part_path.unlink(missing_ok=True)
-        raise TunnelError(
-            f"哈希校验失败：期望 {expected_sha256}，实际 {actual_sha256}",
-            code="hash_mismatch",
-        )
-
-    if dest_path.exists():
-        dest_path.unlink(missing_ok=True)
-    part_path.rename(dest_path)
+    await asyncio.to_thread(_sync_download)
+    os.replace(part_path, dest_path)
     if sys.platform != "win32":
-        try:
-            os.chmod(dest_path, 0o755)
-        except OSError:
-            pass
+        os.chmod(dest_path, 0o755)
 
 
-Downloader = Callable[[str, Path, str], Awaitable[None]]
+Downloader = Callable[[str, Path], Awaitable[None]]
+
+
+def _free_local_port() -> int:
+    """取一个当前空闲的回环端口，交给 cloudflared 的 metrics 服务监听。"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+async def _read_quicktunnel_hostname(metrics_address: str) -> str:
+    """从 cloudflared metrics 服务的 /quicktunnel 读取分配到的主机名。
+
+    cloudflared 先向 trycloudflare 申请到主机名，再启动 metrics 服务，
+    因此连接被拒表示仍在申请中，继续轮询；其余 HTTP 错误如实抛出。
+    """
+    url = f"http://{metrics_address}/quicktunnel"
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                async with session.get(url) as resp:
+                    resp.raise_for_status()
+                    payload = await resp.json(content_type=None)
+            except aiohttp.ClientConnectionError:
+                await asyncio.sleep(METRICS_POLL_INTERVAL_SECONDS)
+                continue
+            hostname = payload.get("hostname") if isinstance(payload, dict) else None
+            if not isinstance(hostname, str) or not hostname:
+                raise TunnelError(
+                    f"cloudflared /quicktunnel 未返回主机名：{payload!r}",
+                    code="hostname_missing",
+                )
+            return hostname
+
+
+async def _drain_output(stream: asyncio.StreamReader) -> None:
+    """持续读走 cloudflared 输出并写入日志：管道写满会让 cloudflared 阻塞。"""
+    while True:
+        line = await stream.readline()
+        if not line:
+            return
+        logger.info("cloudflared: %s", line.decode("utf-8", errors="replace").rstrip())
 
 
 class TunnelManager:
@@ -163,15 +176,11 @@ class TunnelManager:
         *,
         data_dir: Path,
         emitter: EventEmitter,
-        audit_logger: Callable[[str, str], None],
-        downloader: Downloader | None = None,
-        custom_binary: Path | None = None,
+        downloader: Downloader = default_download_file,
     ) -> None:
         self.data_dir = data_dir
         self.emitter = emitter
-        self.audit_logger = audit_logger
-        self.downloader = downloader or default_download_file
-        self.custom_binary = custom_binary
+        self.downloader = downloader
 
         self.state: str = "off"
         self.public_url: str | None = None
@@ -184,11 +193,8 @@ class TunnelManager:
 
     @property
     def binary_path(self) -> Path:
-        if self.custom_binary is not None:
-            return self.custom_binary
-        bin_dir = self.data_dir / "bin"
         exe_name = "cloudflared.exe" if sys.platform == "win32" else "cloudflared"
-        return bin_dir / exe_name
+        return self.data_dir / "bin" / exe_name
 
     def status(self) -> dict[str, Any]:
         """返回隧道当前状态。未就绪时 public_url/hostname 为 null，failed 时带 error。"""
@@ -217,29 +223,31 @@ class TunnelManager:
             return {"status": "starting"}
 
     async def stop(self, *, reason: str = "user_requested") -> dict[str, Any]:
-        """关闭隧道。立即返回 {"status": "stopping"}，若此前在运行则发出 tunnel.stopped 事件。"""
+        """关闭隧道并返回 {"status": "stopping"}；隧道原本在运行时发出 tunnel.stopped 事件。"""
         was_running = (self.state != "off") or (self._process is not None)
 
-        if self._monitor_task is not None and not self._monitor_task.done():
-            self._monitor_task.cancel()
+        task = self._monitor_task
+        self._monitor_task = None
+        if task is not None and not task.done():
+            task.cancel()
             try:
-                await self._monitor_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            self._monitor_task = None
+                await task
+            except asyncio.CancelledError:
+                # 只吸收隧道任务自身的取消；stop 本身被取消时继续向上抛。
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
 
         if self._process is not None:
             proc = self._process
             self._process = None
-            try:
+            if proc.returncode is None:
                 proc.terminate()
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=3.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     proc.kill()
                     await proc.wait()
-            except Exception:  # noqa: BLE001
-                pass
 
         self.state = "off"
         self.public_url = None
@@ -248,24 +256,23 @@ class TunnelManager:
 
         if was_running:
             self.emitter.emit("tunnel.stopped", {"reason": reason})
-            self.audit_logger("tunnel_stopped", f"reason={reason}")
+            logger.info("隧道已关闭 reason=%s", reason)
         return {"status": "stopping"}
 
     async def _ensure_binary(self) -> Path:
         """确保 cloudflared 二进制存在且 SHA256 校验通过，缺失或损坏时按需下载。"""
         bin_path = self.binary_path
-        filename, url, expected_sha256 = detect_platform_asset()
+        _filename, url, expected_sha256 = detect_platform_asset()
 
         if verify_file_hash(bin_path, expected_sha256):
             return bin_path
 
-        # 需要下载
         self.state = "downloading"
         logger.info("开始下载 cloudflared: %s -> %s", url, bin_path)
         try:
-            await self.downloader(url, bin_path, expected_sha256)
-        except Exception as exc:
-            raise TunnelError(f"cloudflared 下载或校验失败: {exc}", code="download_failed") from exc
+            await self.downloader(url, bin_path)
+        except OSError as exc:
+            raise TunnelError(f"cloudflared 下载失败: {exc}", code="download_failed") from exc
 
         if not verify_file_hash(bin_path, expected_sha256):
             bin_path.unlink(missing_ok=True)
@@ -284,11 +291,16 @@ class TunnelManager:
             return
 
         self.state = "starting"
+        # 主机名从 metrics 服务的 /quicktunnel 读取；日志里的 URL（包括
+        # 申请失败时的 https://api.trycloudflare.com/tunnel）一律不参与判定。
+        metrics_address = f"127.0.0.1:{_free_local_port()}"
         cmd = [
             str(bin_path),
             "tunnel",
             "--url",
             f"http://127.0.0.1:{local_port}",
+            "--metrics",
+            metrics_address,
             "--no-autoupdate",
         ]
 
@@ -308,94 +320,60 @@ class TunnelManager:
             self._fail(err_msg)
             return
 
-        # 读取 stderr / stdout 解析分配的主机名
-        hostname_future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-
-        def _check_line(line: str) -> None:
-            if hostname_future.done():
-                return
-            match = _HOSTNAME_REGEX.search(line)
-            if match:
-                hostname_future.set_result(match.group(1))
-
-        async def _consume_stream(stream: asyncio.StreamReader | None) -> None:
-            if stream is None:
-                return
-            while True:
-                line = await stream.readline()
-                if not line:
-                    break
-                text = line.decode("utf-8", errors="replace")
-                _check_line(text)
-
-        stderr_task = asyncio.create_task(_consume_stream(proc.stderr))
-        stdout_task = asyncio.create_task(_consume_stream(proc.stdout))
-
-        reached_ready = False
+        # 输出排空任务一直运行到进程退出：cloudflared 持续写日志，管道写满
+        # 会令它阻塞在写入上，隧道假死且外部强杀无法及时触发 tunnel.failed。
+        drain_tasks = [
+            asyncio.create_task(_drain_output(proc.stderr)),
+            asyncio.create_task(_drain_output(proc.stdout)),
+        ]
+        exit_task = asyncio.create_task(proc.wait())
+        hostname_task = asyncio.create_task(_read_quicktunnel_hostname(metrics_address))
         try:
-            # 30 秒内等待主机名解析
-            wait_proc = asyncio.create_task(proc.wait())
-            done, _ = await asyncio.wait(
-                [hostname_future, wait_proc],
-                timeout=30.0,
-                return_when=asyncio.FIRST_COMPLETED,
+            try:
+                done, _ = await asyncio.wait(
+                    [hostname_task, exit_task],
+                    timeout=HOSTNAME_TIMEOUT_SECONDS,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            except asyncio.CancelledError:
+                proc.kill()
+                raise
+            finally:
+                hostname_task.cancel()
+                await asyncio.gather(hostname_task, return_exceptions=True)
+
+            if exit_task in done:
+                self._fail(f"cloudflared 进程在就绪前退出 (退出码 {proc.returncode})")
+                return
+            if hostname_task not in done:
+                self._fail(
+                    f"cloudflared 主机名解析超时 ({int(HOSTNAME_TIMEOUT_SECONDS)}s)"
+                )
+                return
+            if hostname_task.exception() is not None:
+                self._fail(f"读取 cloudflared 隧道主机名失败: {hostname_task.exception()}")
+                return
+
+            hostname = hostname_task.result()
+            self.hostname = hostname
+            self.public_url = f"https://{hostname}"
+            self.state = "ready"
+            self.error = None
+            logger.info("Quick Tunnel 主机名解析就绪 hostname=%s", hostname)
+            self.emitter.emit(
+                "tunnel.started",
+                {"public_url": self.public_url, "hostname": self.hostname},
             )
 
-            if hostname_future in done:
-                hostname = hostname_future.result()
-                self.hostname = hostname
-                self.public_url = f"https://{hostname}"
-                self.state = "ready"
-                self.error = None
-                logger.info("Quick Tunnel 主机名解析就绪 hostname=%s", hostname)
-                reached_ready = True
-                self.emitter.emit(
-                    "tunnel.started",
-                    {"public_url": self.public_url, "hostname": self.hostname},
-                )
-                self.audit_logger("tunnel_started", f"hostname={hostname}")
-            elif wait_proc in done:
-                code = proc.returncode
-                self._fail(f"cloudflared 进程在就绪前退出 (退出码 {code})")
-                return
-            else:
-                self._fail("cloudflared 主机名解析超时 (30s)")
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-                return
-        except asyncio.CancelledError:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            raise
+            # 进程退出（含外部强杀）由 proc.wait() 检出。
+            return_code = await exit_task
+            if self.state in ("ready", "starting"):
+                self._fail(f"隧道进程已被外部终止 (退出码 {return_code})")
         finally:
-            # 提前返回（就绪前退出/解析超时）在此收尾读任务；就绪路径的
-            # 管道排空延续到下方监视段。
-            if not reached_ready:
-                if not stderr_task.done():
-                    stderr_task.cancel()
-                if not stdout_task.done():
-                    stdout_task.cancel()
-                await asyncio.gather(
-                    stderr_task, stdout_task, return_exceptions=True
-                )
-
-        # 就绪监视阶段：两个消费任务必须持续排空 PIPE——cloudflared 持续
-        # 写日志，管道满会令它阻塞在写入上，隧道假死且外部强杀无法及时
-        # 触发 tunnel.failed。进程退出（含外部强杀）由 proc.wait() 检出。
-        try:
-            return_code = await proc.wait()
-        finally:
-            if not stderr_task.done():
-                stderr_task.cancel()
-            if not stdout_task.done():
-                stdout_task.cancel()
-            await asyncio.gather(stderr_task, stdout_task, return_exceptions=True)
-        if self.state in ("ready", "starting"):
-            self._fail(f"隧道进程已被外部终止 (退出码 {return_code})")
+            exit_task.cancel()
+            for task in drain_tasks:
+                task.cancel()
+            await asyncio.gather(exit_task, *drain_tasks, return_exceptions=True)
 
     def _fail(self, error: str) -> None:
         """进入 failed 终态并派发 tunnel.failed 事件。"""
@@ -404,9 +382,7 @@ class TunnelManager:
         self.hostname = None
         self.error = error
         if self._process is not None:
-            try:
+            if self._process.returncode is None:
                 self._process.kill()
-            except Exception:
-                pass
             self._process = None
         self.emitter.emit("tunnel.failed", {"error": error})
