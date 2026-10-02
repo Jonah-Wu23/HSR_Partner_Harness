@@ -395,17 +395,6 @@
   overflow-wrap: anywhere;
 }
 
-.context-strip-close {
-  flex: none;
-  margin-left: auto;
-  width: 20px;
-  height: 20px;
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  font-size: 14px;
-  line-height: 1;
-}
-.context-strip-close:hover { background: var(--fill-hover); color: var(--text-primary); }
 /* 状态条内按钮收一档，复用 .btn 原语。 */
 .context-strip-btn {
   height: 26px;

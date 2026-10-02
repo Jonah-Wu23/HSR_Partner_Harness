@@ -11,8 +11,6 @@ export interface ContextStatusStripProps {
   /** summary.failed 留下的重新生成目标；只在有目标时显示重新生成按钮。 */
   regenerate?: SummaryRegenerateTarget | null;
   onRegenerate?: (target: SummaryRegenerateTarget) => void | Promise<void>;
-  /** 关闭状态行；失败行不会自动消失，未提供时不渲染关闭按钮。 */
-  onDismiss?: (summaryId: string) => void;
   /** null 表示日常聊天（无项目），不读写长期记忆，界面加以说明。 */
   projectId?: string | null;
 }
@@ -26,7 +24,7 @@ const STATUS_LABEL: Record<ConversationSummary["status"], string> = {
 
 /**
  * 上下文状态条（压缩与长期记忆），挂在聊天视图的输入区之上，不进入消息时间线，
- * 也不占用模态焦点。压缩失败保留到用户关闭，可展开 error_code 与原始 error。
+ * 也不占用模态焦点。压缩失败的状态行一直显示，可展开 error_code 与原始 error。
  * 长期记忆只展示服务端解析出的作用域分量。
  */
 export function ContextStatusStrip({
@@ -34,7 +32,6 @@ export function ContextStatusStrip({
   memories,
   regenerate,
   onRegenerate,
-  onDismiss,
   projectId,
 }: ContextStatusStripProps) {
   const [expanded, setExpanded] = useState<string[]>([]);
@@ -176,17 +173,6 @@ export function ContextStatusStrip({
             ) : null}
 
             {canRegenerate ? renderRegenerate(summary.summary_id) : null}
-
-            {onDismiss ? (
-              <button
-                type="button"
-                className="context-strip-close"
-                aria-label={`关闭${STATUS_LABEL[summary.status]}状态条`}
-                onClick={() => onDismiss(summary.summary_id)}
-              >
-                ×
-              </button>
-            ) : null}
           </div>
         );
       })}

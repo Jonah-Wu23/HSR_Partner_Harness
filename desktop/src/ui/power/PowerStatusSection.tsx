@@ -33,7 +33,7 @@ export function PowerStatusSection({ actions }: PowerStatusSectionProps) {
 
       {error ? (
         <p className="field-error" role="alert" data-testid="power-status-error">
-          电源状态读取失败：{error}
+          {error}
         </p>
       ) : null}
 
