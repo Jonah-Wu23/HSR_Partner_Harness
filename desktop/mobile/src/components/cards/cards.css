@@ -538,6 +538,7 @@
   border-top: 1px solid var(--border);
   max-height: 180px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
 }
 

@@ -147,6 +147,7 @@ const WorkbenchPane = memo(function WorkbenchPane({
           ) : null}
         </div>
         <ConversationList
+          active={open}
           conversationId={assistant.conversationId}
           listId="workbench"
           items={assistant.items}

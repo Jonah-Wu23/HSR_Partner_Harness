@@ -16,6 +16,7 @@ import {
   type Rect,
   type VirtualItem,
 } from "@tanstack/react-virtual";
+import { useConversationScroll, type ConversationAnchor } from "./useConversationScroll";
 
 export interface ConversationItemState {
   isExpanded: (key: string, defaultValue?: boolean) => boolean;
@@ -27,6 +28,7 @@ interface ConversationListProps<T> {
   /** 传入时按 listId 与会话保存时间线快照（测量缓存、滚动位置、跟随与展开状态），
       切回该会话时恢复；同一会话的多条时间线（角色区与工作台）用不同 listId。 */
   listId?: string;
+  active?: boolean;
   items: readonly T[];
   /** 返回条目在本会话内唯一的 key；可以每次渲染传新函数。 */
   getItemKey: (item: T) => string;
@@ -43,19 +45,13 @@ interface ConversationListProps<T> {
   renderJumpButton: (jumpToLatest: () => void) => ReactNode;
 }
 
-interface Anchor {
-  key: string;
-  index: number;
-  top: number;
-}
-
 /** 离开会话时保存的时间线状态，切回时恢复行高、滚动位置、跟随状态与展开状态。 */
 interface TimelineSnapshot {
   measurements: VirtualItem[];
   scrollTop: number;
   viewport: Rect;
   following: boolean;
-  anchor: Anchor | null;
+  anchor: ConversationAnchor | null;
   expanded: Record<string, boolean>;
 }
 
@@ -74,14 +70,6 @@ function extractRange(range: Range): number[] {
   return range.count <= 40
     ? Array.from({ length: range.count }, (_, index) => index)
     : defaultRangeExtractor(range);
-}
-
-const SCROLL_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
-/** 向上翻阅的按键，按下即停止跟随最新消息。 */
-const UPWARD_KEYS = new Set(["ArrowUp", "PageUp", "Home"]);
-
-function distanceFromBottom(node: HTMLElement): number {
-  return node.scrollHeight - node.clientHeight - node.scrollTop;
 }
 
 interface TimelineRowProps<T> {
@@ -128,6 +116,7 @@ export function ConversationList<T>(props: ConversationListProps<T>) {
 
 function ConversationTimeline<T>({
   snapshotKey,
+  active = true,
   items,
   getItemKey,
   estimateSize,
@@ -142,12 +131,26 @@ function ConversationTimeline<T>({
   renderJumpButton,
 }: ConversationListProps<T> & { snapshotKey: string | null }) {
   const [restored] = useState(() => (snapshotKey === null ? null : snapshots.get(snapshotKey) ?? null));
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const followingRef = useRef(restored?.following ?? true);
-  const [following, setFollowing] = useState(followingRef.current);
-  const userScrollUntilRef = useRef(0);
-  const touchingRef = useRef(false);
-  const anchorRef = useRef<Anchor | null>(restored?.anchor ?? null);
+  const {
+    scrollRef,
+    following,
+    followingRef,
+    anchorRef,
+    reconcileLayout,
+    jumpToLatest,
+    onScroll,
+    onWheel,
+    onPointerDown,
+    onTouchStart,
+    onTouchMove,
+    onTouchEnd,
+    onTouchCancel,
+    onKeyDown,
+  } = useConversationScroll({ following: restored?.following ?? true, anchor: restored?.anchor ?? null });
+  const contentRef = useRef<HTMLDivElement>(null);
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const wasActiveRef = useRef(active);
   const [expandedItems, setExpandedItems] = useState(restored?.expanded ?? {});
   const expandedRef = useRef(expandedItems);
 
@@ -163,51 +166,6 @@ function ConversationTimeline<T>({
     return keysRef.current;
   }, [items, getItemKey]);
   const getVirtualKey = useCallback((index: number) => itemKeys[index], [itemKeys]);
-
-  const setFollowLatest = useCallback((next: boolean) => {
-    followingRef.current = next;
-    setFollowing(next);
-  }, []);
-
-  /** 记下视口顶部第一行作为阅读锚点，只读布局。 */
-  const captureAnchor = useCallback(() => {
-    const node = scrollRef.current!;
-    const viewportTop = node.getBoundingClientRect().top;
-    for (const row of node.querySelectorAll<HTMLElement>("[data-timeline-key]")) {
-      const rect = row.getBoundingClientRect();
-      if (rect.bottom > viewportTop) {
-        anchorRef.current = {
-          key: row.dataset.timelineKey!,
-          index: Number(row.dataset.index),
-          top: rect.top - viewportTop,
-        };
-        return;
-      }
-    }
-  }, []);
-
-  /** 跟随最新时贴底，否则把阅读锚点放回原来的视口位置。先读完布局再写一次 scrollTop。
-      手指按在列表上时不写 scrollTop，避免和拖动抢位置。 */
-  const keepPosition = useCallback(() => {
-    if (touchingRef.current) return;
-    const node = scrollRef.current!;
-    if (followingRef.current) {
-      node.scrollTop = node.scrollHeight;
-      return;
-    }
-    const anchor = anchorRef.current;
-    if (!anchor) return;
-    const row = Array.from(node.querySelectorAll<HTMLElement>("[data-timeline-key]")).find(
-      (candidate) => candidate.dataset.timelineKey === anchor.key,
-    );
-    if (!row) {
-      captureAnchor();
-      return;
-    }
-    anchor.index = Number(row.dataset.index);
-    const drift = row.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor.top;
-    if (Math.abs(drift) > 0.5) node.scrollTop += drift;
-  }, [captureAnchor]);
 
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -225,19 +183,47 @@ function ConversationTimeline<T>({
     observeElementRect: (instance, onRect) =>
       observeElementRect(instance, (rect) => {
         onRect(rect);
-        keepPosition();
+        if (activeRef.current) reconcileLayout();
       }),
   });
-  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item) => {
-    const anchorIndex = anchorRef.current?.index;
-    return !followingRef.current && anchorIndex !== undefined && item.index < anchorIndex;
-  };
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => false;
   const totalSize = virtualizer.getTotalSize();
   const virtualItems = virtualizer.getVirtualItems();
 
   useLayoutEffect(() => {
-    if (items.length > 0) keepPosition();
-  }, [items, totalSize, following, keepPosition]);
+    const wasActive = wasActiveRef.current;
+    wasActiveRef.current = active;
+    if (!active) return;
+    if (!wasActive && contentRef.current) {
+      // 重新展开时只更新已挂载行的高度，其余行继续使用会话测量缓存。
+      const measurements = Array.from(
+        contentRef.current.querySelectorAll<HTMLElement>("[data-timeline-key]"),
+        (row) => ({ index: Number(row.dataset.index), height: row.offsetHeight }),
+      );
+      for (const { index, height } of measurements) virtualizer.resizeItem(index, height);
+    }
+    if (items.length > 0) reconcileLayout();
+  }, [active, items, totalSize, following, reconcileLayout, virtualizer]);
+
+  useLayoutEffect(() => {
+    const content = contentRef.current;
+    const ResizeObserverClass = content?.ownerDocument.defaultView?.ResizeObserver;
+    if (!active || !content || !ResizeObserverClass) return;
+    let frame = 0;
+    const observer = new ResizeObserverClass(() => {
+      if (!activeRef.current) return;
+      if (frame) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        if (activeRef.current) reconcileLayout();
+      });
+    });
+    observer.observe(content);
+    return () => {
+      observer.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [active, reconcileLayout]);
 
   useLayoutEffect(() => {
     expandedRef.current = expandedItems;
@@ -259,84 +245,6 @@ function ConversationTimeline<T>({
     [estimateSize, snapshotKey, virtualizer],
   );
 
-  const markUserScroll = (duration: number) => {
-    userScrollUntilRef.current = Date.now() + duration;
-  };
-
-  /** 用户开始向上翻阅：内容可滚动时立即停止跟随，不等滚动事件，流式更新不会再把视口拉回底部。 */
-  const leaveFollow = () => {
-    const node = scrollRef.current!;
-    if (!followingRef.current || node.scrollHeight <= node.clientHeight) return;
-    captureAnchor();
-    setFollowLatest(false);
-  };
-
-  /** 手势结束时已在底部则恢复跟随。 */
-  const followIfAtBottom = (node: HTMLElement) => {
-    if (distanceFromBottom(node) <= 2) setFollowLatest(true);
-  };
-
-  // 触摸开始即暂停贴底与锚点写入，拖动产生的滚动事件按离底距离决定是否继续跟随；
-  // 松手后补一次位置（只点按没有拖动时回到底部）。
-  const onTouchStart = () => {
-    touchingRef.current = true;
-    markUserScroll(1500);
-  };
-
-  const onTouchEnd = () => {
-    touchingRef.current = false;
-    markUserScroll(1500);
-    keepPosition();
-  };
-
-  const onScroll = () => {
-    captureAnchor();
-    if (Date.now() > userScrollUntilRef.current) return;
-    setFollowLatest(distanceFromBottom(scrollRef.current!) <= 2);
-  };
-
-  const onWheel = (event: React.WheelEvent<HTMLDivElement>) => {
-    const innerScroller = (event.target as HTMLElement).closest<HTMLElement>("[data-internal-scroll]");
-    if (innerScroller && innerScroller.scrollHeight > innerScroller.clientHeight) {
-      const atTop = innerScroller.scrollTop <= 0 && event.deltaY < 0;
-      const atBottom =
-        innerScroller.scrollTop + innerScroller.clientHeight >= innerScroller.scrollHeight - 1 &&
-        event.deltaY > 0;
-      if (!atTop && !atBottom) return;
-    }
-    markUserScroll(500);
-    if (event.deltaY < 0) leaveFollow();
-  };
-
-  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    // 按在滚动容器本身（滚动条或内边距）上：按住期间的滚动都算用户滚动，松开时在底部则恢复跟随。
-    if (event.target !== event.currentTarget) return;
-    const node = event.currentTarget;
-    userScrollUntilRef.current = Number.POSITIVE_INFINITY;
-    leaveFollow();
-    const release = () => {
-      window.removeEventListener("pointerup", release);
-      window.removeEventListener("pointercancel", release);
-      markUserScroll(500);
-      followIfAtBottom(node);
-    };
-    window.addEventListener("pointerup", release);
-    window.addEventListener("pointercancel", release);
-  };
-
-  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (!SCROLL_KEYS.has(event.key)) return;
-    markUserScroll(500);
-    if (UPWARD_KEYS.has(event.key) || (event.key === " " && event.shiftKey)) leaveFollow();
-  };
-
-  const jumpToLatest = () => {
-    setFollowLatest(true);
-    const node = scrollRef.current!;
-    node.scrollTop = node.scrollHeight;
-    virtualizer.scrollToIndex(items.length - 1, { align: "end" });
-  };
-
   // 展开状态变化时换新对象，可见行随之重渲染；其余时候保持同一引用，memo 行可以跳过。
   const itemState = useMemo<ConversationItemState>(() => ({
     isExpanded: (key, defaultValue = false) => expandedItems[key] ?? defaultValue,
@@ -356,16 +264,16 @@ function ConversationTimeline<T>({
         onScroll={onScroll}
         onWheel={onWheel}
         onTouchStart={onTouchStart}
-        onTouchMove={() => markUserScroll(1500)}
+        onTouchMove={onTouchMove}
         onTouchEnd={onTouchEnd}
-        onTouchCancel={onTouchEnd}
+        onTouchCancel={onTouchCancel}
         onPointerDown={onPointerDown}
         onKeyDown={onKeyDown}
         tabIndex={tabIndex}
         data-following-latest={following}
         data-testid={scrollTestId}
       >
-        <div className={contentClassName}>
+        <div className={contentClassName} ref={contentRef}>
           {items.length === 0 ? emptyContent : null}
           {/* 视口高度为 0 时虚拟器不给出可见行，此时不渲染占位。 */}
           {firstVirtualItem && lastVirtualItem ? (

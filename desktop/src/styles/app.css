@@ -1768,6 +1768,7 @@
   margin-top: 2px;
   max-height: 120px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   white-space: pre-wrap;
   overflow-wrap: break-word;
 }

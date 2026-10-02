@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 interface ConversationHarness {
+  setMode?: (mode: "chat" | "collaboration") => void;
   setCharacterCount?: (count: number) => void;
   setAssistantCount?: (count: number) => void;
   setCount?: (count: number) => void;
@@ -162,6 +163,17 @@ test("desktop keeps measured rows separate, preserves the reading anchor, and re
   await expect(toolRow).toBeAttached();
   await expect(toolRow.locator(".tool-expanded-body")).toBeVisible();
 
+  const toolTopBeforeClose = await toolRow.evaluate((row) => row.getBoundingClientRect().top);
+  await page.evaluate(() => window.conversationHarness.setMode?.("chat"));
+  await expect(page.locator(".pane-workbench")).toHaveAttribute("aria-hidden", "true");
+  await page.evaluate(() => window.conversationHarness.setAssistantCount?.(110));
+  await page.evaluate(() => window.conversationHarness.setMode?.("collaboration"));
+  await expect(page.locator(".pane-workbench")).toHaveAttribute("aria-hidden", "false");
+  await page.waitForTimeout(350);
+  await expect(toolRow.locator(".tool-expanded-body")).toBeVisible();
+  const toolTopAfterOpen = await toolRow.evaluate((row) => row.getBoundingClientRect().top);
+  expect(Math.abs(toolTopAfterOpen - toolTopBeforeClose)).toBeLessThanOrEqual(2);
+
   expect(pageErrors).toEqual([]);
 });
 
@@ -214,3 +226,103 @@ test("mobile holds the reader position through simulated streaming and scrolls o
   await expect(scroll).toHaveAttribute("data-following-latest", "true");
   expect(pageErrors).toEqual([]);
 });
+
+for (const target of [
+  { name: "desktop character pane", url: "http://127.0.0.1:1422/e2e/desktop-list.html", selector: ".pane-character .message-scroll", setCount: "setCharacterCount" as const },
+  { name: "mobile chat", url: "http://127.0.0.1:1423/e2e/mobile-list.html", selector: ".mobile-chat-scroll", setCount: "setCount" as const },
+]) {
+  test(`${target.name} resumes follow only after user action and follows growing content`, async ({ page }) => {
+    await page.setViewportSize(target.name === "mobile chat" ? { width: 390, height: 844 } : { width: 1440, height: 900 });
+    await page.goto(target.url);
+    await page.waitForFunction(() => window.conversationHarness !== undefined);
+    await page.evaluate((setCount) => window.conversationHarness[setCount]?.(500), target.setCount);
+    const scroll = page.locator(target.selector);
+    await expect.poll(() => scroll.evaluate((node) => node.scrollHeight - node.clientHeight)).toBeGreaterThan(1000);
+    await expect.poll(() => scroll.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThanOrEqual(2);
+
+    await scroll.hover();
+    await page.mouse.wheel(0, -420);
+    await expect(scroll).toHaveAttribute("data-following-latest", "false");
+    await scroll.evaluate((node) => { node.scrollTop = node.scrollHeight; });
+    await waitForPaint(page);
+    await expect(scroll).toHaveAttribute("data-following-latest", "false");
+    await page.mouse.wheel(0, 420);
+    await expect(scroll).toHaveAttribute("data-following-latest", "true");
+    await page.evaluate(() => window.conversationHarness.growLatest("持续增长的正文。".repeat(200)));
+    await waitForPaint(page);
+    await expect.poll(() => scroll.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThanOrEqual(2);
+    expectNoOverlap(await sampleRows(page, target.selector));
+
+    await page.mouse.wheel(0, -420);
+    await expect(scroll).toHaveAttribute("data-following-latest", "false");
+    await scroll.evaluate((node) => node.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+    await page.waitForTimeout(1100);
+    await scroll.evaluate((node) => { node.scrollTop = node.scrollHeight; });
+    await expect(scroll).toHaveAttribute("data-following-latest", "true");
+    await scroll.evaluate((node) => node.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })));
+
+    await page.mouse.wheel(0, -420);
+    await expect(scroll).toHaveAttribute("data-following-latest", "false");
+    await page.mouse.wheel(0, 120);
+    await expect(scroll).toHaveAttribute("data-following-latest", "false");
+    const readAnchor = () => scroll.evaluate((node) => {
+      const viewportTop = node.getBoundingClientRect().top;
+      const row = Array.from(node.querySelectorAll<HTMLElement>("[data-timeline-key]")).find((item) => item.getBoundingClientRect().bottom > viewportTop);
+      return row ? { key: row.dataset.timelineKey, top: row.getBoundingClientRect().top - viewportTop } : null;
+    });
+    const beforeResize = await readAnchor();
+    if (!beforeResize?.key) throw new Error("Missing reading anchor before viewport resize");
+    await page.setViewportSize(target.name === "mobile chat" ? { width: 320, height: 580 } : { width: 1024, height: 740 });
+    await waitForPaint(page);
+    const afterResize = await readAnchor();
+    expect(afterResize?.key).toBe(beforeResize.key);
+    expect(Math.abs((afterResize?.top ?? Infinity) - beforeResize.top)).toBeLessThanOrEqual(2);
+    await page.evaluate(() => window.conversationHarness.growLatest("后续内容。".repeat(80)));
+    await waitForPaint(page);
+    const afterGrowth = await readAnchor();
+    expect(afterGrowth?.key).toBe(beforeResize.key);
+    expect(Math.abs((afterGrowth?.top ?? Infinity) - beforeResize.top)).toBeLessThanOrEqual(2);
+    expectNoOverlap(await sampleRows(page, target.selector));
+
+    const jump = page.locator(target.name === "mobile chat" ? ".mobile-chat-container .mobile-jump-latest" : ".pane-character .scroll-latest-btn");
+    await jump.click();
+    await expect(scroll).toHaveAttribute("data-following-latest", "true");
+    const stream = page.evaluate(() => window.conversationHarness.streamLatest(12));
+    await page.mouse.wheel(0, -420);
+    await expect(scroll).toHaveAttribute("data-following-latest", "false");
+    const interruptedAnchor = await readAnchor();
+    await stream;
+    await waitForPaint(page);
+    await expect(scroll).toHaveAttribute("data-following-latest", "false");
+    const afterStream = await readAnchor();
+    expect(afterStream?.key).toBe(interruptedAnchor?.key);
+    expect(Math.abs((afterStream?.top ?? Infinity) - (interruptedAnchor?.top ?? Infinity))).toBeLessThanOrEqual(2);
+
+    if (target.name === "mobile chat") {
+      await page.waitForTimeout(300);
+      const bounds = await scroll.boundingBox();
+      if (!bounds) throw new Error("Missing mobile scroll bounds");
+      const input = await page.context().newCDPSession(page);
+      await input.send("Input.dispatchTouchEvent", {
+        type: "touchStart",
+        touchPoints: [{ x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }],
+      });
+      await input.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await input.detach();
+      await scroll.evaluate((node) => { node.scrollTop = node.scrollHeight; });
+      await waitForPaint(page);
+      await expect(scroll).toHaveAttribute("data-following-latest", "false");
+    }
+
+    await jump.click();
+    await expect(scroll).toHaveAttribute("data-following-latest", "true");
+    await scroll.focus();
+    await page.keyboard.press("Shift+Space");
+    await expect(scroll).toHaveAttribute("data-following-latest", "false");
+    await expect.poll(() => scroll.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop))
+      .toBeGreaterThan(2);
+    await page.evaluate(() => window.conversationHarness.growLatest("键盘翻阅后收到的新内容。".repeat(20)));
+    await waitForPaint(page);
+    await expect(scroll).toHaveAttribute("data-following-latest", "false");
+  });
+}

@@ -57,6 +57,7 @@ function makeTool(index: number): ToolRun {
 }
 
 function Harness() {
+  const [mode, setMode] = useState<WorkspaceViewModel["mode"]>("collaboration");
   const [messages, setMessages] = useState(() => Array.from({ length: 39 }, (_, index) => makeMessage(index)));
   const streamCommitWaiters = useRef<Array<() => void>>([]);
   const [assistantItems, setAssistantItems] = useState<WorkspaceViewModel["assistant"]["items"]>(() =>
@@ -71,6 +72,7 @@ function Harness() {
 
   useEffect(() => {
     (window as typeof window & { conversationHarness?: object }).conversationHarness = {
+      setMode,
       setCharacterCount: (count: number) => setMessages(Array.from({ length: count }, (_, index) => makeMessage(index))),
       growLatest: (suffix: string) => setMessages((current) => current.map((message, index) =>
         index === current.length - 1 ? { ...message, text: message.text + suffix } : message)),
@@ -99,7 +101,7 @@ function Harness() {
   const assistantMessages = assistantItems.filter((item) => item.kind === "message").map((item) => item.message);
   const toolRuns = assistantItems.filter((item) => item.kind === "tool").map((item) => item.run);
   const workspace = {
-    mode: "collaboration",
+    mode,
     character: timeline,
     assistant: {
       conversationId: "desktop-simulation",
