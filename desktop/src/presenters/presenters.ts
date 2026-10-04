@@ -16,7 +16,6 @@ import type {
 import type {
   ActiveTask,
   Message,
-  PairRecord,
   QueueItem,
   ToolRun,
   VoiceState,
@@ -177,14 +176,61 @@ function presentQueueItems(
   });
 }
 
+/** 会话展示身份视图：会话 character_identity 优先；旧会话缺字段或绑定卡已删除时按会话 pair_id 回退内置搭档。 */
+export interface ConversationCharacterIdentityView {
+  name: string;
+  avatarRef: string | null;
+  avatarVersion: string | null;
+  /** 绑定卡已不可用；name 已回退为内置搭档名，头像引用为空。 */
+  missing: boolean;
+  source: "builtin" | "card";
+}
+
+/**
+ * 取指定会话的角色展示身份，按该会话而非全局当前搭档解析；会话不存在时为 null。
+ *
+ * character_identity 是后端统一解析的结果，旧会话没有这个字段，绑定卡已删除时后端给出
+ * missing=true 与空名字。两种情况都按会话的 pair_id 从搭档目录回退内置搭档名，调用方
+ * 用 missing 决定是否降级头像与提示。
+ */
+export function selectConversationCharacterIdentity(
+  state: Pick<DesktopRenderState, "conversationsById" | "pairs" | "pair">,
+  conversationId: string | null,
+): ConversationCharacterIdentityView | null {
+  if (!conversationId) return null;
+  const conversation = state.conversationsById[conversationId];
+  if (!conversation) return null;
+  const identity = conversation.character_identity ?? null;
+  const builtin =
+    state.pairs.find(
+      (option) => option.source === "builtin" && option.pair_id === conversation.pair_id,
+    ) ?? state.pair;
+  const fallbackName = builtin?.character.name ?? "";
+  if (!identity) {
+    return {
+      name: fallbackName,
+      avatarRef: null,
+      avatarVersion: null,
+      missing: false,
+      source: "builtin",
+    };
+  }
+  return {
+    name: identity.name || fallbackName,
+    avatarRef: identity.avatar_ref,
+    avatarVersion: identity.avatar_version,
+    missing: identity.missing,
+    source: identity.source,
+  };
+}
+
 /** 委派卡：指定会话中角色发起的委派（origin=character_delegation 且 delegation_id 非空），
-    取最新一条 user 消息，状态来自消息状态。 */
+    取最新一条 user 消息，状态来自消息状态；来源名由调用方按会话身份解析后传入。 */
 function presentDelegation(
-  pair: PairRecord | null,
+  fromName: string,
   messages: readonly Message[],
   activeTask: ActiveTask | null,
 ): DelegationCardView | null {
-  if (!pair) return null;
   let delegationMessage: Message | undefined;
   for (const message of messages) {
     if (
@@ -208,24 +254,30 @@ function presentDelegation(
           : "completed";
   return {
     delegationId: delegationMessage.delegation_id ?? "",
-    fromName: pair.character.name,
+    fromName,
     summary: delegationMessage.text,
     status,
   };
 }
 
 /** 语音迷你播放条：tts 播放、合成或失败时显示。后端 tts 状态不带说话方，显示为角色；
-    摘要没有数据时为空串。 */
+    说话方名字按活动会话的身份取；摘要没有数据时为空串。 */
 function presentVoiceMiniPlayer(
-  state: Pick<DesktopRenderState, "pair" | "voice">,
+  state: Pick<
+    DesktopRenderState,
+    "pair" | "pairs" | "conversationsById" | "activeConversationId" | "voice"
+  >,
 ): VoiceMiniPlayerView | null {
-  const pair = state.pair;
-  if (!pair || state.voice.tts === "idle") return null;
+  if (!state.pair || state.voice.tts === "idle") return null;
+  const speakerName =
+    selectConversationCharacterIdentity(state, state.activeConversationId)?.name ||
+    state.pair.character.name ||
+    "";
   if (state.voice.tts === "failed") {
     return {
       status: "failed",
       speaker: "character",
-      speakerName: pair.character.name,
+      speakerName,
       summary: "",
       queuedCount: state.voice.speech_queue_len,
       errorText: state.voice.error ?? undefined,
@@ -234,7 +286,7 @@ function presentVoiceMiniPlayer(
   return {
     status: state.voice.tts === "synthesizing" ? "synthesizing" : "playing",
     speaker: "character",
-    speakerName: pair.character.name,
+    speakerName,
     summary: "",
     queuedCount: state.voice.speech_queue_len,
   };
@@ -328,6 +380,11 @@ function presentSettings(
   const activePairId = currentConv?.pair_id || state.pair?.pair_id;
   const activePair =
     state.pairs.find((p) => p.pair_id === activePairId) ?? state.pair;
+  // 角色侧音色名按本窗口活动会话的身份取；助手侧仍用基础搭档。
+  const activeCharacterName =
+    selectConversationCharacterIdentity(state, state.activeConversationId)?.name ??
+    activePair?.character.name ??
+    "";
 
   // 音色以 config.get 为准；尚未拉取配置时显示快照里搭档的 voice_id。
   const hasVoiceConfig = config?.voice !== undefined;
@@ -340,7 +397,7 @@ function presentSettings(
   const characterVoiceName =
     (typeof voiceConfig.character_voice_name === "string"
       ? voiceConfig.character_voice_name
-      : "") || activePair?.character.name || "";
+      : "") || activeCharacterName;
   const assistantVoiceId =
     configuredAssistantVoiceId || (!hasVoiceConfig ? activePair?.assistant.voice_id ?? "" : "");
   const assistantVoiceName =
@@ -542,6 +599,9 @@ function createWorkspacePresenter(): (state: DesktopRenderState) => WorkspaceVie
       state.toolIdsByConversation[conversationId] ?? NO_IDS,
       state.toolRunsById,
     );
+    // 委派来源名按本工作区会话的身份取，不读全局当前搭档。
+    const characterName =
+      selectConversationCharacterIdentity(state, conversationId)?.name ?? "";
     return workspace(
       selectWindowMode(state),
       character(
@@ -550,7 +610,7 @@ function createWorkspacePresenter(): (state: DesktopRenderState) => WorkspaceVie
         timelineQueue(state.queueItemsByConversation[conversationId]),
       ),
       assistant(conversationId, assistantSpace, tools, state.busy, state.activeTask),
-      delegation(state.pair, messages, state.activeTask),
+      delegation(characterName, messages, state.activeTask),
     );
   };
 }
@@ -733,7 +793,10 @@ export function createAppShellPresenter(): (state: DesktopRenderState) => AppShe
     ["queueItemsByConversation", "activeTasksByConversation", "activeConversationId"],
     presentQueueItems,
   );
-  const voiceMiniPlayer = memoByFields(["pair", "voice"], presentVoiceMiniPlayer);
+  const voiceMiniPlayer = memoByFields(
+    ["pair", "pairs", "conversationsById", "activeConversationId", "voice"],
+    presentVoiceMiniPlayer,
+  );
   const accountGate = memoByFields(["currentAccount", "accounts", "status"], presentAccountGate);
   const settings = memoByFields(SETTINGS_FIELDS, presentSettings);
   let previous: AppShellViewModel | null = null;

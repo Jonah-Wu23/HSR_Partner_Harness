@@ -7,6 +7,8 @@ import { ReasoningRibbon } from "./ReasoningRibbon";
 interface MessageListProps {
   timeline: ConversationTimelineViewModel;
   pair: PairRecord;
+  /** 角色展示名：会话 character_identity 优先，旧会话回退内置搭档。 */
+  characterName: string;
   emptyText: string;
 }
 
@@ -26,8 +28,8 @@ const BUBBLE_CLASS: Record<MessageSource, string> = {
   tool: "msg-bubble msg-system",
 };
 
-function sourceLabel(message: Message, pair: PairRecord): string | null {
-  if (message.source === "character") return pair.character.name;
+function sourceLabel(message: Message, pair: PairRecord, characterName: string): string | null {
+  if (message.source === "character") return characterName;
   if (message.source === "assistant") return pair.assistant.name;
   if (message.source === "user") return "你";
   return null;
@@ -36,13 +38,15 @@ function sourceLabel(message: Message, pair: PairRecord): string | null {
 export function MessageBubble({
   message,
   pair,
+  characterName,
   itemState,
 }: {
   message: Message;
   pair: PairRecord;
+  characterName: string;
   itemState: ConversationItemState;
 }) {
-  const label = sourceLabel(message, pair);
+  const label = sourceLabel(message, pair, characterName);
   const reasoning =
     typeof message.payload?.reasoning === "string" ? message.payload.reasoning : null;
   const reasoningStreaming = message.payload?.reasoning_streaming === true;
@@ -150,7 +154,12 @@ export function renderJumpToLatest(jump: () => void) {
 }
 
 /** 消息流：气泡分色、思考折叠、流式光标与动态高度虚拟窗口。 */
-export const MessageList = memo(function MessageList({ timeline, pair, emptyText }: MessageListProps) {
+export const MessageList = memo(function MessageList({
+  timeline,
+  pair,
+  characterName,
+  emptyText,
+}: MessageListProps) {
   const items = useMemo<MessageListItem[]>(
     () => [...timeline.messages, ...timeline.queueItems],
     [timeline.messages, timeline.queueItems],
@@ -158,11 +167,11 @@ export const MessageList = memo(function MessageList({ timeline, pair, emptyText
   const renderItem = useCallback(
     (item: MessageListItem, itemState: ConversationItemState) =>
       "message_id" in item ? (
-        <MessageBubble message={item} pair={pair} itemState={itemState} />
+        <MessageBubble message={item} pair={pair} characterName={characterName} itemState={itemState} />
       ) : (
         <QueuedBubble item={item} />
       ),
-    [pair],
+    [pair, characterName],
   );
   const emptyContent = useMemo(
     () => (

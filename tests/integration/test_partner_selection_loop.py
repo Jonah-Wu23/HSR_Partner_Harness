@@ -654,3 +654,118 @@ async def test_draft_card_with_existing_binding_is_rejected(tmp_path: Path) -> N
         assert _catalog_item(after, draft.card_id) is None
     finally:
         await loop.stop()
+
+
+@pytest.mark.asyncio
+async def test_legacy_archived_card_restores_into_catalog(tmp_path: Path) -> None:
+    """v13 归档卡升级后恢复：补上绑定即进目录，可据此新建会话。"""
+    database = tmp_path / "data" / "pair_harness.db"
+    database.parent.mkdir(parents=True, exist_ok=True)
+    connection = create_legacy_database(database, 13)
+    _insert_legacy_project(connection)
+    connection.execute(
+        "INSERT INTO app_state(key, value) VALUES ('character_cards.archived', ?)",
+        (json.dumps(["card-archived"]),),
+    )
+    card = CharacterCard(name="归档角色", description="归档设定", first_mes="归档开场白")
+    _insert_legacy_card(
+        connection, "card-archived", state="saved", card_json=dump_card_v3(card)
+    )
+    _insert_legacy_conversation(connection, "c-archived", card_id="card-archived")
+    connection.commit()
+    connection.close()
+
+    loop = SidecarLoop(tmp_path)
+    await loop.start()
+    try:
+        listing = await loop.request("pair.list")
+        # 归档状态仍然把卡挡在目录外，但绑定已经补上。
+        assert _catalog_item(listing, "card-archived") is None
+        snapshot = await loop.request("app.bootstrap")
+        conversations = {
+            item["conversation_id"]: item for item in _project_conversations(snapshot, "p")
+        }
+        assert conversations["c-archived"]["binding_id"] == "card:card-archived"
+
+        loop.clear_events()
+        await loop.request("card.unarchive", card_id="card-archived")
+        restored = await loop.request("pair.list")
+        option = _catalog_item(restored, "card-archived")
+        assert option is not None
+        assert option["binding_id"] == "card:card-archived"
+        assert option["pair_id"] == DEFAULT_PAIR_ID
+        assert option["character"]["name"] == "归档角色"
+        assert loop.payloads("pair.updated") == [
+            {"catalog_version": restored["catalog_version"]}
+        ]
+
+        created = await loop.request("conversation.create", binding_id=option["binding_id"])
+        conversation = created["current_conversation"]
+        assert conversation["character_card_id"] == "card-archived"
+        assert conversation["character_identity"]["name"] == "归档角色"
+        assert [
+            message["text"]
+            for message in created["messages"]
+            if message["source"] == "character"
+        ] == ["归档开场白"]
+    finally:
+        await loop.stop()
+
+
+@pytest.mark.asyncio
+async def test_card_entity_changes_reach_running_conversations(tmp_path: Path) -> None:
+    """改名、换头像、删除都让已有聊天收到新身份的 conversation.changed。"""
+    loop = SidecarLoop(tmp_path)
+    await loop.start()
+    try:
+        imported = await loop.request("card.import_json", path=str(CARD_JSON))
+        card_id = imported["card_id"]
+        listing = await loop.request("pair.list")
+        binding_id = _catalog_item(listing, card_id)["binding_id"]
+        created = await loop.request("conversation.create", binding_id=binding_id)
+        conversation_id = created["current_conversation_id"]
+
+        renamed_name = "白厄（改名后）"
+        loop.clear_events()
+        await loop.request(
+            "card.update",
+            card_id=card_id,
+            card={"name": renamed_name, "first_mes": "改名后的开场白。"},
+        )
+        changed = loop.payloads("conversation.changed")
+        assert [item["conversation"]["conversation_id"] for item in changed] == [
+            conversation_id
+        ]
+        identity = changed[0]["conversation"]["character_identity"]
+        assert (identity["name"], identity["missing"]) == (renamed_name, False)
+
+        loop.clear_events()
+        await loop.request("card.set_avatar", card_id=card_id, path=str(CARD_PNG))
+        changed = loop.payloads("conversation.changed")
+        assert [item["conversation"]["conversation_id"] for item in changed] == [
+            conversation_id
+        ]
+        assert changed[0]["conversation"]["character_identity"]["avatar_ref"]
+
+        # 归档卡删除不进目录事件，但已有聊天照常拿到 missing 身份。
+        await loop.request("card.archive", card_id=card_id)
+        loop.clear_events()
+        await loop.request("card.delete", card_id=card_id, confirm=True)
+        assert loop.payloads("pair.updated") == []
+        changed = loop.payloads("conversation.changed")
+        assert [item["conversation"]["conversation_id"] for item in changed] == [
+            conversation_id
+        ]
+        assert changed[0]["conversation"]["character_identity"]["missing"] is True
+        assert changed[0]["conversation"]["character_card_id"] == card_id
+
+        opened = await loop.request("conversation.open", conversation_id=conversation_id)
+        assert opened["conversation"]["character_identity"] == {
+            "name": "",
+            "avatar_ref": None,
+            "avatar_version": None,
+            "missing": True,
+            "source": "card",
+        }
+    finally:
+        await loop.stop()

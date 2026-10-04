@@ -43,7 +43,7 @@ class DatabaseVersionError(RuntimeError):
 # 数据库结构版本。新库由 schema.sql 一次建全并直接标记为该版本；已有库只按
 # MIGRATIONS 从 user_version 逐级升级，每一级是从上一版本到该版本的完整步骤
 # （建表、加列、回填），不依赖 schema.sql。每次结构变更 +1 并补对应迁移。
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # 索引 i 对应“从版本 i 升到 i+1”的迁移步骤（每级一条或多条 SQL）。
 MIGRATIONS: tuple[tuple[str, ...], ...] = (
@@ -379,6 +379,28 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         "WHERE b.base_pair_id = conversations.pair_id "
         "AND b.character_card_id IS conversations.character_card_id)",
     ),
+    # 版本 15：补齐 v14 漏掉的归档卡绑定。v14 只为未归档的可用卡建默认绑定，
+    # 归档卡恢复后没有绑定，永远进不了搭档目录。这里为全部缺少默认绑定的
+    # saved/imported 卡补建绑定，归档卡一并建上（是否展示仍由归档状态决定）；
+    # 随后按 (character_card_id, pair_id) 重算可匹配会话的 binding_id，
+    # 归档卡这次有了绑定，此前匹配不到的旧会话一并补上。已有绑定保持原样。
+    (
+        "INSERT OR IGNORE INTO partner_bindings("
+        "binding_id, character_card_id, base_pair_id, enabled, created_at, updated_at) "
+        "SELECT 'card:' || c.card_id, c.card_id, 'phainon_ancient_machine', 1, "
+        "strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now'), "
+        "strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now') "
+        "FROM character_cards AS c "
+        "WHERE c.state IN ('saved', 'imported')",
+        "UPDATE conversations SET binding_id = ("
+        "SELECT b.binding_id FROM partner_bindings AS b "
+        "WHERE b.base_pair_id = conversations.pair_id "
+        "AND b.character_card_id IS conversations.character_card_id) "
+        "WHERE EXISTS ("
+        "SELECT 1 FROM partner_bindings AS b "
+        "WHERE b.base_pair_id = conversations.pair_id "
+        "AND b.character_card_id IS conversations.character_card_id)",
+    ),
 )
 
 
@@ -697,6 +719,27 @@ class SQLiteStore(StateStore):
         if row is None:
             return None
         return self.get_conversation(row["conversation_id"])
+
+    def list_conversations_for_character_card(
+        self, character_card_id: str, *, account_id: str | None = None
+    ) -> list[Conversation]:
+        """列出引用该角色卡的全部会话，含已归档会话。
+
+        角色卡改名、换头像或删除后，这些会话的展示身份要逐个重发；归档会话
+        仍可在项目会话列表里打开，因此不过滤 archived。``account_id`` 给定时
+        按账号过滤，事件不跨账号外泄。
+        """
+        where = ["character_card_id = ?"]
+        params: list[Any] = [character_card_id]
+        if account_id is not None:
+            where.append("account_id = ?")
+            params.append(account_id)
+        rows = self.connection.execute(
+            f"SELECT conversation_id FROM conversations "
+            f"WHERE {' AND '.join(where)} ORDER BY julianday(updated_at) DESC",
+            tuple(params),
+        ).fetchall()
+        return [self.get_conversation(row["conversation_id"]) for row in rows]
 
     def save_message(self, message: Message) -> None:
         with self.connection:

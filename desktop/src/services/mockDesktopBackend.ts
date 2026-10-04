@@ -534,6 +534,19 @@ export class MockDesktopBackend implements DesktopBackend {
     if (catalogChanged) this.emit("pair.updated", { catalog_version: this.catalogVersion });
   }
 
+  /** 角色卡改名、换头像或删除后，逐条推送受影响会话的完整记录（含重新解析的 character_identity）；
+      卡已删除时身份带 missing=true，与真实后端的 conversation.changed 同形。 */
+  private emitCardConversationsChanged(cardId: string): void {
+    for (const projectRecord of this.scenario.snapshot.projects) {
+      for (const conversationRecord of projectRecord.conversations) {
+        if (conversationRecord.character_card_id !== cardId) continue;
+        this.emit("conversation.changed", {
+          conversation: this.resolveConversation(conversationRecord),
+        });
+      }
+    }
+  }
+
   /** 与 Sidecar 的 _require_writable_card 一致：内置角色只读。 */
   private requireWritableCard(cardId: string): void {
     if (cardId.startsWith(BUILTIN_PREFIX)) {
@@ -672,6 +685,7 @@ export class MockDesktopBackend implements DesktopBackend {
     this.patchCard(cardId, { name, updated_at: now });
     // 草稿改名不影响目录；已保存/已导入卡改名会改变目录项名字。
     this.emitCardChanged(cardId, this.cardIsInCatalog(this.requireCard(cardId)));
+    this.emitCardConversationsChanged(cardId);
     return { card_id: cardId, updated_at: now };
   }
 
@@ -751,6 +765,8 @@ export class MockDesktopBackend implements DesktopBackend {
     this.cardReferenceAudios.delete(cardId);
     this.voiceProfiles.delete(cardId);
     this.emitCardChanged(cardId, wasInCatalog);
+    // 卡已删除：受影响会话的身份重解析为 missing，逐条广播（已归档卡同样推送）。
+    this.emitCardConversationsChanged(cardId);
     return { card_id: cardId, deleted: true };
   }
 
@@ -932,6 +948,7 @@ export class MockDesktopBackend implements DesktopBackend {
     // 头像变更推进 updated_at，目录项的头像版本随之变化，客户端头像缓存据此失效。
     this.patchCard(cardId, { has_avatar: true, updated_at: new Date().toISOString() });
     this.emitCardChanged(cardId, this.cardIsInCatalog(this.requireCard(cardId)));
+    this.emitCardConversationsChanged(cardId);
     return { card_id: cardId, asset_id: `avatar-${cardId}`, mime_type: mimeType };
   }
 
@@ -942,6 +959,7 @@ export class MockDesktopBackend implements DesktopBackend {
     this.cardAvatars.delete(cardId);
     this.patchCard(cardId, { has_avatar: false, updated_at: new Date().toISOString() });
     this.emitCardChanged(cardId, this.cardIsInCatalog(this.requireCard(cardId)));
+    this.emitCardConversationsChanged(cardId);
     return { card_id: cardId, removed: true };
   }
 
@@ -1319,16 +1337,21 @@ export class MockDesktopBackend implements DesktopBackend {
     return { conversation_id: conversationId, mode };
   }
 
-  /** 结果顶层带 reused。带 binding_id 时有对应活跃会话才复用；省略绑定表示内置搭档。 */
+  /** 结果顶层带 reused。带 binding_id 时有对应活跃会话才复用；省略绑定表示内置搭档。
+      显式 project_id 决定会话归属，不随后端全局当前项目漂移；项目不存在时如实报错。 */
   private createConversation(
     params: Record<string, unknown>,
   ): DesktopSnapshot & { reused: boolean } {
-    const projectId = String(params.project_id ?? this.scenario.snapshot.current_project_id);
+    const requestedProjectId =
+      typeof params.project_id === "string" && params.project_id ? params.project_id : null;
+    // 显式 project_id 决定会话归属；省略时才回退到后端全局当前项目。
+    const projectId = requestedProjectId ?? this.scenario.snapshot.current_project_id;
     const projectIndex = this.scenario.snapshot.projects.findIndex(
       (item) => item.project_id === projectId,
     );
-    if (projectIndex < 0)
-      return { ...this.snapshotResult<DesktopSnapshot>(), reused: false };
+    if (projectIndex < 0) {
+      throw new DesktopRequestError("project_not_found", `项目不存在：${projectId}`);
+    }
     const selectedProject = this.scenario.snapshot.projects[projectIndex];
     const bindingId = typeof params.binding_id === "string" && params.binding_id ? params.binding_id : null;
     // 省略绑定表示内置搭档：沿用当前搭档的内置目录项，不继承任何全局 active 角色卡。

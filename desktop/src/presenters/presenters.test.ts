@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import type { DesktopEvent } from "../contracts/protocol";
+import type { ConversationRecord, DesktopEvent, DesktopSnapshot, Message } from "../contracts/protocol";
 import { createMockScenario } from "../mocks/scenarios";
-import { presentAppShell } from "./presenters";
+import { presentAppShell, selectConversationCharacterIdentity } from "./presenters";
 import { desktopStore } from "../stores/desktopStore";
 
 /** 以指定场景水合 store，返回当前 ViewModel。 */
@@ -639,5 +639,165 @@ describe("AppShell 视图模型投影", () => {
       "tool-b",
       "assistant:conv-1:task-1:2",
     ]);
+  });
+});
+
+describe("会话角色身份选择器与展示位", () => {
+  /** 绑定角色卡的会话；identityOverrides 用于构造已删除卡（missing）等边界。 */
+  function cardConversation(
+    conversationId: string,
+    cardId: string,
+    name: string,
+    identityOverrides: Partial<NonNullable<ConversationRecord["character_identity"]>> = {},
+  ): ConversationRecord {
+    return {
+      conversation_id: conversationId,
+      project_id: "project-1",
+      pair_id: "phainon_ancient_machine",
+      title: `${name}的聊天`,
+      last_mode: "collaboration",
+      archived: false,
+      created_at: "2026-08-11T00:00:00+00:00",
+      updated_at: "2026-08-11T00:00:00+00:00",
+      character_card_id: cardId,
+      binding_id: `card-bind-${cardId}`,
+      character_identity: {
+        name,
+        avatar_ref: `card-avatar:${cardId}`,
+        avatar_version: "v1",
+        missing: false,
+        source: "card",
+        ...identityOverrides,
+      },
+    };
+  }
+
+  function snapshotWith(
+    conversations: ConversationRecord[],
+    messages: Message[] = [],
+  ): DesktopSnapshot {
+    const base = createMockScenario("single-project").snapshot;
+    const project = base.projects[0];
+    return {
+      ...base,
+      projects: [{ ...project, conversations }],
+      messages,
+      current_conversation_id: conversations[0]?.conversation_id ?? "",
+      current_conversation: conversations[0] ?? base.current_conversation,
+    };
+  }
+
+  function delegationMessage(conversationId: string, text: string): Message {
+    return {
+      message_id: `delegation-${conversationId}`,
+      conversation_id: conversationId,
+      pair_id: "phainon_ancient_machine",
+      engine_turn_id: null,
+      source: "user",
+      kind: "user.text",
+      text,
+      payload: {},
+      tts_eligible: false,
+      created_at: "2026-08-11T00:00:00+00:00",
+      target: "assistant",
+      origin: "character_delegation",
+      delegation_id: `task-${conversationId}`,
+      status: "done",
+      timeline_order: 1,
+    };
+  }
+
+  it("选择器按会话取身份，两张卡各自解析，不读全局当前搭档", () => {
+    desktopStore
+      .getState()
+      .hydrate(
+        snapshotWith([
+          cardConversation("conv-a", "card-a", "卡芙卡"),
+          cardConversation("conv-b", "card-b", "银狼"),
+        ]),
+      );
+    const state = desktopStore.getState();
+
+    expect(selectConversationCharacterIdentity(state, "conv-a")).toEqual({
+      name: "卡芙卡",
+      avatarRef: "card-avatar:card-a",
+      avatarVersion: "v1",
+      missing: false,
+      source: "card",
+    });
+    expect(selectConversationCharacterIdentity(state, "conv-b")?.name).toBe("银狼");
+    // 全局搭档是基础搭档（白厄），不参与卡会话的身份解析。
+    expect(state.pair?.character.name).toBe("白厄");
+    expect(selectConversationCharacterIdentity(state, "conv-不存在")).toBeNull();
+    expect(selectConversationCharacterIdentity(state, null)).toBeNull();
+  });
+
+  it("旧会话缺 character_identity 时回退内置搭档；绑定卡已删除时回退内置名并标记 missing", () => {
+    const legacy = createMockScenario("single-project").snapshot.projects[0].conversations[0];
+    const deletedCard = cardConversation("conv-deleted", "card-deleted", "", {
+      name: "",
+      avatar_ref: null,
+      avatar_version: null,
+      missing: true,
+    });
+    desktopStore.getState().hydrate(snapshotWith([legacy, deletedCard]));
+    const state = desktopStore.getState();
+
+    expect(selectConversationCharacterIdentity(state, legacy.conversation_id)).toEqual({
+      name: "白厄",
+      avatarRef: null,
+      avatarVersion: null,
+      missing: false,
+      source: "builtin",
+    });
+    expect(selectConversationCharacterIdentity(state, "conv-deleted")).toMatchObject({
+      name: "白厄",
+      avatarRef: null,
+      missing: true,
+      source: "card",
+    });
+  });
+
+  it("两个卡会话切换后委派来源按各自会话身份显示，无串扰", () => {
+    desktopStore.getState().hydrate(
+      snapshotWith(
+        [cardConversation("conv-a", "card-a", "卡芙卡"), cardConversation("conv-b", "card-b", "银狼")],
+        [
+          delegationMessage("conv-a", "读取项目结构"),
+          delegationMessage("conv-b", "整理测试报告"),
+        ],
+      ),
+    );
+    expect(presentAppShell(desktopStore.getState()).workspace?.delegation).toMatchObject({
+      fromName: "卡芙卡",
+      summary: "读取项目结构",
+    });
+
+    desktopStore.getState().openConversationTab("conv-b");
+    expect(presentAppShell(desktopStore.getState()).workspace?.delegation).toMatchObject({
+      fromName: "银狼",
+      summary: "整理测试报告",
+    });
+  });
+
+  it("语音迷你播放条与设置页角色音色名按活动会话身份显示卡名", () => {
+    desktopStore
+      .getState()
+      .hydrate(snapshotWith([cardConversation("conv-a", "card-a", "卡芙卡")]));
+    desktopStore.getState().applyEvents([
+      {
+        kind: "event",
+        event: "voice.state_changed",
+        sequence: 1,
+        payload: { voice: { tts: "playing", speech_queue_len: 2 } },
+      },
+    ]);
+    const vm = presentAppShell(desktopStore.getState());
+    expect(vm.voiceMiniPlayer).toMatchObject({
+      status: "playing",
+      speaker: "character",
+      speakerName: "卡芙卡",
+    });
+    expect(vm.settings.voice.characterVoiceName).toBe("卡芙卡");
   });
 });

@@ -182,10 +182,7 @@ class CharacterCardRepository:
     def unarchive_card(self, card_id: str) -> CardRecord:
         """把卡移出归档集合；卡不存在抛 KeyError，未归档的卡原样返回。"""
         record = self.get_card(card_id)
-        archived = self._archived_ids()
-        if card_id in archived:
-            archived.discard(card_id)
-            self._store_archived(archived)
+        if self._remove_from_archive(card_id):
             self.connection.commit()
         return record
 
@@ -290,6 +287,19 @@ class CharacterCardRepository:
             "DELETE FROM character_cards WHERE card_id = ?", (card_id,)
         )
         return cursor.rowcount
+
+    def _remove_from_archive(self, card_id: str) -> bool:
+        """把卡移出归档集合，不提交事务；返回是否真的发生变化。
+
+        供需要把「取消归档 + 绑定补齐 + 目录版本递增」放进同一事务的调用方
+        使用；公开方法 ``unarchive_card`` 在此之上自行提交。
+        """
+        archived = self._archived_ids()
+        if card_id not in archived:
+            return False
+        archived.discard(card_id)
+        self._store_archived(archived)
+        return True
 
     @staticmethod
     def _has_avatar(card: CharacterCard) -> bool:

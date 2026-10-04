@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type {
   CardGetResult,
   CardListResult,
+  ConversationRecord,
   DesktopCommand,
   DesktopCommandMethod,
+  ProjectRecord,
   RemoteListDevicesResult,
 } from "../contracts/protocol";
 import {
@@ -159,6 +161,255 @@ describe("MockDesktopBackend 项目与聊天流程", () => {
         text: "取消未生效：服务端没有取消任务 mock-task-1",
       }),
     );
+  });
+});
+
+describe("MockDesktopBackend 会话归属", () => {
+  it("conversation.create 按显式 project_id 归属该项目，项目不存在时如实报错", async () => {
+    const backend = new MockDesktopBackend("many-projects");
+    const result = await backend.request<{
+      current_conversation_id: string;
+      projects: ProjectRecord[];
+    }>(
+      cmd("conversation.create", {
+        project_id: "project-2",
+        title: "窗口 B 的新聊天",
+        binding_id: "builtin:firefly_sam",
+      }),
+    );
+
+    const created = result.projects
+      .find((item) => item.project_id === "project-2")
+      ?.conversations.find((item) => item.conversation_id === result.current_conversation_id);
+    expect(created).toMatchObject({
+      project_id: "project-2",
+      title: "窗口 B 的新聊天",
+      binding_id: "builtin:firefly_sam",
+    });
+    expect(
+      result.projects
+        .find((item) => item.project_id === "project-1")
+        ?.conversations.some((item) => item.conversation_id === result.current_conversation_id),
+    ).toBe(false);
+
+    await expect(
+      backend.request(cmd("conversation.create", { project_id: "project-999" })),
+    ).rejects.toMatchObject({ code: "project_not_found" });
+  });
+
+  it("startConversationWithCard 在窗口标签所属项目创建会话，不用后端全局停留的项目", async () => {
+    const backend = new MockDesktopBackend("many-projects");
+    const controller = createActionController(backend);
+    await controller.loadBootstrap();
+
+    await controller.actions.openConversationTab("project-2-conversation-1");
+    // conversation.open 只改本窗口标签，Sidecar 全局仍停在项目 1。
+    expect(desktopStore.getState().activeConversationId).toBe("project-2-conversation-1");
+    expect(desktopStore.getState().currentProjectId).toBe("project-1");
+
+    await controller.actions.startConversationWithCard("card-saved-002");
+
+    const state = desktopStore.getState();
+    const created = state.conversationsById[state.currentConversationId];
+    expect(created).toMatchObject({
+      project_id: "project-2",
+      binding_id: "card-bind-card-saved-002",
+      character_card_id: "card-saved-002",
+    });
+    expect(
+      state.projectsById["project-2"].conversations.some(
+        (item) => item.conversation_id === created.conversation_id,
+      ),
+    ).toBe(true);
+    expect(
+      state.projectsById["project-1"].conversations.some(
+        (item) => item.conversation_id === created.conversation_id,
+      ),
+    ).toBe(false);
+  });
+
+  it("reuse_active 复用窗口项目里的活跃卡会话，不回落到后端全局项目", async () => {
+    const backend = new MockDesktopBackend("many-projects");
+    const controller = createActionController(backend);
+    await controller.loadBootstrap();
+
+    await controller.actions.openConversationTab("project-2-conversation-1");
+    await controller.actions.startConversationWithCard("card-saved-002");
+    const cardConversationId = desktopStore.getState().currentConversationId;
+
+    // 后端全局切回项目 1，本窗口标签仍停在项目 2 的卡会话。
+    await controller.actions.selectProject("project-1");
+    expect(desktopStore.getState().currentProjectId).toBe("project-1");
+    expect(desktopStore.getState().activeConversationId).toBe(cardConversationId);
+
+    const before = desktopStore.getState().projectsById["project-2"].conversations.length;
+    await controller.actions.startConversationWithCard("card-saved-002", { reuseActive: true });
+
+    const state = desktopStore.getState();
+    expect(state.currentConversationId).toBe(cardConversationId);
+    expect(state.projectsById["project-2"].conversations).toHaveLength(before);
+    expect(
+      state.projectsById["project-1"].conversations.some(
+        (item) => item.binding_id === "card-bind-card-saved-002",
+      ),
+    ).toBe(false);
+  });
+});
+
+/** 建一条绑定 card-saved-002 的会话，返回会话 id 与其初始身份。 */
+async function createCardConversation(backend: MockDesktopBackend) {
+  const created = await backend.request<{
+    current_conversation_id: string;
+    projects: ProjectRecord[];
+  }>(
+    cmd("conversation.create", {
+      project_id: "project-1",
+      binding_id: "card-bind-card-saved-002",
+    }),
+  );
+  const conversation = created.projects
+    .flatMap((item) => item.conversations)
+    .find((item) => item.conversation_id === created.current_conversation_id);
+  return { conversationId: created.current_conversation_id, identity: conversation?.character_identity };
+}
+
+/** 订阅卡变更期间的 conversation.changed，返回收集数组与退订函数。 */
+function collectConversationChanges(backend: MockDesktopBackend): {
+  changes: ConversationRecord[];
+  unsubscribe: () => void;
+} {
+  const changes: ConversationRecord[] = [];
+  const unsubscribe = backend.subscribe((event) => {
+    if (event.event === "conversation.changed") {
+      changes.push(event.payload.conversation as ConversationRecord);
+    }
+  });
+  return { changes, unsubscribe };
+}
+
+describe("MockDesktopBackend 角色卡变更的会话身份广播", () => {
+  it("card.update 改名后广播带新名字与新头像版本的 conversation.changed", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    const { conversationId, identity } = await createCardConversation(backend);
+    const { changes, unsubscribe } = collectConversationChanges(backend);
+    try {
+      const detail = await backend.request<CardGetResult>(
+        cmd("card.get", { card_id: "card-saved-002" }),
+      );
+      await backend.request(
+        cmd("card.update", {
+          card_id: "card-saved-002",
+          card: {
+            ...detail.card,
+            data: { ...(detail.card.data as Record<string, unknown>), name: "卡芙卡·改" },
+          },
+        }),
+      );
+
+      expect(changes).toHaveLength(1);
+      expect(changes[0].conversation_id).toBe(conversationId);
+      expect(changes[0].character_identity).toMatchObject({
+        name: "卡芙卡·改",
+        source: "card",
+        missing: false,
+      });
+      // 改名推进 updated_at，头像版本随之变化，客户端头像缓存据此失效。
+      expect(changes[0].character_identity?.avatar_version).not.toBe(identity?.avatar_version);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("card.remove_avatar 与 card.set_avatar 后广播头像状态同步的会话身份", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    const { conversationId } = await createCardConversation(backend);
+    const { changes, unsubscribe } = collectConversationChanges(backend);
+    try {
+      await backend.request(cmd("card.remove_avatar", { card_id: "card-saved-002" }));
+      expect(changes.at(-1)?.conversation_id).toBe(conversationId);
+      expect(changes.at(-1)?.character_identity).toMatchObject({
+        avatar_ref: null,
+        avatar_version: null,
+      });
+
+      await backend.request(
+        cmd("card.set_avatar", { card_id: "card-saved-002", path: "C:/Cards/avatar.png" }),
+      );
+      expect(changes).toHaveLength(2);
+      expect(changes.at(-1)?.character_identity).toMatchObject({
+        avatar_ref: "card-avatar:card-saved-002",
+        source: "card",
+      });
+      expect(changes.at(-1)?.character_identity?.avatar_version).not.toBeNull();
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("卡改名的事件流落到 store：会话索引与项目内会话列表一起换成新身份", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    const controller = createActionController(backend);
+    const unsubscribe = backend.subscribe((event) => desktopStore.getState().applyEvents([event]));
+    try {
+      await controller.loadBootstrap();
+      await controller.actions.createConversation(
+        "project-1",
+        undefined,
+        "card-bind-card-saved-002",
+      );
+      const conversationId = desktopStore.getState().currentConversationId;
+      const beforeVersion =
+        desktopStore.getState().conversationsById[conversationId].character_identity?.avatar_version;
+      expect(beforeVersion).not.toBeNull();
+
+      const detail = await backend.request<CardGetResult>(
+        cmd("card.get", { card_id: "card-saved-002" }),
+      );
+      await controller.actions.updateCard(
+        "card-saved-002",
+        {
+          ...detail.card,
+          data: { ...(detail.card.data as Record<string, unknown>), name: "卡芙卡·改" },
+        },
+      );
+
+      const state = desktopStore.getState();
+      expect(state.conversationsById[conversationId].character_identity).toMatchObject({
+        name: "卡芙卡·改",
+      });
+      const inProject = state.projectsById["project-1"].conversations.find(
+        (item) => item.conversation_id === conversationId,
+      );
+      expect(inProject?.character_identity).toMatchObject({ name: "卡芙卡·改" });
+      // 头像版本推进：以它为缓存键的头像组件重新加载。
+      expect(
+        state.conversationsById[conversationId].character_identity?.avatar_version,
+      ).not.toBe(beforeVersion);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("已归档的角色卡删除后广播身份 missing，不再返回卡名与头像", async () => {
+    const backend = new MockDesktopBackend("single-project");
+    const { conversationId } = await createCardConversation(backend);
+    await backend.request(cmd("card.archive", { card_id: "card-saved-002" }));
+    const { changes, unsubscribe } = collectConversationChanges(backend);
+    try {
+      await backend.request(cmd("card.delete", { card_id: "card-saved-002", confirm: true }));
+
+      expect(changes).toHaveLength(1);
+      expect(changes[0].conversation_id).toBe(conversationId);
+      expect(changes[0].character_identity).toEqual({
+        name: "",
+        avatar_ref: null,
+        avatar_version: null,
+        missing: true,
+        source: "card",
+      });
+    } finally {
+      unsubscribe();
+    }
   });
 });
 

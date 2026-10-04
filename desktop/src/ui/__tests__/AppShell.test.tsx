@@ -2,9 +2,9 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AppShell } from "../AppShell";
-import type { HostEvent } from "../../contracts/protocol";
+import type { ConversationRecord, DesktopSnapshot, HostEvent, QueueItem } from "../../contracts/protocol";
 import type { MockScenarioName } from "../../mocks/scenarios";
-import { MOCK_STREAM_ID, createMockScenario } from "../../mocks/scenarios";
+import { MOCK_STREAM_ID, createMockScenario, message } from "../../mocks/scenarios";
 import { presentAppShell } from "../../presenters/presenters";
 import { createActionController, type ActionController } from "../../services/actions";
 import { MOCK_ACCOUNT_PASSWORD, MockDesktopBackend } from "../../services/mockDesktopBackend";
@@ -563,5 +563,95 @@ describe("AppShell 排队条、多搭档与音色直达", () => {
       expect(screen.queryByRole("dialog", { name: "设置" })).toBeInTheDocument(),
     );
     await waitFor(() => expect(screen.getByTestId("character-voice-select")).toHaveValue(""));
+  });
+});
+
+describe("AppShell 卡会话身份展示", () => {
+  /** 两个绑定不同角色卡的会话，各自带一条角色消息；角色身份取自会话记录。 */
+  function twoCardSnapshot(): DesktopSnapshot {
+    const base = createMockScenario("single-project").snapshot;
+    const project = base.projects[0];
+    const template = project.conversations[0];
+    const cardConversation = (
+      conversationId: string,
+      title: string,
+      cardId: string,
+      name: string,
+    ): ConversationRecord => ({
+      ...template,
+      conversation_id: conversationId,
+      title,
+      character_card_id: cardId,
+      binding_id: `card-bind-${cardId}`,
+      character_identity: {
+        name,
+        avatar_ref: null,
+        avatar_version: null,
+        missing: false,
+        source: "card",
+      },
+    });
+    const convA = cardConversation("conv-card-a", "和卡芙卡的聊天", "card-saved-002", "卡芙卡");
+    const convB = cardConversation("conv-card-b", "和砂金的聊天", "card-imported-004", "砂金");
+    return {
+      ...base,
+      projects: [{ ...project, conversations: [convA, convB] }],
+      messages: [
+        message("msg-card-a", "conv-card-a", "character", "character.speech", "卡芙卡的消息"),
+        message("msg-card-b", "conv-card-b", "character", "character.speech", "砂金的消息"),
+      ],
+      current_conversation_id: "conv-card-a",
+      current_conversation: convA,
+    };
+  }
+
+  it("工作区标题与消息署名显示卡名，切到另一张卡互不串扰", async () => {
+    const { refresh } = await renderScenario("single-project");
+    desktopStore.getState().hydrate(twoCardSnapshot());
+    refresh();
+
+    const cardPane = screen.getByLabelText("角色区");
+    expect(cardPane).toHaveTextContent("卡芙卡");
+    expect(screen.getByText("卡芙卡的消息")).toBeInTheDocument();
+    // 顶栏同为卡芙卡，不残留基础搭档的内置角色名。
+    expect(screen.getByRole("banner")).not.toHaveTextContent("白厄");
+
+    desktopStore.getState().openConversationTab("conv-card-b");
+    refresh();
+
+    const silverPane = screen.getByLabelText("角色区");
+    expect(silverPane).toHaveTextContent("砂金");
+    expect(silverPane).not.toHaveTextContent("卡芙卡");
+    expect(screen.getByText("砂金的消息")).toBeInTheDocument();
+    expect(screen.getByRole("banner")).toHaveTextContent("砂金");
+  });
+
+  it("排队条按活动会话的身份显示卡名", async () => {
+    const rendered = await renderScenario("single-project");
+    desktopStore.getState().hydrate(twoCardSnapshot());
+    rendered.refresh();
+
+    const queueItem: QueueItem = {
+      queue_item_id: "q-card",
+      account_id: "",
+      conversation_id: "conv-card-a",
+      target: "character",
+      text: "等你忙完再说这个",
+      intent: "followup",
+      position: 0,
+      status: "queued",
+      error: null,
+      created_at: "2026-08-12T00:00:00+00:00",
+      source_message_id: null,
+      origin: "desktop",
+      remote_device_key: null,
+      remote_device_name: null,
+    };
+    rendered.backend.emitQueueChanged("conv-card-a", [queueItem]);
+    rendered.refresh();
+
+    const strip = screen.getByRole("region", { name: "排队 1 条" });
+    expect(strip).toHaveTextContent("给卡芙卡");
+    expect(strip).not.toHaveTextContent("白厄");
   });
 });

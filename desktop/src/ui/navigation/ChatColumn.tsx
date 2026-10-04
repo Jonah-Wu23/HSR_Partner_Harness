@@ -448,8 +448,10 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
           items={pairMenuItems}
           onSelect={(bindingId) => {
             // 分隔项不可点击；其余项都是配对目录里的绑定 id。
+            // 项目归属由动作层按本窗口上下文解析（活动标签会话所属项目），
+            // 不用全局指针——多窗口下它可能指向另一个窗口停留的项目。
             if (bindingId === PAIR_MENU_SEPARATOR_ID) return;
-            void actions.createConversation(navigation.currentProjectId, undefined, bindingId);
+            void actions.createConversation(undefined, undefined, bindingId);
           }}
         />
       </div>

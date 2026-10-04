@@ -58,6 +58,7 @@ import {
   selectComposerTarget,
   selectWindowConversationId,
   selectWindowProjectId,
+  type DesktopState,
 } from "../stores/desktopStore";
 
 export interface ActionController {
@@ -76,6 +77,25 @@ function findCardBinding(pairs: readonly PairOption[], cardId: string): PairOpti
   return (
     pairs.find((item) => item.source === "card" && item.character_card_id === cardId) ?? null
   );
+}
+
+/**
+ * 新建会话时的本窗口项目上下文。
+ *
+ * 权威来源是活动标签那条会话记录：conversation.open 只装载本窗口的标签，不改 Sidecar 的
+ * 全局导航，所以 state.currentProjectId 可能是另一个窗口停留的项目，不能用来给新会话定归属。
+ * 角色库与创作页只替换主内容区（ui/AppShell.tsx），窗口的聊天标签保持不动，仍是该窗口的
+ * 项目上下文。窗口没有打开的会话（或记录尚未装载）时退回导航态的 currentProjectId；
+ * 两者都没有时返回 null，调用方如实报错，不发请求。
+ */
+function selectWindowConversationProjectId(
+  state: Pick<DesktopState, "activeConversationId" | "conversationsById" | "currentProjectId">,
+): string | null {
+  const conversationId = state.activeConversationId;
+  const conversationProjectId = conversationId
+    ? state.conversationsById[conversationId]?.project_id ?? null
+    : null;
+  return conversationProjectId ?? (state.currentProjectId || null);
 }
 
 /**
@@ -241,8 +261,12 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       // bindingId 来自配对目录（内置项 builtin:<pair_id>，卡项为持久化绑定 id）；
       // 省略绑定表示内置搭档，服务端不再继承全局 active 角色卡。
       // 「使用该角色」类入口带 reuse_active 复用同项目同绑定的活跃会话；「新建聊天」按钮总是新建。
+      // projectId 缺省时按本窗口上下文解析（活动标签会话所属项目），
+      // 不用 Sidecar 全局当前项目——多窗口下它可能是另一个窗口停留的项目。
+      const effectiveProjectId =
+        projectId ?? selectWindowConversationProjectId(desktopStore.getState());
       await requestSnapshot<ConversationCreateResult>("conversation.create", {
-        project_id: projectId,
+        ...(effectiveProjectId ? { project_id: effectiveProjectId } : {}),
         title,
         ...(bindingId ? { binding_id: bindingId } : {}),
         ...(opts?.reuseActive ? { reuse_active: true } : {}),
@@ -250,6 +274,15 @@ export function createActionController(backend: DesktopBackend): ActionControlle
       focusBackendConversation();
     },
     async startConversationWithCard(cardId, opts) {
+      // 项目上下文在第一个 await 之前捕获：目录重取期间其他窗口可能改写 Sidecar 的全局
+      // 当前项目，新会话不能跟着漂移。
+      const projectId = selectWindowConversationProjectId(desktopStore.getState());
+      if (!projectId) {
+        rejectAction(
+          `card-project-missing:${cardId}`,
+          "当前窗口没有项目上下文，无法开始对话",
+        );
+      }
       let binding = findCardBinding(desktopStore.getState().pairs, cardId);
       if (!binding) {
         // 刚发布或导入的卡可能尚未反映到本地目录，按权威目录再确认一次。
@@ -262,7 +295,7 @@ export function createActionController(backend: DesktopBackend): ActionControlle
           "该角色卡当前不在可选搭档目录中（草稿、已归档或绑定尚未生效），无法开始对话",
         );
       }
-      await this.createConversation(undefined, undefined, binding.binding_id, {
+      await this.createConversation(projectId, undefined, binding.binding_id, {
         reuseActive: opts?.reuseActive ?? true,
       });
       // 角色库的「使用中」标记仍跟随最近一次点选；会话身份由 binding_id 决定，不依赖该标记。

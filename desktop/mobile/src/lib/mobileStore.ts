@@ -3,6 +3,7 @@ import type {
   ActiveTask,
   ApprovalMode,
   ApprovalResolvedPayload,
+  CharacterIdentity,
   ConversationMode,
   ConversationOpenResult,
   ConversationRecord,
@@ -1647,6 +1648,19 @@ async function queryMicPermission(): Promise<MobileVoiceAvailability["micPermiss
     console.warn("浏览器不支持查询麦克风授权状态", error);
     return "unknown";
   }
+}
+
+/**
+ * 指定会话的角色展示身份：会话记录里的 character_identity 优先（卡会话显示卡名），
+ * 旧会话没有该字段时返回 null，由调用方回退当前聊天的搭档角色名。
+ * 按传入的会话 id 取，不读全局活动会话，多聊天之间不串扰。
+ */
+export function selectConversationCharacterIdentity(
+  state: Pick<MobileState, "conversationsById">,
+  conversationId: string | null,
+): CharacterIdentity | null {
+  if (!conversationId) return null;
+  return state.conversationsById[conversationId]?.character_identity ?? null;
 }
 
 /** 全应用共用的 WS 客户端；通知引擎直接订阅它的事件流。 */

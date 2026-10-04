@@ -1,13 +1,48 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import type { DesktopCommand } from "../contracts/protocol";
-import { createMockScenario } from "../mocks/scenarios";
+import type { DesktopCommand, PairOption } from "../contracts/protocol";
+import { MOCK_PAIR_OPTIONS, createMockScenario } from "../mocks/scenarios";
 import { desktopStore } from "../stores/desktopStore";
 import { fakeBackend, unexpectedCommand } from "../test/fakeBackend";
 import { createActionController } from "./actions";
 
 function paramsOf(commands: readonly DesktopCommand[], method: string): Record<string, unknown>[] {
   return commands.filter((command) => command.method === method).map((command) => command.params);
+}
+
+/** 配对目录里的卡绑定项（与 mock 后端的绑定 id 同形）。 */
+const CARD_BINDING_ID = "card-bind-card-saved-002";
+const CARD_OPTION: PairOption = {
+  binding_id: CARD_BINDING_ID,
+  pair_id: MOCK_PAIR_OPTIONS[0].pair_id,
+  character_card_id: "card-saved-002",
+  source: "card",
+  character: {
+    id: "card-saved-002",
+    name: "卡芙卡",
+    voice_id: "",
+    avatar_ref: null,
+    avatar_version: null,
+    missing: false,
+  },
+  assistant: { ...MOCK_PAIR_OPTIONS[0].assistant },
+  theme: { ...MOCK_PAIR_OPTIONS[0].theme },
+};
+
+/** 多项目窗口：本窗口标签停在项目 2 的聊天，Sidecar 全局当前项目仍是项目 1。 */
+function hydrateWindowOnOtherProject(includeCard: boolean) {
+  const snapshot = createMockScenario("many-projects").snapshot;
+  desktopStore
+    .getState()
+    .hydrate({ ...snapshot, pairs: includeCard ? [...snapshot.pairs, CARD_OPTION] : snapshot.pairs });
+  desktopStore.getState().openConversationTab("project-2-conversation-1");
+}
+
+/** 角色卡入口附带的下游请求（select_active 与角色库刷新），与用例无关，按协议形状回应。 */
+function respondToCardSideEffects(command: DesktopCommand): unknown {
+  if (command.method === "card.select_active") return { card_id: "card-saved-002" };
+  if (command.method === "card.list") return { cards: [] };
+  return unexpectedCommand(command);
 }
 
 beforeEach(() => {
@@ -55,6 +90,86 @@ describe("startConversationWithCard 的目录查找", () => {
     expect(paramsOf(commands, "pair.list")).toEqual([{}]);
     expect(paramsOf(commands, "conversation.create")).toEqual([]);
     expect(paramsOf(commands, "card.select_active")).toEqual([]);
+  });
+});
+
+describe("startConversationWithCard 的项目上下文", () => {
+  it("新会话建在本窗口标签所属项目，即便后端全局停在别的项目", async () => {
+    const { backend, commands } = fakeBackend((command) =>
+      command.method === "conversation.create"
+        ? createMockScenario("many-projects").snapshot
+        : respondToCardSideEffects(command),
+    );
+    const { actions } = createActionController(backend);
+    hydrateWindowOnOtherProject(true);
+    expect(desktopStore.getState().activeConversationId).toBe("project-2-conversation-1");
+    expect(desktopStore.getState().currentProjectId).toBe("project-1");
+
+    await actions.startConversationWithCard("card-saved-002");
+
+    expect(paramsOf(commands, "conversation.create")).toEqual([
+      { project_id: "project-2", binding_id: CARD_BINDING_ID, reuse_active: true },
+    ]);
+  });
+
+  it("目录重取期间后端全局项目漂移，仍用捕获时的窗口项目", async () => {
+    const { backend, commands } = fakeBackend((command) => {
+      if (command.method === "pair.list") {
+        // 目录请求在途时另一个窗口把后端全局切到项目 3。
+        desktopStore.setState({ currentProjectId: "project-3" });
+        return { pairs: [...MOCK_PAIR_OPTIONS, CARD_OPTION], catalog_version: 99 };
+      }
+      if (command.method === "conversation.create")
+        return createMockScenario("many-projects").snapshot;
+      return respondToCardSideEffects(command);
+    });
+    const { actions } = createActionController(backend);
+    hydrateWindowOnOtherProject(false);
+
+    await actions.startConversationWithCard("card-saved-002");
+
+    expect(paramsOf(commands, "pair.list")).toHaveLength(1);
+    expect(paramsOf(commands, "conversation.create")).toEqual([
+      { project_id: "project-2", binding_id: CARD_BINDING_ID, reuse_active: true },
+    ]);
+  });
+
+  it("窗口没有打开任何聊天时退回导航态当前项目", async () => {
+    const { backend, commands } = fakeBackend((command) =>
+      command.method === "conversation.create"
+        ? createMockScenario("many-projects").snapshot
+        : respondToCardSideEffects(command),
+    );
+    const { actions } = createActionController(backend);
+    hydrateWindowOnOtherProject(true);
+    // 关掉本窗口所有标签：没有会话可归属，回退到导航态的当前项目。
+    desktopStore.getState().closeConversationTab("project-2-conversation-1");
+    desktopStore.getState().closeConversationTab("project-1-conversation-1");
+    expect(desktopStore.getState().activeConversationId).toBeNull();
+
+    await actions.startConversationWithCard("card-saved-002");
+
+    expect(paramsOf(commands, "conversation.create")).toEqual([
+      { project_id: "project-1", binding_id: CARD_BINDING_ID, reuse_active: true },
+    ]);
+  });
+
+  it("本窗口没有会话也没有当前项目时如实报错，不发任何请求", async () => {
+    const { backend, commands } = fakeBackend((command) => unexpectedCommand(command));
+    const { actions } = createActionController(backend);
+    // 清掉本窗口的会话与导航态项目：既没有会话所属项目，也没有可回退的当前项目。
+    desktopStore.setState({
+      currentProjectId: "",
+      activeConversationId: null,
+      activeProjectId: null,
+      openConversationIds: [],
+    });
+
+    await expect(actions.startConversationWithCard("card-saved-002")).rejects.toThrow(
+      "当前窗口没有项目上下文，无法开始对话",
+    );
+
+    expect(commands).toEqual([]);
   });
 });
 

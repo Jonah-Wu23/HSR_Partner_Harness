@@ -62,7 +62,7 @@ describe("MessageList", () => {
   it("流式消息标记为 streaming，定稿后标记为 done", () => {
     const streaming = makeMessage({ streaming: true, text: "我已经看见了" });
     const { container, rerender } = render(
-      <MessageList timeline={makeTimeline([streaming])} pair={pair} emptyText="空" />,
+      <MessageList timeline={makeTimeline([streaming])} pair={pair} characterName="白厄" emptyText="空" />,
     );
     expect(messageRow(container, "character")).toHaveAttribute("data-message-status", "streaming");
 
@@ -70,6 +70,7 @@ describe("MessageList", () => {
       <MessageList
         timeline={makeTimeline([{ ...streaming, streaming: false }])}
         pair={pair}
+        characterName="白厄"
         emptyText="空"
       />,
     );
@@ -89,11 +90,31 @@ describe("MessageList", () => {
       makeMessage({ message_id: "m-user", source: "user", kind: "user.text", text: "用户说", timeline_order: 3 }),
     ];
     const { container } = render(
-      <MessageList timeline={makeTimeline(messages)} pair={pair} emptyText="空" />,
+      <MessageList timeline={makeTimeline(messages)} pair={pair} characterName="白厄" emptyText="空" />,
     );
     expect(within(messageRow(container, "character")).getByText("白厄")).toBeInTheDocument();
     expect(within(messageRow(container, "assistant")).getByText("神秘的古代机械")).toBeInTheDocument();
     expect(within(messageRow(container, "user")).getByText("你")).toBeInTheDocument();
+  });
+
+  it("角色署名用会话身份名，卡会话不显示基础搭档的内置角色名", () => {
+    const message = makeMessage({ source: "character", text: "本姑娘出马当然拍到啦" });
+    const { container } = render(
+      <MessageList timeline={makeTimeline([message])} pair={pair} characterName="三月七" emptyText="空" />,
+    );
+    const row = messageRow(container, "character");
+    expect(within(row).getByText("三月七")).toBeInTheDocument();
+    expect(within(row).queryByText("白厄")).not.toBeInTheDocument();
+  });
+
+  it("流式占位消息同样署名会话身份名", () => {
+    const streaming = makeMessage({ source: "character", text: "", streaming: true });
+    const { container } = render(
+      <MessageList timeline={makeTimeline([streaming])} pair={pair} characterName="卡芙卡" emptyText="空" />,
+    );
+    const row = messageRow(container, "character");
+    expect(within(row).getByText("卡芙卡")).toBeInTheDocument();
+    expect(within(row).getByText("...")).toBeInTheDocument();
   });
 
   it.each([
@@ -104,7 +125,7 @@ describe("MessageList", () => {
   ] as const)("%s 消息在气泡内显示状态说明「%s」", (status, payload, text) => {
     const message = makeMessage({ source: "user", kind: "user.text", text: "跑测试", status, payload });
     const { container } = render(
-      <MessageList timeline={makeTimeline([message])} pair={pair} emptyText="空" />,
+      <MessageList timeline={makeTimeline([message])} pair={pair} characterName="白厄" emptyText="空" />,
     );
     const row = messageRow(container, "user");
     expect(row).toHaveAttribute("data-message-status", status);
@@ -113,7 +134,7 @@ describe("MessageList", () => {
 
   it("失败消息的错误以 alert 呈现", () => {
     const message = makeMessage({ status: "failed", payload: { error: "模型请求超时" } });
-    render(<MessageList timeline={makeTimeline([message])} pair={pair} emptyText="空" />);
+    render(<MessageList timeline={makeTimeline([message])} pair={pair} characterName="白厄" emptyText="空" />);
     expect(screen.getByRole("alert")).toHaveTextContent("模型请求超时");
   });
 
@@ -121,7 +142,7 @@ describe("MessageList", () => {
     const message = makeMessage({
       payload: { reasoning: "先分析项目结构，再决定修改范围。" },
     });
-    render(<MessageList timeline={makeTimeline([message])} pair={pair} emptyText="空" />);
+    render(<MessageList timeline={makeTimeline([message])} pair={pair} characterName="白厄" emptyText="空" />);
     expect(screen.queryByText(/先分析项目结构/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "思考完成 · 展开" }));
     expect(screen.getByText(/先分析项目结构/)).toBeInTheDocument();
@@ -139,7 +160,7 @@ describe("MessageList", () => {
       payload: { reasoning, reasoning_streaming: true },
     });
     const { container } = render(
-      <MessageList timeline={makeTimeline([message])} pair={pair} emptyText="空" />,
+      <MessageList timeline={makeTimeline([message])} pair={pair} characterName="白厄" emptyText="空" />,
     );
     expect(container.querySelectorAll(`[data-message-source="${source}"]`)).toHaveLength(1);
     const row = messageRow(container, source);
@@ -148,7 +169,7 @@ describe("MessageList", () => {
   });
 
   it("空时间线展示占位文案", () => {
-    render(<MessageList timeline={makeTimeline([])} pair={pair} emptyText="和角色聊聊…" />);
+    render(<MessageList timeline={makeTimeline([])} pair={pair} characterName="白厄" emptyText="和角色聊聊…" />);
     expect(screen.getByText("和角色聊聊…")).toBeInTheDocument();
   });
 
@@ -157,7 +178,7 @@ describe("MessageList", () => {
       makeMessage({ message_id: `m-${index}`, text: `消息 ${index}`, timeline_order: index }),
     );
     const { container } = render(
-      <MessageList timeline={makeTimeline(messages)} pair={pair} emptyText="空" />,
+      <MessageList timeline={makeTimeline(messages)} pair={pair} characterName="白厄" emptyText="空" />,
     );
     const mounted = container.querySelectorAll("[data-message-source]").length;
     expect(mounted).toBeGreaterThan(0);
@@ -186,6 +207,7 @@ describe("MessageList", () => {
           },
         ])}
         pair={pair}
+        characterName="白厄"
         emptyText="空"
       />,
     );

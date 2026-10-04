@@ -24,15 +24,19 @@ export interface HarnessActions {
   archiveProject(projectId: string): Promise<void>;
   /** 创建聊天。bindingId 是配对目录里的绑定项（内置项为 `builtin:<pair_id>`，卡项为绑定 id），
       省略表示使用内置搭档。opts.reuseActive=true 时下发 reuse_active，「使用该角色」类入口
-      复用同项目同绑定的活跃会话；「新建聊天」按钮不传，总是新建。 */
+      复用同项目同绑定的活跃会话；「新建聊天」按钮不传，总是新建。
+      projectId 省略时服务端回退到 Sidecar 的全局当前项目，多窗口下可能是别的窗口停留的项目；
+      需要按本窗口归属的调用方必须显式传值。 */
   createConversation(
     projectId?: string,
     title?: string,
     bindingId?: string,
     opts?: { reuseActive?: boolean },
   ): Promise<void>;
-  /** 「使用该角色」入口：从最新配对目录按 character_card_id 找到绑定项并按它创建会话；
-      目录中没有该卡的绑定项（草稿、已归档或尚未生效）时如实报错，不静默回退。
+  /** 「使用该角色」入口：从最新配对目录按 character_card_id 找到绑定项并按它创建会话。
+      项目归属取本窗口活动标签所属项目（没有打开会话时退回导航态的当前项目），不随后端
+      全局导航漂移；没有项目上下文或目录中没有该卡的绑定项（草稿、已归档或尚未生效）时
+      如实报错，不静默回退。
       会话创建成功后再把该卡标记为角色库「使用中」（card.select_active），该标记不参与身份解析。 */
   startConversationWithCard(cardId: string, opts?: { reuseActive?: boolean }): Promise<void>;
   /** 重取权威搭档目录（pair.list）写入 store；版本不新于本地已存版本时丢弃响应。 */

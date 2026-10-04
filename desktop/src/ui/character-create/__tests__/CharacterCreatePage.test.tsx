@@ -441,6 +441,7 @@ describe("CharacterCreatePage", () => {
 
     it("已发布的卡点击开始对话：按该卡的绑定项建会话、设为当前角色并回到聊天视图", async () => {
       const backend = new MockDesktopBackend();
+      desktopStore.setState({ currentProjectId: "project-1" });
       await renderCreatePage(backend, "card-saved-002");
 
       const [startChat] = await screen.findAllByTestId("btn-start-chat");
@@ -457,7 +458,7 @@ describe("CharacterCreatePage", () => {
         ["pair.list", {}],
         [
           "conversation.create",
-          { binding_id: "card-bind-card-saved-002", reuse_active: true },
+          { project_id: "project-1", binding_id: "card-bind-card-saved-002", reuse_active: true },
         ],
         ["card.select_active", { card_id: "card-saved-002" }],
         ["card.list", { include_archived: true }],

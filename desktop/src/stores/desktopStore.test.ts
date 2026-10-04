@@ -563,6 +563,70 @@ describe("desktopStore 事件投影", () => {
     );
   });
 
+  it("conversation.changed 带重解析的角色身份时，会话索引与项目内会话列表一起换新", () => {
+    const conversation = desktopStore.getState().conversationsById["conv-1"];
+    const cardIdentity = {
+      character_card_id: "card-saved-002",
+      binding_id: "card-bind-card-saved-002",
+      character_identity: {
+        name: "卡芙卡",
+        avatar_ref: "card-avatar:card-saved-002",
+        avatar_version: "v1",
+        missing: false,
+        source: "card" as const,
+      },
+    };
+    desktopStore.getState().applyEvents([
+      event("conversation.changed", { conversation: { ...conversation, ...cardIdentity } }, 1),
+    ]);
+    // 卡改名：同一会话记录换成新身份，头像版本推进使客户端头像缓存失效。
+    desktopStore.getState().applyEvents([
+      event(
+        "conversation.changed",
+        {
+          conversation: {
+            ...conversation,
+            ...cardIdentity,
+            character_identity: { ...cardIdentity.character_identity, name: "卡芙卡·改", avatar_version: "v2" },
+          },
+        },
+        2,
+      ),
+    ]);
+
+    const state = desktopStore.getState();
+    expect(state.conversationsById["conv-1"].character_identity).toMatchObject({
+      name: "卡芙卡·改",
+      avatar_version: "v2",
+    });
+    const inProject = state.projectsById["project-1"].conversations.find(
+      (item) => item.conversation_id === "conv-1",
+    );
+    expect(inProject?.character_identity).toMatchObject({
+      name: "卡芙卡·改",
+      avatar_version: "v2",
+    });
+    // 侧栏、会话行与顶栏都读这两处投影，改名后不得残留上一个身份。
+    expect(
+      presentAppShell(state).navigation?.projects[0].conversations[0].character_identity,
+    ).toMatchObject({ name: "卡芙卡·改", avatar_version: "v2" });
+  });
+
+  it("conversation.changed 归档会话：项目列表移除并关闭本窗口标签，索引保留归档记录", () => {
+    desktopStore.getState().openConversationTab("conv-1");
+    const conversation = desktopStore.getState().conversationsById["conv-1"];
+    desktopStore.getState().applyEvents([
+      event("conversation.changed", { conversation: { ...conversation, archived: true } }, 1),
+    ]);
+
+    const state = desktopStore.getState();
+    expect(state.projectsById["project-1"].conversations).toEqual([]);
+    expect(state.openConversationIds).not.toContain("conv-1");
+    expect(state.activeConversationId).toBeNull();
+    // 索引保留归档记录本身，后续按 id 读取仍能得到归档状态。
+    expect(state.conversationsById["conv-1"]).toMatchObject({ archived: true });
+  });
+
   it("审批按钮锁定到 approval.resolved 到达，终态移出待审批队列", () => {
     desktopStore.getState().applyEvents([
       event(

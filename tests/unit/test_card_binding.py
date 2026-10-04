@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -347,4 +348,224 @@ async def test_card_bound_to_three_assistants_creates_consistent_conversations(s
         assert created["current_conversation"]["character_identity"]["name"] == "三助手角色"
         assert created["pair"]["pair_id"] == pair_id
         assert created["pair"]["assistant"]["name"] == pairs[pair_id].assistant.name
+
+
+def _drop_binding_row(service, card_id: str) -> None:
+    """造出 v14 迁移留下的状态：卡有归档/可用状态但没有默认绑定。"""
+    service.store.connection.execute(
+        "DELETE FROM partner_bindings WHERE character_card_id = ?", (card_id,)
+    )
+    service.store.connection.commit()
+
+
+async def test_unarchive_repairs_missing_binding_in_one_transaction(service) -> None:
+    """归档卡缺绑定时，恢复在同一事务里补建绑定并推进一次目录版本。"""
+    card_id = await _publish_card(service, "旧库归档卡")
+    await call(service, "1", "card.archive", card_id=card_id)
+    _drop_binding_row(service, card_id)
+    before = service.binding_repository.catalog_version()
+    service.event_log.items.clear()
+
+    restored = await call(service, "2", "card.unarchive", card_id=card_id)
+    assert restored == {"card_id": card_id, "archived": False}
+    binding = service.binding_repository.find_binding(card_id, DEFAULT_PAIR_ID)
+    assert binding is not None
+    assert service.binding_repository.catalog_version() == before + 1
+    assert len(service.event_log.payloads("pair.updated")) == 1
+
+    # 恢复后的卡真实可用：目录里可选，按该绑定能建出会话。
+    catalog = await call(service, "3", "pair.list")
+    option = next(item for item in catalog["pairs"] if item["character_card_id"] == card_id)
+    assert option["binding_id"] == binding.binding_id
+    created = await call(service, "4", "conversation.create", binding_id=binding.binding_id)
+    assert created["current_conversation"]["character_card_id"] == card_id
+
+    # 重复恢复幂等：不建第二行绑定、不推进版本、不重复广播。
+    service.event_log.items.clear()
+    await call(service, "5", "card.unarchive", card_id=card_id)
+    rows = [
+        item
+        for item in service.binding_repository.list_bindings(include_disabled=True)
+        if item.character_card_id == card_id
+    ]
+    assert len(rows) == 1
+    assert service.binding_repository.catalog_version() == before + 1
+    assert service.event_log.items == []
+
+
+async def test_publish_rolls_back_when_binding_creation_fails(service) -> None:
+    """绑定创建失败：整笔回滚到 draft，无绑定、版本不变、零事件，重试后成功。"""
+    card_id = (await call(service, "0", "card.create_draft", name="注入角色"))["card_id"]
+    await call(
+        service,
+        "0b",
+        "card.update",
+        card_id=card_id,
+        card={"name": "注入角色", "first_mes": "你好"},
+    )
+    before = service.binding_repository.catalog_version()
+    service.event_log.items.clear()
+    service.store.connection.execute(
+        "CREATE TRIGGER fail_binding_insert BEFORE INSERT ON partner_bindings "
+        "BEGIN SELECT RAISE(ABORT, '绑定写入被拦截'); END"
+    )
+    service.store.connection.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="绑定写入被拦截"):
+        await call(service, "1", "card.publish", card_id=card_id)
+
+    assert service.card_repository.get_card(card_id).state == "draft"
+    assert service.binding_repository.find_binding(card_id, DEFAULT_PAIR_ID) is None
+    assert service.binding_repository.catalog_version() == before
+    assert service.event_log.items == []
+
+    service.store.connection.execute("DROP TRIGGER fail_binding_insert")
+    service.store.connection.commit()
+    published = await call(service, "2", "card.publish", card_id=card_id)
+    assert published == {"card_id": card_id, "state": "saved"}
+    assert service.binding_repository.find_binding(card_id, DEFAULT_PAIR_ID) is not None
+    assert service.binding_repository.catalog_version() == before + 1
+    assert len(service.event_log.payloads("card.updated")) == 1
+    assert len(service.event_log.payloads("pair.updated")) == 1
+
+
+async def test_publish_rolls_back_when_catalog_version_bump_fails(service) -> None:
+    """版本递增失败：状态跃迁与刚建的绑定一起回滚，重试后卡与绑定同时成立。"""
+    card_id = (await call(service, "0", "card.create_draft", name="注入角色"))["card_id"]
+    await call(
+        service,
+        "0b",
+        "card.update",
+        card_id=card_id,
+        card={"name": "注入角色", "first_mes": "你好"},
+    )
+    missing = service.store.connection.execute(
+        "SELECT count(*) FROM app_state WHERE key = 'partner_catalog.version'"
+    ).fetchone()[0]
+    assert missing == 0, "注入前提：目录版本行尚不存在，写入走 INSERT"
+    service.event_log.items.clear()
+    service.store.connection.execute(
+        "CREATE TRIGGER fail_catalog_version BEFORE INSERT ON app_state "
+        "WHEN NEW.key = 'partner_catalog.version' "
+        "BEGIN SELECT RAISE(ABORT, '目录版本写入被拦截'); END"
+    )
+    service.store.connection.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="目录版本写入被拦截"):
+        await call(service, "1", "card.publish", card_id=card_id)
+
+    assert service.card_repository.get_card(card_id).state == "draft"
+    assert service.binding_repository.find_binding(card_id, DEFAULT_PAIR_ID) is None
+    assert service.binding_repository.catalog_version() == 0
+    assert service.event_log.items == []
+
+    service.store.connection.execute("DROP TRIGGER fail_catalog_version")
+    service.store.connection.commit()
+    assert (await call(service, "2", "card.publish", card_id=card_id))["state"] == "saved"
+    assert service.binding_repository.find_binding(card_id, DEFAULT_PAIR_ID) is not None
+    assert service.binding_repository.catalog_version() == 1
+
+
+async def test_republish_repairs_missing_binding_and_stays_idempotent(service) -> None:
+    """重复发布：已有绑定原样返回；缺绑定则补建并推进一次版本后广播。"""
+    card_id = await _publish_card(service, "重复发布角色")
+    version = service.binding_repository.catalog_version()
+    service.event_log.items.clear()
+
+    again = await call(service, "1", "card.publish", card_id=card_id)
+    assert again == {"card_id": card_id, "state": "saved"}
+    assert service.binding_repository.catalog_version() == version
+    assert service.event_log.items == []
+
+    _drop_binding_row(service, card_id)
+    repaired = await call(service, "2", "card.publish", card_id=card_id)
+    assert repaired == {"card_id": card_id, "state": "saved"}
+    assert service.binding_repository.find_binding(card_id, DEFAULT_PAIR_ID) is not None
+    assert service.binding_repository.catalog_version() == version + 1
+    assert len(service.event_log.payloads("card.updated")) == 1
+    assert len(service.event_log.payloads("pair.updated")) == 1
+
+    service.event_log.items.clear()
+    await call(service, "3", "card.publish", card_id=card_id)
+    assert [
+        item
+        for item in service.binding_repository.list_bindings(include_disabled=True)
+        if item.character_card_id == card_id
+    ]
+    assert service.binding_repository.catalog_version() == version + 1
+    assert service.event_log.items == []
+
+
+def _changed_conversation_ids(service) -> list[str]:
+    return [
+        payload["conversation"]["conversation_id"]
+        for payload in service.event_log.payloads("conversation.changed")
+    ]
+
+
+async def test_card_entity_changes_broadcast_conversation_identity(service) -> None:
+    """改名、换头像、去头像与删除都让已有聊天拿到新身份，删除后 missing。"""
+    card_id = await _publish_card(service, "旧名字", first_mes="你好")
+    conversation = await _create_with_card(service, "1", card_id)
+    conversation_id = conversation.conversation_id
+
+    service.event_log.items.clear()
+    await call(
+        service,
+        "2",
+        "card.update",
+        card_id=card_id,
+        card={"name": "新名字", "first_mes": "你好"},
+    )
+    assert _changed_conversation_ids(service) == [conversation_id]
+    identity = service.event_log.payloads("conversation.changed")[0]["conversation"][
+        "character_identity"
+    ]
+    assert identity["name"] == "新名字"
+    assert identity["missing"] is False
+
+    service.event_log.items.clear()
+    await call(service, "3", "card.set_avatar", card_id=card_id, path=str(PNG_FIXTURE))
+    avatar_ref = service.event_log.payloads("conversation.changed")[0]["conversation"][
+        "character_identity"
+    ]["avatar_ref"]
+    assert avatar_ref
+
+    service.event_log.items.clear()
+    await call(service, "4", "card.remove_avatar", card_id=card_id)
+    assert (
+        service.event_log.payloads("conversation.changed")[0]["conversation"][
+            "character_identity"
+        ]["avatar_ref"]
+        is None
+    )
+
+    # 归档卡不在目录里（不发 pair.updated），但已有聊天照常拿到 missing 身份。
+    await call(service, "5", "card.archive", card_id=card_id)
+    service.event_log.items.clear()
+    await call(service, "6", "card.delete", card_id=card_id, confirm=True)
+    assert service.event_log.payloads("pair.updated") == []
+    assert _changed_conversation_ids(service) == [conversation_id]
+    deleted = service.event_log.payloads("conversation.changed")[0]["conversation"]
+    assert deleted["character_identity"]["missing"] is True
+    assert deleted["character_card_id"] == card_id
+
+
+async def test_identity_broadcast_reaches_archived_conversations(service) -> None:
+    """已归档会话仍会被改名或删除触发的 conversation.changed 覆盖到。"""
+    card_id = await _publish_card(service, "待删角色", first_mes="你好")
+    conversation = await _create_with_card(service, "1", card_id)
+    # 归档当前会话会把界面切到新建的内置会话，原会话留在归档列表里。
+    await call(service, "2", "conversation.archive", conversation_id=conversation.conversation_id)
+    service.event_log.items.clear()
+
+    await call(service, "3", "card.delete", card_id=card_id, confirm=True)
+    changed = [
+        payload
+        for payload in service.event_log.payloads("conversation.changed")
+        if payload["conversation"]["conversation_id"] == conversation.conversation_id
+    ]
+    assert len(changed) == 1
+    assert changed[0]["conversation"]["archived"] is True
+    assert changed[0]["conversation"]["character_identity"]["missing"] is True
 

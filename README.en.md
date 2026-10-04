@@ -120,7 +120,7 @@ Voice settings use your own DashScope account. Built-in pairs provide five clone
 
 ## Download
 
-The Windows x64 installer is published on [GitHub Releases](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases). The current release is [v0.4.2](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases/tag/v0.4.2). Download `HSR.Partner.Harness_0.4.2_x64-setup.exe`. First-time installation may trigger a SmartScreen warning.
+The Windows x64 installer and Android arm64 package are published on [GitHub Releases](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases). The current release is [v0.4.2](https://github.com/Jonah-Wu23/HSR_Partner_Harness/releases/tag/v0.4.2). Download `HSR.Partner.Harness_0.4.2_x64-setup.exe` for Windows or `app-arm64-debug.apk` for Android. First-time Windows installation may trigger a SmartScreen warning.
 
 The app includes a demo mode for the interface and interaction experience. Add model settings to run live models. Live coding uses the bundled DeepSeek-Reasonix runtime and reuses the endpoint you configured for dialogue.
 

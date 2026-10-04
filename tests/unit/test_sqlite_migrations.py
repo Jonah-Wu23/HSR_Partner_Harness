@@ -13,8 +13,10 @@ from pair_harness.core.contracts import (
     ToolRun,
     enum_value,
 )
+from pair_harness.character_cards.repository import CharacterCardRepository
 from pair_harness.partner_catalog import PartnerBindingRepository
 from pair_harness.storage.sqlite_store import (
+    MIGRATIONS,
     SCHEMA_VERSION,
     DatabaseVersionError,
     SQLiteStore,
@@ -383,8 +385,26 @@ def test_v0_4_1_messages_and_tools_are_renumbered_on_one_timeline(tmp_path: Path
         assert [m.timeline_order for m in store.load_conversation("other").messages] == [1]
 
 
-def test_v0_4_2_database_gains_bindings_and_backfills_binding_id(tmp_path: Path) -> None:
-    database = tmp_path / "v13.sqlite"
+def _apply_migration_level(connection: sqlite3.Connection, target: int) -> None:
+    """在旧库上手工执行到版本 target 的迁移，用于构造该版本的库内真实状态。"""
+    for statement in MIGRATIONS[target - 1]:
+        connection.execute(statement)
+    connection.execute(f"PRAGMA user_version = {target}")
+    connection.commit()
+
+
+def _bindings_by_id(connection: sqlite3.Connection) -> dict[str, tuple]:
+    # 旧库连接没有 row_factory，统一按下标取值。
+    return {
+        row[0]: (row[1], row[2])
+        for row in connection.execute(
+            "SELECT binding_id, character_card_id, base_pair_id FROM partner_bindings"
+        )
+    }
+
+
+def _legacy_card_library(database: Path) -> sqlite3.Connection:
+    """v13 库：一张归档卡、一张可用卡、一张草稿、一张已被删掉的卡各有会话。"""
     connection = create_legacy_database(database, 13)
     _insert_project(connection)
     connection.execute(
@@ -398,40 +418,105 @@ def test_v0_4_2_database_gains_bindings_and_backfills_binding_id(tmp_path: Path)
         ("card-archived", "saved"),
     ):
         _insert_character_card(connection, card_id, state=state)
-    _insert_conversation(connection, "c-builtin", pair_id="phainon_ancient_machine")
+    _insert_conversation(connection, "c-builtin", pair_id=PAIR_ID)
     _insert_conversation(connection, "c-legacy-pair", pair_id="pair_legacy")
     _insert_conversation(connection, "c-card", character_card_id="card-saved")
     _insert_conversation(connection, "c-archived", character_card_id="card-archived")
     _insert_conversation(connection, "c-draft", character_card_id="card-draft")
     _insert_conversation(connection, "c-missing", character_card_id="card-gone")
     connection.commit()
+    return connection
+
+
+def test_v0_4_2_database_gains_bindings_and_backfills_binding_id(tmp_path: Path) -> None:
+    """v13 直升 v15：可用卡与归档卡都补默认绑定，可匹配会话回填 binding_id。"""
+    database = tmp_path / "v13.sqlite"
+    connection = _legacy_card_library(database)
     connection.close()
 
     with SQLiteStore(database) as store:
         assert _user_version(store.connection) == SCHEMA_VERSION
-        bindings = {
-            row["binding_id"]: (row["character_card_id"], row["base_pair_id"])
-            for row in store.connection.execute(
-                "SELECT binding_id, character_card_id, base_pair_id FROM partner_bindings"
-            )
-        }
-        assert bindings == {
+        assert _bindings_by_id(store.connection) == {
             "builtin:firefly_sam": (None, "firefly_sam"),
             "builtin:march7_fourth_mirror": (None, "march7_fourth_mirror"),
-            "builtin:phainon_ancient_machine": (None, "phainon_ancient_machine"),
-            "card:card-saved": ("card-saved", "phainon_ancient_machine"),
-            "card:card-imported": ("card-imported", "phainon_ancient_machine"),
+            "builtin:phainon_ancient_machine": (None, PAIR_ID),
+            "card:card-saved": ("card-saved", PAIR_ID),
+            "card:card-imported": ("card-imported", PAIR_ID),
+            # v15 为归档卡补上绑定；是否进目录仍由归档状态决定。
+            "card:card-archived": ("card-archived", PAIR_ID),
         }
         assert (
             store.get_conversation("c-builtin").binding_id
             == "builtin:phainon_ancient_machine"
         )
         assert store.get_conversation("c-card").binding_id == "card:card-saved"
+        assert store.get_conversation("c-archived").binding_id == "card:card-archived"
         assert store.get_conversation("c-legacy-pair").binding_id is None
-        assert store.get_conversation("c-archived").binding_id is None
         assert store.get_conversation("c-draft").binding_id is None
         assert store.get_conversation("c-missing").binding_id is None
+        assert CharacterCardRepository(store).is_archived("card-archived")
         assert PartnerBindingRepository(store).catalog_version() == 0
+
+
+def test_v15_backfills_archived_cards_missed_by_v14(tmp_path: Path) -> None:
+    """v14 跳过归档卡：升到 v15 后归档卡补上绑定，其旧会话回填 binding_id。"""
+    database = tmp_path / "v14.sqlite"
+    connection = _legacy_card_library(database)
+    _apply_migration_level(connection, 14)
+
+    # v14 留下的现状：归档卡没有绑定，它的会话也回填不到 binding_id。
+    assert _bindings_by_id(connection) == {
+        "builtin:firefly_sam": (None, "firefly_sam"),
+        "builtin:march7_fourth_mirror": (None, "march7_fourth_mirror"),
+        "builtin:phainon_ancient_machine": (None, PAIR_ID),
+        "card:card-saved": ("card-saved", PAIR_ID),
+        "card:card-imported": ("card-imported", PAIR_ID),
+    }
+    assert (
+        connection.execute(
+            "SELECT binding_id FROM conversations WHERE conversation_id = 'c-archived'"
+        ).fetchone()[0]
+        is None
+    )
+    connection.close()
+
+    with SQLiteStore(database) as store:
+        assert _user_version(store.connection) == SCHEMA_VERSION
+        assert _bindings_by_id(store.connection)["card:card-archived"] == (
+            "card-archived",
+            PAIR_ID,
+        )
+        assert store.get_conversation("c-archived").binding_id == "card:card-archived"
+        assert store.get_conversation("c-card").binding_id == "card:card-saved"
+        assert store.get_conversation("c-draft").binding_id is None
+        assert store.get_conversation("c-missing").binding_id is None
+
+
+def test_v15_migration_is_idempotent(tmp_path: Path) -> None:
+    """v15 的补绑定与回填重复执行：不再建第二行绑定，也不改会话绑定。"""
+    database = tmp_path / "v13.sqlite"
+    connection = _legacy_card_library(database)
+    connection.close()
+
+    with SQLiteStore(database) as store:
+        bindings_before = _bindings_by_id(store.connection)
+        conversations_before = {
+            row["conversation_id"]: row["binding_id"]
+            for row in store.connection.execute(
+                "SELECT conversation_id, binding_id FROM conversations"
+            )
+        }
+        store.connection.execute("BEGIN")
+        for statement in MIGRATIONS[SCHEMA_VERSION - 1]:
+            store.connection.execute(statement)
+        store.connection.commit()
+        assert _bindings_by_id(store.connection) == bindings_before
+        assert {
+            row["conversation_id"]: row["binding_id"]
+            for row in store.connection.execute(
+                "SELECT conversation_id, binding_id FROM conversations"
+            )
+        } == conversations_before
 
 
 def test_failed_migration_level_rolls_back_and_retries_on_next_open(tmp_path: Path) -> None:

@@ -212,6 +212,7 @@ describe("CharacterLibraryPage", () => {
 
     it("使用已发布卡时按该卡绑定项建会话、更新使用中标记并回到聊天视图", async () => {
       const backend = new MockDesktopBackend();
+      desktopStore.setState({ currentProjectId: "project-1" });
       await renderLibrary(backend);
 
       // 砂金当前已归档；已发布且未归档的卡才进入可选搭档目录。
@@ -231,7 +232,7 @@ describe("CharacterLibraryPage", () => {
         ["pair.list", {}],
         [
           "conversation.create",
-          { binding_id: "card-bind-card-imported-004", reuse_active: true },
+          { project_id: "project-1", binding_id: "card-bind-card-imported-004", reuse_active: true },
         ],
         ["card.select_active", { card_id: "card-imported-004" }],
         ["card.list", { include_archived: true }],
@@ -240,6 +241,7 @@ describe("CharacterLibraryPage", () => {
 
     it("草稿卡不在搭档目录时如实报错，留在角色库且不发会话创建请求", async () => {
       const backend = new MockDesktopBackend();
+      desktopStore.setState({ currentProjectId: "project-1" });
       await renderLibrary(backend);
 
       fireEvent.click(screen.getByRole("button", { name: "使用新角色草稿" }));

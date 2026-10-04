@@ -15,6 +15,8 @@ import { CollapseIcon } from "../../assets/icons/icons";
 interface WorkspaceProps {
   workspace: WorkspaceViewModel;
   pair: PairRecord;
+  /** 本工作区会话的角色展示名：会话 character_identity 优先，旧会话回退内置搭档。 */
+  characterName: string;
   /** 工作台空状态的快捷任务：以「交给助手」发出预设任务。 */
   onQuickTask?: (text: string) => void;
   /** 工作台头部收起按钮：等同切回聊天模式。 */
@@ -36,6 +38,7 @@ const workbenchItemKey = (item: WorkbenchItem) =>
 interface CharacterPaneProps {
   timeline: ConversationTimelineViewModel;
   pair: PairRecord;
+  characterName: string;
   workbenchOpen: boolean;
   delegation: DelegationCardView | null;
   onCancelDelegation?: () => void;
@@ -45,6 +48,7 @@ interface CharacterPaneProps {
 const CharacterPane = memo(function CharacterPane({
   timeline,
   pair,
+  characterName,
   workbenchOpen,
   delegation,
   onCancelDelegation,
@@ -53,18 +57,23 @@ const CharacterPane = memo(function CharacterPane({
     <section className="pane pane-character" aria-label="角色区">
       <div className="pane-header">
         <span className="pair-dot pair-dot-character" />
-        {pair.character.name}
+        {characterName}
         <span className="pane-header-tag" aria-live="polite">
           {timeline.isStreaming ? "正在回复…" : "空闲"}
         </span>
       </div>
       {!workbenchOpen ? (
         <div className="capability-tag" role="note">
-          纯聊天 · {pair.character.name} 暂时看不到你的项目
+          纯聊天 · {characterName} 暂时看不到你的项目
           <span className="capability-tag-hint">切到协作模式即可让它读写项目</span>
         </div>
       ) : null}
-      <MessageList timeline={timeline} pair={pair} emptyText={`和 ${pair.character.name} 聊聊吧`} />
+      <MessageList
+        timeline={timeline}
+        pair={pair}
+        characterName={characterName}
+        emptyText={`和 ${characterName} 聊聊吧`}
+      />
       {delegation ? <DelegationCard delegation={delegation} onCancel={onCancelDelegation} /> : null}
     </section>
   );
@@ -73,6 +82,7 @@ const CharacterPane = memo(function CharacterPane({
 interface WorkbenchPaneProps {
   assistant: AssistantWorkbenchViewModel;
   pair: PairRecord;
+  characterName: string;
   open: boolean;
   onQuickTask?: (text: string) => void;
   onCloseWorkbench?: () => void;
@@ -82,6 +92,7 @@ interface WorkbenchPaneProps {
 const WorkbenchPane = memo(function WorkbenchPane({
   assistant,
   pair,
+  characterName,
   open,
   onQuickTask,
   onCloseWorkbench,
@@ -109,7 +120,12 @@ const WorkbenchPane = memo(function WorkbenchPane({
   const renderItem = useCallback(
     (item: WorkbenchItem, itemState: ConversationItemState) =>
       item.kind === "message" ? (
-        <MessageBubble message={item.message} pair={pair} itemState={itemState} />
+        <MessageBubble
+          message={item.message}
+          pair={pair}
+          characterName={characterName}
+          itemState={itemState}
+        />
       ) : (
         <ToolCard
           run={item.run}
@@ -117,7 +133,7 @@ const WorkbenchPane = memo(function WorkbenchPane({
           onExpandedChange={(expanded) => itemState.setExpanded(`tool:${item.run.tool_call_id}`, expanded)}
         />
       ),
-    [pair],
+    [pair, characterName],
   );
 
   return (
@@ -174,6 +190,7 @@ const WorkbenchPane = memo(function WorkbenchPane({
 export const Workspace = memo(function Workspace({
   workspace,
   pair,
+  characterName,
   onQuickTask,
   onCloseWorkbench,
   onCancelDelegation,
@@ -233,6 +250,7 @@ export const Workspace = memo(function Workspace({
       <CharacterPane
         timeline={workspace.character}
         pair={pair}
+        characterName={characterName}
         workbenchOpen={workbenchOpen}
         delegation={workspace.delegation}
         onCancelDelegation={onCancelDelegation}
@@ -259,6 +277,7 @@ export const Workspace = memo(function Workspace({
       <WorkbenchPane
         assistant={workspace.assistant}
         pair={pair}
+        characterName={characterName}
         open={workbenchOpen}
         onQuickTask={onQuickTask}
         onCloseWorkbench={onCloseWorkbench}

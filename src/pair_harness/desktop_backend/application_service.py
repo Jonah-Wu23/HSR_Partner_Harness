@@ -2986,6 +2986,37 @@ class DesktopApplicationService:
         self.store.connection.commit()
         return version
 
+    def _ensure_card_binding(self, card_id: str, state: str) -> bool:
+        """卡状态可用且缺默认绑定时补建绑定，不提交事务。
+
+        返回是否真的写入；草稿或已有绑定返回 False。调用方决定是否推进目录
+        版本与广播。
+        """
+        if state not in ELIGIBLE_CARD_STATES:
+            return False
+        if (
+            self.binding_repository.find_binding(card_id, self._CARD_BINDING_PAIR_ID)
+            is not None
+        ):
+            return False
+        self.binding_repository.create_binding(card_id, self._CARD_BINDING_PAIR_ID)
+        return True
+
+    def _emit_identity_changed(self, card_id: str) -> None:
+        """角色实体变更提交后，把仍引用该卡的会话按新身份逐个广播。
+
+        会话里的 character_identity 是展示快照，改名、换头像与删除都要让已有
+        聊天拿到新身份，删除后按 missing 呈现。含已归档会话；账号是隔离边界，
+        只广播当前账号的会话。
+        """
+        for conversation in self.store.list_conversations_for_character_card(
+            card_id, account_id=self.current_account_id
+        ):
+            self.emitter.emit(
+                "conversation.changed",
+                {"conversation": self._conversation_payload(conversation)},
+            )
+
     async def _card_list(
         self, params: Mapping[str, Any], ctx: CommandContext
     ) -> dict[str, Any]:
@@ -3094,6 +3125,8 @@ class DesktopApplicationService:
         if self._card_in_catalog(card_id):
             # 改名、设定等资料变化影响目录项展示，目录版本随之前进。
             self._emit_card_updated(card_id, self._commit_catalog_version())
+        # 已有聊天的身份快照同步换成新名字等展示信息。
+        self._emit_identity_changed(card_id)
         return {"card_id": record.card_id, "updated_at": record.updated_at}
 
     async def _card_duplicate(
@@ -3176,12 +3209,26 @@ class DesktopApplicationService:
         card_id = self._required_string(params, "card_id")
         self._require_writable_card(card_id)
         try:
-            self.card_repository.unarchive_card(card_id)
+            record = self.card_repository.get_card(card_id)
         except KeyError as exc:
             raise ServiceError("角色卡不存在", code="card_not_found") from exc
-        if self._card_in_catalog(card_id):
+        # 取消归档、补齐绑定与目录版本递增走同一事务：v14 迁移漏掉归档卡，旧库
+        # 里的归档卡没有绑定，只改归档状态的话恢复后仍然进不了搭档目录。
+        try:
+            changed = self.card_repository._remove_from_archive(card_id)
+            created_binding = self._ensure_card_binding(card_id, record.state)
+            version = (
+                self.binding_repository.bump_catalog_version()
+                if changed or created_binding
+                else None
+            )
+            self.store.connection.commit()
+        except BaseException:
+            self.store.connection.rollback()
+            raise
+        if version is not None and self._card_in_catalog(card_id):
             # 恢复让角色重新进入可选搭档目录。
-            self._emit_pair_updated(self._commit_catalog_version())
+            self._emit_pair_updated(version)
         return {"card_id": card_id, "archived": False}
 
     async def _card_delete(
@@ -3199,6 +3246,8 @@ class DesktopApplicationService:
         self.asset_service.delete_assets_for_card(card_id)
         if existed:
             self._emit_pair_updated(self._commit_catalog_version())
+        # 已归档卡不在目录里，但引用它的聊天仍要拿到 missing 身份。
+        self._emit_identity_changed(card_id)
         return {"card_id": card_id, "deleted": True}
 
     async def _card_select_active(
@@ -3565,18 +3614,31 @@ class DesktopApplicationService:
                     "完成创建前必填：" + "、".join(missing),
                     code="card_publish_invalid",
                 )
-            # 草稿→saved：状态跃迁、自动绑定与目录版本同一事务提交。
-            self.card_repository._update_card_row(
-                card_id, state="saved", updated_at=_now_iso()
+        # 状态跃迁（走无提交原语）、绑定补齐与目录版本递增由这里统一管理事务：
+        # 任何一步失败整笔回滚，不会留下「已保存、无绑定」的半完成卡；提交成功
+        # 前不广播。重复发布（卡已是 saved/imported）只补缺的绑定，已有绑定原样
+        # 返回。
+        transitioned = record.state == "draft"
+        try:
+            if transitioned:
+                self.card_repository._update_card_row(
+                    card_id, state="saved", updated_at=_now_iso()
+                )
+            state = "saved" if transitioned else record.state
+            created_binding = self._ensure_card_binding(card_id, state)
+            version = (
+                self.binding_repository.bump_catalog_version()
+                if transitioned or created_binding
+                else None
             )
-            self.binding_repository.create_binding(card_id, self._CARD_BINDING_PAIR_ID)
-            version = self.binding_repository.bump_catalog_version()
             self.store.connection.commit()
+        except BaseException:
+            self.store.connection.rollback()
+            raise
+        if version is not None:
             self._emit_card_updated(card_id, version)
             self._emit_pair_updated(version)
-            return {"card_id": card_id, "state": "saved"}
-        published = self.card_repository.publish_card(card_id)
-        return {"card_id": card_id, "state": published.state}
+        return {"card_id": card_id, "state": state}
 
     # ------------------------------------------------------------------ 头像资产
 
@@ -3643,6 +3705,8 @@ class DesktopApplicationService:
         if self._card_in_catalog(card_id):
             # 头像换新后目录项的头像引用与版本随之前进。
             self._emit_card_updated(card_id, self._commit_catalog_version())
+        # 已有聊天的身份快照同步换成新头像。
+        self._emit_identity_changed(card_id)
         return {"card_id": card_id, "asset_id": asset_id, "mime_type": mime}
 
     async def _card_remove_avatar(
@@ -3661,6 +3725,8 @@ class DesktopApplicationService:
             self.card_repository.update_card(card_id, card)
             if self._card_in_catalog(card_id):
                 self._emit_card_updated(card_id, self._commit_catalog_version())
+            # 已有聊天的身份快照同步去掉旧头像。
+            self._emit_identity_changed(card_id)
         return {"card_id": card_id, "removed": True}
 
     # ------------------------------------------------------------------ 角色卡音色
