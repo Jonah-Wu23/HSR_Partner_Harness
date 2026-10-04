@@ -1,31 +1,27 @@
 # ConversationOrchestrator
 
-> God node · 154 connections · `src/pair_harness/core/orchestrator.py`
+> God node · 126 connections · `src/pair_harness/core/orchestrator.py`
 
-**Community:** [会话编排器](会话编排器.md)
+**Community:** [消息契约与会话编排](消息契约与会话编排.md)
 
 ## Connections by Relation
 
 ### calls
-- _build_service() `EXTRACTED`
 - run_real() `EXTRACTED`
+- .__init__() `EXTRACTED`
+- test_interleaved_output_forms_ordered_assistant_segments() `EXTRACTED`
 - _make_orchestrator() `EXTRACTED`
-- _make_orchestrator() `EXTRACTED`
-- _make_orchestrator() `EXTRACTED`
-- _make_orchestrator() `EXTRACTED`
-- _make_orchestrator() `EXTRACTED`
-- _make_orchestrator() `EXTRACTED`
-- _make_orchestrator() `EXTRACTED`
-- _make_orchestrator() `EXTRACTED`
-- test_returned_reasoning_is_attached_to_final_messages() `EXTRACTED`
 - run_demo() `EXTRACTED`
+- _make_orchestrator() `EXTRACTED`
+- _make_orchestrator() `EXTRACTED`
+- test_task_result_turn_shares_character_turn_context() `EXTRACTED`
+- test_returned_reasoning_is_attached_to_final_messages() `EXTRACTED`
+- _make_orchestrator() `EXTRACTED`
+- _make_orchestrator() `EXTRACTED`
 - _make_orchestrator() `EXTRACTED`
 - test_concurrent_chat_rounds_serialized_in_arrival_order() `EXTRACTED`
 - _make_orchestrator() `EXTRACTED`
 - _live_orchestrator() `EXTRACTED`
-- _make_orchestrator() `EXTRACTED`
-- make_orchestrator() `EXTRACTED`
-- make_orchestrator() `EXTRACTED`
 - make_orchestrator() `EXTRACTED`
 
 ### contains
@@ -34,8 +30,6 @@
 ### imports
 - application_service.py `EXTRACTED`
 - cli.py `EXTRACTED`
-- voice_runtime.py `EXTRACTED`
-- voice_factory.py `EXTRACTED`
 
 ### method
 - ._execute_once() `EXTRACTED`
@@ -43,48 +37,45 @@
 - .process_character_turn() `EXTRACTED`
 - ._execute() `EXTRACTED`
 - .process_direct_input() `EXTRACTED`
-- ._retry_character_delegation() `EXTRACTED`
-- .__init__() `EXTRACTED`
 - ._dialogue_request() `EXTRACTED`
-- ._deny_tool_and_notify() `EXTRACTED`
-- ._build_runtime_context() `EXTRACTED`
-- ._context_or_current() `EXTRACTED`
+- .__init__() `EXTRACTED`
+- ._deny_tool() `EXTRACTED`
 - ._emit_gate_outcome() `EXTRACTED`
 - ._set_message_status() `EXTRACTED`
+- ._build_runtime_context() `EXTRACTED`
 - .submit_user_message() `EXTRACTED`
-- .select_context() `EXTRACTED`
-- .handle_direct_input() `EXTRACTED`
-- ._emit_event() `EXTRACTED`
-- ._turn_index_for() `EXTRACTED`
+- ._steer_turn() `EXTRACTED`
 - ._finalize_segment() `EXTRACTED`
 - ._forward_dialogue_event() `EXTRACTED`
-- *…and 38 more `method` connection(s) not listed (lowest-degree first to go)*
-
-### references
-- .__init__() `EXTRACTED`
+- .handle_character_input() `EXTRACTED`
+- ._emit_event() `EXTRACTED`
+- ._operation_from_approval_event() `EXTRACTED`
+- ._approval_notice() `EXTRACTED`
+- ._roleplay_context() `EXTRACTED`
+- *…and 30 more `method` connection(s) not listed (lowest-degree first to go)*
 
 ### uses
 - [DesktopApplicationService](DesktopApplicationService.md) `INFERRED`
 - [Message](Message.md) `INFERRED`
-- [MessageSource](MessageSource.md) `INFERRED`
-- [CharacterTurn](CharacterTurn.md) `INFERRED`
-- [ApprovalMode](ApprovalMode.md) `INFERRED`
-- ProjectRef `INFERRED`
+- EngineEvent `INFERRED`
+- MessageSource `INFERRED`
+- EngineSessionRef `INFERRED`
+- ApprovalMode `INFERRED`
+- ApprovalDecision `INFERRED`
 - PendingOperation `INFERRED`
 - MessageKind `INFERRED`
-- EngineEvent `INFERRED`
-- EngineSessionRef `INFERRED`
-- ApprovalDecision `INFERRED`
-- TaskRequestDraft `INFERRED`
 - TaskRequest `INFERRED`
 - EngineEventType `INFERRED`
-- DialogueRequest `INFERRED`
-- MessageOrigin `INFERRED`
+- TaskRequestDraft `INFERRED`
 - ApprovalManager `INFERRED`
-- DialogueEvent `INFERRED`
+- MessageOrigin `INFERRED`
+- CodingEngine `INFERRED`
 - DialogueModel `INFERRED`
-- ConversationSummary `INFERRED`
-- *…and 50 more `uses` connection(s) not listed (lowest-degree first to go)*
+- DialogueEvent `INFERRED`
+- DialogueRequest `INFERRED`
+- ExecutionContext `INFERRED`
+- direct_input() `INFERRED`
+- *…and 37 more `uses` connection(s) not listed (lowest-degree first to go)*
 
 ---
 

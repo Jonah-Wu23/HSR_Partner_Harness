@@ -1,8 +1,8 @@
 # Message
 
-> God node · 133 connections · `src/pair_harness/core/contracts.py`
+> God node · 113 connections · `src/pair_harness/core/contracts.py`
 
-**Community:** [对话上下文与消息模型](对话上下文与消息模型.md)
+**Community:** [消息契约与会话编排](消息契约与会话编排.md)
 
 ## Connections by Relation
 
@@ -18,14 +18,14 @@
 - orchestrator.py `EXTRACTED`
 - openai_compatible.py `EXTRACTED`
 - ports.py `EXTRACTED`
-- adapters/demo.py `EXTRACTED`
 - sqlite_store.py `EXTRACTED`
+- demo.py `EXTRACTED`
 - summary.py `EXTRACTED`
 - voice_runtime.py `EXTRACTED`
-- projection.py `EXTRACTED`
-- reviewer.py `EXTRACTED`
 - approval.py `EXTRACTED`
-- context.py `EXTRACTED`
+- core/repository.py `EXTRACTED`
+- reviewer.py `EXTRACTED`
+- projection.py `EXTRACTED`
 
 ### inherits
 - FrozenModel `EXTRACTED`
@@ -36,48 +36,48 @@
 ### references
 - ._message() `EXTRACTED`
 - .process_character_turn() `EXTRACTED`
-- .gate() `EXTRACTED`
 - .adjudicate() `EXTRACTED`
+- ._run_submit_turn() `EXTRACTED`
 - .process_direct_input() `EXTRACTED`
+- ._maybe_auto_summary() `EXTRACTED`
 - ._dialogue_request() `EXTRACTED`
-- ._retry_character_delegation() `EXTRACTED`
 - ._relay_mobile_tts_task() `EXTRACTED`
 - .generate_title() `EXTRACTED`
-- .review() `EXTRACTED`
 - ._enqueue_for_playback() `EXTRACTED`
 - ._set_message_status() `EXTRACTED`
+- ._run_submit_chain() `EXTRACTED`
 - .submit_user_message() `EXTRACTED`
-- .__init__() `EXTRACTED`
 - ._review_op() `EXTRACTED`
-- ._maybe_relay_mobile_tts() `EXTRACTED`
 - ._forward_dialogue_event() `EXTRACTED`
-- .save_message() `EXTRACTED`
-- ._write_message_row() `EXTRACTED`
+- ._maybe_relay_mobile_tts() `EXTRACTED`
+- .review() `EXTRACTED`
 - ._roleplay_context() `EXTRACTED`
-- *…and 24 more `references` connection(s) not listed (lowest-degree first to go)*
+- ._generate_title() `EXTRACTED`
+- .on_message() `EXTRACTED`
+- *…and 23 more `references` connection(s) not listed (lowest-degree first to go)*
 
 ### uses
 - [DesktopApplicationService](DesktopApplicationService.md) `INFERRED`
 - [SQLiteStore](SQLiteStore.md) `INFERRED`
 - [ConversationOrchestrator](ConversationOrchestrator.md) `INFERRED`
-- OpenAICompatibleDialogueModel `INFERRED`
 - VoiceRuntime `INFERRED`
+- OpenAICompatibleDialogueModel `INFERRED`
 - ApprovalManager `INFERRED`
-- DialogueModelReviewer `INFERRED`
+- _RecordingVoiceRuntime `INFERRED`
 - DialogueModel `INFERRED`
 - ScriptedDialogueModel `INFERRED`
-- build_projection() `INFERRED`
+- ConversationSnapshot `INFERRED`
+- ConversationOutcome `INFERRED`
+- DialogueModelReviewer `INFERRED`
+- _message() `INFERRED`
 - StateStore `INFERRED`
-- make_request() `INFERRED`
 - ScriptedReviewer `INFERRED`
-- _message() `INFERRED`
-- _message() `INFERRED`
-- _message() `INFERRED`
-- _request() `INFERRED`
+- test_assistant_messages_never_preempt() `INFERRED`
+- Reviewer `INFERRED`
+- messages_after_coverage() `INFERRED`
+- summary_trigger() `INFERRED`
 - validate_summary_coverage() `INFERRED`
-- _message() `INFERRED`
-- test_mobile_tts_begin_failure_is_reported_not_swallowed() `INFERRED`
-- *…and 52 more `uses` connection(s) not listed (lowest-degree first to go)*
+- *…and 33 more `uses` connection(s) not listed (lowest-degree first to go)*
 
 ---
 

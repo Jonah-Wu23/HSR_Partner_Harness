@@ -1,33 +1,33 @@
 # SQLiteStore
 
-> God node · 225 connections · `src/pair_harness/storage/sqlite_store.py`
+> God node · 175 connections · `src/pair_harness/storage/sqlite_store.py`
 
-**Community:** [存储增量缓冲与刷盘](存储增量缓冲与刷盘.md)
+**Community:** [SQLite 存储与队列恢复](SQLite_存储与队列恢复.md)
 
 ## Connections by Relation
 
 ### calls
-- _build_service() `EXTRACTED`
 - run_real() `EXTRACTED`
-- test_m41_denied_tool_run_is_persisted() `EXTRACTED`
-- test_m42_delegation_correction_replaces_original_role_message() `EXTRACTED`
-- test_migration_11_upgrades_v10_library_and_matches_fresh_schema() `EXTRACTED`
-- test_immediate_save_still_durable_before_batch() `EXTRACTED`
-- test_batch_same_key_keeps_last_state_and_first_position() `EXTRACTED`
-- test_batch_sample_stays_within_budget() `EXTRACTED`
-- test_batch_touches_conversation_updated_at_once() `EXTRACTED`
-- test_burst_sample_transaction_bound() `EXTRACTED`
-- test_flush_if_due_uses_50ms_window() `EXTRACTED`
-- test_memory_requires_complete_scope() `EXTRACTED`
+- store() `EXTRACTED`
+- _build_service() `EXTRACTED`
+- test_latest_summary_follows_coverage_end_time() `EXTRACTED`
+- test_store_persists_core_records() `EXTRACTED`
 - test_memory_scope_isolation_by_project_and_assistant() `EXTRACTED`
 - test_metric_null_and_zero_semantics() `EXTRACTED`
 - test_metric_query_filters_and_cursor_pagination() `EXTRACTED`
+- test_metric_upsert_keeps_one_row_per_turn() `EXTRACTED`
+- test_summary_failure_keeps_real_error() `EXTRACTED`
+- test_summary_upsert_is_idempotent_by_range() `EXTRACTED`
+- test_message_source_kind_columns_store_enum_values() `EXTRACTED`
+- test_message_with_lone_surrogates_can_be_persisted() `EXTRACTED`
 - test_metric_terminal_state_cannot_regress() `EXTRACTED`
-- test_migration_level_is_atomic_on_failure() `EXTRACTED`
-- test_role_message_stats_since_filters_structurally() `EXTRACTED`
-- test_batch_enqueue_flushes_one_transaction_and_coalesces() `EXTRACTED`
-- test_flush_if_due_skips_before_deadline() `EXTRACTED`
-- *…and 25 more `calls` connection(s) not listed (lowest-degree first to go)*
+- test_summary_rejects_unknown_status_and_missing_row() `EXTRACTED`
+- service() `EXTRACTED`
+- repo() `EXTRACTED`
+- test_legacy_db_upgrade_rebuilds_card_tables_and_preserves_data() `EXTRACTED`
+- test_memory_assistant_identity_unique_key_and_mutation_scope() `EXTRACTED`
+- test_memory_delete_is_soft_and_recreatable() `EXTRACTED`
+- *…and 16 more `calls` connection(s) not listed (lowest-degree first to go)*
 
 ### contains
 - sqlite_store.py `EXTRACTED`
@@ -42,27 +42,27 @@
 - StateStore `EXTRACTED`
 
 ### method
-- ._write_rows() `EXTRACTED`
+- ._update_existing() `EXTRACTED`
 - ._summary_from_row() `EXTRACTED`
 - .update_memory() `EXTRACTED`
 - ._memory_from_row() `EXTRACTED`
 - .query_turn_metrics() `EXTRACTED`
 - ._metric_from_row() `EXTRACTED`
+- ._update_project_column() `EXTRACTED`
 - .get_project() `EXTRACTED`
 - .get_conversation() `EXTRACTED`
-- ._project_from_row() `EXTRACTED`
-- ._touch_conversation() `EXTRACTED`
-- .flush() `EXTRACTED`
-- ._write_message_row() `EXTRACTED`
-- .update_summary() `EXTRACTED`
-- .close() `EXTRACTED`
-- ._update_project_column() `EXTRACTED`
-- .save_message() `EXTRACTED`
 - .get_queue_item() `EXTRACTED`
+- ._project_from_row() `EXTRACTED`
+- ._derive_password() `EXTRACTED`
 - .create_account() `EXTRACTED`
 - .get_account() `EXTRACTED`
 - ._account_dict() `EXTRACTED`
-- *…and 98 more `method` connection(s) not listed (lowest-degree first to go)*
+- ._write_message_row() `EXTRACTED`
+- .latest_completed_summary() `EXTRACTED`
+- .delete_memory() `EXTRACTED`
+- .get_memory() `EXTRACTED`
+- .list_memories() `EXTRACTED`
+- *…and 68 more `method` connection(s) not listed (lowest-degree first to go)*
 
 ### references
 - .__init__() `EXTRACTED`
@@ -73,24 +73,24 @@
 - [DesktopApplicationService](DesktopApplicationService.md) `INFERRED`
 - [Message](Message.md) `INFERRED`
 - EngineSessionRef `INFERRED`
-- _seed() `INFERRED`
 - CharacterCardRepository `INFERRED`
-- PairMemory `INFERRED`
 - ConversationSummary `INFERRED`
-- MemoryScope `INFERRED`
-- TurnMetric `INFERRED`
+- ConversationSummary `INFERRED`
+- PairMemory `INFERRED`
 - ToolRun `INFERRED`
+- MemoryScope `INFERRED`
 - TurnMetricQuery `INFERRED`
-- ProjectionEntry `INFERRED`
+- ConversationSnapshot `INFERRED`
+- Conversation `INFERRED`
+- TurnMetric `INFERRED`
 - CharacterAssetService `INFERRED`
 - test_restored_orchestrator_backfills_history_and_session_ref() `INFERRED`
 - Project `INFERRED`
-- _make_orchestrator() `INFERRED`
-- test_completed_demo_conversation_restores_after_reopen() `INFERRED`
-- test_restore_drops_session_from_a_different_engine() `INFERRED`
-- test_store_persists_core_records() `INFERRED`
-- Conversation `INFERRED`
-- *…and 33 more `uses` connection(s) not listed (lowest-degree first to go)*
+- _seed() `INFERRED`
+- test_release_database_upgrades_to_fresh_schema() `INFERRED`
+- test_v0_4_1_messages_and_tools_are_renumbered_on_one_timeline() `INFERRED`
+- test_user_deny_finishes_tool_as_denied_and_persists_it() `INFERRED`
+- *…and 22 more `uses` connection(s) not listed (lowest-degree first to go)*
 
 ---
 
