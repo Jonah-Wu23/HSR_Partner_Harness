@@ -611,6 +611,18 @@
   box-shadow: -1px 0 0 var(--bg-elevated);
 }
 
+/* 新建聊天菜单：内置搭档段与角色卡段之间的分隔项；Menu 没有分隔类型，用不可点击项承载。 */
+.new-chat-wrapper .menu-item:disabled {
+  height: 1px;
+  min-height: 1px;
+  margin: 4px 0;
+  padding: 0;
+  opacity: 1;
+  background: var(--separator);
+  pointer-events: none;
+}
+.new-chat-wrapper .menu-item:disabled > * { display: none; }
+
 .chat-search {
   display: flex;
   align-items: center;

@@ -2,6 +2,7 @@ import type {
   DesktopEvent,
   DesktopSnapshot,
   Message,
+  PairOption,
   PairRecord,
   ProjectRecord,
   ToolRun,
@@ -115,6 +116,22 @@ export const MOCK_PAIRS: PairRecord[] = [
 ];
 
 const pair: PairRecord = MOCK_PAIRS[0];
+
+/** 内置搭档的目录项（binding_id 为 `builtin:<pair_id>`）；角色卡绑定项由 mock 后端按卡生成。 */
+export const MOCK_PAIR_OPTIONS: PairOption[] = MOCK_PAIRS.map((pairRecord) => ({
+  binding_id: `builtin:${pairRecord.pair_id}`,
+  pair_id: pairRecord.pair_id,
+  character_card_id: null,
+  source: "builtin",
+  character: {
+    ...pairRecord.character,
+    avatar_ref: null,
+    avatar_version: null,
+    missing: false,
+  },
+  assistant: { ...pairRecord.assistant },
+  theme: { ...pairRecord.theme },
+}));
 
 // 场景默认已登录非默认账号（username 不是 default，不触发账号门）；
 // 账号门与引导场景单独用 gate-default、onboarding-pending。
@@ -293,7 +310,8 @@ function baseSnapshot(
       speech_queue_len: 0,
     },
     pair: activePair,
-    pairs: MOCK_PAIRS,
+    pairs: MOCK_PAIR_OPTIONS,
+    catalog_version: 1,
     sequence: 0,
     stream_id: MOCK_STREAM_ID,
   };

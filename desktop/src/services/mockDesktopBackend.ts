@@ -2,6 +2,7 @@ import type {
   ApprovalResolvedPayload,
   CardAvatarPayload,
   CardSummaryPayload,
+  CharacterIdentity,
   CharacterVoiceState,
   CompatReportPayload,
   ConversationOpenResult,
@@ -12,6 +13,7 @@ import type {
   DesktopStreamEvent,
   Message,
   MessageDeltaPayload,
+  PairOption,
   PendingApproval,
   ProjectRecord,
   PowerStatusPayload,
@@ -43,6 +45,7 @@ import { RequestIdFactory } from "./backend";
 import { applyMessageDelta } from "../stores/messageDelta";
 import {
   MOCK_STREAM_ID,
+  MOCK_PAIR_OPTIONS,
   createMockScenario,
   conversation,
   message,
@@ -170,6 +173,12 @@ export class MockDesktopBackend implements DesktopBackend {
   /** 已裁决的审批终态，用于首个终态获胜的仲裁。 */
   private resolvedApprovals = new Map<string, ApprovalResolvedPayload>();
 
+  /* 搭档目录：内置搭档来自 MOCK_PAIR_OPTIONS，角色卡绑定项由可用卡派生
+     （已保存/已导入且未归档）。目录版本随角色卡变更递增，与真实后端同一套语义。 */
+
+  /** 目录版本；mock 初始为 1，任何进入目录链路的角色卡变更使其 +1。 */
+  private catalogVersion = 1;
+
   /** 账号密码（account_id → 密码）；默认账号未设密码。 */
   private passwords = new Map<string, string>();
 
@@ -242,6 +251,8 @@ export class MockDesktopBackend implements DesktopBackend {
         return this.snapshotResult<T>();
       case "app.shutdown":
         return { stopped: true } as T;
+      case "pair.list":
+        return { pairs: this.pairCatalog(), catalog_version: this.catalogVersion } as T;
       case "project.create":
         return this.createProject(command.params) as T;
       case "project.select":
@@ -352,6 +363,8 @@ export class MockDesktopBackend implements DesktopBackend {
         return this.cardSetAvatar(command.params) as T;
       case "card.remove_avatar":
         return this.cardRemoveAvatar(command.params) as T;
+      case "card.avatar":
+        return this.cardAvatar(command.params) as T;
       case "voice.card_bind_reference":
         return this.voiceCardBindReference(command.params) as T;
       case "voice.card_create":
@@ -428,6 +441,98 @@ export class MockDesktopBackend implements DesktopBackend {
   /* card.* 命令；错误码、检查顺序与 Sidecar 一致。 */
 
   private activeCardId: string | null = "card-saved-002";
+
+  /** 角色卡绑定 id：mock 里按卡 id 稳定生成，与真实后端的持久化绑定同形。 */
+  private cardBindingId(cardId: string): string {
+    return `card-bind-${cardId}`;
+  }
+
+  /** 卡进入新建目录的条件：已保存或已导入，且未归档；草稿与导入失败不入目录。 */
+  private cardIsInCatalog(card: MockCardSummary): boolean {
+    return (
+      (card.state === "saved" || card.state === "imported") && !this.archivedCardIds.has(card.card_id)
+    );
+  }
+
+  /** 完整搭档目录：内置搭档在前，角色卡绑定项在后；卡项以「神秘的古代机械」为助手与主题。 */
+  private pairCatalog(): PairOption[] {
+    const base =
+      MOCK_PAIR_OPTIONS.find((item) => item.pair_id === "phainon_ancient_machine") ??
+      MOCK_PAIR_OPTIONS[0];
+    const cards = this.cards.filter((card) => this.cardIsInCatalog(card)).map((card): PairOption => {
+      const profile = this.voiceProfiles.get(card.card_id);
+      const hasAvatar = this.cardAvatars.has(card.card_id);
+      return {
+        binding_id: this.cardBindingId(card.card_id),
+        pair_id: base.pair_id,
+        character_card_id: card.card_id,
+        source: "card",
+        character: {
+          id: card.card_id,
+          name: card.name,
+          voice_id: profile?.state === "voice_ready" ? profile.voice_id : "",
+          avatar_ref: hasAvatar ? `card-avatar:${card.card_id}` : null,
+          avatar_version: hasAvatar ? card.updated_at : null,
+          missing: false,
+        },
+        assistant: { ...base.assistant },
+        theme: { ...base.theme },
+      };
+    });
+    return [...this.clone(MOCK_PAIR_OPTIONS), ...cards];
+  }
+
+  private findBinding(bindingId: string): PairOption | null {
+    return this.pairCatalog().find((item) => item.binding_id === bindingId) ?? null;
+  }
+
+  /** 会话所属绑定：优先持久化字段，内置会话按 base pair 归到内置项。 */
+  private conversationBindingId(conversation: ConversationRecord): string {
+    if (conversation.binding_id) return conversation.binding_id;
+    return conversation.character_card_id ? "" : `builtin:${conversation.pair_id}`;
+  }
+
+  /** 统一身份解析器：卡会话返回卡名与头像引用，内置会话返回内置角色，卡已删除时标记缺失。 */
+  private resolveIdentity(conversation: ConversationRecord): CharacterIdentity {
+    const cardId = conversation.character_card_id ?? null;
+    if (cardId) {
+      const card = this.cards.find((item) => item.card_id === cardId);
+      if (!card) {
+        return { name: "", avatar_ref: null, avatar_version: null, missing: true, source: "card" };
+      }
+      const hasAvatar = this.cardAvatars.has(cardId);
+      return {
+        name: card.name,
+        avatar_ref: hasAvatar ? `card-avatar:${cardId}` : null,
+        avatar_version: hasAvatar ? card.updated_at : null,
+        missing: false,
+        source: "card",
+      };
+    }
+    const builtin = MOCK_PAIR_OPTIONS.find((item) => item.pair_id === conversation.pair_id);
+    return {
+      name: builtin?.character.name ?? "",
+      avatar_ref: null,
+      avatar_version: null,
+      missing: false,
+      source: "builtin",
+    };
+  }
+
+  private resolveConversation(conversation: ConversationRecord): ConversationRecord {
+    return {
+      ...conversation,
+      binding_id: this.conversationBindingId(conversation) || null,
+      character_identity: this.resolveIdentity(conversation),
+    };
+  }
+
+  /** 角色卡变更后的目录事件：card.updated 携带卡 id 与目录版本，目录内容变化时再发 pair.updated。 */
+  private emitCardChanged(cardId: string, catalogChanged: boolean): void {
+    if (catalogChanged) this.catalogVersion += 1;
+    this.emit("card.updated", { card_id: cardId, catalog_version: this.catalogVersion });
+    if (catalogChanged) this.emit("pair.updated", { catalog_version: this.catalogVersion });
+  }
 
   /** 与 Sidecar 的 _require_writable_card 一致：内置角色只读。 */
   private requireWritableCard(cardId: string): void {
@@ -548,6 +653,7 @@ export class MockDesktopBackend implements DesktopBackend {
       },
       mockCardPayload(name),
     );
+    this.emitCardChanged(cardId, false);
     return { card_id: cardId, state: "draft" };
   }
 
@@ -564,6 +670,8 @@ export class MockDesktopBackend implements DesktopBackend {
     const now = new Date().toISOString();
     this.cardPayloads.set(cardId, payload);
     this.patchCard(cardId, { name, updated_at: now });
+    // 草稿改名不影响目录；已保存/已导入卡改名会改变目录项名字。
+    this.emitCardChanged(cardId, this.cardIsInCatalog(this.requireCard(cardId)));
     return { card_id: cardId, updated_at: now };
   }
 
@@ -589,6 +697,7 @@ export class MockDesktopBackend implements DesktopBackend {
         },
         renamedCard(mockBuiltinCardPayload(cardId, builtin.name), name),
       );
+      this.emitCardChanged(newId, this.cardIsInCatalog(this.requireCard(newId)));
       return { card_id: newId, name };
     }
     const source = this.requireCard(cardId);
@@ -604,16 +713,20 @@ export class MockDesktopBackend implements DesktopBackend {
     if (reference) this.cardReferenceAudios.set(newId, reference);
     const profile = this.voiceProfiles.get(cardId);
     if (profile) this.voiceProfiles.set(newId, profile);
+    this.emitCardChanged(newId, this.cardIsInCatalog(this.requireCard(newId)));
     return { card_id: newId, name };
   }
 
   private cardArchive(params: Record<string, unknown>) {
     const cardId = String(params.card_id ?? "");
     this.requireWritableCard(cardId);
-    if (this.requireCard(cardId).state === "draft") {
+    const card = this.requireCard(cardId);
+    if (card.state === "draft") {
       throw new DesktopRequestError("card_invalid_state", "草稿不能归档，请先保存");
     }
+    const wasInCatalog = this.cardIsInCatalog(card);
     this.archivedCardIds.add(cardId);
+    this.emitCardChanged(cardId, wasInCatalog);
     return { card_id: cardId, archived: true };
   }
 
@@ -622,6 +735,7 @@ export class MockDesktopBackend implements DesktopBackend {
     this.requireWritableCard(cardId);
     this.requireCard(cardId);
     this.archivedCardIds.delete(cardId);
+    this.emitCardChanged(cardId, this.cardIsInCatalog(this.requireCard(cardId)));
     return { card_id: cardId, archived: false };
   }
 
@@ -629,12 +743,14 @@ export class MockDesktopBackend implements DesktopBackend {
     const cardId = String(params.card_id ?? "");
     this.requireWritableCard(cardId);
     if (params.confirm !== true) throw new DesktopRequestError("card_confirm_required", "删除需要确认");
+    const wasInCatalog = this.cardIsInCatalog(this.requireCard(cardId));
     this.cards = this.cards.filter((card) => card.card_id !== cardId);
     this.cardPayloads.delete(cardId);
     this.archivedCardIds.delete(cardId);
     this.cardAvatars.delete(cardId);
     this.cardReferenceAudios.delete(cardId);
     this.voiceProfiles.delete(cardId);
+    this.emitCardChanged(cardId, wasInCatalog);
     return { card_id: cardId, deleted: true };
   }
 
@@ -702,6 +818,7 @@ export class MockDesktopBackend implements DesktopBackend {
     if (withAvatar) {
       this.cardAvatars.set(cardId, { mime_type: "image/png", data_base64: PLACEHOLDER_AVATAR_BASE64 });
     }
+    this.emitCardChanged(cardId, this.cardIsInCatalog(this.requireCard(cardId)));
     return { card_id: cardId, name, state: "imported", report: preview.report };
   }
 
@@ -791,6 +908,7 @@ export class MockDesktopBackend implements DesktopBackend {
       throw new DesktopRequestError(CARD_PUBLISH_INVALID, `完成创建前必填：${missing.join("、")}`);
     }
     this.patchCard(cardId, { state: "saved", updated_at: new Date().toISOString() });
+    this.emitCardChanged(cardId, this.cardIsInCatalog(this.requireCard(cardId)));
     return { card_id: cardId, state: "saved" };
   }
 
@@ -811,7 +929,9 @@ export class MockDesktopBackend implements DesktopBackend {
     }
     this.requireCard(cardId);
     this.cardAvatars.set(cardId, { mime_type: mimeType, data_base64: PLACEHOLDER_AVATAR_BASE64 });
-    this.patchCard(cardId, { has_avatar: true });
+    // 头像变更推进 updated_at，目录项的头像版本随之变化，客户端头像缓存据此失效。
+    this.patchCard(cardId, { has_avatar: true, updated_at: new Date().toISOString() });
+    this.emitCardChanged(cardId, this.cardIsInCatalog(this.requireCard(cardId)));
     return { card_id: cardId, asset_id: `avatar-${cardId}`, mime_type: mimeType };
   }
 
@@ -820,8 +940,16 @@ export class MockDesktopBackend implements DesktopBackend {
     this.requireWritableCard(cardId);
     this.requireCard(cardId);
     this.cardAvatars.delete(cardId);
-    this.patchCard(cardId, { has_avatar: false });
+    this.patchCard(cardId, { has_avatar: false, updated_at: new Date().toISOString() });
+    this.emitCardChanged(cardId, this.cardIsInCatalog(this.requireCard(cardId)));
     return { card_id: cardId, removed: true };
+  }
+
+  /** card.avatar：只读返回卡头像；卡没有头像时为 null。 */
+  private cardAvatar(params: Record<string, unknown>) {
+    const cardId = requiredString(params, "card_id");
+    this.requireCard(cardId);
+    return { avatar: this.cardAvatars.get(cardId) ?? null };
   }
 
   /* 电源状态。 */
@@ -1096,8 +1224,17 @@ export class MockDesktopBackend implements DesktopBackend {
 
   private snapshotResult<T>(): T {
     this.refreshCurrentPointers();
-    this.scenario.snapshot.sequence = this.sequence;
-    return this.clone(this.scenario.snapshot) as T;
+    const snapshot = this.scenario.snapshot;
+    snapshot.sequence = this.sequence;
+    snapshot.pairs = this.pairCatalog();
+    snapshot.catalog_version = this.catalogVersion;
+    // 会话记录按统一身份解析器补齐绑定 id 与角色身份；历史会话不改动运行字段。
+    snapshot.projects = snapshot.projects.map((projectRecord) => ({
+      ...projectRecord,
+      conversations: projectRecord.conversations.map((item) => this.resolveConversation(item)),
+    }));
+    snapshot.current_conversation = this.resolveConversation(snapshot.current_conversation);
+    return this.clone(snapshot) as T;
   }
 
   private createProject(params: Record<string, unknown>): DesktopSnapshot {
@@ -1182,7 +1319,7 @@ export class MockDesktopBackend implements DesktopBackend {
     return { conversation_id: conversationId, mode };
   }
 
-  /** 结果顶层带 reused。mock 场景的会话没有绑定角色卡，不参与复用，reuse_active 也总是新建。 */
+  /** 结果顶层带 reused。带 binding_id 时有对应活跃会话才复用；省略绑定表示内置搭档。 */
   private createConversation(
     params: Record<string, unknown>,
   ): DesktopSnapshot & { reused: boolean } {
@@ -1193,15 +1330,35 @@ export class MockDesktopBackend implements DesktopBackend {
     if (projectIndex < 0)
       return { ...this.snapshotResult<DesktopSnapshot>(), reused: false };
     const selectedProject = this.scenario.snapshot.projects[projectIndex];
+    const bindingId = typeof params.binding_id === "string" && params.binding_id ? params.binding_id : null;
+    // 省略绑定表示内置搭档：沿用当前搭档的内置目录项，不继承任何全局 active 角色卡。
+    const binding = bindingId
+      ? this.findBinding(bindingId)
+      : (MOCK_PAIR_OPTIONS.find(
+          (item) => item.pair_id === this.scenario.snapshot.pair.pair_id,
+        ) ?? MOCK_PAIR_OPTIONS[0]);
+    if (!binding) {
+      throw new DesktopRequestError("pair_binding_not_found", `搭档绑定不存在：${bindingId}`);
+    }
+    if (params.reuse_active === true) {
+      const existing = selectedProject.conversations.find(
+        (item) => !item.archived && this.conversationBindingId(item) === binding.binding_id,
+      );
+      if (existing) {
+        this.scenario.snapshot.current_project_id = projectId;
+        this.scenario.snapshot.current_conversation_id = existing.conversation_id;
+        return { ...this.snapshotResult<DesktopSnapshot>(), reused: true };
+      }
+    }
     const conversationId = `${projectId}-conversation-${selectedProject.conversations.length + 1}`;
-    const pairId =
-      typeof params.pair_id === "string" ? params.pair_id : this.scenario.snapshot.pair.pair_id;
     const newConversation = conversation(
       conversationId,
       projectId,
       String(params.title ?? "新聊天"),
-      pairId,
+      binding.pair_id,
     );
+    newConversation.binding_id = binding.binding_id;
+    newConversation.character_card_id = binding.character_card_id;
     this.scenario.snapshot.projects = this.scenario.snapshot.projects.map((item, index) =>
       index === projectIndex
         ? { ...item, conversations: [...item.conversations, newConversation] }
@@ -1243,7 +1400,7 @@ export class MockDesktopBackend implements DesktopBackend {
     )!;
     const activeTasks = this.scenario.snapshot.active_tasks;
     return {
-      conversation: this.clone(selectedConversation),
+      conversation: this.clone(this.resolveConversation(selectedConversation)),
       project: this.clone(projectWithoutConversations(selectedProject)),
       pair: this.clone(selectedPair),
       messages: this.clone(

@@ -439,7 +439,7 @@ describe("CharacterCreatePage", () => {
       expect(screen.queryByTestId("btn-start-chat")).not.toBeInTheDocument();
     });
 
-    it("已发布的卡点击开始对话：设为当前角色、复用或新建聊天并回到聊天视图", async () => {
+    it("已发布的卡点击开始对话：按该卡的绑定项建会话、设为当前角色并回到聊天视图", async () => {
       const backend = new MockDesktopBackend();
       await renderCreatePage(backend, "card-saved-002");
 
@@ -447,14 +447,20 @@ describe("CharacterCreatePage", () => {
       fireEvent.click(startChat);
 
       await waitFor(() => expect(desktopStore.getState().mainView).toBe("chat"));
+      // 创作页没有目录上下文，先按权威目录补取 pair.list；随后用绑定 id 建会话（reuse_active 复用），
+      // 建会话成功后再经 card.select_active 更新角色库「使用中」标记。
       expect(
         backend.recordedRequests
           .filter((command) => command.method !== "card.get")
           .map((command) => [command.method, command.params]),
       ).toEqual([
+        ["pair.list", {}],
+        [
+          "conversation.create",
+          { binding_id: "card-bind-card-saved-002", reuse_active: true },
+        ],
         ["card.select_active", { card_id: "card-saved-002" }],
         ["card.list", { include_archived: true }],
-        ["conversation.create", { reuse_active: true }],
       ]);
     });
   });

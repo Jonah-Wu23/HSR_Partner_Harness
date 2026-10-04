@@ -6,10 +6,11 @@ import type {
   DesktopEventName,
   HostEvent,
   MemoryWirePayload,
+  PairOption,
   PowerStatusPayload,
   ToolRun,
 } from "../contracts/protocol";
-import { createMockScenario, message } from "../mocks/scenarios";
+import { MOCK_PAIR_OPTIONS, createMockScenario, message } from "../mocks/scenarios";
 import { presentAppShell } from "../presenters/presenters";
 import { createActionController } from "../services/actions";
 import { MockDesktopBackend } from "../services/mockDesktopBackend";
@@ -64,6 +65,79 @@ const disconnectNotice = {
   severity: "recoverable",
   source: "sidecar",
 };
+
+/** 目录里的一个角色卡绑定项（辅助断言快照 pairs）。 */
+const CARD_OPTION: PairOption = {
+  binding_id: "card-bind-card-saved-002",
+  pair_id: "phainon_ancient_machine",
+  character_card_id: "card-saved-002",
+  source: "card",
+  character: {
+    id: "card-saved-002",
+    name: "卡芙卡",
+    voice_id: "",
+    avatar_ref: null,
+    avatar_version: null,
+    missing: false,
+  },
+  assistant: { ...MOCK_PAIR_OPTIONS[0].assistant },
+  theme: { ...MOCK_PAIR_OPTIONS[0].theme },
+};
+
+describe("搭档目录与目录版本", () => {
+  beforeEach(resetStore);
+
+  it("card.updated / pair.updated 只推进待重取计数，不改目录内容与目录版本", () => {
+    const before = desktopStore.getState();
+    const pairsBefore = before.pairs;
+    const versionBefore = before.catalogVersion;
+    expect(pairsBefore.length).toBeGreaterThan(0);
+
+    desktopStore.getState().applyEvents([
+      event("card.updated", { card_id: "card-saved-002", catalog_version: versionBefore + 1 }, 1),
+      event("pair.updated", { catalog_version: versionBefore + 2 }, 2),
+    ]);
+
+    const state = desktopStore.getState();
+    expect(state.catalogRevision).toBe(before.catalogRevision + 2);
+    expect(state.pairs).toBe(pairsBefore);
+    expect(state.catalogVersion).toBe(versionBefore);
+  });
+
+  it("pair.list 响应推进目录与版本，旧版本或同版本响应被丢弃", () => {
+    const initialVersion = desktopStore.getState().catalogVersion;
+    const fresh = [...MOCK_PAIR_OPTIONS, CARD_OPTION];
+
+    desktopStore.getState().applyPairCatalog({ pairs: fresh, catalog_version: initialVersion + 1 });
+    expect(desktopStore.getState().pairs).toEqual(fresh);
+    expect(desktopStore.getState().catalogVersion).toBe(initialVersion + 1);
+
+    // 乱序迟到的旧响应与同版本响应都不能覆盖已存的较新目录。
+    desktopStore.getState().applyPairCatalog({
+      pairs: MOCK_PAIR_OPTIONS,
+      catalog_version: initialVersion,
+    });
+    desktopStore.getState().applyPairCatalog({
+      pairs: MOCK_PAIR_OPTIONS,
+      catalog_version: initialVersion + 1,
+    });
+    expect(desktopStore.getState().pairs).toEqual(fresh);
+    expect(desktopStore.getState().catalogVersion).toBe(initialVersion + 1);
+  });
+
+  it("快照水合写入权威 pairs 与 catalog_version", () => {
+    const pairs = [...MOCK_PAIR_OPTIONS, CARD_OPTION];
+    desktopStore.getState().hydrate({
+      ...createMockScenario("single-project").snapshot,
+      pairs,
+      catalog_version: 9,
+    });
+
+    const state = desktopStore.getState();
+    expect(state.pairs).toEqual(pairs);
+    expect(state.catalogVersion).toBe(9);
+  });
+});
 
 describe("desktopStore 事件投影", () => {
   beforeEach(resetStore);

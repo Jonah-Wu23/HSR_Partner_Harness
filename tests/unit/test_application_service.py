@@ -59,7 +59,19 @@ async def test_bootstrap_contains_projects_conversation_and_voice_shape(service)
         "march7_fourth_mirror",
         "phainon_ancient_machine",
     ]
-    assert snapshot["pairs"][-1] == snapshot["pair"]
+    assert [pair["binding_id"] for pair in snapshot["pairs"]] == [
+        "builtin:firefly_sam",
+        "builtin:march7_fourth_mirror",
+        "builtin:phainon_ancient_machine",
+    ]
+    assert all(pair["source"] == "builtin" for pair in snapshot["pairs"])
+    assert snapshot["catalog_version"] == 0
+    # 快照 pair 仍是当前搭档的内置形状；目录项额外带绑定 id 与角色摘要。
+    current = snapshot["pairs"][-1]
+    assert current["pair_id"] == snapshot["pair"]["pair_id"]
+    assert current["assistant"] == snapshot["pair"]["assistant"]
+    assert current["theme"] == snapshot["pair"]["theme"]
+    assert current["character"]["name"] == snapshot["pair"]["character"]["name"]
     assert snapshot["messages"] == []
     assert snapshot["voice"]["supported"] is False
     assert snapshot["voice"]["speech_queue_len"] == 0
@@ -522,14 +534,33 @@ async def test_chat_mode_rejects_assistant_target(service) -> None:
     assert service.store.load_conversation(conversation_id).messages == ()
 
 
+async def _publish_card(service, name: str) -> str:
+    """建一张已发布（可用）的角色卡；发布时自动绑定默认搭档。"""
+    created = await call(service, f"{name}-draft", "card.create_draft", name=name)
+    card_id = created["card_id"]
+    await call(
+        service,
+        f"{name}-update",
+        "card.update",
+        card_id=card_id,
+        card={"name": name, "first_mes": "你好"},
+    )
+    await call(service, f"{name}-publish", "card.publish", card_id=card_id)
+    return card_id
+
+
 def _card_conversation(service, card_id: str, *, archived: bool = False) -> str:
     """在当前项目建一个绑定角色卡的聊天，带一条历史消息。"""
+    binding = service.binding_repository.find_binding(
+        card_id, service.pair_config.pair_id
+    )
     conversation = service.store.create_conversation(
         pair_id=service.pair_config.pair_id,
         project_id=service.current_project_id,
         title=f"卡聊天-{card_id}",
         account_id=service.current_account_id,
         character_card_id=card_id,
+        binding_id=binding.binding_id if binding is not None else None,
     )
     service.store.save_message(
         Message(
@@ -549,19 +580,19 @@ def _card_conversation(service, card_id: str, *, archived: bool = False) -> str:
     ("existing_card", "archived", "params", "reused"),
     [
         pytest.param(
-            "card-a", False, {"character_card_id": "card-a", "reuse_active": True}, True,
+            "same", False, {"character_card_id": "same", "reuse_active": True}, True,
             id="same-card",
         ),
         pytest.param(
-            "card-a", False, {"character_card_id": "card-b", "reuse_active": True}, False,
+            "same", False, {"character_card_id": "other", "reuse_active": True}, False,
             id="other-card",
         ),
         pytest.param(
-            "card-a", False, {"character_card_id": "card-a"}, False,
+            "same", False, {"character_card_id": "same"}, False,
             id="reuse-not-requested",
         ),
         pytest.param(
-            "card-a", True, {"character_card_id": "card-a", "reuse_active": True}, False,
+            "same", True, {"character_card_id": "same", "reuse_active": True}, False,
             id="archived",
         ),
         pytest.param(None, False, {"reuse_active": True}, False, id="without-card"),
@@ -570,18 +601,27 @@ def _card_conversation(service, card_id: str, *, archived: bool = False) -> str:
 async def test_conversation_create_reuse_active(
     service, existing_card: str | None, archived: bool, params: dict, reused: bool
 ) -> None:
-    """reuse_active 只复用同项目、同角色卡、同搭档的未归档聊天，其他情况照常新建。"""
-    existing = (
-        _card_conversation(service, existing_card, archived=archived)
-        if existing_card
-        else service.current_conversation_id
-    )
+    """reuse_active 只复用同项目、同绑定的未归档聊天，其他情况照常新建。"""
+    cards: dict[str, str] = {}
+    if existing_card is None:
+        # 无绑定的普通会话不参与复用。
+        existing = service.current_conversation_id
+    else:
+        cards = {
+            "same": await _publish_card(service, "复用角色甲"),
+            "other": await _publish_card(service, "复用角色乙"),
+        }
+        existing = _card_conversation(service, cards["same"], archived=archived)
+    resolved_params = {
+        key: (cards[value] if key == "character_card_id" else value)
+        for key, value in params.items()
+    }
     before = {
         conversation.conversation_id
         for conversation in service.store.list_conversations(service.current_project_id)
     }
 
-    result = await call(service, "create-1", "conversation.create", **params)
+    result = await call(service, "create-1", "conversation.create", **resolved_params)
 
     assert result["reused"] is reused
     after = {

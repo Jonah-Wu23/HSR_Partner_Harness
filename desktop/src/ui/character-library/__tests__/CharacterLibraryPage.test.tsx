@@ -210,18 +210,49 @@ describe("CharacterLibraryPage", () => {
       ]);
     });
 
-    it("使用某张卡时设为当前角色、复用或新建聊天并回到聊天视图", async () => {
+    it("使用已发布卡时按该卡绑定项建会话、更新使用中标记并回到聊天视图", async () => {
+      const backend = new MockDesktopBackend();
+      await renderLibrary(backend);
+
+      // 砂金当前已归档；已发布且未归档的卡才进入可选搭档目录。
+      fireEvent.change(screen.getByLabelText("按来源筛选"), { target: { value: "archived" } });
+      fireEvent.click(screen.getByRole("button", { name: "恢复砂金" }));
+      await waitFor(() =>
+        expect(screen.queryByTestId("char-card-card-imported-004")).not.toBeInTheDocument(),
+      );
+      fireEvent.change(screen.getByLabelText("按来源筛选"), { target: { value: "all" } });
+
+      fireEvent.click(screen.getByRole("button", { name: "使用砂金" }));
+
+      await waitFor(() => expect(desktopStore.getState().mainView).toBe("chat"));
+      // 角色库没有目录上下文，先按权威目录补取 pair.list；建会话用绑定 id（reuse_active 复用同绑定会话），
+      // 会话创建成功后才经 card.select_active 更新「使用中」标记。
+      expect(requestLog(backend.recordedRequests).slice(-4)).toEqual([
+        ["pair.list", {}],
+        [
+          "conversation.create",
+          { binding_id: "card-bind-card-imported-004", reuse_active: true },
+        ],
+        ["card.select_active", { card_id: "card-imported-004" }],
+        ["card.list", { include_archived: true }],
+      ]);
+    });
+
+    it("草稿卡不在搭档目录时如实报错，留在角色库且不发会话创建请求", async () => {
       const backend = new MockDesktopBackend();
       await renderLibrary(backend);
 
       fireEvent.click(screen.getByRole("button", { name: "使用新角色草稿" }));
 
-      await waitFor(() => expect(desktopStore.getState().mainView).toBe("chat"));
-      expect(requestLog(backend.recordedRequests).slice(1)).toEqual([
-        ["card.select_active", { card_id: "card-draft-001" }],
-        ["card.list", { include_archived: true }],
-        ["conversation.create", { reuse_active: true }],
-      ]);
+      await waitFor(() =>
+        expect(desktopStore.getState().toasts.at(-1)?.text).toBe(
+          "该角色卡当前不在可选搭档目录中（草稿、已归档或绑定尚未生效），无法开始对话",
+        ),
+      );
+      expect(desktopStore.getState().mainView).toBe("characters");
+      expect(requestLog(backend.recordedRequests).slice(1)).toEqual([["pair.list", {}]]);
+      expect(requestLog(backend.recordedRequests).filter(([method]) => method === "conversation.create")).toEqual([]);
+      expect(requestLog(backend.recordedRequests).filter(([method]) => method === "card.select_active")).toEqual([]);
     });
 
     it("编辑按钮与使用中置顶条都打开该卡的创作页", async () => {

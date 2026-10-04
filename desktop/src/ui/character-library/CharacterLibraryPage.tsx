@@ -103,10 +103,14 @@ export function CharacterLibraryPage({
   };
 
   const handleUseCard = async (cardId: string) => {
-    await actions.selectActiveCard(cardId);
-    // reuse_active 复用同项目同角色卡的活跃会话，不重复建聊天。
-    await actions.createConversation(undefined, undefined, undefined, { reuseActive: true });
-    actions.openChat();
+    // 角色库不再先 card.select_active：直接按该卡在配对目录里的绑定项新建（或复用）会话。
+    // 目录里没有该卡的绑定项（草稿、已归档）时动作层会提示，这里保持停留在角色库。
+    try {
+      await actions.startConversationWithCard(cardId);
+      actions.openChat();
+    } catch {
+      // 失败原文已由动作层推送提示，不切换视图。
+    }
   };
 
   const handleImportSuccess = () => {

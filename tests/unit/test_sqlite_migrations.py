@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -12,6 +13,7 @@ from pair_harness.core.contracts import (
     ToolRun,
     enum_value,
 )
+from pair_harness.partner_catalog import PartnerBindingRepository
 from pair_harness.storage.sqlite_store import (
     SCHEMA_VERSION,
     DatabaseVersionError,
@@ -109,11 +111,29 @@ def _insert_conversation(
     *,
     title: str = "旧聊天",
     pair_id: str = PAIR_ID,
+    character_card_id: str | None = None,
+) -> None:
+    extra_column = "" if character_card_id is None else ", character_card_id"
+    extra_value = "" if character_card_id is None else ", ?"
+    params: tuple = (
+        (conversation_id, pair_id, title, NOW, NOW)
+        if character_card_id is None
+        else (conversation_id, pair_id, title, NOW, NOW, character_card_id)
+    )
+    connection.execute(
+        f"INSERT INTO conversations(conversation_id, project_id, pair_id, title, "
+        f"created_at, updated_at{extra_column}) VALUES (?, 'p', ?, ?, ?, ?{extra_value})",
+        params,
+    )
+
+
+def _insert_character_card(
+    connection: sqlite3.Connection, card_id: str, *, state: str
 ) -> None:
     connection.execute(
-        "INSERT INTO conversations(conversation_id, project_id, pair_id, title, "
-        "created_at, updated_at) VALUES (?, 'p', ?, ?, ?, ?)",
-        (conversation_id, pair_id, title, NOW, NOW),
+        "INSERT INTO character_cards(card_id, state, name, source, card_json, "
+        "created_at, updated_at) VALUES (?, ?, ?, 'user_created', '{}', ?, ?)",
+        (card_id, state, card_id, NOW, NOW),
     )
 
 
@@ -361,6 +381,57 @@ def test_v0_4_1_messages_and_tools_are_renumbered_on_one_timeline(tmp_path: Path
         ]
         assert sorted(orders.values()) == list(range(1, 8))
         assert [m.timeline_order for m in store.load_conversation("other").messages] == [1]
+
+
+def test_v0_4_2_database_gains_bindings_and_backfills_binding_id(tmp_path: Path) -> None:
+    database = tmp_path / "v13.sqlite"
+    connection = create_legacy_database(database, 13)
+    _insert_project(connection)
+    connection.execute(
+        "INSERT INTO app_state(key, value) VALUES ('character_cards.archived', ?)",
+        (json.dumps(["card-archived"]),),
+    )
+    for card_id, state in (
+        ("card-saved", "saved"),
+        ("card-imported", "imported"),
+        ("card-draft", "draft"),
+        ("card-archived", "saved"),
+    ):
+        _insert_character_card(connection, card_id, state=state)
+    _insert_conversation(connection, "c-builtin", pair_id="phainon_ancient_machine")
+    _insert_conversation(connection, "c-legacy-pair", pair_id="pair_legacy")
+    _insert_conversation(connection, "c-card", character_card_id="card-saved")
+    _insert_conversation(connection, "c-archived", character_card_id="card-archived")
+    _insert_conversation(connection, "c-draft", character_card_id="card-draft")
+    _insert_conversation(connection, "c-missing", character_card_id="card-gone")
+    connection.commit()
+    connection.close()
+
+    with SQLiteStore(database) as store:
+        assert _user_version(store.connection) == SCHEMA_VERSION
+        bindings = {
+            row["binding_id"]: (row["character_card_id"], row["base_pair_id"])
+            for row in store.connection.execute(
+                "SELECT binding_id, character_card_id, base_pair_id FROM partner_bindings"
+            )
+        }
+        assert bindings == {
+            "builtin:firefly_sam": (None, "firefly_sam"),
+            "builtin:march7_fourth_mirror": (None, "march7_fourth_mirror"),
+            "builtin:phainon_ancient_machine": (None, "phainon_ancient_machine"),
+            "card:card-saved": ("card-saved", "phainon_ancient_machine"),
+            "card:card-imported": ("card-imported", "phainon_ancient_machine"),
+        }
+        assert (
+            store.get_conversation("c-builtin").binding_id
+            == "builtin:phainon_ancient_machine"
+        )
+        assert store.get_conversation("c-card").binding_id == "card:card-saved"
+        assert store.get_conversation("c-legacy-pair").binding_id is None
+        assert store.get_conversation("c-archived").binding_id is None
+        assert store.get_conversation("c-draft").binding_id is None
+        assert store.get_conversation("c-missing").binding_id is None
+        assert PartnerBindingRepository(store).catalog_version() == 0
 
 
 def test_failed_migration_level_rolls_back_and_retries_on_next_open(tmp_path: Path) -> None:

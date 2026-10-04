@@ -6,6 +6,7 @@ import type {
 import type {
   ApprovalMode,
   CardArchiveResult,
+  CardAvatarResult,
   CardCreateDraftResult,
   CardDeleteResult,
   CardDuplicateResult,
@@ -27,6 +28,8 @@ import type {
   DesktopCommandMethod,
   DesktopSnapshot,
   DesktopStreamEvent,
+  PairListResult,
+  PairOption,
   ReasoningEffort,
   PowerStatusPayload,
   RemoteIssueCodeResult,
@@ -67,6 +70,34 @@ export interface ActionController {
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+/** 在配对目录里按角色卡找绑定项（同一张卡在同一助手下的绑定唯一）。 */
+function findCardBinding(pairs: readonly PairOption[], cardId: string): PairOption | null {
+  return (
+    pairs.find((item) => item.source === "card" && item.character_card_id === cardId) ?? null
+  );
+}
+
+/**
+ * 目录变更事件（card.updated / pair.updated）后的权威目录重取入口。
+ *
+ * store 只把事件记成递增的 catalogRevision，请求由动作层发出：模块级订阅一次，
+ * 控制器创建时把重取函数注册进来（同一窗口只有一个控制器，新控制器取代旧的）。
+ */
+let catalogRefresher: (() => Promise<void>) | null = null;
+let lastCatalogRevision = 0;
+
+desktopStore.subscribe((state) => {
+  const revision = state.catalogRevision;
+  if (revision <= lastCatalogRevision) {
+    lastCatalogRevision = revision;
+    return;
+  }
+  lastCatalogRevision = revision;
+  if (!catalogRefresher) return;
+  // 失败已由请求层提示；后台刷新不再向上抛，避免未处理的拒绝。
+  void catalogRefresher().catch(() => undefined);
+});
 
 export function createActionController(backend: DesktopBackend): ActionController {
   // 请求 id 携带本窗口 viewId，多窗口之间全应用唯一。
@@ -172,6 +203,15 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     if (conversationId) desktopStore.getState().openConversationTab(conversationId);
   };
 
+  // 卡头像按 cardId + avatarVersion 缓存；同一个头像在菜单与会话行里只取一次。
+  const cardAvatarCache = new Map<string, Promise<string | null>>();
+
+  const reloadPairCatalog = async () => {
+    const result = await request<PairListResult>("pair.list");
+    desktopStore.getState().applyPairCatalog(result);
+  };
+  catalogRefresher = reloadPairCatalog;
+
   const actions: HarnessActions = {
     async createProject(rootPath, name) {
       const selectedRoot = rootPath?.trim() || (await backend.pickFolder("选择项目文件夹"));
@@ -197,15 +237,57 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     async archiveProject(projectId) {
       await requestSnapshot("project.archive", { project_id: projectId });
     },
-    async createConversation(projectId, title, pairId, opts) {
-      // 「使用该角色」类入口带 reuse_active 复用活跃会话；「新建聊天」按钮总是新建。
+    async createConversation(projectId, title, bindingId, opts) {
+      // bindingId 来自配对目录（内置项 builtin:<pair_id>，卡项为持久化绑定 id）；
+      // 省略绑定表示内置搭档，服务端不再继承全局 active 角色卡。
+      // 「使用该角色」类入口带 reuse_active 复用同项目同绑定的活跃会话；「新建聊天」按钮总是新建。
       await requestSnapshot<ConversationCreateResult>("conversation.create", {
         project_id: projectId,
         title,
-        ...(pairId ? { pair_id: pairId } : {}),
+        ...(bindingId ? { binding_id: bindingId } : {}),
         ...(opts?.reuseActive ? { reuse_active: true } : {}),
       });
       focusBackendConversation();
+    },
+    async startConversationWithCard(cardId, opts) {
+      let binding = findCardBinding(desktopStore.getState().pairs, cardId);
+      if (!binding) {
+        // 刚发布或导入的卡可能尚未反映到本地目录，按权威目录再确认一次。
+        await reloadPairCatalog();
+        binding = findCardBinding(desktopStore.getState().pairs, cardId);
+      }
+      if (!binding) {
+        rejectAction(
+          `card-binding-missing:${cardId}`,
+          "该角色卡当前不在可选搭档目录中（草稿、已归档或绑定尚未生效），无法开始对话",
+        );
+      }
+      await this.createConversation(undefined, undefined, binding.binding_id, {
+        reuseActive: opts?.reuseActive ?? true,
+      });
+      // 角色库的「使用中」标记仍跟随最近一次点选；会话身份由 binding_id 决定，不依赖该标记。
+      await this.selectActiveCard(cardId);
+    },
+    async refreshPairCatalog() {
+      await reloadPairCatalog();
+    },
+    async fetchCardAvatar(cardId, avatarVersion) {
+      const key = `${cardId}\u0000${avatarVersion ?? ""}`;
+      const cached = cardAvatarCache.get(key);
+      if (cached !== undefined) return cached;
+      const pending = request<CardAvatarResult>("card.avatar", { card_id: cardId })
+        .then((result) =>
+          result.avatar
+            ? `data:${result.avatar.mime_type};base64,${result.avatar.data_base64}`
+            : null,
+        )
+        .catch((error: unknown) => {
+          // 读取失败不进缓存，后续可以重试；失败原文已由请求层提示。
+          cardAvatarCache.delete(key);
+          throw error;
+        });
+      cardAvatarCache.set(key, pending);
+      return pending;
     },
     async selectConversation(conversationId) {
       await requestSnapshot("conversation.select", { conversation_id: conversationId });

@@ -22,14 +22,24 @@ export interface HarnessActions {
   repairProjectPath(projectId: string): Promise<void>;
   selectProject(projectId: string): Promise<void>;
   archiveProject(projectId: string): Promise<void>;
-  /** 创建聊天。opts.reuseActive=true 时下发 reuse_active，「使用该角色」类入口复用
-      同项目同角色卡的活跃会话；「新建聊天」按钮不传，总是新建。 */
+  /** 创建聊天。bindingId 是配对目录里的绑定项（内置项为 `builtin:<pair_id>`，卡项为绑定 id），
+      省略表示使用内置搭档。opts.reuseActive=true 时下发 reuse_active，「使用该角色」类入口
+      复用同项目同绑定的活跃会话；「新建聊天」按钮不传，总是新建。 */
   createConversation(
     projectId?: string,
     title?: string,
-    pairId?: string,
+    bindingId?: string,
     opts?: { reuseActive?: boolean },
   ): Promise<void>;
+  /** 「使用该角色」入口：从最新配对目录按 character_card_id 找到绑定项并按它创建会话；
+      目录中没有该卡的绑定项（草稿、已归档或尚未生效）时如实报错，不静默回退。
+      会话创建成功后再把该卡标记为角色库「使用中」（card.select_active），该标记不参与身份解析。 */
+  startConversationWithCard(cardId: string, opts?: { reuseActive?: boolean }): Promise<void>;
+  /** 重取权威搭档目录（pair.list）写入 store；版本不新于本地已存版本时丢弃响应。 */
+  refreshPairCatalog(): Promise<void>;
+  /** 读取角色卡头像，返回 `data:<mime>;base64,<...>` 数据地址；卡没有头像时返回 null。
+      按 cardId + avatarVersion 做内存缓存，头像变更后旧条目不再命中。 */
+  fetchCardAvatar(cardId: string, avatarVersion: string | null): Promise<string | null>;
   selectConversation(conversationId: string): Promise<void>;
   /** 打开或聚焦本窗口聊天标签，经只读 conversation.open 装载，不改 Sidecar 全局导航。 */
   openConversationTab(conversationId: string): Promise<void>;

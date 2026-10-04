@@ -93,6 +93,40 @@ async def _card_with_reference(service, name: str) -> tuple[str, bytes]:
     return card_id, wav
 
 
+async def _publish_card(service, name: str) -> str:
+    """发布一张卡：进入可选搭档目录并自动绑定默认搭档。"""
+    card_id = (await call(service, "pub-draft", "card.create_draft", name=name))["card_id"]
+    await call(
+        service,
+        "pub-update",
+        "card.update",
+        card_id=card_id,
+        card={"name": name, "first_mes": "你好"},
+    )
+    await call(service, "pub", "card.publish", card_id=card_id)
+    return card_id
+
+
+async def _catalog_card(service, name: str) -> str:
+    """目录内的卡：已发布并绑定参考音频。"""
+    card_id = await _publish_card(service, name)
+    path = service.tmp_path / f"{name}.wav"
+    _write_wav(path, seconds=1.0)
+    await call(
+        service,
+        "catalog-bind",
+        "voice.card_bind_reference",
+        card_id=card_id,
+        path=str(path),
+    )
+    return card_id
+
+
+def _catalog_option(pairs: list[dict[str, Any]], card_id: str) -> dict[str, Any]:
+    """目录项按角色卡 id 取回。"""
+    return next(item for item in pairs if item["character_card_id"] == card_id)
+
+
 def _profile(service, card_id: str):
     return service.card_repository.get_card(card_id).card.hsr.voice_profile
 
@@ -307,6 +341,103 @@ async def test_unbind_resets_voice_and_keeps_reference(service, replay_http) -> 
     assert kinds == ["reference_audio"]
 
 
+# ---------------------------------------------------------------- 目录事件
+
+
+async def test_catalog_card_reference_binding_broadcasts_card_updated(service) -> None:
+    """绑定参考音频改变卡资料：推进目录版本并只发 card.updated。"""
+    card_id = await _publish_card(service, "参考音角色")
+    service.event_log.items.clear()
+    path = service.tmp_path / "reference-only.wav"
+    _write_wav(path, seconds=1.0)
+
+    await call(
+        service, "1", "voice.card_bind_reference", card_id=card_id, path=str(path)
+    )
+
+    [event] = service.event_log.payloads("card.updated")
+    assert event["card_id"] == card_id
+    assert service.event_log.payloads("pair.updated") == []
+    listing = await call(service, "2", "pair.list")
+    assert listing["catalog_version"] == event["catalog_version"]
+
+
+async def test_catalog_card_voice_lifecycle_broadcasts_card_updated(
+    service, replay_http
+) -> None:
+    """目录内建卡音色：creating、ready 与解绑三次落库各推进一次目录版本。"""
+    await _configure_voice(service, replay_http)
+    card_id = await _catalog_card(service, "目录音色角色")
+    _voice_created(replay_http, "catalog-voice-01")
+    service.event_log.items.clear()
+
+    await call(service, "1", "voice.card_create", card_id=card_id, mode="clone")
+
+    events = service.event_log.payloads("card.updated")
+    assert [event["card_id"] for event in events] == [card_id, card_id]
+    versions = [event["catalog_version"] for event in events]
+    assert versions[0] < versions[1]
+    assert service.event_log.payloads("pair.updated") == []
+
+    listing = await call(service, "2", "pair.list")
+    assert listing["catalog_version"] == versions[-1]
+    assert _catalog_option(listing["pairs"], card_id)["character"]["voice_id"] == (
+        "catalog-voice-01"
+    )
+
+    await call(service, "3", "voice.card_unbind", card_id=card_id)
+
+    unbound = service.event_log.payloads("card.updated")[-1]
+    assert unbound["catalog_version"] > versions[-1]
+    listing = await call(service, "4", "pair.list")
+    assert listing["catalog_version"] == unbound["catalog_version"]
+    assert _catalog_option(listing["pairs"], card_id)["character"]["voice_id"] == ""
+
+
+async def test_catalog_card_voice_failure_clears_catalog_voice(
+    service, replay_http
+) -> None:
+    """失败回调落 voice_failed 时目录里的 voice_id 随状态清空。"""
+    await _configure_voice(service, replay_http)
+    card_id = await _catalog_card(service, "失败音色角色")
+    _voice_created(replay_http, "before-failure")
+    await call(service, "1", "voice.card_create", card_id=card_id, mode="clone")
+    ready = await call(service, "2", "pair.list")
+    assert _catalog_option(ready["pairs"], card_id)["character"]["voice_id"] == (
+        "before-failure"
+    )
+    service.event_log.items.clear()
+
+    _rejected(replay_http, "audio is too short")
+    await expect_service_error(
+        lambda: call(service, "3", "voice.card_create", card_id=card_id, mode="clone"),
+        "voice_card_create_failed",
+    )
+
+    events = service.event_log.payloads("card.updated")
+    assert [event["card_id"] for event in events] == [card_id, card_id]
+    assert events[0]["catalog_version"] < events[1]["catalog_version"]
+    listing = await call(service, "4", "pair.list")
+    assert listing["catalog_version"] == events[-1]["catalog_version"]
+    assert _catalog_option(listing["pairs"], card_id)["character"]["voice_id"] == ""
+
+
+async def test_draft_card_voice_changes_emit_no_catalog_event(service, replay_http) -> None:
+    """不在目录内的卡改音色不发事件、不动目录版本。"""
+    await _configure_voice(service, replay_http)
+    card_id, _ = await _card_with_reference(service, "草稿音色角色")
+    _voice_created(replay_http, "draft-voice")
+    before = (await call(service, "0", "pair.list"))["catalog_version"]
+    service.event_log.items.clear()
+
+    await call(service, "1", "voice.card_create", card_id=card_id, mode="clone")
+    await call(service, "2", "voice.card_unbind", card_id=card_id)
+
+    assert service.event_log.payloads("card.updated") == []
+    assert service.event_log.payloads("pair.updated") == []
+    assert (await call(service, "3", "pair.list"))["catalog_version"] == before
+
+
 # ---------------------------------------------------------------- 播放
 
 
@@ -337,14 +468,24 @@ async def test_card_voice_applies_only_to_bound_conversation(service) -> None:
     service.attach_voice_runtime(speaker)
     unbound_id = service.current_conversation_id
     card_id = (await call(service, "1", "card.create_draft", name="覆盖角色"))["card_id"]
+    await call(
+        service,
+        "2",
+        "card.update",
+        card_id=card_id,
+        card={"name": "覆盖角色", "first_mes": "你好"},
+    )
+    await call(service, "3", "card.publish", card_id=card_id)
     service.card_repository.update_voice_profile(
         card_id, state="voice_ready", voice_id="card-voice-01"
     )
+    binding = service.binding_repository.find_binding(card_id, "phainon_ancient_machine")
+    assert binding is not None
 
     # 进入聊天时语音焦点切到该聊天的有效搭档音色。
-    await call(service, "2", "conversation.create", character_card_id=card_id)
+    await call(service, "4", "conversation.create", binding_id=binding.binding_id)
     bound_id, bound_pair = speaker.contexts[-1]
-    await call(service, "3", "conversation.select", conversation_id=unbound_id)
+    await call(service, "5", "conversation.select", conversation_id=unbound_id)
     focused_id, unbound_pair = speaker.contexts[-1]
 
     assert bound_id != unbound_id

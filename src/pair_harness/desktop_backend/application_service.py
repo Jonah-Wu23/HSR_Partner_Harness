@@ -63,7 +63,7 @@ from pair_harness.character_cards.png import (
     read_png_card,
     write_png_card,
 )
-from pair_harness.character_cards.repository import CharacterCardRepository
+from pair_harness.character_cards.repository import CardRecord, CharacterCardRepository
 from pair_harness.character_cards.assets import (
     CharacterAssetError,
     CharacterAssetService,
@@ -133,6 +133,13 @@ from pair_harness.core.memory import (
 )
 from pair_harness.core.voice_policy import is_readable_text
 from pair_harness.core.voice_runtime import VoiceRuntime
+from pair_harness.partner_catalog.repository import PartnerBindingRepository
+from pair_harness.partner_catalog.service import (
+    ELIGIBLE_CARD_STATES,
+    PartnerCatalogError,
+    PartnerCatalogService,
+    ResolvedBinding,
+)
 from pair_harness.settings import Settings
 from pair_harness.storage.sqlite_store import SQLiteStore
 from .pairing import PairingError, PairingService
@@ -159,9 +166,13 @@ from .voice_factory import (
 
 
 def _params_card_id(params: Mapping[str, Any]) -> str | None:
-    """params.character_card_id 的显式值；空/缺失返回 None（走 active 快照）。"""
+    """params.character_card_id 的显式值；空/缺失返回 None（走内置角色）。"""
     value = str(params.get("character_card_id") or "").strip()
     return value or None
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _nullable_int(value: Any) -> int | None:
@@ -776,6 +787,8 @@ class DesktopApplicationService:
         # demo 模式使用离线脚本运行时，账号配置不参与装配。
         self._demo = demo
         self.card_repository = CharacterCardRepository(store)
+        # 搭档绑定：目录、会话身份与新卡自动绑定的持久化入口。
+        self.binding_repository = PartnerBindingRepository(store)
         # 受管理资产（头像、参考音频）。
         self.asset_service = CharacterAssetService(
             store, store.database.parent / "character_assets"
@@ -792,6 +805,10 @@ class DesktopApplicationService:
         self.remote_serve: RemoteServe | None = None
         self.pair_config = pair_config
         self.pair_catalog = tuple(pair_catalog)
+        # 可选搭档目录与新建会话身份校验的唯一入口。
+        self.catalog_service = PartnerCatalogService(
+            store, self.card_repository, self.binding_repository, self.pair_catalog
+        )
         # 装配结果缓存（card_id → (updated_at, AssembledPrompt)）。
         self._assembled_cache: dict[str, tuple[str, AssembledPrompt]] = {}
         self.approval_broker = ApprovalBroker(emitter)
@@ -1030,6 +1047,8 @@ class DesktopApplicationService:
     # ------------------------------------------------------------------ 快照
 
     def bootstrap(self) -> dict[str, Any]:
+        # 目录与版本一次读取，快照内两者互相一致。
+        catalog_options, catalog_version = self.catalog_service.list_options()
         projects: list[dict[str, Any]] = []
         for project in self.store.list_projects_for_account(self.current_account_id):
             project_payload = dict(to_jsonable(project))
@@ -1094,7 +1113,8 @@ class DesktopApplicationService:
             "remote_serve": self.remote_serve.payload() if self.remote_serve else None,
             "voice": self._voice_snapshot(),
             "pair": self._pair_payload(self.pair_config),
-            "pairs": [self._pair_payload(pair) for pair in self.pair_catalog],
+            "pairs": catalog_options,
+            "catalog_version": catalog_version,
             # 快照记录最近一条已经发出的事件；next_sequence 指向下一条待发事件。
             # 前端以该值作为 lastSequence，下一条事件必须从它递增一位。
             "sequence": self.emitter.next_sequence - 1,
@@ -1571,6 +1591,7 @@ class DesktopApplicationService:
         return {
             "app.bootstrap": self._app_bootstrap,
             "app.shutdown": self._app_shutdown,
+            "pair.list": self._pair_list,
             "project.create": self._project_create,
             "project.select": self._project_select,
             "project.update_settings": self._project_update_settings,
@@ -1624,6 +1645,7 @@ class DesktopApplicationService:
             "card.publish": self._card_publish,
             "card.set_avatar": self._card_set_avatar,
             "card.remove_avatar": self._card_remove_avatar,
+            "card.avatar": self._card_avatar,
             "power.get_status": self._power_get_status,
             "voice.card_bind_reference": self._voice_card_bind_reference,
             "voice.card_create": self._voice_card_create,
@@ -1663,6 +1685,13 @@ class DesktopApplicationService:
     ) -> dict[str, Any]:
         await self.shutdown()
         return {"stopped": True}
+
+    async def _pair_list(
+        self, params: Mapping[str, Any], ctx: CommandContext
+    ) -> dict[str, Any]:
+        """pair.list：权威可选搭档目录与目录版本，与快照的 pairs/catalog_version 同形。"""
+        options, catalog_version = self.catalog_service.list_options()
+        return {"pairs": options, "catalog_version": catalog_version}
 
     async def _project_create(
         self, params: Mapping[str, Any], ctx: CommandContext
@@ -1840,19 +1869,21 @@ class DesktopApplicationService:
     async def _conversation_create(
         self, params: Mapping[str, Any], ctx: CommandContext
     ) -> dict[str, Any]:
-        pair_id = self._requested_pair_id(params)
         project_id = str(params.get("project_id") or self.current_project_id)
         project = self._current_account_project(project_id)
-        # 显式 character_card_id 优先；缺省时快照当时有效的 active 卡。
-        card_id = _params_card_id(params) or self._effective_active_card_id()
-        # reuse_active=true 时同项目、同角色卡、同搭档已有活跃会话则直接复用：
-        # 不新建、不重复插入开场白、不改标题。无角色卡的普通会话不参与复用；
-        # 搭档是会话身份的一部分，不跨搭档复用。
-        if bool(params.get("reuse_active", False)) and card_id is not None:
+        # 身份只取显式参数：binding_id 优先，其次显式 pair_id + character_card_id，
+        # 再次 pair_id 的内置角色；不再继承全局 active 卡。
+        resolved = self._resolve_binding(
+            binding_id=_optional_text(params, "binding_id"),
+            pair_id=self._requested_pair_id(params),
+            character_card_id=_params_card_id(params),
+        )
+        # reuse_active=true 时同项目、同绑定已有活跃会话则直接复用：不新建、
+        # 不重复插入开场白、不改标题。
+        if bool(params.get("reuse_active", False)):
             existing = self.store.find_active_conversation(
                 project.project_id,
-                character_card_id=card_id,
-                pair_id=pair_id,
+                binding_id=resolved.binding_id,
                 account_id=self.current_account_id,
             )
             if existing is not None:
@@ -1863,8 +1894,7 @@ class DesktopApplicationService:
         title = _optional_text(params, "title")
         conversation = self._create_conversation(
             project.project_id,
-            pair_id=pair_id,
-            character_card_id=card_id,
+            resolved=resolved,
             title=title,
         )
         await self._enter_conversation_context(conversation.conversation_id)
@@ -2798,6 +2828,8 @@ class DesktopApplicationService:
     # ------------------------------------------------------------------ 角色卡
 
     _BUILTIN_PREFIX = "builtin:"
+    # 导入、发布、复制产生的可用卡自动绑定到这个内置搭档，助手与主题随之确定。
+    _CARD_BINDING_PAIR_ID = "phainon_ancient_machine"
 
     def _builtin_card(self, card_id: str) -> CharacterCard:
         """内置角色的只读卡视图：来自 pair 目录，不入库。"""
@@ -2869,6 +2901,90 @@ class DesktopApplicationService:
             raise ServiceError(
                 "内置角色为只读，不能修改、归档或删除", code="card_read_only"
             )
+
+    async def _card_avatar(
+        self, params: Mapping[str, Any], ctx: CommandContext
+    ) -> dict[str, Any]:
+        """card.avatar：按 card_id 取卡头像，没有头像返回 null。"""
+        card_id = self._required_string(params, "card_id")
+        if card_id.startswith(self._BUILTIN_PREFIX):
+            card = self._builtin_card(card_id)
+        else:
+            try:
+                card = self.card_repository.get_card(card_id).card
+            except KeyError as exc:
+                raise ServiceError("角色卡不存在", code="card_not_found") from exc
+        return {"avatar": self._card_avatar_payload(card)}
+
+    def _card_in_catalog(self, card_id: str) -> bool:
+        """该卡当前是否属于可选搭档目录：有启用绑定、状态可用且未归档。"""
+        bound = any(
+            binding.character_card_id == card_id
+            for binding in self.binding_repository.list_bindings()
+        )
+        if not bound:
+            return False
+        try:
+            record = self.card_repository.get_card(card_id)
+        except KeyError:
+            return False
+        return (
+            record.state in ELIGIBLE_CARD_STATES
+            and not self.card_repository.is_archived(card_id)
+        )
+
+    def _commit_catalog_version(self) -> int:
+        """目录版本 +1 并提交，返回新版本。"""
+        version = self.binding_repository.bump_catalog_version()
+        self.store.connection.commit()
+        return version
+
+    def _emit_card_updated(self, card_id: str, catalog_version: int) -> None:
+        self.emitter.emit(
+            "card.updated", {"card_id": card_id, "catalog_version": catalog_version}
+        )
+
+    def _emit_pair_updated(self, catalog_version: int) -> None:
+        self.emitter.emit("pair.updated", {"catalog_version": catalog_version})
+
+    def _commit_new_card(
+        self,
+        *,
+        card_id: str,
+        state: str,
+        name: str,
+        source: str,
+        card_json: str,
+    ) -> tuple[CardRecord, int]:
+        """新卡落库、自动绑定与目录版本写进同一事务并提交。
+
+        供 JSON / PNG 导入使用；PNG 的头像资产必须在调用前就绪，绑定才会与
+        完整卡一起可见。提交成功前不广播事件，失败由调用方回滚并清理资产。
+        """
+        now = _now_iso()
+        self.card_repository._insert_card_row(
+            card_id=card_id,
+            state=state,
+            name=name,
+            source=source,
+            card_json=card_json,
+            created_at=now,
+            updated_at=now,
+        )
+        self.binding_repository.create_binding(card_id, self._CARD_BINDING_PAIR_ID)
+        version = self.binding_repository.bump_catalog_version()
+        self.store.connection.commit()
+        return self.card_repository.get_card(card_id), version
+
+    def _bind_eligible_card(self, card_id: str) -> int | None:
+        """把可用卡绑定到默认搭档并推进目录版本；草稿不建绑定，返回 None。"""
+        record = self.card_repository.get_card(card_id)
+        if record.state not in ELIGIBLE_CARD_STATES:
+            return None
+        self.binding_repository.create_binding(card_id, self._CARD_BINDING_PAIR_ID)
+        version = self.binding_repository.bump_catalog_version()
+        self.store.connection.commit()
+        return version
 
     async def _card_list(
         self, params: Mapping[str, Any], ctx: CommandContext
@@ -2975,6 +3091,9 @@ class DesktopApplicationService:
             card.hsr.avatar_asset = avatar_asset
             card.hsr.voice_profile = voice_profile
         record = self.card_repository.update_card(card_id, card)
+        if self._card_in_catalog(card_id):
+            # 改名、设定等资料变化影响目录项展示，目录版本随之前进。
+            self._emit_card_updated(card_id, self._commit_catalog_version())
         return {"card_id": record.card_id, "updated_at": record.updated_at}
 
     async def _card_duplicate(
@@ -2986,28 +3105,37 @@ class DesktopApplicationService:
             record = self.card_repository.import_card(
                 self._builtin_card(card_id), as_duplicate=True
             )
-            return {"card_id": record.card_id, "name": record.card.name}
-        try:
-            record = self.card_repository.duplicate_card(card_id)
-        except KeyError as exc:
-            raise ServiceError("角色卡不存在", code="card_not_found") from exc
-        # duplicate_card 只深拷贝 JSON，副本仍引用原卡资产 ID；这里复制资产
-        # 文件并把副本引用改向新资产 ID，删除原卡不影响副本。
-        mapping = self._copy_card_assets(card_id, record.card_id)
-        card = record.card
-        hsr = card.hsr
-        if hsr is not None:
-            if hsr.avatar_asset is not None and hsr.avatar_asset.asset_id in mapping:
-                hsr.avatar_asset.asset_id = mapping[hsr.avatar_asset.asset_id]
-            if (
-                hsr.voice_profile is not None
-                and hsr.voice_profile.reference_audio_asset in mapping
-            ):
-                hsr.voice_profile.reference_audio_asset = mapping[
-                    hsr.voice_profile.reference_audio_asset
-                ]
-            self.card_repository.update_card(record.card_id, card)
-        return {"card_id": record.card_id, "name": card.name}
+            new_card_id = record.card_id
+            name = record.card.name
+        else:
+            try:
+                record = self.card_repository.duplicate_card(card_id)
+            except KeyError as exc:
+                raise ServiceError("角色卡不存在", code="card_not_found") from exc
+            # duplicate_card 只深拷贝 JSON，副本仍引用原卡资产 ID；这里复制资产
+            # 文件并把副本引用改向新资产 ID，删除原卡不影响副本。
+            mapping = self._copy_card_assets(card_id, record.card_id)
+            card = record.card
+            hsr = card.hsr
+            if hsr is not None:
+                if hsr.avatar_asset is not None and hsr.avatar_asset.asset_id in mapping:
+                    hsr.avatar_asset.asset_id = mapping[hsr.avatar_asset.asset_id]
+                if (
+                    hsr.voice_profile is not None
+                    and hsr.voice_profile.reference_audio_asset in mapping
+                ):
+                    hsr.voice_profile.reference_audio_asset = mapping[
+                        hsr.voice_profile.reference_audio_asset
+                    ]
+                self.card_repository.update_card(record.card_id, card)
+            new_card_id = record.card_id
+            name = card.name
+        # 副本可用时进入可选搭档目录：绑定与目录版本一并推进。
+        version = self._bind_eligible_card(new_card_id)
+        if version is not None:
+            self._emit_card_updated(new_card_id, version)
+            self._emit_pair_updated(version)
+        return {"card_id": new_card_id, "name": name}
 
     def _copy_card_assets(self, source_card_id: str, target_card_id: str) -> dict[str, str]:
         """把源卡的全部受管理资产真实复制归属到目标卡；返回旧→新 asset_id 映射。"""
@@ -3030,12 +3158,16 @@ class DesktopApplicationService:
     ) -> dict[str, Any]:
         card_id = str(params.get("card_id") or "")
         self._require_writable_card(card_id)
+        in_catalog = self._card_in_catalog(card_id)
         try:
             self.card_repository.archive_card(card_id)
         except KeyError as exc:
             raise ServiceError("角色卡不存在", code="card_not_found") from exc
         except ValueError as exc:
             raise ServiceError(str(exc), code="card_invalid_state") from exc
+        if in_catalog:
+            # 归档让角色退出可选搭档目录。
+            self._emit_pair_updated(self._commit_catalog_version())
         return {"card_id": card_id, "archived": True}
 
     async def _card_unarchive(
@@ -3047,6 +3179,9 @@ class DesktopApplicationService:
             self.card_repository.unarchive_card(card_id)
         except KeyError as exc:
             raise ServiceError("角色卡不存在", code="card_not_found") from exc
+        if self._card_in_catalog(card_id):
+            # 恢复让角色重新进入可选搭档目录。
+            self._emit_pair_updated(self._commit_catalog_version())
         return {"card_id": card_id, "archived": False}
 
     async def _card_delete(
@@ -3055,12 +3190,15 @@ class DesktopApplicationService:
         card_id = str(params.get("card_id") or "")
         self._require_writable_card(card_id)
         confirm = params.get("confirm") is True
+        existed = self._card_in_catalog(card_id)
         try:
             self.card_repository.delete_card(card_id, confirm=confirm)
         except ValueError as exc:
             raise ServiceError(str(exc), code="card_confirm_required") from exc
         # 删除卡时同步清理头像与参考音频资产。
         self.asset_service.delete_assets_for_card(card_id)
+        if existed:
+            self._emit_pair_updated(self._commit_catalog_version())
         return {"card_id": card_id, "deleted": True}
 
     async def _card_select_active(
@@ -3194,12 +3332,27 @@ class DesktopApplicationService:
     async def _card_import_json(
         self, params: Mapping[str, Any], ctx: CommandContext
     ) -> dict[str, Any]:
+        """card.import_json：JSON 卡入库、自动绑定与目录版本同一事务。"""
         _path, data = self._read_card_file(params)
         result = self._parse_json_card(data)
         as_duplicate = params.get("as_duplicate") is True
-        record = self.card_repository.import_card(
-            result.card, as_duplicate=as_duplicate
-        )
+        name = f"{result.card.name}（副本）" if as_duplicate else result.card.name
+        card_id = uuid4().hex
+        try:
+            record, version = self._commit_new_card(
+                card_id=card_id,
+                state="imported",
+                name=name,
+                source="tavern_import",
+                card_json=dump_card_v3(
+                    dataclasses.replace(result.card, name=name), for_export=True
+                ),
+            )
+        except BaseException:
+            self.store.connection.rollback()
+            raise
+        self._emit_card_updated(card_id, version)
+        self._emit_pair_updated(version)
         return {
             "card_id": record.card_id,
             "name": record.card.name,
@@ -3274,40 +3427,55 @@ class DesktopApplicationService:
     ) -> dict[str, Any]:
         """card.import_png：PNG 字节入库并登记头像资产。
 
-        字节 → read_png_card → import_card（as_duplicate 改名）→ store_asset
-        （PNG 原始字节即头像）→ 回写 card.hsr.avatar_asset。解析或资产写入
-        失败都按 card_import_failed 报出原文；导入已落库时不回滚。
+        字节 → read_png_card → store_asset（PNG 原始字节即头像）→ 卡落库（含
+        avatar_asset 引用）+ 自动绑定 + 目录版本同一事务提交。头像资产先就绪，
+        绑定才随完整卡一起可见；任一步失败都回滚数据库并清理本次新增资产，
+        提交成功前不广播任何事件。
         """
         path, data = self._read_card_file(params)
         result = self._parse_png_card(data)
         as_duplicate = params.get("as_duplicate") is True
-        record = self.card_repository.import_card(
-            result.card, as_duplicate=as_duplicate
-        )
+        name = f"{result.card.name}（副本）" if as_duplicate else result.card.name
+        card_id = uuid4().hex
         try:
             asset_id = self.asset_service.store_asset(
-                card_id=record.card_id,
+                card_id=card_id,
                 data=data,
                 kind="avatar",
                 mime_type="image/png",
                 source_ref=path.name,
             )
-        except CharacterAssetError as exc:
-            raise ServiceError(
-                f"写入角色卡头像资产失败：{exc}", code="card_import_failed"
-            ) from exc
-        # 经 update_card 回写卡 JSON 的 hsr.avatar_asset，updated_at 随之更新。
-        card = record.card
-        if card.hsr is None:
-            card.hsr = HsrExtension()
-        card.hsr.avatar_asset = AvatarAsset(
-            asset_id=asset_id,
-            source="png_import",
-            source_ref=path.name,
-            mime_type="image/png",
-            exported_in_png=True,
-        )
-        self.card_repository.update_card(record.card_id, card)
+            # 先按导出形态落库（去掉外部设备的本机资产引用），再写回本次
+            # 刚生成的头像引用，避免 PNG 里残留其他资产库的 id。
+            card = load_card_payload(
+                json.loads(
+                    dump_card_v3(
+                        dataclasses.replace(result.card, name=name), for_export=True
+                    )
+                )
+            ).card
+            if card.hsr is None:
+                card.hsr = HsrExtension()
+            card.hsr.avatar_asset = AvatarAsset(
+                asset_id=asset_id,
+                source="png_import",
+                source_ref=path.name,
+                mime_type="image/png",
+                exported_in_png=True,
+            )
+            record, version = self._commit_new_card(
+                card_id=card_id,
+                state="imported",
+                name=name,
+                source="tavern_import",
+                card_json=dump_card_v3(card),
+            )
+        except BaseException:
+            self.store.connection.rollback()
+            self.asset_service.delete_assets_for_card(card_id)
+            raise
+        self._emit_card_updated(card_id, version)
+        self._emit_pair_updated(version)
         return {
             "card_id": record.card_id,
             "name": record.card.name,
@@ -3397,6 +3565,16 @@ class DesktopApplicationService:
                     "完成创建前必填：" + "、".join(missing),
                     code="card_publish_invalid",
                 )
+            # 草稿→saved：状态跃迁、自动绑定与目录版本同一事务提交。
+            self.card_repository._update_card_row(
+                card_id, state="saved", updated_at=_now_iso()
+            )
+            self.binding_repository.create_binding(card_id, self._CARD_BINDING_PAIR_ID)
+            version = self.binding_repository.bump_catalog_version()
+            self.store.connection.commit()
+            self._emit_card_updated(card_id, version)
+            self._emit_pair_updated(version)
+            return {"card_id": card_id, "state": "saved"}
         published = self.card_repository.publish_card(card_id)
         return {"card_id": card_id, "state": published.state}
 
@@ -3462,6 +3640,9 @@ class DesktopApplicationService:
             mime_type=mime,
         )
         self.card_repository.update_card(card_id, card)
+        if self._card_in_catalog(card_id):
+            # 头像换新后目录项的头像引用与版本随之前进。
+            self._emit_card_updated(card_id, self._commit_catalog_version())
         return {"card_id": card_id, "asset_id": asset_id, "mime_type": mime}
 
     async def _card_remove_avatar(
@@ -3478,6 +3659,8 @@ class DesktopApplicationService:
         if card.hsr is not None and card.hsr.avatar_asset is not None:
             card.hsr.avatar_asset = None
             self.card_repository.update_card(card_id, card)
+            if self._card_in_catalog(card_id):
+                self._emit_card_updated(card_id, self._commit_catalog_version())
         return {"card_id": card_id, "removed": True}
 
     # ------------------------------------------------------------------ 角色卡音色
@@ -3544,6 +3727,7 @@ class DesktopApplicationService:
             card.hsr.voice_profile = VoiceProfile()
         card.hsr.voice_profile.reference_audio_asset = asset_id
         self.card_repository.update_card(card_id, card)
+        self._emit_card_voice_changed(card_id)
         return {
             "card_id": card_id,
             "asset_id": asset_id,
@@ -3570,6 +3754,11 @@ class DesktopApplicationService:
             },
         )
 
+    def _emit_card_voice_changed(self, card_id: str) -> None:
+        """音色字段提交后广播：卡在目录内时推进目录版本并 emit card.updated。"""
+        if self._card_in_catalog(card_id):
+            self._emit_card_updated(card_id, self._commit_catalog_version())
+
     @staticmethod
     def _default_prefix(card_name: str) -> str:
         cleaned = "".join(
@@ -3582,6 +3771,7 @@ class DesktopApplicationService:
         record = self.card_repository.update_voice_profile(
             card_id, state=CharacterVoiceState.FAILED.value, last_error=detail
         )
+        self._emit_card_voice_changed(card_id)
         self._card_provision_emit(
             card_id,
             CharacterVoiceState.FAILED.value,
@@ -3673,6 +3863,7 @@ class DesktopApplicationService:
             self.card_repository.update_voice_profile(
                 card_id, state=CharacterVoiceState.CREATING.value
             )
+            self._emit_card_voice_changed(card_id)
             try:
                 if mode == "clone":
                     result = await asyncio.to_thread(
@@ -3711,6 +3902,7 @@ class DesktopApplicationService:
                 prefix=prefix,
                 last_error="",
             )
+            self._emit_card_voice_changed(card_id)
             self._card_provision_emit(
                 card_id,
                 CharacterVoiceState.READY.value,
@@ -3741,6 +3933,7 @@ class DesktopApplicationService:
             profile.last_error = ""
             profile.updated_at = utc_now().isoformat()
             self.card_repository.update_card(card_id, card)
+            self._emit_card_voice_changed(card_id)
         return {
             "card_id": card_id,
             "state": CharacterVoiceState.UNCONFIGURED.value,
@@ -3847,21 +4040,6 @@ class DesktopApplicationService:
             await asyncio.sleep(interval_seconds)
 
     # ------------------------------------------------------------------ 聊天绑定角色卡（装配）
-
-    def _effective_active_card_id(self) -> str | None:
-        """当前可作为新对话角色身份的 active 卡；draft 与归档卡不生效。"""
-        card_id = self.card_repository.get_active_card_id()
-        if not card_id:
-            return None
-        try:
-            record = self.card_repository.get_card(card_id)
-        except KeyError:
-            return None
-        if record.state not in {"saved", "imported"}:
-            return None
-        if self.card_repository.is_archived(card_id):
-            return None
-        return card_id
 
     def _recent_completed_summary(
         self, conversation_id: str
@@ -6234,7 +6412,10 @@ class DesktopApplicationService:
     # ------------------------------------------------------------------ 上下文工具
 
     def _requested_pair_id(self, params: Mapping[str, Any]) -> str:
-        """解析创建命令的搭档参数；省略时使用当前搭档。"""
+        """解析创建命令的搭档参数；省略时使用当前搭档。
+
+        只做内置搭档白名单校验；角色身份由 ``_resolve_binding`` 统一裁决。
+        """
         if "pair_id" not in params:
             return self.pair_config.pair_id
         pair_id = str(params["pair_id"])
@@ -6402,6 +6583,23 @@ class DesktopApplicationService:
         self._current_account_project(conversation.project_id, conversation_mismatch=True)
         return conversation
 
+    def _resolve_binding(
+        self,
+        *,
+        binding_id: str | None = None,
+        pair_id: str | None = None,
+        character_card_id: str | None = None,
+    ) -> ResolvedBinding:
+        """新建会话的身份校验入口；目录校验失败按其错误码转成业务错误。"""
+        try:
+            return self.catalog_service.validate_for_create(
+                binding_id=binding_id,
+                pair_id=pair_id,
+                character_card_id=character_card_id,
+            )
+        except PartnerCatalogError as exc:
+            raise ServiceError(str(exc), code=exc.code) from exc
+
     def _find_or_create_conversation(
         self, project_id: str, *, pair_id: str, character_card_id: str | None = None
     ):
@@ -6412,37 +6610,34 @@ class DesktopApplicationService:
             return conversations[0]
         return self._create_conversation(
             project_id,
-            pair_id=pair_id,
-            character_card_id=character_card_id or self._effective_active_card_id(),
+            resolved=self._resolve_binding(
+                pair_id=pair_id, character_card_id=character_card_id
+            ),
         )
 
     def _create_conversation(
         self,
         project_id: str,
         *,
-        pair_id: str,
-        character_card_id: str | None,
+        resolved: ResolvedBinding,
         title: str | None = None,
     ) -> Conversation:
-        """新建聊天并插入绑定卡的开场白。
+        """按已校验的绑定新建聊天，并插入绑定卡的开场白。
 
-        聊天快照创建时的角色卡；之后切换 active 卡不影响已开的聊天。
+        会话保存创建时确定的绑定、伴侣配置与角色卡；之后目录变化不影响已开的聊天。
         """
         conversation = self.store.create_conversation(
             project_id=project_id,
-            pair_id=pair_id,
+            pair_id=resolved.base_pair_id,
             title=title or "新聊天",
             title_source="user" if title else "default",
             account_id=self.current_account_id,
-            character_card_id=character_card_id,
+            character_card_id=resolved.character_card_id,
+            binding_id=resolved.binding_id,
         )
-        if character_card_id:
-            try:
-                record = self.card_repository.get_card(character_card_id)
-            except KeyError:
-                record = None
-            if record is not None:
-                self._insert_character_greeting(conversation, record.card)
+        if resolved.character_card_id is not None:
+            record = self.card_repository.get_card(resolved.character_card_id)
+            self._insert_character_greeting(conversation, record.card)
         return conversation
 
     def _schedule_title_generation(self, conversation_id: str, target: str) -> None:
@@ -6524,9 +6719,13 @@ class DesktopApplicationService:
             raise ServiceError(f"缺少非空参数：{key}", code="invalid_params")
         return value.strip()
 
-    @staticmethod
-    def _conversation_payload(conversation: Any) -> dict[str, Any]:
-        return dict(to_jsonable(conversation))
+    def _conversation_payload(self, conversation: Any) -> dict[str, Any]:
+        """会话记录加统一身份解析结果；已删除卡的会话带 missing 标记。"""
+        payload = dict(to_jsonable(conversation))
+        payload["character_identity"] = self.catalog_service.resolve_character_identity(
+            conversation.pair_id, conversation.character_card_id
+        )
+        return payload
 
     @staticmethod
     def _empty_project_payload() -> dict[str, Any]:

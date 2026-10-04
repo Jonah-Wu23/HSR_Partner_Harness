@@ -5,6 +5,7 @@ import type {
   AccountListItem,
   AccountRecord,
   ActiveTask,
+  CharacterIdentity,
   ConversationOpenResult,
   ConversationRecord,
   ConversationSummary,
@@ -14,9 +15,10 @@ import type {
   MemoryWirePayload,
   Message,
   MessageDeltaPayload,
+  PairListResult,
   PairMemory,
+  PairOption,
   PairRecord,
-  PairSummary,
   PendingApproval,
   PowerStatusPayload,
   ProjectRecord,
@@ -103,7 +105,12 @@ export interface DesktopState {
   currentProjectId: string;
   currentConversationId: string;
   pair: PairRecord | null;
-  pairs: PairSummary[];
+  /** 完整可选搭档目录（内置搭档在前，角色卡绑定在后）；未水合前为空。 */
+  pairs: PairOption[];
+  /** pairs 的权威目录版本；-1 表示尚未收到任何目录数据。 */
+  catalogVersion: number;
+  /** 目录变更事件的本地计数；每来一次 card.updated/pair.updated 递增，动作层据此重取 pair.list。 */
+  catalogRevision: number;
   activeTask: DesktopSnapshot["active_task"];
   /** 全账号活动任务，按 conversation_id 索引；busy 与 activeTask 由本窗口活动聊天推导。 */
   activeTasksByConversation: Record<string, ActiveTask>;
@@ -208,6 +215,8 @@ export interface DesktopState {
   /** 隧道停止或状态查询请求失败：记录错误原文，隧道状态保持不变。 */
   setTunnelRequestFailed(error: string): void;
   hydrate(snapshot: DesktopSnapshot): void;
+  /** 写入权威搭档目录；版本不新于本地已存版本时丢弃（防乱序旧响应覆盖新目录）。 */
+  applyPairCatalog(result: PairListResult): void;
   applyEvents(events: DesktopStreamEvent[]): void;
   /** 装载 conversation.open 的只读结果并打开对应标签，不改全局当前聊天。 */
   hydrateConversationView(result: ConversationOpenResult, bufferedEvents?: DesktopStreamEvent[]): void;
@@ -246,6 +255,7 @@ export type DesktopRenderState = Pick<
   | "currentConversationId"
   | "pair"
   | "pairs"
+  | "catalogVersion"
   | "activeTask"
   | "activeTasksByConversation"
   | "busy"
@@ -313,6 +323,8 @@ function createInitialState(): DesktopData {
     currentConversationId: "",
     pair: null,
     pairs: [],
+    catalogVersion: -1,
+    catalogRevision: 0,
     activeTask: null,
     activeTasksByConversation: {},
     busy: false,
@@ -707,6 +719,7 @@ function hydrateSnapshotState(state: DesktopState, snapshot: DesktopSnapshot): D
     currentConversationId: snapshot.current_conversation_id,
     pair: selectedPair,
     pairs: snapshot.pairs,
+    catalogVersion: snapshot.catalog_version,
     activeTasksByConversation: Object.fromEntries(
       snapshot.active_tasks.map((task) => [task.conversation_id, task]),
     ),
@@ -1193,6 +1206,13 @@ function applyBusinessEvent(state: DesktopState, event: DesktopEvent, draft: Bat
       }
       break;
     }
+    case "card.updated":
+    case "pair.updated": {
+      // 目录已变化：本地目录版本不动（只有权威响应才能推进 catalogVersion），
+      // 只记一次待重取，动作层看到计数变化后请求 pair.list。
+      next.catalogRevision = next.catalogRevision + 1;
+      break;
+    }
     case "conversation.changed": {
       const conversation = event.payload.conversation as ConversationRecord;
       const conversationId = conversation.conversation_id;
@@ -1436,6 +1456,13 @@ export const desktopStore = createStore<DesktopState>((set) => ({
       return replayBufferedEvents({ ...hydrated, eventBuffer: state.eventBuffer }, createBatchDraft());
     });
   },
+  applyPairCatalog(result) {
+    set((state) => {
+      // 旧代次或乱序响应：版本不新于本地已存目录时丢弃。
+      if (result.catalog_version <= state.catalogVersion) return state;
+      return { pairs: result.pairs, catalogVersion: result.catalog_version };
+    });
+  },
   hydrateConversationView(result, bufferedEvents = []) {
     set((state) => {
       if (state.streamId !== null && result.stream_id !== state.streamId) return state;
@@ -1499,9 +1526,6 @@ export const desktopStore = createStore<DesktopState>((set) => ({
         activeProjectId: projectId,
         // 搭档未变时沿用原对象，依赖搭档的消息行不必重渲染。
         pair: state.pair !== null && sameRecord(state.pair, result.pair) ? state.pair : result.pair,
-        pairs: state.pairs.some((item) => item.pair_id === result.pair.pair_id)
-          ? state.pairs
-          : [...state.pairs, result.pair],
       };
       // 装载结果反映 result.sequence 时的会话数据，窗口全局游标保持常驻订阅的进度。
       // 常驻订阅尚未应用、序号不超过 result.sequence 的会话内事件之后到达时由
@@ -1786,6 +1810,24 @@ export function useDesktopStore<T>(selector: (state: DesktopState) => T): T {
 export const selectWindowConversationId = (state: DesktopState): string | null =>
   state.activeConversationId;
 
+/** 本窗口活动会话的角色身份（后端统一解析，标识卡/内置与缺失状态）；无会话或未下发时为 null。 */
+export const selectWindowCharacterIdentity = (
+  state: Pick<DesktopState, "activeConversationId" | "conversationsById">,
+): CharacterIdentity | null => {
+  const conversationId = state.activeConversationId;
+  if (!conversationId) return null;
+  return state.conversationsById[conversationId]?.character_identity ?? null;
+};
+
+/** 本窗口活动会话绑定的角色卡 id；内置会话为 null。 */
+export const selectWindowCharacterCardId = (
+  state: Pick<DesktopState, "activeConversationId" | "conversationsById">,
+): string | null => {
+  const conversationId = state.activeConversationId;
+  if (!conversationId) return null;
+  return state.conversationsById[conversationId]?.character_card_id ?? null;
+};
+
 /** 本窗口当前项目由活动标签所属项目决定，没有标签时取后端快照的当前项目。 */
 export const selectWindowProjectId = (
   state: Pick<DesktopState, "activeProjectId" | "currentProjectId">,
@@ -1827,6 +1869,7 @@ export const selectDesktopRenderState = (state: DesktopState): DesktopRenderStat
   currentConversationId: state.currentConversationId,
   pair: state.pair,
   pairs: state.pairs,
+  catalogVersion: state.catalogVersion,
   activeTask: state.activeTask,
   activeTasksByConversation: state.activeTasksByConversation,
   busy: state.busy,

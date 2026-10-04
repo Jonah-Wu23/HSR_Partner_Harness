@@ -71,7 +71,9 @@ CREATE TABLE IF NOT EXISTS conversations (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     -- 聊天绑定的自定义角色卡 card_id；内置角色为 NULL。
-    character_card_id TEXT NULL
+    character_card_id TEXT NULL,
+    -- 聊天创建时使用的搭档绑定；旧数据或匹配不到时为 NULL。
+    binding_id TEXT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_conversations_project_updated
@@ -160,6 +162,35 @@ CREATE TABLE IF NOT EXISTS character_assets (
 
 CREATE INDEX IF NOT EXISTS idx_character_assets_card
 ON character_assets(card_id);
+
+-- 搭档绑定：base_pair_id 指向 YAML 搭档配置（助手、主题与运行配置），
+-- binding_id 是用户真正选择的搭档身份。character_card_id 为 NULL 表示内置角色。
+-- 唯一索引把同一张卡与同一个内置搭档约束成一行；SQLite 唯一索引下多个 NULL
+-- 互不冲突，内置搭档靠绑定主键保证每个 base_pair_id 一行。
+CREATE TABLE IF NOT EXISTS partner_bindings (
+    binding_id TEXT PRIMARY KEY,
+    character_card_id TEXT NULL,
+    base_pair_id TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_partner_bindings_scope
+ON partner_bindings(character_card_id, base_pair_id);
+
+-- 三个内置搭档的绑定随新库一次建全，binding_id 稳定为 builtin:<pair_id>。
+INSERT OR IGNORE INTO partner_bindings(
+    binding_id, character_card_id, base_pair_id, enabled, created_at, updated_at
+)
+SELECT 'builtin:' || pair_id, NULL, pair_id, 1,
+    strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now'),
+    strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')
+FROM (
+    SELECT 'firefly_sam' AS pair_id
+    UNION ALL SELECT 'march7_fourth_mirror'
+    UNION ALL SELECT 'phainon_ancient_machine'
+);
 
 -- 投影表由版本 11 迁移建立，当前没有读写方。
 CREATE TABLE IF NOT EXISTS conversation_projections (

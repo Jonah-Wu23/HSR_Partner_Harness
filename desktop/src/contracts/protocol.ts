@@ -155,6 +155,10 @@ export interface ConversationRecord {
   updated_at: string;
   /** 本聊天绑定的角色卡 id；null 表示使用内置角色。 */
   character_card_id?: string | null;
+  /** 创建本聊天时使用的搭档绑定 id；迁移未匹配到绑定的旧会话为 null。 */
+  binding_id?: string | null;
+  /** 后端统一解析的角色身份；缺失时由界面按 pair_id 回退内置渲染。 */
+  character_identity?: CharacterIdentity | null;
 }
 
 export interface PairSpeaker {
@@ -164,6 +168,42 @@ export interface PairSpeaker {
 }
 
 export type PairSpeakerSummary = PairSpeaker;
+
+/** 目录项里的角色侧摘要；卡搭档的名字与头像引用实时取自角色卡。 */
+export interface PairCharacterSummary {
+  id: string;
+  name: string;
+  voice_id: string;
+  /** 头像资产引用；内置搭档与无头像的卡为 null。 */
+  avatar_ref: string | null;
+  /** 头像资产版本，随头像变更推进，用于客户端的头像缓存失效。 */
+  avatar_version: string | null;
+  /** 角色卡已不可用（已删除）时为 true。 */
+  missing: boolean;
+}
+
+/** 新建聊天目录的一个搭档选项：内置搭档或一条角色卡绑定。 */
+export interface PairOption {
+  /** 目录内稳定主键；内置项为 `builtin:<pair_id>`，卡项为持久化绑定 id。 */
+  binding_id: string;
+  /** 运行链路使用的搭档配置 id（卡项的 base pair）。 */
+  pair_id: string;
+  /** 绑定的角色卡 id；内置项为 null。 */
+  character_card_id: string | null;
+  source: "builtin" | "card";
+  character: PairCharacterSummary;
+  assistant: PairSpeaker;
+  theme: PairTheme;
+}
+
+/** 后端统一身份解析器给出的会话角色身份，会话行与顶栏按它渲染。 */
+export interface CharacterIdentity {
+  name: string;
+  avatar_ref: string | null;
+  avatar_version: string | null;
+  missing: boolean;
+  source: "builtin" | "card";
+}
 
 export interface PairTheme {
   character_text: string;
@@ -275,7 +315,10 @@ export interface DesktopSnapshot {
   remote_control: RemoteControlState;
   voice: VoiceState;
   pair: PairRecord;
-  pairs: PairSummary[];
+  /** 完整可选搭档目录：内置搭档在前，角色卡绑定在后。 */
+  pairs: PairOption[];
+  /** 目录版本，随绑定与角色卡变更递增；客户端据此丢弃乱序的旧响应。 */
+  catalog_version: number;
   sequence: number;
   /** 快照所属连接代次；旧代次快照不能覆盖新代次状态。 */
   stream_id: string;
@@ -297,8 +340,30 @@ export interface ConversationOpenResult {
 }
 
 /** conversation.create 的结果：bootstrap 快照加 reused。请求带 reuse_active=true 时，
-    同项目同角色卡已有活跃会话则复用它；无角色卡的普通会话不参与复用。 */
+    同项目同绑定已有活跃会话则复用它；无绑定的普通会话不参与复用。 */
 export type ConversationCreateResult = DesktopSnapshot & { reused: boolean };
+
+/** pair.list：权威搭档目录与目录版本（与快照 pairs / catalog_version 同形）。 */
+export interface PairListResult {
+  pairs: PairOption[];
+  catalog_version: number;
+}
+
+/** card.avatar：卡头像的 base64 数据；卡没有头像时为 null。 */
+export interface CardAvatarResult {
+  avatar: CardAvatarPayload | null;
+}
+
+/** card.updated：角色卡数据变化；catalog_version 是变化后的目录版本。 */
+export interface CardUpdatedPayload {
+  card_id: string;
+  catalog_version: number;
+}
+
+/** pair.updated：搭档目录已变化，客户端据此重取 pair.list。 */
+export interface PairUpdatedPayload {
+  catalog_version: number;
+}
 
 /** task.cancel：cancelled=false 表示服务端没有取消任何任务（任务不在运行或已结束）。 */
 export interface TaskCancelResult {
@@ -318,6 +383,7 @@ export type DesktopCommandMethod =
   | "ping"
   | "app.bootstrap"
   | "app.shutdown"
+  | "pair.list"
   | "project.create"
   | "project.select"
   | "project.update_settings"
@@ -370,6 +436,7 @@ export type DesktopCommandMethod =
   | "card.publish"
   | "card.set_avatar"
   | "card.remove_avatar"
+  | "card.avatar"
   | "voice.card_bind_reference"
   | "voice.card_create"
   | "voice.card_unbind"
@@ -439,6 +506,8 @@ export type DesktopEventName =
   | "task.busy_changed"
   | "conversation.changed"
   | "project.changed"
+  | "card.updated"
+  | "pair.updated"
   | "account.changed"
   | "voice.asr_partial"
   | "voice.state_changed"

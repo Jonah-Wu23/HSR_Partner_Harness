@@ -316,15 +316,19 @@ export function CharacterCreatePage({ vm, actions, onPickFile, onReturnToChat }:
     [saveStatus],
   );
 
-  // 使用该角色开始对话：激活卡 → 创建新聊天 → 进入聊天视图。
+  // 使用该角色开始对话：按该卡在配对目录里的绑定项创建（或复用）会话 → 进入聊天视图。
   const handleStartChat = useCallback(
-    async (cardId: string | null) => {
+    (cardId: string | null) => {
       if (!cardId) return;
-      confirmLeave(async () => {
-        await actions.selectActiveCard(cardId);
-        // reuse_active 复用同项目同角色卡的活跃会话，不重复建聊天。
-        await actions.createConversation(undefined, undefined, undefined, { reuseActive: true });
-        actions.openChat();
+      confirmLeave(() => {
+        void (async () => {
+          try {
+            await actions.startConversationWithCard(cardId);
+            actions.openChat();
+          } catch {
+            // 失败原文已由动作层推送提示（目录里没有该卡的绑定项），留在创作页。
+          }
+        })();
       });
     },
     [actions, confirmLeave],

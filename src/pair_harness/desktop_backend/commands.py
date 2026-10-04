@@ -13,6 +13,8 @@ DESKTOP_COMMANDS = frozenset(
         "project.update_settings",
         "project.archive",
         "conversation.create",
+        # 可选搭档目录：与快照 pairs/catalog_version 同一入口。
+        "pair.list",
         # WS 心跳：探测传输活性，并为已鉴权的控制租约持有者续租。
         "ping",
         "conversation.select",
@@ -62,6 +64,7 @@ DESKTOP_COMMANDS = frozenset(
         "card.publish",
         "card.set_avatar",
         "card.remove_avatar",
+        "card.avatar",
         "power.get_status",
         "voice.card_bind_reference",
         "voice.card_create",

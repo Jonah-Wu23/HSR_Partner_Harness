@@ -43,7 +43,7 @@ class DatabaseVersionError(RuntimeError):
 # 数据库结构版本。新库由 schema.sql 一次建全并直接标记为该版本；已有库只按
 # MIGRATIONS 从 user_version 逐级升级，每一级是从上一版本到该版本的完整步骤
 # （建表、加列、回填），不依赖 schema.sql。每次结构变更 +1 并补对应迁移。
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # 索引 i 对应“从版本 i 升到 i+1”的迁移步骤（每级一条或多条 SQL）。
 MIGRATIONS: tuple[tuple[str, ...], ...] = (
@@ -336,6 +336,49 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         "DROP TABLE _v13_tools",
         "DROP TABLE _v13_orders",
     ),
+    # 版本 14：持久化搭档绑定（partner_bindings）与聊天绑定的 binding_id。
+    # 三个内置搭档各建一行 character_card_id 为 NULL 的绑定；既有可用角色卡
+    # （saved/imported 且不在 app_state 归档集合）补建默认搭档
+    # 「神秘的古代机械」的绑定；既有聊天按 (character_card_id, pair_id)
+    # 匹配回填 binding_id，匹配不到（卡已删除、草稿或归档）保持 NULL。
+    (
+        "CREATE TABLE IF NOT EXISTS partner_bindings ("
+        "binding_id TEXT PRIMARY KEY,"
+        "character_card_id TEXT NULL,"
+        "base_pair_id TEXT NOT NULL,"
+        "enabled INTEGER NOT NULL DEFAULT 1,"
+        "created_at TEXT NOT NULL,"
+        "updated_at TEXT NOT NULL)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_partner_bindings_scope "
+        "ON partner_bindings(character_card_id, base_pair_id)",
+        "ALTER TABLE conversations ADD COLUMN binding_id TEXT NULL",
+        "INSERT OR IGNORE INTO partner_bindings("
+        "binding_id, character_card_id, base_pair_id, enabled, created_at, updated_at) "
+        "SELECT 'builtin:' || pair_id, NULL, pair_id, 1, "
+        "strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now'), "
+        "strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now') "
+        "FROM (SELECT 'firefly_sam' AS pair_id "
+        "UNION ALL SELECT 'march7_fourth_mirror' "
+        "UNION ALL SELECT 'phainon_ancient_machine')",
+        "INSERT OR IGNORE INTO partner_bindings("
+        "binding_id, character_card_id, base_pair_id, enabled, created_at, updated_at) "
+        "SELECT 'card:' || c.card_id, c.card_id, 'phainon_ancient_machine', 1, "
+        "strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now'), "
+        "strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now') "
+        "FROM character_cards AS c "
+        "WHERE c.state IN ('saved', 'imported') "
+        "AND NOT EXISTS ("
+        "SELECT 1 FROM app_state AS s, json_each(s.value) AS j "
+        "WHERE s.key = 'character_cards.archived' AND j.value = c.card_id)",
+        "UPDATE conversations SET binding_id = ("
+        "SELECT b.binding_id FROM partner_bindings AS b "
+        "WHERE b.base_pair_id = conversations.pair_id "
+        "AND b.character_card_id IS conversations.character_card_id) "
+        "WHERE EXISTS ("
+        "SELECT 1 FROM partner_bindings AS b "
+        "WHERE b.base_pair_id = conversations.pair_id "
+        "AND b.character_card_id IS conversations.character_card_id)",
+    ),
 )
 
 
@@ -521,6 +564,7 @@ class SQLiteStore(StateStore):
         conversation_id: str | None = None,
         account_id: str = "",
         character_card_id: str | None = None,
+        binding_id: str | None = None,
         title_source: str = "default",
     ) -> Conversation:
         conversation_id = conversation_id or str(uuid4())
@@ -529,8 +573,8 @@ class SQLiteStore(StateStore):
             """
             INSERT INTO conversations(
                 conversation_id, account_id, project_id, pair_id, title, title_source,
-                last_mode, archived, created_at, updated_at, character_card_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                last_mode, archived, created_at, updated_at, character_card_id, binding_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
             ON CONFLICT(conversation_id) DO UPDATE SET
                 updated_at=excluded.updated_at
             """,
@@ -545,6 +589,7 @@ class SQLiteStore(StateStore):
                 now,
                 now,
                 character_card_id,
+                binding_id,
             ),
         )
         self.connection.commit()
@@ -568,6 +613,7 @@ class SQLiteStore(StateStore):
             created_at=_dt(row["created_at"]),
             updated_at=_dt(row["updated_at"]),
             character_card_id=row["character_card_id"],
+            binding_id=row["binding_id"],
         )
 
     def list_conversations(
@@ -616,23 +662,30 @@ class SQLiteStore(StateStore):
         self,
         project_id: str,
         *,
+        binding_id: str | None = None,
         character_card_id: str | None = None,
         pair_id: str | None = None,
         account_id: str | None = None,
     ) -> Conversation | None:
-        """按项目、角色卡与搭档找最新的未归档会话。
+        """按项目与搭档绑定找最新的未归档会话。
 
-        conversation.create 的 ``reuse_active`` 复用键；只匹配
-        archived=0 的会话。无匹配返回 None。
+        conversation.create 的 ``reuse_active`` 复用键是 ``binding_id``：同一
+        搭档绑定只复用一条会话。``binding_id`` 为空时退回按 ``character_card_id``
+        与 ``pair_id`` 匹配，兼容尚未提交绑定 id 的调用点。只匹配 archived=0 的
+        会话，无匹配返回 None。
         """
         where = ["project_id = ?", "archived = 0"]
         params: list[Any] = [project_id]
-        if character_card_id is not None:
-            where.append("character_card_id = ?")
-            params.append(character_card_id)
-        if pair_id is not None:
-            where.append("pair_id = ?")
-            params.append(pair_id)
+        if binding_id is not None:
+            where.append("binding_id = ?")
+            params.append(binding_id)
+        else:
+            if character_card_id is not None:
+                where.append("character_card_id = ?")
+                params.append(character_card_id)
+            if pair_id is not None:
+                where.append("pair_id = ?")
+                params.append(pair_id)
         if account_id is not None:
             where.append("account_id = ?")
             params.append(account_id)

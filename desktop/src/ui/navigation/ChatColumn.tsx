@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { HarnessActions } from "../../contracts/actions";
+import type { PairOption } from "../../contracts/protocol";
 import type {
   ConversationViewModel,
   NavigationViewModel,
@@ -20,9 +21,12 @@ import {
   SettingIcon,
   WarningIcon,
 } from "../../assets/icons/icons";
-import { Menu } from "../primitives/Menu";
+import { Menu, type MenuItem } from "../primitives/Menu";
 import { isSameDay, relativeTime } from "../format";
-import { getPairAvatars } from "../../assets/pairs/avatars";
+import { getPairAvatars, useCardAvatar } from "../../assets/pairs/avatars";
+
+/** 新建菜单里两段之间的分隔项 id；Menu 没有分隔类型，用不可点击项承载。 */
+const PAIR_MENU_SEPARATOR_ID = "pair-menu-separator";
 
 interface ChatColumnProps {
   navigation: NavigationViewModel;
@@ -75,7 +79,6 @@ interface ArchiveConfirmProps {
   onConfirm: () => void;
   onCancel: () => void;
 }
-
 function ArchiveConfirm({ label, message, confirmLabel, onConfirm, onCancel }: ArchiveConfirmProps) {
   return (
     <div className="archive-confirm" role="alertdialog" aria-label={label}>
@@ -89,6 +92,104 @@ function ArchiveConfirm({ label, message, confirmLabel, onConfirm, onCancel }: A
         </button>
       </div>
     </div>
+  );
+}
+
+/** 新建菜单项图标：内置搭档用静态头像，角色卡用卡头像；没有头像时用搭档主题双点。 */
+function PairMenuIcon({ pair, actions }: { pair: PairOption; actions: HarnessActions }) {
+  const avatars = pair.source === "builtin" ? getPairAvatars(pair.pair_id) : null;
+  const cardAvatar = useCardAvatar(
+    actions.fetchCardAvatar,
+    pair.source === "card" ? pair.character_card_id : null,
+    pair.character.avatar_version,
+  );
+  return (
+    <span className="pair-menu-icon">
+      {cardAvatar ? (
+        <img src={cardAvatar} alt="" className="pair-menu-avatar" />
+      ) : avatars ? (
+        <span className="pair-menu-avatars">
+          <img src={avatars.character} alt="" className="pair-menu-avatar" />
+          <img src={avatars.assistant} alt="" className="pair-menu-avatar pair-menu-avatar-offset" />
+        </span>
+      ) : (
+        <span className="pair-chip">
+          <span className="pair-dot" style={{ background: pair.theme.character_primary }} />
+          <span className="pair-dot" style={{ background: pair.theme.assistant_primary }} />
+        </span>
+      )}
+    </span>
+  );
+}
+
+/**
+ * 会话行搭档芯片：conversation.character_identity 存在且来自角色卡时，角色侧显示卡名与卡头像；
+ * 卡头像缺失或角色卡已删除（missing）时退回几何占位。没有角色身份时维持内置搭档渲染。
+ */
+function ConversationPairChip({
+  conversation,
+  pairs,
+  actions,
+}: {
+  conversation: ConversationViewModel;
+  pairs: PairOption[];
+  actions: HarnessActions;
+}) {
+  const identity = conversation.character_identity ?? null;
+  const item =
+    conversation.binding_id !== undefined && conversation.binding_id !== null
+      ? pairs.find((candidate) => candidate.binding_id === conversation.binding_id) ?? null
+      : null;
+  const baseItem =
+    pairs.find(
+      (candidate) => candidate.source === "builtin" && candidate.pair_id === conversation.pair_id,
+    ) ?? null;
+  const catalogItem = item ?? baseItem;
+  const missing = identity?.missing === true;
+  // 卡已删除（missing）时不请求头像，直接按几何占位降级。
+  const cardId =
+    identity?.source === "card" && !missing ? conversation.character_card_id ?? null : null;
+  const cardAvatar = useCardAvatar(
+    actions.fetchCardAvatar,
+    cardId,
+    identity?.avatar_version ?? null,
+  );
+  const avatars = getPairAvatars(catalogItem?.pair_id ?? conversation.pair_id);
+  // 卡会话的角色侧只用卡头像；没有卡头像或已缺失时退回几何占位，不借用内置角色头像。
+  const characterAvatar = cardAvatar ?? (cardId === null ? avatars?.character ?? null : null);
+  const assistantAvatar = missing ? null : avatars?.assistant ?? null;
+  const characterName =
+    identity?.name || catalogItem?.character.name || conversation.pair_id || "未知搭档";
+  const assistantName = catalogItem?.assistant.name ?? null;
+  const title = assistantName ? `${characterName} × ${assistantName}` : characterName;
+
+  const avatarsNode =
+    characterAvatar && assistantAvatar ? (
+      <span className="pair-chip-avatars">
+        <img src={characterAvatar} alt="" className="pair-chip-avatar" />
+        <img
+          src={assistantAvatar}
+          alt=""
+          className="pair-chip-avatar pair-chip-avatar-offset"
+        />
+      </span>
+    ) : catalogItem && !missing ? (
+      <>
+        <span className="pair-dot" style={{ background: catalogItem.theme.character_primary }} />
+        <span className="pair-dot" style={{ background: catalogItem.theme.assistant_primary }} />
+      </>
+    ) : (
+      <>
+        <span className="pair-dot pair-dot-character" />
+        <span className="pair-dot pair-dot-assistant" />
+      </>
+    );
+
+  return (
+    <span className="pair-chip" title={title}>
+      {avatarsNode}
+      <span className="pair-chip-name">{title}</span>
+    </span>
   );
 }
 
@@ -176,34 +277,14 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
 
   const renderRow = (conversation: ConversationViewModel) => {
     const editing = editingId === conversation.conversation_id;
-    const convPairId = conversation.pair_id;
-    const matchedPair = navigation.pairs.find((p) => p.pair_id === convPairId) ?? null;
-    const avatars = convPairId ? getPairAvatars(convPairId) : null;
-    const pairTitle = matchedPair
-      ? `${matchedPair.character.name} × ${matchedPair.assistant.name}`
-      : (convPairId || "未知搭档");
 
     const meta = (
       <div className="conv-meta">
-        <span className="pair-chip" title={pairTitle}>
-          {avatars ? (
-            <span className="pair-chip-avatars">
-              <img src={avatars.character} alt="" className="pair-chip-avatar" />
-              <img src={avatars.assistant} alt="" className="pair-chip-avatar pair-chip-avatar-offset" />
-            </span>
-          ) : matchedPair ? (
-            <>
-              <span className="pair-dot" style={{ background: matchedPair.theme.character_primary }} />
-              <span className="pair-dot" style={{ background: matchedPair.theme.assistant_primary }} />
-            </>
-          ) : (
-            <>
-              <span className="pair-dot pair-dot-character" />
-              <span className="pair-dot pair-dot-assistant" />
-            </>
-          )}
-          <span className="pair-chip-name">{pairTitle}</span>
-        </span>
+        <ConversationPairChip
+          conversation={conversation}
+          pairs={navigation.pairs}
+          actions={actions}
+        />
         <span className="conv-time">{relativeTime(conversation.updated_at)}</span>
       </div>
     );
@@ -276,30 +357,27 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
   const currentSelectedConv = conversations.find(
     (c) => c.conversation_id === navigation.currentConversationId,
   );
-  const defaultPairId = currentSelectedConv?.pair_id ?? navigation.currentPair.pair_id;
+  // 菜单项 id 是绑定 id；旧会话没有 binding_id 时按内置搭档推导，仅用于选中标记。
+  const defaultBindingId = currentSelectedConv
+    ? (currentSelectedConv.binding_id ??
+      (currentSelectedConv.character_card_id ? null : `builtin:${currentSelectedConv.pair_id}`))
+    : null;
 
-  const pairMenuItems = pairsList.map((pair) => {
-    const avatars = getPairAvatars(pair.pair_id);
-    return {
-      id: pair.pair_id,
-      label: `${pair.character.name} × ${pair.assistant.name}`,
-      icon: (
-        <span className="pair-menu-icon">
-          {avatars ? (
-            <span className="pair-menu-avatars">
-              <img src={avatars.character} alt="" className="pair-menu-avatar" />
-              <img src={avatars.assistant} alt="" className="pair-menu-avatar pair-menu-avatar-offset" />
-            </span>
-          ) : (
-            <span className="pair-chip">
-              <span className="pair-dot" style={{ background: pair.theme.character_primary }} />
-              <span className="pair-dot" style={{ background: pair.theme.assistant_primary }} />
-            </span>
-          )}
-        </span>
-      ),
-    };
+  // 内置搭档段在前，角色卡段在后，两段之间放一个不可点击的分隔项。
+  const builtinOptions = pairsList.filter((pair) => pair.source === "builtin");
+  const cardOptions = pairsList.filter((pair) => pair.source === "card");
+  const pairMenuItem = (pair: PairOption): MenuItem => ({
+    id: pair.binding_id,
+    label: `${pair.character.name} × ${pair.assistant.name}`,
+    icon: <PairMenuIcon pair={pair} actions={actions} />,
   });
+  const pairMenuItems: MenuItem[] = [
+    ...builtinOptions.map(pairMenuItem),
+    ...(builtinOptions.length > 0 && cardOptions.length > 0
+      ? [{ id: PAIR_MENU_SEPARATOR_ID, label: "", disabled: true }]
+      : []),
+    ...cardOptions.map(pairMenuItem),
+  ];
 
   return (
     <div className="chat-column-inner">
@@ -356,7 +434,7 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
         <Menu
           ariaLabel="选择搭档新建聊天"
           align="left"
-          selectedId={defaultPairId}
+          selectedId={defaultBindingId ?? undefined}
           trigger={({ open }) => (
             <button
               type="button"
@@ -368,8 +446,10 @@ export function ChatColumn({ navigation, theme, actions, onCollapse }: ChatColum
             </button>
           )}
           items={pairMenuItems}
-          onSelect={(pairId) => {
-            void actions.createConversation(navigation.currentProjectId, undefined, pairId);
+          onSelect={(bindingId) => {
+            // 分隔项不可点击；其余项都是配对目录里的绑定 id。
+            if (bindingId === PAIR_MENU_SEPARATOR_ID) return;
+            void actions.createConversation(navigation.currentProjectId, undefined, bindingId);
           }}
         />
       </div>

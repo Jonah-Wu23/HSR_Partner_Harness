@@ -563,6 +563,7 @@ const NAVIGATION_FIELDS = [
   "currentConversationId",
   "pair",
   "pairs",
+  "catalogVersion",
 ] as const;
 
 function presentNavigation(
@@ -598,6 +599,7 @@ function presentNavigation(
     currentConversationId: navigationConversationId,
     currentPair: state.pair,
     pairs: state.pairs,
+    catalogVersion: state.catalogVersion,
   };
 }
 

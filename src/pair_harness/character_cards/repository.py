@@ -7,6 +7,7 @@ import copy
 import json
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from typing import Any
 from uuid import uuid4
 
 from pair_harness.character_cards.codec import dump_card_v3, load_card_json
@@ -87,24 +88,27 @@ class CharacterCardRepository:
         card_id = uuid4().hex
         card = CharacterCard(name=name)
         now = _now()
-        self.connection.execute(
-            "INSERT INTO character_cards("
-            "card_id, state, name, source, card_json, created_at, updated_at"
-            ") VALUES (?, 'draft', ?, 'user_created', ?, ?, ?)",
-            (card_id, name, dump_card_v3(card), now, now),
+        self._insert_card_row(
+            card_id=card_id,
+            state="draft",
+            name=name,
+            source="user_created",
+            card_json=dump_card_v3(card),
+            created_at=now,
+            updated_at=now,
         )
         self.connection.commit()
         return self.get_card(card_id)
 
     def update_card(self, card_id: str, card: CharacterCard) -> CardRecord:
         """以传入卡重新 dump 覆盖 card_json，刷新 updated_at。"""
-        now = _now()
-        cursor = self.connection.execute(
-            "UPDATE character_cards SET card_json = ?, name = ?, updated_at = ? "
-            "WHERE card_id = ?",
-            (dump_card_v3(card), card.name, now, card_id),
+        cursor = self._update_card_row(
+            card_id,
+            card_json=dump_card_v3(card),
+            name=card.name,
+            updated_at=_now(),
         )
-        if cursor.rowcount == 0:
+        if cursor == 0:
             raise KeyError(card_id)
         self.connection.commit()
         return self.get_card(card_id)
@@ -132,11 +136,14 @@ class CharacterCardRepository:
         card_to_store = replace(card, name=name)
         card_id = uuid4().hex
         now = _now()
-        self.connection.execute(
-            "INSERT INTO character_cards("
-            "card_id, state, name, source, card_json, created_at, updated_at"
-            ") VALUES (?, 'imported', ?, 'tavern_import', ?, ?, ?)",
-            (card_id, name, dump_card_v3(card_to_store, for_export=True), now, now),
+        self._insert_card_row(
+            card_id=card_id,
+            state="imported",
+            name=name,
+            source="tavern_import",
+            card_json=dump_card_v3(card_to_store, for_export=True),
+            created_at=now,
+            updated_at=now,
         )
         self.connection.commit()
         return self.get_card(card_id)
@@ -148,19 +155,14 @@ class CharacterCardRepository:
         card = copy.deepcopy(source.card)
         card.name = f"{card.name}（副本）"
         now = _now()
-        self.connection.execute(
-            "INSERT INTO character_cards("
-            "card_id, state, name, source, card_json, created_at, updated_at"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                new_id,
-                source.state,
-                card.name,
-                source.source,
-                dump_card_v3(card),
-                now,
-                now,
-            ),
+        self._insert_card_row(
+            card_id=new_id,
+            state=source.state,
+            name=card.name,
+            source=source.source,
+            card_json=dump_card_v3(card),
+            created_at=now,
+            updated_at=now,
         )
         self.connection.commit()
         return self.get_card(new_id)
@@ -191,7 +193,7 @@ class CharacterCardRepository:
         """删除一张卡及其在归档集合中的引用；confirm=False 拒绝且抛出。"""
         if not confirm:
             raise ValueError("删除需要确认")
-        self.connection.execute("DELETE FROM character_cards WHERE card_id = ?", (card_id,))
+        self._delete_card_row(card_id)
         archived = self._archived_ids()
         if card_id in archived:
             archived.discard(card_id)
@@ -213,11 +215,7 @@ class CharacterCardRepository:
         record = self.get_card(card_id)
         if record.state != "draft":
             return record
-        self.connection.execute(
-            "UPDATE character_cards SET state = 'saved', updated_at = ? "
-            "WHERE card_id = ?",
-            (_now(), card_id),
-        )
+        self._update_card_row(card_id, state="saved", updated_at=_now())
         self.connection.commit()
         return self.get_card(card_id)
 
@@ -232,6 +230,66 @@ class CharacterCardRepository:
         return row["value"] if row is not None else None
 
     # ---------------------------------------------------------------- 内部
+
+    def _insert_card_row(
+        self,
+        *,
+        card_id: str,
+        state: str,
+        name: str,
+        source: str,
+        card_json: str,
+        created_at: str,
+        updated_at: str,
+    ) -> None:
+        """插入一行角色卡，不提交事务。
+
+        供需要把「卡落库 + 绑定创建 + 目录版本递增」放进同一事务的调用方
+        使用；公开写方法在此之上自行提交。
+        """
+        self.connection.execute(
+            "INSERT INTO character_cards("
+            "card_id, state, name, source, card_json, created_at, updated_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (card_id, state, name, source, card_json, created_at, updated_at),
+        )
+
+    def _update_card_row(
+        self,
+        card_id: str,
+        *,
+        card_json: str | None = None,
+        name: str | None = None,
+        state: str | None = None,
+        updated_at: str | None = None,
+    ) -> int:
+        """按需更新一行角色卡的指定列，不提交事务；返回受影响行数。"""
+        assignments: list[str] = []
+        params: list[Any] = []
+        for column, value in (
+            ("card_json", card_json),
+            ("name", name),
+            ("state", state),
+            ("updated_at", updated_at),
+        ):
+            if value is not None:
+                assignments.append(f"{column} = ?")
+                params.append(value)
+        if not assignments:
+            return 0
+        params.append(card_id)
+        cursor = self.connection.execute(
+            f"UPDATE character_cards SET {', '.join(assignments)} WHERE card_id = ?",
+            tuple(params),
+        )
+        return cursor.rowcount
+
+    def _delete_card_row(self, card_id: str) -> int:
+        """删除一行角色卡，不提交事务；返回受影响行数。"""
+        cursor = self.connection.execute(
+            "DELETE FROM character_cards WHERE card_id = ?", (card_id,)
+        )
+        return cursor.rowcount
 
     @staticmethod
     def _has_avatar(card: CharacterCard) -> bool:

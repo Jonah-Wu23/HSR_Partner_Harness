@@ -5,8 +5,8 @@ import type {
   CharacterCardSource,
   ConversationRecord,
   Message,
+  PairOption,
   PairRecord,
-  PairSummary,
   PendingApproval,
   ProjectRecord,
   ReasoningEffort,
@@ -61,7 +61,10 @@ export interface NavigationViewModel {
   currentProjectId: string;
   currentConversationId: string;
   currentPair: PairRecord;
-  pairs: PairSummary[];
+  /** 新建聊天菜单的数据源：内置搭档在前，角色卡绑定在后。 */
+  pairs: PairOption[];
+  /** 当前 pairs 对应的目录版本；高于它的响应被丢弃，防止乱序旧数据覆盖。 */
+  catalogVersion: number;
 }
 
 export interface ConversationTimelineViewModel {

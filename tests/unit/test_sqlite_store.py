@@ -428,6 +428,41 @@ def test_find_active_conversation_with_pair_and_card(tmp_path: Path) -> None:
         assert store.find_active_conversation("p1", pair_id="pair_c") is None
 
 
+def test_find_active_conversation_prefers_binding_id(tmp_path: Path) -> None:
+    with SQLiteStore(tmp_path / "db.sqlite") as store:
+        store.create_project(name="Repo", root_path=str(tmp_path), project_id="p1")
+        first = store.create_conversation(
+            project_id="p1",
+            pair_id="pair_a",
+            title="绑定一",
+            character_card_id="card_x",
+            binding_id="binding-1",
+            account_id="acc1",
+        )
+        second = store.create_conversation(
+            project_id="p1",
+            pair_id="pair_a",
+            title="绑定二",
+            character_card_id="card_x",
+            binding_id="binding-2",
+            account_id="acc1",
+        )
+
+        assert store.get_conversation(first.conversation_id).binding_id == "binding-1"
+        assert second.binding_id == "binding-2"
+        found = store.find_active_conversation("p1", binding_id="binding-1")
+        assert found is not None and found.conversation_id == first.conversation_id
+        right = store.find_active_conversation("p1", binding_id="binding-2")
+        assert right is not None and right.conversation_id == second.conversation_id
+        assert store.find_active_conversation("p1", binding_id="binding-3") is None
+        # 未给 binding_id 时退回旧的 (角色卡, 搭档) 匹配
+        legacy = store.find_active_conversation(
+            "p1", character_card_id="card_x", pair_id="pair_a"
+        )
+        assert legacy is not None
+        assert legacy.binding_id in {"binding-1", "binding-2"}
+
+
 # ---------------------------------------------------------------- 摘要
 
 

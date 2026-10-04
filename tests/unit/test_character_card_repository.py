@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from pair_harness.character_cards.codec import load_card_json
+from pair_harness.character_cards.codec import dump_card_v3, load_card_json
 from pair_harness.character_cards.models import (
     AvatarAsset,
     CharacterCard,
@@ -128,6 +128,46 @@ def test_missing_card_raises_keyerror(repo) -> None:
         repository.get_card("no-such-card")
     with pytest.raises(KeyError):
         repository.update_card("no-such-card", _make_card())
+
+
+# ---------------------------------------------------------------- 事务原语
+
+
+def test_row_primitives_leave_commit_to_caller(repo) -> None:
+    repository, store = repo
+    now = "2026-01-01T00:00:00+00:00"
+
+    def insert(card_id: str, name: str) -> None:
+        repository._insert_card_row(
+            card_id=card_id,
+            state="draft",
+            name=name,
+            source="user_created",
+            card_json=dump_card_v3(_make_card(name=name)),
+            created_at=now,
+            updated_at=now,
+        )
+
+    insert("row-1", "事务内")
+    # 原语不自行提交：回滚后行消失
+    store.connection.rollback()
+    with pytest.raises(KeyError):
+        repository.get_card("row-1")
+
+    insert("row-1", "事务内")
+    assert repository._update_card_row("row-1", name="改名") == 1
+    assert repository._update_card_row("row-missing", name="改名") == 0
+    store.connection.commit()
+    row = store.connection.execute(
+        "SELECT name FROM character_cards WHERE card_id = 'row-1'"
+    ).fetchone()
+    assert row["name"] == "改名"
+
+    assert repository._delete_card_row("row-1") == 1
+    assert repository._delete_card_row("row-1") == 0
+    store.connection.commit()
+    with pytest.raises(KeyError):
+        repository.get_card("row-1")
 
 
 # ---------------------------------------------------------------- 未知扩展往返

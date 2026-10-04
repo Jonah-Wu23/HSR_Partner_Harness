@@ -492,20 +492,26 @@ describe("AppShell 排队条、多搭档与音色直达", () => {
     expect(screen.getByLabelText("角色区")).toHaveTextContent("三月七");
     expect(screen.getByLabelText("助手工作台")).toHaveTextContent("第四面镜");
 
-    // 新建聊天先选择搭档
+    // 新建聊天先选择搭档：内置三项在前，分隔项后接角色卡绑定项（mock 为已保存的卡生成）。
     fireEvent.click(screen.getByRole("button", { name: /新建聊天/ }));
     const menu = screen.getByRole("menu", { name: "选择搭档新建聊天" });
-    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+    const menuItems = within(menu).getAllByRole("menuitem");
+    expect(menuItems.map((item) => item.textContent)).toEqual([
       expect.stringContaining("白厄 × 神秘的古代机械"),
       expect.stringContaining("流萤 × 萨姆"),
       expect.stringContaining("三月七 × 第四面镜"),
+      "",
+      expect.stringContaining("卡芙卡 × 神秘的古代机械"),
     ]);
+    expect(menuItems[3]).toBeDisabled();
     fireEvent.click(within(menu).getByRole("menuitem", { name: /流萤 × 萨姆/ }));
     await waitFor(() =>
       expect(paramsOf(backend, "conversation.create")).toEqual([
-        expect.objectContaining({ pair_id: "firefly_sam" }),
+        expect.objectContaining({ binding_id: "builtin:firefly_sam" }),
       ]),
     );
+    // 提交的是目录绑定 id，不再下发 pair_id。
+    expect(paramsOf(backend, "conversation.create")[0]).not.toHaveProperty("pair_id");
   });
 
   it("会话的 pair_id 不在搭档列表中时照常渲染，并以 pair_id 标注", async () => {

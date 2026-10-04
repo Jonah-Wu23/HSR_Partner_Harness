@@ -150,12 +150,14 @@ async def _publish_card(service) -> str:
 
 async def _bind_card_conversation(service) -> str:
     card_id = await _publish_card(service)
-    await call(service, "card-select", "card.select_active", card_id=card_id)
+    binding = service.binding_repository.find_binding(card_id, PAIR_ID)
+    assert binding is not None, "发布后的卡应有默认搭档绑定"
     await call(
         service,
         "conversation-create",
         "conversation.create",
         project_id=service.current_project_id,
+        binding_id=binding.binding_id,
     )
     return service.current_conversation_id
 
@@ -270,19 +272,25 @@ async def _unbound_conversation(service) -> str:
 
 
 async def _conversation_bound_to_empty_draft(service) -> str:
+    # 装配层只读会话上的角色卡 id；草稿没有绑定、无法经命令建会话，直接落一条会话。
     draft = await call(service, "card-draft", "card.create_draft", name="空草稿卡")
-    await call(
-        service, "conversation-create", "conversation.create", character_card_id=draft["card_id"]
+    conversation = service.store.create_conversation(
+        pair_id=PAIR_ID,
+        project_id=service.current_project_id,
+        account_id=service.current_account_id,
+        character_card_id=draft["card_id"],
     )
-    return service.current_conversation_id
+    return conversation.conversation_id
 
 
 async def _conversation_bound_to_archived_card(service) -> str:
     cards = await call(service, "card-list", "card.list")
     builtin = next(item for item in cards["cards"] if str(item["card_id"]).startswith("builtin:"))
     copy = await call(service, "card-duplicate", "card.duplicate", card_id=builtin["card_id"])
+    binding = service.binding_repository.find_binding(copy["card_id"], PAIR_ID)
+    assert binding is not None, "复制出的可用卡应有默认搭档绑定"
     await call(
-        service, "conversation-create", "conversation.create", character_card_id=copy["card_id"]
+        service, "conversation-create", "conversation.create", binding_id=binding.binding_id
     )
     await call(service, "card-archive", "card.archive", card_id=copy["card_id"])
     return service.current_conversation_id
@@ -293,7 +301,7 @@ async def _conversation_bound_to_archived_card(service) -> str:
     [
         (_unbound_conversation, "none", "character_card_unbound", "未绑定角色卡"),
         (_conversation_bound_to_empty_draft, "card", "assembly_empty", "装配结果为空"),
-        # 归档只影响新聊天的 active 快照，已绑定的聊天仍按该卡装配
+        # 归档只让角色退出新建目录，已绑定的聊天仍按该卡装配
         (_conversation_bound_to_archived_card, "card", "assembly_empty", "装配结果为空"),
     ],
     ids=["unbound", "bound_empty_draft", "bound_archived_card"],

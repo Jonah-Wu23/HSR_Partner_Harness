@@ -43,6 +43,8 @@ class Conversation:
     character_card_id: str | None = None
     # 标题来源：default 初始名、auto 助手生成、user 用户命名。
     title_source: str = "default"
+    # 会话创建时使用的搭档绑定（binding_id）；旧数据或匹配不到时为 None。
+    binding_id: str | None = None
 
 
 @dataclass(frozen=True)
