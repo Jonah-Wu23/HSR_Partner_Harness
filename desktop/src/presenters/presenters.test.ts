@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import type { ConversationRecord, DesktopEvent, DesktopSnapshot, Message } from "../contracts/protocol";
 import { createMockScenario } from "../mocks/scenarios";
-import { presentAppShell, selectConversationCharacterIdentity } from "./presenters";
+import { presentAppShell } from "./presenters";
+import { getCharacterIdentityName, selectConversationCharacterIdentity } from "./conversationIdentity";
 import { desktopStore } from "../stores/desktopStore";
 
 /** 以指定场景水合 store，返回当前 ViewModel。 */
@@ -718,10 +719,13 @@ describe("会话角色身份选择器与展示位", () => {
       );
     const state = desktopStore.getState();
 
+    expect(selectConversationCharacterIdentity(state, "conv-a")).toBe(
+      state.conversationsById["conv-a"].character_identity,
+    );
     expect(selectConversationCharacterIdentity(state, "conv-a")).toEqual({
       name: "卡芙卡",
-      avatarRef: "card-avatar:card-a",
-      avatarVersion: "v1",
+      avatar_ref: "card-avatar:card-a",
+      avatar_version: "v1",
       missing: false,
       source: "card",
     });
@@ -732,30 +736,31 @@ describe("会话角色身份选择器与展示位", () => {
     expect(selectConversationCharacterIdentity(state, null)).toBeNull();
   });
 
-  it("旧会话缺 character_identity 时回退内置搭档；绑定卡已删除时回退内置名并标记 missing", () => {
+  it("会话身份未加载或不可用时保留真实状态并显示明确提示", () => {
     const legacy = createMockScenario("single-project").snapshot.projects[0].conversations[0];
+    delete legacy.character_identity;
     const deletedCard = cardConversation("conv-deleted", "card-deleted", "", {
-      name: "",
       avatar_ref: null,
       avatar_version: null,
       missing: true,
     });
-    desktopStore.getState().hydrate(snapshotWith([legacy, deletedCard]));
+    const nullIdentity = { ...legacy, conversation_id: "conv-null", character_identity: null };
+    const emptyName = cardConversation("conv-empty", "card-empty", "  ");
+    desktopStore.getState().hydrate(snapshotWith([legacy, deletedCard, nullIdentity, emptyName]));
     const state = desktopStore.getState();
 
-    expect(selectConversationCharacterIdentity(state, legacy.conversation_id)).toEqual({
-      name: "白厄",
-      avatarRef: null,
-      avatarVersion: null,
-      missing: false,
-      source: "builtin",
-    });
-    expect(selectConversationCharacterIdentity(state, "conv-deleted")).toMatchObject({
-      name: "白厄",
-      avatarRef: null,
-      missing: true,
-      source: "card",
-    });
+    expect(selectConversationCharacterIdentity(state, legacy.conversation_id)).toBeNull();
+    expect(selectConversationCharacterIdentity(state, "conv-null")).toBeNull();
+    expect(getCharacterIdentityName(selectConversationCharacterIdentity(state, legacy.conversation_id)))
+      .toBe("角色身份加载中");
+    expect(selectConversationCharacterIdentity(state, "conv-deleted")).toBe(deletedCard.character_identity);
+    expect(getCharacterIdentityName(selectConversationCharacterIdentity(state, "conv-deleted")))
+      .toBe("角色身份不可用");
+    expect(getCharacterIdentityName(selectConversationCharacterIdentity(state, "conv-empty")))
+      .toBe("角色身份不可用");
+    expect(presentAppShell(state).settings.voice.characterVoiceName).toBe("角色身份加载中");
+    desktopStore.getState().openConversationTab("conv-deleted");
+    expect(presentAppShell(desktopStore.getState()).settings.voice.characterVoiceName).toBe("角色身份不可用");
   });
 
   it("两个卡会话切换后委派来源按各自会话身份显示，无串扰", () => {
@@ -792,6 +797,7 @@ describe("会话角色身份选择器与展示位", () => {
         payload: { voice: { tts: "playing", speech_queue_len: 2 } },
       },
     ]);
+    desktopStore.getState().setConfigSnapshot({ voice: { character_voice_name: "白厄" } });
     const vm = presentAppShell(desktopStore.getState());
     expect(vm.voiceMiniPlayer).toMatchObject({
       status: "playing",
@@ -799,5 +805,18 @@ describe("会话角色身份选择器与展示位", () => {
       speakerName: "卡芙卡",
     });
     expect(vm.settings.voice.characterVoiceName).toBe("卡芙卡");
+    desktopStore.getState().applyEvents([{
+      kind: "event",
+      event: "conversation.changed",
+      sequence: 2,
+      payload: { conversation: cardConversation("conv-a", "card-a", "改名后的卡芙卡") },
+    }]);
+    const renamed = presentAppShell(desktopStore.getState());
+    expect(renamed.voiceMiniPlayer?.speakerName).toBe("改名后的卡芙卡");
+    expect(renamed.settings.voice.characterVoiceName).toBe("改名后的卡芙卡");
+    desktopStore.getState().closeConversationTab("conv-a");
+    const closed = presentAppShell(desktopStore.getState());
+    expect(closed.voiceMiniPlayer?.speakerName).toBe("角色身份加载中");
+    expect(closed.settings.voice.characterVoiceName).toBe("角色身份加载中");
   });
 });

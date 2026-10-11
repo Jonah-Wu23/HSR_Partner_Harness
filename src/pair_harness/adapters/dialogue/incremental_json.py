@@ -6,7 +6,8 @@ from pydantic_core import from_json
 class IncrementalJsonSpeechParser:
     """从流式 content 分片中提取 speech 预览增量。
 
-    输出按部分 JSON 解析，只取顶层 speech 字符串值，转义序列解码后上屏。
+    输出按部分 JSON 解析，确认 delegate 为布尔值后提取顶层 speech 字符串。
+    字段未齐时暂存台词，转义序列解码后上屏。
     权威台词由流结束后的完整解析产生，并由 character.final 覆盖预览；
     不是 JSON 对象的输出没有预览，由完整解析报告协议错误。
     """
@@ -29,6 +30,8 @@ class IncrementalJsonSpeechParser:
             obj = from_json(text, allow_partial="trailing-strings")
         except ValueError:
             # JSON 已损坏：预览停在已上屏部分，流结束后的完整解析如实报错。
+            return ""
+        if not isinstance(obj.get("delegate"), bool):
             return ""
         value = obj.get("speech")
         if not isinstance(value, str):

@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { ConversationRecord } from "../../contracts/protocol";
@@ -64,7 +64,29 @@ describe("TopBar 搭档显示", () => {
     const banner = screen.getByRole("banner");
     expect(banner).toHaveTextContent("卡芙卡");
     expect(banner).toHaveTextContent("神秘的古代机械");
-    // 内置搭档的名字不再作为卡会话的角色名出现。
     expect(banner).not.toHaveTextContent("白厄");
+    const conversation = desktopStore.getState().conversationsById["conv-card"];
+    act(() => desktopStore.getState().applyEvents([{
+      kind: "event",
+      event: "conversation.changed",
+      sequence: 1,
+      payload: { conversation: { ...conversation, character_identity: null } },
+    }]));
+    expect(banner).toHaveTextContent("角色身份加载中");
+    expect(banner.querySelectorAll("img")).toHaveLength(1);
+    act(() => desktopStore.getState().applyEvents([{
+      kind: "event",
+      event: "conversation.changed",
+      sequence: 2,
+      payload: {
+        conversation: {
+          ...conversation,
+          character_identity: { ...conversation.character_identity!, name: "", missing: true },
+        },
+      },
+    }]));
+    expect(banner).toHaveTextContent("角色身份不可用");
+    expect(banner).not.toHaveTextContent("白厄");
+    expect(banner.querySelectorAll("img")).toHaveLength(1);
   });
 });

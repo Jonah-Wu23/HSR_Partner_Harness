@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -8,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from httpx_sse import aconnect_sse
+from httpx_sse import SSEError, aconnect_sse
 
 from pair_harness.config.pairs import load_pair_config, load_prompt
 from pair_harness.adapters.dialogue.incremental_json import IncrementalJsonSpeechParser
@@ -34,6 +35,27 @@ from pair_harness.core.contracts import (
 from pair_harness.core.ports import DialogueModel
 
 logger = logging.getLogger(__name__)
+_MAX_RETRIES = 7
+
+
+def _retryable(exc: Exception) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code == 429 or 500 <= exc.response.status_code < 600
+    return isinstance(exc, (httpx.TransportError, DialogueProtocolError, SSEError))
+
+
+async def _wait_for_retry(attempt: int, exc: Exception) -> None:
+    delay = min(2 ** attempt, 60)
+    condition = (
+        f"HTTP {exc.response.status_code}"
+        if isinstance(exc, httpx.HTTPStatusError)
+        else type(exc).__name__
+    )
+    logger.warning(
+        "对话请求重试 %s/%s，等待 %s 秒，触发条件：%s",
+        attempt + 1, _MAX_RETRIES, delay, condition,
+    )
+    await asyncio.sleep(delay)
 
 
 class DialogueProtocolError(ValueError):
@@ -73,8 +95,8 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         self._owns_client = client is None
         self._timeout = timeout or httpx.Timeout(30.0, connect=10.0)
         self._config_root = config_root
-        # 角色回合的采样温度；None 表示使用服务端默认值。
-        self.temperature = temperature
+        # 所有对话请求与重试使用相同采样温度。
+        self.temperature = 1
         self.character_prompt_resolver = character_prompt_resolver
 
     def _client_or_raise(self) -> httpx.AsyncClient:
@@ -97,14 +119,14 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             self._owns_client = False
 
     def _system_prompt(self, pair_id: str, assembled: AssembledPrompt | None) -> str:
-        """角色侧文本（自定义角色卡装配结果或内置角色卡）+ 助手身份 + 输出协议。"""
+        """角色侧文本（自定义角色卡装配结果或内置角色卡）与助手身份。"""
         config = load_pair_config(pair_id, root=self._config_root)
         if assembled is not None:
             character_text = assembled.system_text
         else:
             character_text = load_prompt(config.character.prompt, root=self._config_root)
         assistant_brief = self._assistant_brief(config.assistant.prompt)
-        return f"{character_text}\n\n{assistant_brief}\n\n{_OUTPUT_FORMAT_INSTRUCTION}"
+        return f"{character_text}\n\n{assistant_brief}"
 
     def _assistant_brief(self, prompt_path: str) -> str:
         """助手提示词的第一节（身份与表达风格）。"""
@@ -130,7 +152,12 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             }.get(message.source)
             if role is None:
                 continue
-            messages.append({"role": role, "content": message.text})
+            content = (
+                json.dumps({"speech": message.text}, ensure_ascii=False)
+                if message.source == MessageSource.CHARACTER
+                else message.text
+            )
+            messages.append({"role": role, "content": content})
         # depth 注入只按对话消息计数，进度、结果与运行环境系统块在注入之后追加。
         if assembled is not None:
             _apply_depth_injections(messages, assembled)
@@ -153,6 +180,7 @@ class OpenAICompatibleDialogueModel(DialogueModel):
                 }
             )
         messages.append({"role": "user", "content": request.user_message.text})
+        messages.append({"role": "system", "content": _OUTPUT_FORMAT_INSTRUCTION})
         return messages
 
     @staticmethod
@@ -181,13 +209,28 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             ],
             "stream": False,
             "max_tokens": max_tokens,
+            "temperature": 1,
             **self._request_extras(),
         }
-        response = await self._client_or_raise().post("/chat/completions", json=body)
-        response.raise_for_status()
+        for attempt in range(_MAX_RETRIES + 1):
+            raw_text = ""
+            try:
+                response = await self._client_or_raise().post("/chat/completions", json=body)
+                raw_text = response.text
+                response.raise_for_status()
+                return self._parse_completion(response)
+            except (httpx.HTTPError, DialogueProtocolError) as exc:
+                if not _retryable(exc) or attempt == _MAX_RETRIES:
+                    logger.error("JSON 补全失败，最后原始输出：%r", raw_text)
+                    raise
+                await _wait_for_retry(attempt, exc)
+        raise AssertionError("重试循环未返回或抛出错误")
+
+    @staticmethod
+    def _parse_completion(response: httpx.Response) -> dict[str, Any]:
         try:
             content = response.json()["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise DialogueProtocolError(
                 f"Chat Completions 响应缺少 choices[0].message.content：{response.text[:2000]}"
             ) from exc
@@ -245,15 +288,14 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         return await self.complete_json(system=system, user=context_text, max_tokens=2048)
 
     def _request_extras(self) -> dict[str, Any]:
-        """DeepSeek 端点使用 JSON Output 并关闭 thinking，其他端点保持标准请求体。
+        """所有端点使用 JSON Output；DeepSeek 端点另外关闭 thinking。
 
         deepseek-v4-flash 在 thinking=enabled 与 response_format=json_object
         组合下，带历史和项目上下文的回合会返回 HTTP 200 但 content 只有空格。
         """
-        if not is_deepseek_host(self.base_url):
-            return {}
-        extras = deepseek_request_extras(thinking=False)
-        extras["response_format"] = {"type": "json_object"}
+        extras: dict[str, Any] = {"response_format": {"type": "json_object"}}
+        if is_deepseek_host(self.base_url):
+            extras.update(deepseek_request_extras(thinking=False))
         return extras
 
     async def stream_reply(self, request: DialogueRequest) -> AsyncIterator[DialogueEvent]:
@@ -264,10 +306,25 @@ class OpenAICompatibleDialogueModel(DialogueModel):
             "stream": True,
             **self._request_extras(),
         }
-        if self.temperature is not None:
-            payload["temperature"] = self.temperature
+        payload["temperature"] = 1
         if is_deepseek_host(self.base_url):
             payload["max_tokens"] = 8192
+        for attempt in range(_MAX_RETRIES + 1):
+            speech_started = False
+            try:
+                async for event in self._stream_attempt(client, payload):
+                    if event.type == "speech.delta":
+                        speech_started = True
+                    yield event
+                return
+            except (httpx.HTTPError, DialogueProtocolError, SSEError) as exc:
+                if speech_started or not _retryable(exc) or attempt == _MAX_RETRIES:
+                    raise
+                await _wait_for_retry(attempt, exc)
+
+    async def _stream_attempt(
+        self, client: httpx.AsyncClient, payload: dict[str, Any]
+    ) -> AsyncIterator[DialogueEvent]:
         # content 增量经 IncrementalJsonSpeechParser 只提取 speech 上屏；
         # reasoning_content 走独立通道。
         text_chunks: list[str] = []
@@ -275,43 +332,62 @@ class OpenAICompatibleDialogueModel(DialogueModel):
         parser = IncrementalJsonSpeechParser()
         speech_started = False
         reasoning_started = False
-        async with aconnect_sse(
-            client, "POST", "/chat/completions", json=payload
-        ) as event_source:
-            event_source.response.raise_for_status()
-            async for sse in event_source.aiter_sse():
-                if sse.data == "[DONE]":
-                    break
-                delta_payload = _chunk_delta(sse.data)
-                content_delta = delta_payload.get("content", "")
-                reasoning_delta = delta_payload.get("reasoning_content", "")
-                if reasoning_delta:
-                    if not reasoning_started:
-                        yield DialogueEvent(type="reasoning.started")
-                        reasoning_started = True
-                    reasoning_chunks.append(str(reasoning_delta))
-                    yield DialogueEvent(type="reasoning.delta", delta=str(reasoning_delta))
-                if content_delta:
-                    raw_text = str(content_delta)
-                    text_chunks.append(raw_text)
-                    speech_delta = parser.feed(raw_text)
-                    if speech_delta:
-                        if not speech_started:
-                            yield DialogueEvent(type="speech.started")
-                            speech_started = True
-                        yield DialogueEvent(type="speech.delta", delta=speech_delta)
+        try:
+            async with aconnect_sse(
+                client, "POST", "/chat/completions", json=payload
+            ) as event_source:
+                try:
+                    event_source.response.raise_for_status()
+                    async for sse in event_source.aiter_sse():
+                        if sse.data == "[DONE]":
+                            break
+                        delta_payload = _chunk_delta(sse.data)
+                        content_delta = delta_payload.get("content", "")
+                        reasoning_delta = delta_payload.get("reasoning_content", "")
+                        if reasoning_delta:
+                            if not reasoning_started:
+                                yield DialogueEvent(type="reasoning.started")
+                                reasoning_started = True
+                            reasoning_chunks.append(str(reasoning_delta))
+                            yield DialogueEvent(type="reasoning.delta", delta=str(reasoning_delta))
+                        if content_delta:
+                            raw_text = str(content_delta)
+                            text_chunks.append(raw_text)
+                            speech_delta = parser.feed(raw_text)
+                            if speech_delta:
+                                if not speech_started:
+                                    yield DialogueEvent(type="speech.started")
+                                    speech_started = True
+                                yield DialogueEvent(type="speech.delta", delta=speech_delta)
+                except (httpx.HTTPStatusError, SSEError):
+                    await event_source.response.aread()
+                    text_chunks.append(event_source.response.text)
+                    raise
+            raw_text = "".join(text_chunks)
+            turn = self.parse_output(raw_text)
+        except (httpx.HTTPError, DialogueProtocolError, SSEError):
+            raw_text = "".join(text_chunks)
+            logger.error("流式对话失败，最后原始输出：%r", raw_text)
+            if reasoning_started:
+                yield DialogueEvent(type="reasoning.completed")
+            if speech_started:
+                yield DialogueEvent(type="speech.completed", raw=raw_text)
+            raise
         if reasoning_started:
             yield DialogueEvent(type="reasoning.completed")
-        raw_text = "".join(text_chunks)
         if raw_text:
             # speech.completed 携带完整原始输出供技术详情使用，raw 不进入气泡。
             yield DialogueEvent(type="speech.completed", raw=raw_text)
-        turn = self.parse_output(raw_text)
         turn = turn.model_copy(update={"reasoning": "".join(reasoning_chunks).strip()})
         yield DialogueEvent(type="character.final", turn=turn)
 
 
 _OUTPUT_FORMAT_INSTRUCTION = """## 运行时输出协议（最高优先级）
+
+历史角色消息是已显示台词的投影，以 {"speech": "已显示台词"} 记录，
+其中未保存历史回合的 delegate、delegation 或 memory。
+当前轮必须按以下协议输出完整回合 JSON，包含 speech 和 delegate，
+并按本轮需要提供 delegation 或 memory。
 
 每轮只输出一个 JSON 对象，不得在 JSON 前后添加正文、解释或 Markdown
 代码块。speech 只放会进入语音朗读的角色台词，不含舞台说明、括号、星号
@@ -320,27 +396,28 @@ _OUTPUT_FORMAT_INSTRUCTION = """## 运行时输出协议（最高优先级）
 delegate 是每轮必填的布尔字段，由你判断：true 表示本轮用户请求需要
 搭档真正动手（本地文件、代码、命令、工具操作），false 表示纯聊天或
 你自己就能回答。判定以你对用户请求的理解为准，与用户怎么措辞无关。
+先输出 delegate，再输出 speech，以便界面在确认协议字段后持续显示台词。
 
 纯聊天：
 
-{"speech": "角色台词", "delegate": false}
+{"delegate": false, "speech": "角色台词"}
 
 需要委派时，delegate 必须为 true，且同一轮必须带上 delegation：
 
-{"speech": "角色台词", "delegate": true, "delegation": {"type": "task", "instructions": "任务内容", "constraints": ["约束"]}}
+{"delegate": true, "speech": "角色台词", "delegation": {"type": "task", "instructions": "任务内容", "constraints": ["约束"]}}
 
 delegate 为 true 却漏了 delegation 属于协议违规，本轮不会有任务交给搭档；
 只在台词里说“让搭档看看”不算委派，只有 delegation 才是任务。
 
 修改正在执行的任务：
 
-{"speech": "角色台词", "delegate": true, "delegation": {"type": "amendment", "instructions": "修改内容", "target_task_id": "任务id", "revision": 2}}
+{"delegate": true, "speech": "角色台词", "delegation": {"type": "amendment", "instructions": "修改内容", "target_task_id": "任务id", "revision": 2}}
 
 memory 是可选的长期记忆字段：本轮出现了值得长期记住的内容时，在同一个
 JSON 对象里加上 memory，值是数组，每个元素是对象且 content 是对象；字段与
 内容由你自己决定，要不要记也由你判断，没有要记的就省略 memory：
 
-{"speech": "角色台词", "delegate": false, "memory": [{"content": {"字段": "内容"}}]}
+{"delegate": false, "speech": "角色台词", "memory": [{"content": {"字段": "内容"}}]}
 
 memory 不是任务，也不需要搭档动手；它只表示你希望记住这件事。
 
@@ -384,7 +461,9 @@ def _parse_character_turn(raw_text: str) -> CharacterTurn:
     speech = speech.strip()
     if not speech.strip(" \t\r\n.…。!！?？"):
         raise DialogueProtocolError("角色模型输出的 speech 为空或仅包含占位标点")
-    delegate = obj.get("delegate", False)
+    if "delegate" not in obj:
+        raise DialogueProtocolError("角色模型输出缺少 delegate 布尔字段")
+    delegate = obj["delegate"]
     if not isinstance(delegate, bool):
         raise DialogueProtocolError(f"角色模型输出的 delegate 不是布尔值：{delegate!r}")
     delegation = _parse_delegation(obj.get("delegation"))

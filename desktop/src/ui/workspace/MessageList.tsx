@@ -7,7 +7,7 @@ import { ReasoningRibbon } from "./ReasoningRibbon";
 interface MessageListProps {
   timeline: ConversationTimelineViewModel;
   pair: PairRecord;
-  /** 角色展示名：会话 character_identity 优先，旧会话回退内置搭档。 */
+  /** 会话 character_identity 的名字或身份状态提示。 */
   characterName: string;
   emptyText: string;
 }

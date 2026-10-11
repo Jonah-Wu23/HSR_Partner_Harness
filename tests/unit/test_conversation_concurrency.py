@@ -7,6 +7,7 @@ import pytest
 
 from pair_harness.adapters.demo import ScriptedCodingEngine, ScriptedDialogueModel
 from pair_harness.core.contracts import (
+    ApprovalDecision,
     CharacterTurn,
     DialogueEvent,
     EngineEvent,
@@ -14,6 +15,7 @@ from pair_harness.core.contracts import (
     EngineSessionRef,
     MessageOrigin,
     MessageStatus,
+    PendingOperation,
     TaskRequest,
 )
 from pair_harness.desktop_backend.application_service import build_demo_service
@@ -391,6 +393,55 @@ async def test_task_cancel_targets_precise_conversation_and_task(service, engine
     await wait_until(
         lambda: _turn_statuses(service, conv_b) == ["completed"],
         message="B 应正常完成",
+    )
+
+
+async def test_account_switch_settles_pending_approval_and_cancels_active_task(
+    service, engine
+) -> None:
+    """账号切换的取消路径先结清该会话的待审批再取消活动任务：审批按系统
+    否决广播一次终态，任务进入取消终态，切换完成且不残留活动任务。"""
+    conversation_id = service.current_conversation_id
+    await _submit_to_assistant(service, conversation_id, "需要审批的任务")
+    await wait_until(lambda: len(engine.gates) == 1, message="任务应开始运行")
+    active = service.orchestrator.state.get_for_conversation(conversation_id)
+
+    approval_task = asyncio.create_task(
+        service.approval_broker.request(
+            operation=PendingOperation(
+                tool_kind="shell", command="echo hi", paths=(), summary="测试操作"
+            ),
+            approval_id="approval-switch-1",
+            reason="需要审批",
+            conversation_id=conversation_id,
+            task_id=active.task_id,
+        )
+    )
+    await wait_until(
+        lambda: "approval-switch-1" in service.approval_broker._pending,
+        message="审批应处于未决",
+    )
+
+    other = service.store.create_account(
+        username="switch-target", display_name="切换目标", password="switch-pass-1"
+    )
+    switched = await call(
+        service, "switch-1", "account.switch", account_id=other["account_id"]
+    )
+    assert switched["account"]["account_id"] == other["account_id"]
+    assert service.current_account_id == other["account_id"]
+
+    assert service.approval_broker._pending == {}
+    resolved = service.event_log.payloads("approval.resolved")
+    assert len(resolved) == 1
+    assert resolved[0]["approval_id"] == "approval-switch-1"
+    assert resolved[0]["decision"] == "deny"
+    assert resolved[0]["resolved_by"] == "system"
+    assert await approval_task is ApprovalDecision.DENY
+    await wait_until(
+        lambda: _turn_statuses(service, conversation_id) == ["cancelled"]
+        and service.orchestrator.state.active_tasks() == [],
+        message="活动任务应进入取消终态并清空",
     )
 
 

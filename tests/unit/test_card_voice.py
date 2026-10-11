@@ -463,9 +463,16 @@ async def test_card_preview_requires_runtime_and_ready_voice(service) -> None:
     assert speaker.enqueued == [("晚上好呀", "ready-vid-42")]
 
 
-async def test_card_voice_applies_only_to_bound_conversation(service) -> None:
+async def test_bound_card_without_voice_leaves_character_voice_empty(service) -> None:
+    """绑定卡的角色侧音色只取卡音色；音色未就绪时留空，VoiceRuntime 跳过朗读。"""
     speaker = SpeakerRecorder()
     service.attach_voice_runtime(speaker)
+    # 内置搭档（白厄）音色已生成，回落时本会读出声音。
+    service.store.set_configs_and_secrets(
+        service.current_account_id,
+        {"voice.profile.phainon.voice_id": "voice-phainon"},
+        {"voice.api_key": "test-key"},
+    )
     unbound_id = service.current_conversation_id
     card_id = (await call(service, "1", "card.create_draft", name="覆盖角色"))["card_id"]
     await call(
@@ -476,22 +483,27 @@ async def test_card_voice_applies_only_to_bound_conversation(service) -> None:
         card={"name": "覆盖角色", "first_mes": "你好"},
     )
     await call(service, "3", "card.publish", card_id=card_id)
-    service.card_repository.update_voice_profile(
-        card_id, state="voice_ready", voice_id="card-voice-01"
-    )
     binding = service.binding_repository.find_binding(card_id, "phainon_ancient_machine")
     assert binding is not None
 
     # 进入聊天时语音焦点切到该聊天的有效搭档音色。
     await call(service, "4", "conversation.create", binding_id=binding.binding_id)
-    bound_id, bound_pair = speaker.contexts[-1]
-    await call(service, "5", "conversation.select", conversation_id=unbound_id)
-    focused_id, unbound_pair = speaker.contexts[-1]
-
+    bound_id, silent_pair = speaker.contexts[-1]
     assert bound_id != unbound_id
     assert service.store.get_conversation(bound_id).character_card_id == card_id
+    assert silent_pair.character.voice_id == ""
+
+    service.card_repository.update_voice_profile(
+        card_id, state="voice_ready", voice_id="card-voice-01"
+    )
+    await call(service, "5", "conversation.select", conversation_id=bound_id)
+    refocused_id, bound_pair = speaker.contexts[-1]
+    await call(service, "6", "conversation.select", conversation_id=unbound_id)
+    focused_id, unbound_pair = speaker.contexts[-1]
+
+    assert refocused_id == bound_id
     assert bound_pair.character.voice_id == "card-voice-01"
     assert focused_id == unbound_id
-    assert unbound_pair.character.voice_id != "card-voice-01"
+    assert unbound_pair.character.voice_id == "voice-phainon"
     # 卡音色只覆盖角色侧。
     assert bound_pair.assistant.voice_id == unbound_pair.assistant.voice_id

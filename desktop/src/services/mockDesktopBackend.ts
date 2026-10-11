@@ -13,6 +13,7 @@ import type {
   DesktopStreamEvent,
   Message,
   MessageDeltaPayload,
+  MemoryListResult,
   PairOption,
   PendingApproval,
   ProjectRecord,
@@ -117,6 +118,7 @@ function renamedCard(card: Record<string, unknown>, name: string): Record<string
 
 /** mock 后端可配置开关，便于 UI 开发与测试覆盖异常路径。 */
 export interface MockDesktopBackendOptions {
+  snapshot?: DesktopSnapshot;
   /** 账号是否已配置 voice.api_key/voice.base_url；默认 true。 */
   voiceConfigured?: boolean;
   /** 是否模拟音色创建失败路径；默认 false。 */
@@ -196,6 +198,7 @@ export class MockDesktopBackend implements DesktopBackend {
     options: MockDesktopBackendOptions = {},
   ) {
     this.scenario = createMockScenario(scenarioName);
+    if (options.snapshot) this.scenario.snapshot = this.clone(options.snapshot);
     this.sequence = this.scenario.snapshot.sequence;
     this.resetPasswords();
     this.voiceConfigured = options.voiceConfigured ?? true;
@@ -267,6 +270,8 @@ export class MockDesktopBackend implements DesktopBackend {
         return this.selectConversation(command.params) as T;
       case "conversation.open":
         return this.openConversation(command.params) as T;
+      case "memory.list":
+        return this.listMemories(command.params) as T;
       case "conversation.rename":
         return this.renameConversation(command.params) as T;
       case "conversation.archive":
@@ -1405,6 +1410,21 @@ export class MockDesktopBackend implements DesktopBackend {
       }
     }
     return this.snapshotResult<DesktopSnapshot>();
+  }
+
+  private listMemories(params: Record<string, unknown>): MemoryListResult {
+    const conversationId = String(params.conversation_id ?? "");
+    const conversation = this.scenario.snapshot.projects
+      .flatMap((project) => project.conversations)
+      .find((item) => item.conversation_id === conversationId);
+    if (!conversation) {
+      throw new DesktopRequestError("conversation_not_found", `会话不存在：${conversationId}`);
+    }
+    if (!conversation.project_id) {
+      throw new DesktopRequestError("memory_invalid", "日常聊天（无项目）不读写长期记忆");
+    }
+    // 既有浏览器场景没有预置记忆，按真实 memory.list 响应契约返回空记录集合。
+    return { memories: [] };
   }
 
   private openConversation(params: Record<string, unknown>): ConversationOpenResult {

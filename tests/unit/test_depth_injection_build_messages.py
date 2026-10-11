@@ -85,9 +85,9 @@ _RUNTIME = ProjectRuntimeContext(
     project_name="项目", project_abs_dir="C:/p", conversation_mode="collaboration"
 )
 _PROMPT = ("system", "<角色提示>")
-_A = ("assistant", "a")
+_A = ("assistant", '{"speech": "a"}')
 _B = ("user", "b")
-_C = ("assistant", "c")
+_C = ("assistant", '{"speech": "c"}')
 
 
 def _layout(messages: list[dict]) -> list[tuple[str, str]]:
@@ -99,6 +99,8 @@ def _layout(messages: list[dict]) -> list[tuple[str, str]]:
             content = "<角色提示>"
         elif "当前工作环境" in content:
             content = "<运行环境>"
+        elif content.startswith("## 运行时输出协议"):
+            content = "<输出协议>"
         layout.append((message["role"], content))
     return layout
 
@@ -153,6 +155,7 @@ def test_depth_injections_spliced_into_conversation(
         *expected,
         ("system", "<运行环境>"),
         ("user", "当前用户消息"),
+        ("system", "<输出协议>"),
     ]
 
 

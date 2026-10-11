@@ -120,7 +120,7 @@ describe("ChatTimeline 角色身份展示", () => {
     expect(card).not.toHaveTextContent("白厄");
   });
 
-  it("旧会话没有 character_identity 时维持搭档角色名回退", () => {
+  it("会话身份未加载或不可用时明确显示身份状态", () => {
     const legacy = cardConversation("c1", "", "白厄");
     delete legacy.character_identity;
     useMobileStore.setState({
@@ -129,9 +129,15 @@ describe("ChatTimeline 角色身份展示", () => {
       pair: PAIR,
       messages: [characterMessage("c1", "旧会话的消息")],
     });
-    render(<ChatTimeline conversationId="c1" />);
+    const { rerender } = render(<ChatTimeline conversationId="c1" />);
 
-    expect(screen.getByTestId("msg-source-badge")).toHaveTextContent("白厄");
+    expect(screen.getByTestId("msg-source-badge")).toHaveTextContent("角色身份加载中");
+    const unavailable = cardConversation("c1", "card-deleted", "");
+    unavailable.character_identity!.missing = true;
+    useMobileStore.setState({ conversationsById: { c1: unavailable } });
+    rerender(<ChatTimeline conversationId="c1" />);
+    expect(screen.getByTestId("msg-source-badge")).toHaveTextContent("角色身份不可用");
+    expect(screen.queryByText("白厄")).toBeNull();
   });
 
   it("切换会话时各自显示各自的名字，互不串扰", () => {

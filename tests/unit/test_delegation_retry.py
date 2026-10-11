@@ -74,7 +74,7 @@ def _result_request(result: CharacterResultSummary) -> DialogueRequest:
         (
             "failed",
             '{"speech":"没做成，我让第四面镜马上重试一次。",'
-            '"delegation":{"type":"task","instructions":"重试任务"}}',
+            '"delegate":true,"delegation":{"type":"task","instructions":"重试任务"}}',
             "没做成，我让第四面镜马上重试一次。",
             "重试任务",
         ),
@@ -82,13 +82,13 @@ def _result_request(result: CharacterResultSummary) -> DialogueRequest:
         (
             "failed",
             '{"speech":"我已经把文件删掉了。",'
-            '"delegation":{"type":"task","instructions":"重试任务"}}',
+            '"delegate":true,"delegation":{"type":"task","instructions":"重试任务"}}',
             "我已经把文件删掉了。",
             "重试任务",
         ),
         (
             "completed",
-            '{"speech":"做完了。","delegation":{"type":"task","instructions":"多余任务"}}',
+            '{"speech":"做完了。","delegate":true,"delegation":{"type":"task","instructions":"多余任务"}}',
             "做完了。",
             "多余任务",
         ),

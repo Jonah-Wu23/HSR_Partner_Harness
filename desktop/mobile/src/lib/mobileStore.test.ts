@@ -396,8 +396,30 @@ describe("mobileStore 电源状态", () => {
 });
 
 describe("mobileStore 打开聊天", () => {
-  it("conversation.open 带手机视图 id，装载结果写入消息、配对与活动任务", async () => {
-    await pairAndBootstrap();
+  it("conversation.open 带手机视图 id，装载结果写入完整会话、消息、配对与活动任务", async () => {
+    const otherConversation = { ...CONVERSATION, conversation_id: "c2" };
+    const otherProject = { ...PROJECT, project_id: "p2", conversations: [] };
+    await pairAndBootstrap({
+      ...snapshotResult(10),
+      projects: [{ ...PROJECT, conversations: [CONVERSATION, otherConversation] }, otherProject],
+    });
+    const previous = useMobileStore.getState();
+    const conversation: ConversationRecord = {
+      ...CONVERSATION,
+      title: "装载后的标题",
+      last_mode: "chat",
+      archived: true,
+      updated_at: "2026-09-12T00:00:00Z",
+      character_card_id: "card-1",
+      binding_id: "binding-1",
+      character_identity: {
+        name: "卡芙卡",
+        avatar_ref: "card-avatar:card-1",
+        avatar_version: "v2",
+        missing: false,
+        source: "card",
+      },
+    };
     const task = activeTask("c1", "task-7");
     const opening = useMobileStore.getState().openConversation("c1");
     const frame = await sentRequest("conversation.open");
@@ -405,16 +427,22 @@ describe("mobileStore 打开聊天", () => {
       conversation_id: "c1",
       view_id: expect.stringMatching(/^mobile-/),
     });
-    latestSocket().respond(frame, openResult({ messages: [message()], active_task: task }));
+    latestSocket().respond(frame, openResult({ conversation, messages: [message()], active_task: task }));
     await opening;
 
-    expect(useMobileStore.getState()).toMatchObject({
+    const state = useMobileStore.getState();
+    expect(state).toMatchObject({
       activeConversationId: "c1",
       messages: [message()],
       pair: PAIR,
       activeTask: task,
       timelineLoading: false,
     });
+    expect(state.conversationsById.c1).toEqual(conversation);
+    expect(state.projects[0].conversations[0]).toBe(state.conversationsById.c1);
+    expect(state.projects[0].conversations[1]).toBe(previous.conversationsById.c2);
+    expect(state.conversationsById.c2).toBe(previous.conversationsById.c2);
+    expect(state.projects[1]).toBe(previous.projects[1]);
   });
 
   it("WS 握手完成前打开聊天时等连接就绪再发请求", async () => {
@@ -427,7 +455,11 @@ describe("mobileStore 打开聊天", () => {
     latestSocket().open();
     latestSocket().respond(await sentRequest("conversation.open"), openResult());
     await opening;
-    expect(useMobileStore.getState().activeConversationId).toBe("c1");
+    const state = useMobileStore.getState();
+    expect(state.activeConversationId).toBe("c1");
+    expect(state.conversationsById.c1).toEqual(CONVERSATION);
+    expect(state.projects).toEqual([{ ...PROJECT, conversations: [CONVERSATION] }]);
+    expect(state.projects[0].conversations[0]).toBe(state.conversationsById.c1);
   });
 
   it("装载失败时停在目标聊天并记录 openError，等待期间的事件照常生效", async () => {
@@ -463,11 +495,27 @@ describe("mobileStore 打开聊天", () => {
       delta: "实时内容",
       timeline_order: 1,
     });
+    const renamed: ConversationRecord = {
+      ...CONVERSATION,
+      character_card_id: "card-1",
+      binding_id: "binding-1",
+      character_identity: {
+        name: "等待期改名",
+        avatar_ref: "card-avatar:card-1",
+        avatar_version: "v3",
+        missing: false,
+        source: "card",
+      },
+    };
+    emitEvent("conversation.changed", 12, { conversation: renamed });
     latestSocket().respond(frame, openResult());
     await opening;
 
-    expect(useMobileStore.getState().messages[0]?.text).toBe("实时内容");
-    expect(useMobileStore.getState().lastSequence).toBe(11);
+    const state = useMobileStore.getState();
+    expect(state.messages[0]?.text).toBe("实时内容");
+    expect(state.lastSequence).toBe(12);
+    expect(state.conversationsById.c1).toEqual(renamed);
+    expect(state.projects[0].conversations[0]).toBe(state.conversationsById.c1);
   });
 
   it("连续打开两个聊天时忽略先发请求的迟到响应", async () => {

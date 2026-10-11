@@ -58,19 +58,19 @@ def stream_transport(chunks: list[str], *, reasoning: str = "") -> MockTransport
     "chunks",
     [
         # 原始 JSON 分块
-        ['{"speech": "你好，', '伙伴。", "delegation": null}'],
+        ['{"delegate": false, "speech": "你好，', '伙伴。", "delegation": null}'],
         # 键被截断在块边界
-        ['{"speec', 'h": "你好"}'],
+        ['{"delegate": false, "speec', 'h": "你好"}'],
         # 值被截断在块边界
-        ['{"speech": "你好', '，伙伴"}'],
+        ['{"speech": "你好', '，伙伴", "delegate": false}'],
         # 转义字符被截断
-        ['{"speech": "他说\\"', '好\\""}'],
-        ['{"speech": "第一行\\', 'n第二行\\u4f', '60"}'],
+        ['{"delegate": false, "speech": "他说\\"', '好\\""}'],
+        ['{"delegate": false, "speech": "第一行\\', 'n第二行\\u4f', '60"}'],
         # 其他字段的字符串值里出现 "speech" 字样
-        ['{"note": "\\"speech\\": \\"假的", ', '"speech": "真的"}'],
+        ['{"delegate": false, "note": "\\"speech\\": \\"假的", ', '"speech": "真的"}'],
         # 逐字符推进
-        json_delta_chunks({"speech": "你好，伙伴"}, 1),
-        json_delta_chunks({"speech": "引号\"与\\n换行"}, 1),
+        json_delta_chunks({"delegate": False, "speech": "你好，伙伴"}, 1),
+        json_delta_chunks({"speech": "引号\"与\\n换行", "delegate": False}, 1),
     ],
 )
 def test_parser_extracts_clean_speech_across_chunk_boundaries(chunks: list[str]) -> None:
@@ -85,11 +85,16 @@ def test_parser_extracts_clean_speech_across_chunk_boundaries(chunks: list[str])
     assert emitted == expected
 
 
-def test_parser_no_speech_key_extracts_nothing() -> None:
-    """裸裁决 JSON（无 speech 字段）：不上屏增量。"""
+@pytest.mark.parametrize("payload", [
+    {"allow": True, "reason": "低风险"},
+    {"speech": "尚未确认协议"},
+    {"speech": "尚未确认协议", "delegate": "false"},
+])
+def test_parser_no_speech_key_extracts_nothing(payload: dict) -> None:
+    """speech 或 delegate 字段未满足协议时不显示增量。"""
     parser = IncrementalJsonSpeechParser()
     deltas = []
-    for chunk in json_delta_chunks({"allow": True, "reason": "低风险"}, 5):
+    for chunk in json_delta_chunks(payload, 5):
         deltas.append(parser.feed(chunk))
     assert all(d == "" for d in deltas)
     assert parser.speech == ""
@@ -101,7 +106,7 @@ def test_parser_no_speech_key_extracts_nothing() -> None:
 @pytest.mark.asyncio
 async def test_stream_yields_clean_speech_deltas_and_raw_completed() -> None:
     """JSON 流：speech.delta 只含干净台词；speech.completed 携带完整 raw。"""
-    payload = {"speech": "这事得交给古代机械。", "delegation": None}
+    payload = {"speech": "这事得交给古代机械。", "delegate": False, "delegation": None}
     client = AsyncClient(
         base_url="http://test",
         transport=stream_transport(json_delta_chunks(payload, 4)),
@@ -129,7 +134,7 @@ async def test_stream_yields_clean_speech_deltas_and_raw_completed() -> None:
 @pytest.mark.asyncio
 async def test_stream_emits_reasoning_lifecycle_events() -> None:
     """reasoning_content 走独立通道：started → delta → completed。"""
-    payload = {"speech": "好，我们继续。"}
+    payload = {"speech": "好，我们继续。", "delegate": False}
     client = AsyncClient(
         base_url="http://test",
         transport=stream_transport(json_delta_chunks(payload, 3), reasoning="我在思考"),
@@ -159,7 +164,7 @@ async def test_stream_rejects_truncated_json_tail() -> None:
     """JSON 收尾截断时直接失败，不能把增量预览当成完整协议结果。"""
     client = AsyncClient(
         base_url="http://test",
-        transport=stream_transport(['{"speech": "正式回复。", "delegation":']),
+        transport=stream_transport(['{"delegate": false, "speech": "正式回复。", "delegation":']),
     )
     model = OpenAICompatibleDialogueModel(
         base_url="http://test", api_key="k", model="m", client=client

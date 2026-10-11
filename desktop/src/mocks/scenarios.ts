@@ -182,10 +182,19 @@ export function conversation(
   title: string,
   pairId: string = pair.pair_id,
 ): ProjectRecord["conversations"][number] {
+  const builtin = MOCK_PAIRS.find((item) => item.pair_id === pairId);
+  if (!builtin) throw new Error(`未知搭档：${pairId}`);
   return {
     conversation_id: id,
     project_id: projectId,
     pair_id: pairId,
+    character_identity: {
+      name: builtin.character.name,
+      avatar_ref: null,
+      avatar_version: null,
+      missing: false,
+      source: "builtin",
+    },
     title,
     last_mode: "collaboration",
     archived: false,

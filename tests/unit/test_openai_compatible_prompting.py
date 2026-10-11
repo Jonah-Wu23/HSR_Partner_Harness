@@ -138,10 +138,12 @@ async def test_prompt_assembly_injects_role_card_partner_and_summaries(
     # 搭档（助手）表达配置：按 pair_id 从 config/pairs 加载
     assert "神秘的古代机械" in system
     # 输出格式约定（delegation JSON 形态与 delegate 自报字段）
-    assert '"type": "task"' in system and '"type": "amendment"' in system
-    assert "delegate" in system
-    # 近期角色对话：character → assistant
-    assert {"role": "assistant", "content": "好，我陪着你弄。"} in messages
+    protocol = messages[-1]
+    assert protocol["role"] == "system"
+    assert '"type": "task"' in protocol["content"] and '"type": "amendment"' in protocol["content"]
+    assert "delegate" in protocol["content"]
+    # 近期角色对话：character → assistant，content 只记录 speech 台词投影。
+    assert {"role": "assistant", "content": '{"speech": "好，我陪着你弄。"}'} in messages
     # 进度与结果摘要注入
     assert any(
         m["role"] == "system" and "任务进度" in m["content"] and "已完成步骤：2" in m["content"]
@@ -151,15 +153,15 @@ async def test_prompt_assembly_injects_role_card_partner_and_summaries(
         m["role"] == "system" and "任务结果" in m["content"] and "report.md" in m["content"]
         for m in messages
     )
-    # 最后一条是用户消息
-    assert messages[-1] == {"role": "user", "content": "帮我把报告整理好"}
+    # 当前用户消息后单独追加运行时协议。
+    assert messages[-2] == {"role": "user", "content": "帮我把报告整理好"}
     assert body["model"] == "test-model"
 
 
 @pytest.mark.asyncio
 async def test_client_reused_across_calls_and_rebuilt_after_aclose(fake_chat_server: str) -> None:
-    _FakeChatHandler.scripts.append({"chunks": ['{"speech":"第一句。"}']})
-    _FakeChatHandler.scripts.append({"chunks": ['{"speech":"第二句。"}']})
+    _FakeChatHandler.scripts.append({"chunks": ['{"speech":"第一句。","delegate":false}']})
+    _FakeChatHandler.scripts.append({"chunks": ['{"speech":"第二句。","delegate":false}']})
     model = make_model(fake_chat_server)
 
     await run_turn(model, make_request())
@@ -173,7 +175,7 @@ async def test_client_reused_across_calls_and_rebuilt_after_aclose(fake_chat_ser
     await model.aclose()
     assert model._client is None
     # aclose 后再次调用会重建 client
-    _FakeChatHandler.scripts.append({"chunks": ['{"speech":"第三句。"}']})
+    _FakeChatHandler.scripts.append({"chunks": ['{"speech":"第三句。","delegate":false}']})
     turn = await run_turn(model, make_request())
     assert turn.speech == "第三句。"
     assert model._client is not None and model._client is not first_client
@@ -181,7 +183,7 @@ async def test_client_reused_across_calls_and_rebuilt_after_aclose(fake_chat_ser
 
 @pytest.mark.asyncio
 async def test_injected_client_not_closed_by_aclose(fake_chat_server: str) -> None:
-    _FakeChatHandler.scripts.append({"chunks": ['{"speech":"注入。"}']})
+    _FakeChatHandler.scripts.append({"chunks": ['{"speech":"注入。","delegate":false}']})
     external = httpx.AsyncClient(base_url=fake_chat_server)
     model = OpenAICompatibleDialogueModel(
         base_url=fake_chat_server,

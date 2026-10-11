@@ -23,6 +23,13 @@ const CONVERSATION: ConversationRecord = {
   project_id: "p1",
   pair_id: "pair-1",
   title: "开发架构重构",
+  character_identity: {
+    name: "白厄",
+    avatar_ref: null,
+    avatar_version: null,
+    missing: false,
+    source: "builtin",
+  },
   last_mode: "collaboration",
   archived: false,
   created_at: "2026-08-20T00:00:00Z",

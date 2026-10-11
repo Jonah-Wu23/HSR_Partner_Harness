@@ -3,7 +3,11 @@ import type { ActiveTask, Message, QueueItem, ToolRun } from "@shared/contracts/
 import { ConversationList, type ConversationItemState } from "@shared/ui/conversation/ConversationList";
 import { DelegationCard, type DelegationStatus } from "../../components/cards/DelegationCard";
 import { ToolCard } from "../../components/cards/ToolCard";
-import { useMobileStore, selectConversationCharacterIdentity } from "../../lib/mobileStore";
+import { useMobileStore } from "../../lib/mobileStore";
+import {
+  getCharacterIdentityName,
+  selectConversationCharacterIdentity,
+} from "@shared/presenters/conversationIdentity";
 import { MessageBubble } from "./MessageBubble";
 import { QueueItemRow } from "./QueueItemRow";
 import { useChatTimeline, type TimelineItem } from "./useChatTimeline";
@@ -94,12 +98,8 @@ export const ChatTimeline = memo(function ChatTimeline({ conversationId }: ChatT
     (state) => state.activeConversationId !== conversationId || state.timelineLoading,
   );
   const openFailed = useMobileStore((state) => state.openError?.conversationId === conversationId);
-  // 角色名按正在查看的会话取：会话 character_identity 优先（卡会话显示卡名），
-  // 旧会话没有该字段时维持从搭档回退；助手名仍用搭档的助手侧。
-  const characterName = useMobileStore(
-    (state) =>
-      selectConversationCharacterIdentity(state, conversationId)?.name ||
-      state.pair?.character?.name,
+  const characterName = useMobileStore((state) =>
+    getCharacterIdentityName(selectConversationCharacterIdentity(state, conversationId)),
   );
   const assistantName = useMobileStore((state) => state.pair?.assistant?.name);
   const activeTask = useMobileStore((state) => state.activeTask);
@@ -131,7 +131,7 @@ export const ChatTimeline = memo(function ChatTimeline({ conversationId }: ChatT
       return (
         <DelegationCard
           delegationId={message.delegation_id ?? ""}
-          fromName={characterName || "角色"}
+          fromName={characterName}
           summary={message.text}
           status={delegationStatusOf(message, activeTask)}
         />

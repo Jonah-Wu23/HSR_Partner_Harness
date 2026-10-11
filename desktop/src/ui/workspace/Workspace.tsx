@@ -15,7 +15,7 @@ import { CollapseIcon } from "../../assets/icons/icons";
 interface WorkspaceProps {
   workspace: WorkspaceViewModel;
   pair: PairRecord;
-  /** 本工作区会话的角色展示名：会话 character_identity 优先，旧会话回退内置搭档。 */
+  /** 本工作区会话 character_identity 的名字或身份状态提示。 */
   characterName: string;
   /** 工作台空状态的快捷任务：以「交给助手」发出预设任务。 */
   onQuickTask?: (text: string) => void;

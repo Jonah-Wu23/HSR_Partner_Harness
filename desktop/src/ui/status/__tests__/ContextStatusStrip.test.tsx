@@ -126,9 +126,42 @@ describe("ContextStatusStrip", () => {
     for (const part of ["acct-1", "proj-1", "pair-1", "card:card-1", "ancient-machine"]) {
       expect(scope).toHaveTextContent(part);
     }
+    // 作用域分量是运行配置 id，标签不写成「搭档」，避免读成角色名
+    expect(scope).toHaveTextContent("配对配置");
+    expect(scope).not.toHaveTextContent("搭档");
+    expect(screen.getByTestId("context-strip-memory-scope-pair")).toHaveTextContent("pair-1");
     const memoryRow = screen.getByTestId("context-strip-memory");
     expect(memoryRow).toHaveTextContent("配对共享");
     expect(memoryRow).toHaveTextContent("作用域由服务端解析，客户端只传 conversation_id");
+  });
+
+  it("角色与助手身份显示可读名，服务端原始 id 留在 title", () => {
+    render(
+      <ContextStatusStrip
+        summaries={null}
+        memories={[memoryRecord()]}
+        characterName="白厄"
+        assistantName="神秘的古代机械"
+      />,
+    );
+    const character = screen.getByTestId("context-strip-memory-scope-character");
+    expect(character).toHaveTextContent("白厄");
+    expect(character).toHaveAttribute("title", "card:card-1");
+    const assistant = screen.getByTestId("context-strip-memory-scope-assistant");
+    expect(assistant).toHaveTextContent("神秘的古代机械");
+    expect(assistant).toHaveAttribute("title", "ancient-machine");
+    // 配对配置是真实作用域分量，保持原始 id
+    expect(screen.getByTestId("context-strip-memory-scope-pair")).toHaveTextContent("pair-1");
+  });
+
+  it.each([
+    ["角色身份缺失", { characterName: null, assistantName: "神秘的古代机械" }, "card:card-1", "神秘的古代机械"],
+    ["助手名未解析", { characterName: "白厄", assistantName: null }, "白厄", "ancient-machine"],
+    ["名字是空白", { characterName: "  ", assistantName: "" }, "card:card-1", "ancient-machine"],
+  ])("%s时回退服务端原始 id", (_name, names, characterText, assistantText) => {
+    render(<ContextStatusStrip summaries={null} memories={[memoryRecord()]} {...names} />);
+    expect(screen.getByTestId("context-strip-memory-scope-character")).toHaveTextContent(characterText);
+    expect(screen.getByTestId("context-strip-memory-scope-assistant")).toHaveTextContent(assistantText);
   });
 
   it.each([
