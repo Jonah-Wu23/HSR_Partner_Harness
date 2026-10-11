@@ -6,6 +6,7 @@ import { ConnectionPill } from "./status/ConnectionPill";
 import { DemoModeNotice } from "./status/DemoModeNotice";
 import { SettingIcon, StopIcon } from "../assets/icons/icons";
 import { getPairAvatars, useCardAvatar } from "../assets/pairs/avatars";
+import { getCharacterIdentityName, isCharacterIdentityAvailable } from "../presenters/conversationIdentity";
 import {
   useDesktopStore,
   selectWindowCharacterCardId,
@@ -40,17 +41,18 @@ export const TopBar = memo(function TopBar({
   // 顶栏的 pair 来自按 pair_id 匹配的目录项，卡会话的 pair_id 指向 base 搭档，因此身份以会话记录为准。
   const characterIdentity = useDesktopStore(selectWindowCharacterIdentity);
   const characterCardId = useDesktopStore(selectWindowCharacterCardId);
-  const isCardCharacter = characterIdentity?.source === "card" && characterIdentity.missing !== true;
+  const identityAvailable = isCharacterIdentityAvailable(characterIdentity);
   const cardAvatar = useCardAvatar(
     actions.fetchCardAvatar,
-    isCardCharacter ? characterCardId : null,
+    identityAvailable && characterIdentity.source === "card" ? characterCardId : null,
     characterIdentity?.avatar_version ?? null,
   );
   const avatars = pair ? getPairAvatars(pair.pair_id) : null;
-  const characterName = characterIdentity?.name || pair?.character.name || "";
-  // 卡会话只用卡头像；卡头像未就绪时退回几何占位，不借用内置角色头像。
-  const characterAvatar =
-    cardAvatar ?? (characterIdentity?.source === "card" ? null : avatars?.character ?? null);
+  const characterName = getCharacterIdentityName(characterIdentity);
+  let characterAvatar: string | null = null;
+  if (identityAvailable) {
+    characterAvatar = characterIdentity.source === "builtin" ? avatars?.character ?? null : cardAvatar;
+  }
 
   return (
     <header className="app-topbar">

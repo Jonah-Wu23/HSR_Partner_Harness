@@ -38,6 +38,12 @@ describe("MockDesktopBackend 项目与聊天流程", () => {
     const controller = createActionController(backend);
     await controller.loadBootstrap();
 
+    expect(await controller.actions.listMemories()).toEqual([]);
+    expect(desktopStore.getState().memoriesByConversation["conv-1"]).toEqual([]);
+    await expect(
+      backend.request(cmd("memory.list", { conversation_id: "missing-conversation" })),
+    ).rejects.toMatchObject({ code: "conversation_not_found" });
+
     await controller.actions.createConversation(undefined, "新的协作聊天");
     const stateAfterCreate = desktopStore.getState();
     const createdConversationId = stateAfterCreate.currentConversationId;

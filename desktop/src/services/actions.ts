@@ -843,7 +843,7 @@ export function createActionController(backend: DesktopBackend): ActionControlle
     },
     async listMemories(opts) {
       const conversationId = resolveMemoryConversationId(opts?.conversationId);
-      desktopStore.getState().setMemoryPanel({ conversationId, loading: true, error: null });
+      desktopStore.getState().setMemoryPanel({ conversationId, loading: true, error: null, loaded: false });
       try {
         const result = await request<MemoryListResult>("memory.list", {
           conversation_id: conversationId,
@@ -854,12 +854,16 @@ export function createActionController(backend: DesktopBackend): ActionControlle
         const store = desktopStore.getState();
         store.setMemoriesForConversation(conversationId, memories);
         if (store.activeConversationId === conversationId) store.setMemories(memories);
-        desktopStore.getState().setMemoryPanel({ loading: false, error: null, loaded: true });
+        if (desktopStore.getState().memoryPanel.conversationId === conversationId) {
+          desktopStore.getState().setMemoryPanel({ loading: false, error: null, loaded: true });
+        }
         return memories;
       } catch (error) {
-        desktopStore
-          .getState()
-          .setMemoryPanel({ loading: false, error: errorMessage(error), loaded: true });
+        if (desktopStore.getState().memoryPanel.conversationId === conversationId) {
+          desktopStore
+            .getState()
+            .setMemoryPanel({ loading: false, error: errorMessage(error), loaded: true });
+        }
         throw error;
       }
     },

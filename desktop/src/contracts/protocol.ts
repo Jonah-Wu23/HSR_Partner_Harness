@@ -157,7 +157,7 @@ export interface ConversationRecord {
   character_card_id?: string | null;
   /** 创建本聊天时使用的搭档绑定 id；迁移未匹配到绑定的旧会话为 null。 */
   binding_id?: string | null;
-  /** 后端统一解析的角色身份；缺失时由界面按 pair_id 回退内置渲染。 */
+  /** 后端统一解析的会话角色身份；界面明确展示尚未加载或不可用状态。 */
   character_identity?: CharacterIdentity | null;
 }
 

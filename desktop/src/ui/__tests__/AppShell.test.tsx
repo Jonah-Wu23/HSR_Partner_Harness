@@ -17,8 +17,8 @@ interface Rendered {
   refresh: () => void;
 }
 
-async function renderScenario(name: MockScenarioName): Promise<Rendered> {
-  const backend = new MockDesktopBackend(name);
+async function renderScenario(name: MockScenarioName, snapshot?: DesktopSnapshot): Promise<Rendered> {
+  const backend = new MockDesktopBackend(name, { snapshot });
   const controller = createActionController(backend);
   // 与 AppController 一致：backend 事件转发进 store（queue.changed 等）
   backend.subscribe((event) => desktopStore.getState().applyEvents([event]));
@@ -514,25 +514,29 @@ describe("AppShell 排队条、多搭档与音色直达", () => {
     expect(paramsOf(backend, "conversation.create")[0]).not.toHaveProperty("pair_id");
   });
 
-  it("会话的 pair_id 不在搭档列表中时照常渲染，并以 pair_id 标注", async () => {
+  it("会话的 pair_id 不在搭档列表且身份未加载时显示身份状态", async () => {
     const { refresh } = await renderScenario("single-project");
     const scenario = createMockScenario("single-project").snapshot;
     const [firstProject] = scenario.projects;
+    const conversation = {
+      ...firstProject.conversations[0],
+      pair_id: "unknown_custom_pair",
+      title: "未知搭档的聊天",
+      character_identity: null,
+    };
     desktopStore.getState().hydrate({
       ...scenario,
-      projects: [
-        {
-          ...firstProject,
-          conversations: [
-            { ...firstProject.conversations[0], pair_id: "unknown_custom_pair", title: "未知搭档的聊天" },
-          ],
-        },
-      ],
-      current_conversation_id: firstProject.conversations[0].conversation_id,
+      projects: [{ ...firstProject, conversations: [conversation] }],
+      current_conversation_id: conversation.conversation_id,
+      current_conversation: conversation,
     });
     refresh();
     expect(screen.getByRole("button", { name: /未知搭档的聊天/, current: "page" })).toBeInTheDocument();
-    expect(screen.getByTitle("unknown_custom_pair")).toBeInTheDocument();
+    expect(screen.getByTitle("角色身份加载中")).toBeInTheDocument();
+    expect(screen.getByRole("banner")).toHaveTextContent("角色身份加载中");
+    expect(screen.getByRole("banner")).not.toHaveTextContent("白厄");
+    expect(within(screen.getByRole("region", { name: "角色区" })).getAllByText(/角色身份加载中/).length)
+      .toBeGreaterThan(0);
   });
 
   it("从角色库直达语音页的预选卡在关闭设置后清空，从齿轮重新打开不残留", async () => {
@@ -606,9 +610,7 @@ describe("AppShell 卡会话身份展示", () => {
   }
 
   it("工作区标题与消息署名显示卡名，切到另一张卡互不串扰", async () => {
-    const { refresh } = await renderScenario("single-project");
-    desktopStore.getState().hydrate(twoCardSnapshot());
-    refresh();
+    const { refresh } = await renderScenario("single-project", twoCardSnapshot());
 
     const cardPane = screen.getByLabelText("角色区");
     expect(cardPane).toHaveTextContent("卡芙卡");
@@ -627,9 +629,7 @@ describe("AppShell 卡会话身份展示", () => {
   });
 
   it("排队条按活动会话的身份显示卡名", async () => {
-    const rendered = await renderScenario("single-project");
-    desktopStore.getState().hydrate(twoCardSnapshot());
-    rendered.refresh();
+    const rendered = await renderScenario("single-project", twoCardSnapshot());
 
     const queueItem: QueueItem = {
       queue_item_id: "q-card",

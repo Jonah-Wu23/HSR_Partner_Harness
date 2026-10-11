@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 
 import type { HarnessActions } from "../../contracts/actions";
 import type { PairMemory } from "../../contracts/protocol";
-import { useDesktopStore } from "../../stores/desktopStore";
+import { isCharacterIdentityAvailable } from "../../presenters/conversationIdentity";
+import { findPairAssistantName } from "../../presenters/memoryScope";
+import { selectWindowCharacterIdentity, useDesktopStore } from "../../stores/desktopStore";
 import { MemoryContentEditor, parseMemoryContent } from "./MemoryContentEditor";
 
 interface MemoryPanelProps {
@@ -10,13 +12,20 @@ interface MemoryPanelProps {
   actions: HarnessActions;
 }
 
-/** 作用域五分量的展示顺序：账号、项目、配对、角色、助手身份。 */
-const SCOPE_FIELDS: Array<{ key: keyof PairMemory["scope"]; label: string }> = [
-  { key: "account_id", label: "账号" },
-  { key: "project_id", label: "项目" },
-  { key: "pair_id", label: "配对" },
-  { key: "character_ref", label: "角色" },
-  { key: "assistant_identity", label: "助手身份" },
+/** 作用域五分量的展示顺序：账号、项目、配对配置、角色、助手身份。 */
+const SCOPE_FIELDS: Array<{
+  key: keyof PairMemory["scope"];
+  label: string;
+  /** 分量在 testid 里的名字，与上下文状态条的作用域栏一致。 */
+  testId: string;
+  /** 该分量的可读名取自哪个 prop；缺省表示服务端原值就是展示值。 */
+  nameKey?: "characterName" | "assistantName";
+}> = [
+  { key: "account_id", label: "账号", testId: "account" },
+  { key: "project_id", label: "项目", testId: "project" },
+  { key: "pair_id", label: "配对配置", testId: "pair" },
+  { key: "character_ref", label: "角色", testId: "character", nameKey: "characterName" },
+  { key: "assistant_identity", label: "助手身份", testId: "assistant", nameKey: "assistantName" },
 ];
 
 /** 记忆列表条目。 */
@@ -27,6 +36,8 @@ function MemoryItem({
   saving,
   confirmingDelete,
   removing,
+  characterName,
+  assistantName,
   onStartEdit,
   onDraftChange,
   onCancelEdit,
@@ -43,6 +54,10 @@ function MemoryItem({
   confirmingDelete: boolean;
   /** memory.delete 请求在途（按钮禁用）。 */
   removing: boolean;
+  /** 当前会话的角色显示名；null 表示身份不可用，作用域栏回退原始 character_ref。 */
+  characterName: string | null;
+  /** 本条记忆 pair_id 对应的助手显示名；null 表示目录里没有匹配项，回退原始 assistant_identity。 */
+  assistantName: string | null;
   onStartEdit: () => void;
   onDraftChange: (value: string) => void;
   onCancelEdit: () => void;
@@ -53,6 +68,7 @@ function MemoryItem({
 }) {
   const active = memory.status === "active";
   const parsed = parseMemoryContent(draft);
+  const scopeNames = { characterName, assistantName };
   return (
     <article
       className="settings-status-card"
@@ -74,14 +90,24 @@ function MemoryItem({
         最近更新：{memory.updated_at || "未报告"}
       </div>
 
-      {/* 作用域五分量由服务端下发 */}
+      {/* 作用域五分量由服务端下发；角色与助手身份显示可读名，服务端原值留在 title */}
       <dl className="context-strip-scope-facts" data-testid={`memory-scope-${memory.memory_id}`}>
-        {SCOPE_FIELDS.map((field) => (
-          <div key={field.key} style={{ display: "flex", gap: "6px" }}>
-            <dt>{field.label}</dt>
-            <dd>{memory.scope[field.key] || "未报告"}</dd>
-          </div>
-        ))}
+        {SCOPE_FIELDS.map((field) => {
+          const raw = memory.scope[field.key];
+          const name = field.nameKey ? scopeNames[field.nameKey] : null;
+          const readable = name?.trim() ? name : null;
+          return (
+            <div key={field.key} style={{ display: "flex", gap: "6px" }}>
+              <dt>{field.label}</dt>
+              <dd
+                title={readable ? raw : undefined}
+                data-testid={`memory-scope-${memory.memory_id}-${field.testId}`}
+              >
+                {readable ?? (raw || "未报告")}
+              </dd>
+            </div>
+          );
+        })}
       </dl>
 
       {editing ? (
@@ -159,6 +185,10 @@ function MemoryItem({
  * 作用域（account/project/pair/character_ref/assistant_identity 五分量）由服务端
  * 按会话解析，界面只传 conversation_id。读取失败由 listMemories 写入
  * memoryPanel.error 后显示；新增、修改、删除失败显示后端错误原文。
+ *
+ * 列出的记忆都属于本窗口活动会话的作用域，因此角色显示名取该会话的 character_identity，
+ * 助手显示名按每条记忆的 pair_id 在搭档目录里查；两者都拿不到时回退服务端原值，
+ * 与上下文状态条的作用域栏同一口径。
  */
 export function MemoryPanel({ actions }: MemoryPanelProps) {
   const conversationId = useDesktopStore((state) => state.activeConversationId);
@@ -166,6 +196,8 @@ export function MemoryPanel({ actions }: MemoryPanelProps) {
   const memories = useDesktopStore((state) =>
     conversationId ? state.memoriesByConversation[conversationId] ?? null : null,
   );
+  const characterIdentity = useDesktopStore(selectWindowCharacterIdentity);
+  const pairs = useDesktopStore((state) => state.pairs);
 
   const [draft, setDraft] = useState("");
   const [addError, setAddError] = useState<string | null>(null);
@@ -199,6 +231,7 @@ export function MemoryPanel({ actions }: MemoryPanelProps) {
 
   const listed = memories ?? [];
   const addParsed = parseMemoryContent(draft);
+  const characterName = isCharacterIdentityAvailable(characterIdentity) ? characterIdentity.name : null;
 
   /** 变更后重新读取服务端列表。 */
   const reload = () => void actions.listMemories({ conversationId });
@@ -295,6 +328,8 @@ export function MemoryPanel({ actions }: MemoryPanelProps) {
               saving={savingId === memory.memory_id}
               confirmingDelete={confirmDeleteId === memory.memory_id}
               removing={deletingId === memory.memory_id}
+              characterName={characterName}
+              assistantName={findPairAssistantName(pairs, memory.scope.pair_id)}
               onStartEdit={() => {
                 setEditingId(memory.memory_id);
                 setEditDraft(JSON.stringify(memory.content, null, 2));

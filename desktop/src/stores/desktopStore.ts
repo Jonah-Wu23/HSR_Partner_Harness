@@ -42,6 +42,7 @@ import type {
 } from "../contracts/view-models";
 import { pairMemoryFromPayload } from "../contracts/protocol";
 import { applyMessageDelta } from "./messageDelta";
+import { selectConversationCharacterIdentity } from "../presenters/conversationIdentity";
 
 export type DesktopStatus = "booting" | "ready" | "disconnected" | "error";
 
@@ -1813,11 +1814,8 @@ export const selectWindowConversationId = (state: DesktopState): string | null =
 /** 本窗口活动会话的角色身份（后端统一解析，标识卡/内置与缺失状态）；无会话或未下发时为 null。 */
 export const selectWindowCharacterIdentity = (
   state: Pick<DesktopState, "activeConversationId" | "conversationsById">,
-): CharacterIdentity | null => {
-  const conversationId = state.activeConversationId;
-  if (!conversationId) return null;
-  return state.conversationsById[conversationId]?.character_identity ?? null;
-};
+): CharacterIdentity | null =>
+  selectConversationCharacterIdentity(state, state.activeConversationId);
 
 /** 本窗口活动会话绑定的角色卡 id；内置会话为 null。 */
 export const selectWindowCharacterCardId = (

@@ -139,7 +139,7 @@ describe("ChatColumn 新建菜单与搭档芯片", () => {
     expect(chip).toHaveTextContent("卡芙卡 × 神秘的古代机械");
   });
 
-  it("角色卡已缺失时会话行芯片退回内置搭档渲染，也不请求卡头像", () => {
+  it("角色卡已缺失时会话行芯片显示身份不可用，也不请求卡头像", () => {
     // 卡已删除：目录里没有对应绑定项，身份标记 missing 且不带名字。
     hydrate(
       snapshotWith(
@@ -161,9 +161,9 @@ describe("ChatColumn 新建菜单与搭档芯片", () => {
     );
     const { backend } = renderColumn();
 
-    expect(screen.getByTitle("白厄 × 神秘的古代机械")).toHaveTextContent(
-      "白厄 × 神秘的古代机械",
-    );
+    const chip = screen.getByTitle("角色身份不可用 × 神秘的古代机械");
+    expect(chip).toHaveTextContent("角色身份不可用 × 神秘的古代机械");
+    expect(chip.querySelector("img")).toBeNull();
     expect(paramsOf(backend, "card.avatar")).toEqual([]);
   });
 });

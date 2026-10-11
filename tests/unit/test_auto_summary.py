@@ -94,6 +94,8 @@ async def test_auto_summary_failure_keeps_provider_error(service) -> None:
         await wait_until(
             lambda: service.event_log.payloads("summary.failed"),
             message="模型正文不是 JSON 对象时应广播 summary.failed",
+            # 等待完整指数退避（累计 123 秒）后传播供应商错误。
+            timeout=150.0,
         )
     [failed] = service.event_log.payloads("summary.failed")
     assert failed["error_code"] == "summary_provider_error"

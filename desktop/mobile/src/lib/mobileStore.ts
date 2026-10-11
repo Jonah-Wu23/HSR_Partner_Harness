@@ -3,7 +3,6 @@ import type {
   ActiveTask,
   ApprovalMode,
   ApprovalResolvedPayload,
-  CharacterIdentity,
   ConversationMode,
   ConversationOpenResult,
   ConversationRecord,
@@ -159,7 +158,7 @@ export interface MobileState {
   approvals: PendingApproval[];
   /** 已决审批记录，界面据此展示双端仲裁结果。 */
   resolvedApprovals: MobileResolvedApproval[];
-  /** 当前聊天的配对，委派卡显示「来自 <角色名> 的委派」。 */
+  /** 当前聊天的基础搭档，提供助手身份。 */
   pair: PairRecord | null;
   /** 当前聊天的活动任务，委派卡据 delegation_id 判断运行中。 */
   activeTask: ActiveTask | null;
@@ -611,8 +610,28 @@ export const useMobileStore = create<MobileState>((storeSet, get) => {
    * 全账号活动任务集合由 app.bootstrap 与 task.busy_changed 维护，这里只替换本聊天的条目。
    */
   const applyConversationOpen = (conversationId: string, result: ConversationOpenResult): void => {
-    const otherTasks = get().activeTasks.filter((task) => task.conversation_id !== conversationId);
+    const state = get();
+    const conversation = result.conversation;
+    const project = state.projects.find((item) => item.project_id === result.project.project_id);
+    const openedProject = {
+      ...(project ?? result.project),
+      conversations: upsertBy(
+        project?.conversations ?? [],
+        conversation,
+        (item) => item.conversation_id === conversation.conversation_id,
+      ),
+    };
+    const otherTasks = state.activeTasks.filter((task) => task.conversation_id !== conversationId);
     set({
+      conversationsById: {
+        ...state.conversationsById,
+        [conversation.conversation_id]: conversation,
+      },
+      projects: upsertBy(
+        state.projects,
+        openedProject,
+        (item) => item.project_id === openedProject.project_id,
+      ),
       messages: result.messages,
       toolRuns: result.tool_runs,
       queueItems: visibleQueueItems(result.queue_items),
@@ -1648,19 +1667,6 @@ async function queryMicPermission(): Promise<MobileVoiceAvailability["micPermiss
     console.warn("浏览器不支持查询麦克风授权状态", error);
     return "unknown";
   }
-}
-
-/**
- * 指定会话的角色展示身份：会话记录里的 character_identity 优先（卡会话显示卡名），
- * 旧会话没有该字段时返回 null，由调用方回退当前聊天的搭档角色名。
- * 按传入的会话 id 取，不读全局活动会话，多聊天之间不串扰。
- */
-export function selectConversationCharacterIdentity(
-  state: Pick<MobileState, "conversationsById">,
-  conversationId: string | null,
-): CharacterIdentity | null {
-  if (!conversationId) return null;
-  return state.conversationsById[conversationId]?.character_identity ?? null;
 }
 
 /** 全应用共用的 WS 客户端；通知引擎直接订阅它的事件流。 */

@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { DesktopCommand, MemoryWirePayload } from "../../../contracts/protocol";
+import { MOCK_PAIR_OPTIONS, conversation } from "../../../mocks/scenarios";
 import { createActionController } from "../../../services/actions";
 import { DesktopRequestError } from "../../../services/backend";
 import { desktopStore } from "../../../stores/desktopStore";
@@ -87,7 +88,53 @@ describe("MemoryPanel 长期记忆增删改", () => {
     expect(scope).toHaveTextContent("phainon_ancient_machine");
     expect(scope).toHaveTextContent("builtin:phainon");
     expect(scope).toHaveTextContent("ancient_machine");
+    // 配对一栏是运行配置 id，标签不写成「搭档」，避免读成角色名
+    expect(scope).toHaveTextContent("配对配置");
+    expect(screen.getByTestId("memory-scope-mem-1-pair")).toHaveTextContent("phainon_ancient_machine");
     expect(screen.getByTestId("memory-status-mem-1")).toHaveTextContent("生效中");
+  });
+
+  it("身份与搭档目录齐备时，角色与助手身份显示可读名，服务端原值留在 title", async () => {
+    desktopStore.setState({
+      pairs: MOCK_PAIR_OPTIONS,
+      conversationsById: { "conv-1": conversation("conv-1", "project-1", "夜训偏好") },
+    });
+    renderPanel(memoryServer([wire()]));
+
+    const character = await screen.findByTestId("memory-scope-mem-1-character");
+    expect(character).toHaveTextContent("白厄");
+    expect(character).toHaveAttribute("title", "builtin:phainon");
+    const assistant = screen.getByTestId("memory-scope-mem-1-assistant");
+    expect(assistant).toHaveTextContent("神秘的古代机械");
+    expect(assistant).toHaveAttribute("title", "ancient_machine");
+    // 配对配置是真实作用域分量，保持服务端原值，也不挂 title
+    const pair = screen.getByTestId("memory-scope-mem-1-pair");
+    expect(pair).toHaveTextContent("phainon_ancient_machine");
+    expect(pair).not.toHaveAttribute("title");
+  });
+
+  it("角色卡已删除时角色回退原始 character_ref，助手显示名照常", async () => {
+    desktopStore.setState({
+      pairs: MOCK_PAIR_OPTIONS,
+      conversationsById: {
+        "conv-1": {
+          ...conversation("conv-1", "project-1", "夜训偏好"),
+          character_identity: {
+            name: "已删除的卡",
+            avatar_ref: null,
+            avatar_version: null,
+            missing: true,
+            source: "card",
+          },
+        },
+      },
+    });
+    renderPanel(memoryServer([wire()]));
+
+    const character = await screen.findByTestId("memory-scope-mem-1-character");
+    expect(character).toHaveTextContent("builtin:phainon");
+    expect(character).not.toHaveAttribute("title");
+    expect(screen.getByTestId("memory-scope-mem-1-assistant")).toHaveTextContent("神秘的古代机械");
   });
 
   it("读取返回前显示尚未读取，读取到零条后才说暂无记录", async () => {

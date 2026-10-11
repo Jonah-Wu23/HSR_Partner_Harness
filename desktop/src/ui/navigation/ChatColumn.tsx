@@ -24,6 +24,11 @@ import {
 import { Menu, type MenuItem } from "../primitives/Menu";
 import { isSameDay, relativeTime } from "../format";
 import { getPairAvatars, useCardAvatar } from "../../assets/pairs/avatars";
+import {
+  getCharacterIdentityName,
+  getConversationCharacterIdentity,
+  isCharacterIdentityAvailable,
+} from "../../presenters/conversationIdentity";
 
 /** 新建菜单里两段之间的分隔项 id；Menu 没有分隔类型，用不可点击项承载。 */
 const PAIR_MENU_SEPARATOR_ID = "pair-menu-separator";
@@ -122,10 +127,7 @@ function PairMenuIcon({ pair, actions }: { pair: PairOption; actions: HarnessAct
   );
 }
 
-/**
- * 会话行搭档芯片：conversation.character_identity 存在且来自角色卡时，角色侧显示卡名与卡头像；
- * 卡头像缺失或角色卡已删除（missing）时退回几何占位。没有角色身份时维持内置搭档渲染。
- */
+/** 会话行搭档芯片：角色名字与头像取自会话身份，身份或头像不可用时显示几何占位。 */
 function ConversationPairChip({
   conversation,
   pairs,
@@ -135,7 +137,7 @@ function ConversationPairChip({
   pairs: PairOption[];
   actions: HarnessActions;
 }) {
-  const identity = conversation.character_identity ?? null;
+  const identity = getConversationCharacterIdentity(conversation);
   const item =
     conversation.binding_id !== undefined && conversation.binding_id !== null
       ? pairs.find((candidate) => candidate.binding_id === conversation.binding_id) ?? null
@@ -145,21 +147,22 @@ function ConversationPairChip({
       (candidate) => candidate.source === "builtin" && candidate.pair_id === conversation.pair_id,
     ) ?? null;
   const catalogItem = item ?? baseItem;
+  const identityAvailable = isCharacterIdentityAvailable(identity);
   const missing = identity?.missing === true;
-  // 卡已删除（missing）时不请求头像，直接按几何占位降级。
   const cardId =
-    identity?.source === "card" && !missing ? conversation.character_card_id ?? null : null;
+    identityAvailable && identity.source === "card" ? conversation.character_card_id ?? null : null;
   const cardAvatar = useCardAvatar(
     actions.fetchCardAvatar,
     cardId,
     identity?.avatar_version ?? null,
   );
   const avatars = getPairAvatars(catalogItem?.pair_id ?? conversation.pair_id);
-  // 卡会话的角色侧只用卡头像；没有卡头像或已缺失时退回几何占位，不借用内置角色头像。
-  const characterAvatar = cardAvatar ?? (cardId === null ? avatars?.character ?? null : null);
+  let characterAvatar: string | null = null;
+  if (identityAvailable) {
+    characterAvatar = identity.source === "builtin" ? avatars?.character ?? null : cardAvatar;
+  }
   const assistantAvatar = missing ? null : avatars?.assistant ?? null;
-  const characterName =
-    identity?.name || catalogItem?.character.name || conversation.pair_id || "未知搭档";
+  const characterName = getCharacterIdentityName(identity);
   const assistantName = catalogItem?.assistant.name ?? null;
   const title = assistantName ? `${characterName} × ${assistantName}` : characterName;
 

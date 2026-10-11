@@ -1303,6 +1303,11 @@ class DesktopApplicationService:
             and self._attach_account_voice_runtime()
         ):
             await self.start_voice()
+            # 新运行时按内置搭档音色装配，卡音色覆盖只在聚焦时计算：重新
+            # 聚焦当前聊天，否则要等用户切换聊天才恢复卡音色。
+            await self._focus_voice_context(
+                self.current_conversation_id, self.pair_config.pair_id
+            )
             return
         self._voice_state["supported"] = False
         self._voice_state["enabled"] = False
@@ -3974,6 +3979,7 @@ class DesktopApplicationService:
                 CharacterVoiceState.READY.value,
                 voice_id=result.voice_id,
             )
+            await self._refocus_current_card_voice(card_id)
             return {
                 "card_id": card_id,
                 "state": CharacterVoiceState.READY.value,
@@ -4000,6 +4006,7 @@ class DesktopApplicationService:
             profile.updated_at = utc_now().isoformat()
             self.card_repository.update_card(card_id, card)
             self._emit_card_voice_changed(card_id)
+            await self._refocus_current_card_voice(card_id)
         return {
             "card_id": card_id,
             "state": CharacterVoiceState.UNCONFIGURED.value,
@@ -4486,8 +4493,9 @@ class DesktopApplicationService:
     ) -> str | None:
         """解析手机朗读可用的音色，随 message.created 的 tts_ready 下发。
 
-        卡级已就绪音色优先，否则按账号级与作者级解析；没有音色或没有
-        DashScope Key 时返回 None，手机端据此不展示朗读入口。
+        卡级已就绪音色优先；聊天绑定卡而音色未就绪时同样返回 None。其余
+        情况按账号级与作者级解析，没有音色或没有 DashScope Key 时返回
+        None，手机端据此不展示朗读入口。
         """
         try:
             conversation = self.store.get_conversation(conversation_id)
@@ -6080,6 +6088,7 @@ class DesktopApplicationService:
             for active in active_tasks:
                 turn_task = self._conversation_turn_tasks.get(active.conversation_id)
                 try:
+                    self.approval_broker.cancel_for_conversation(active.conversation_id)
                     cancelled = await self.orchestrator.cancel_active_task(
                         active.conversation_id, active.task_id
                     )
@@ -6555,8 +6564,10 @@ class DesktopApplicationService:
     ) -> PairConfig:
         """按当前账号解析某个搭档的真实有效音色。
 
-        聊天绑定卡且卡音色 voice_ready 时，角色侧 voice_id 覆盖为卡音色；
-        助手侧不覆盖，也不可用。
+        聊天绑定的卡仍在库时，角色侧 voice_id 只取卡音色；音色未就绪则为
+        空串，VoiceRuntime 据空串跳过朗读。未绑卡或卡已删除时按账号级与
+        作者级解析内置搭档音色，与 conversation.card_missing 的回退内置
+        角色语义一致。助手侧不覆盖，也不可用。
         """
         pair_config = load_pair_config(pair_id)
         config = self._load_account_config()
@@ -6570,25 +6581,30 @@ class DesktopApplicationService:
         if conversation_id is None:
             return effective
         card_voice_id = self._conversation_card_voice_id(conversation_id)
-        if card_voice_id:
-            return effective.model_copy(
-                update={
-                    "character": effective.character.model_copy(
-                        update={"voice_id": card_voice_id}
-                    )
-                }
-            )
-        return effective
+        if card_voice_id is None:
+            return effective
+        return effective.model_copy(
+            update={
+                "character": effective.character.model_copy(
+                    update={"voice_id": card_voice_id}
+                )
+            }
+        )
 
-    def _conversation_card_voice_id(self, conversation_id: str) -> str:
-        """聊天绑定卡的可用音色；未绑定、卡已删除或音色未就绪时为空串。"""
+    def _conversation_card_voice_id(self, conversation_id: str) -> str | None:
+        """聊天绑定卡的音色。
+
+        返回 None 表示没有卡绑定生效（未绑卡或卡已删除），调用方回落内置
+        搭档音色；返回空串表示卡存在但音色未就绪，调用方据此不朗读。
+        """
         card_id = self.store.get_conversation(conversation_id).character_card_id
         if not card_id:
-            return ""
+            return None
         try:
             record = self.card_repository.get_card(card_id)
         except KeyError:
-            return ""
+            # 卡已删除：与 conversation.card_missing 一致回退内置角色。
+            return None
         profile = record.card.hsr.voice_profile if record.card.hsr else None
         if (
             profile is not None
@@ -6608,6 +6624,20 @@ class DesktopApplicationService:
             conversation_id,
             self._effective_voice_pair(pair_id, conversation_id),
         )
+
+    async def _refocus_current_card_voice(self, card_id: str) -> None:
+        """卡音色状态变化后，当前聊天正绑定这张卡时立即重新聚焦语音上下文。
+
+        运行时装配时用的是内置搭档音色，卡音色覆盖只在聚焦时计算；创建或
+        解绑卡音色后重新聚焦，用户不必切换聊天才听到新音色。
+        """
+        conversation_id = self.current_conversation_id
+        if not conversation_id:
+            return
+        bound_card_id = self.store.get_conversation(conversation_id).character_card_id
+        if bound_card_id != card_id:
+            return
+        await self._focus_voice_context(conversation_id, self.pair_config.pair_id)
 
     async def _select_conversation_context(self, conversation_id: str, *, emit: bool) -> None:
         # 账号是完整隔离边界：先校验会话与项目归属，再更新最近打开时间。

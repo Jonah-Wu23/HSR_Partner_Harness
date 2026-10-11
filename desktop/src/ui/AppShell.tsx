@@ -3,7 +3,10 @@ import { useCallback, useMemo, useState } from "react";
 import type { HarnessActions } from "../contracts/actions";
 import type { AppShellViewModel } from "../contracts/view-models";
 import type { DesktopBackend } from "../services/backend";
-import { selectConversationCharacterIdentity } from "../presenters/presenters";
+import {
+  getCharacterIdentityName,
+  selectConversationCharacterIdentity,
+} from "../presenters/conversationIdentity";
 import { useDesktopStore } from "../stores/desktopStore";
 import { TopBar } from "./TopBar";
 import { Navigation } from "./navigation/Navigation";
@@ -87,14 +90,10 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
       .find((c) => c.conversation_id === navigation.currentConversationId);
     return navigation.pairs.find((p) => p.pair_id === activeConv?.pair_id) ?? navigation.currentPair;
   }, [navigation]);
-  // 本窗口活动会话的角色展示身份：会话 character_identity 优先，旧会话回退内置搭档。
-  // 顶栏、工作区标题、消息署名、委派来源、排队条与语音条共用这一解析。
-  const activeCharacterName = useDesktopStore(
-    (state) =>
-      selectConversationCharacterIdentity(
-        state,
-        vm.workspace?.character.conversationId ?? null,
-      )?.name ?? "",
+  const activeCharacterName = useDesktopStore((state) =>
+    getCharacterIdentityName(
+      selectConversationCharacterIdentity(state, vm.workspace?.character.conversationId ?? null),
+    ),
   );
   const [techDetailsOpen, setTechDetailsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -164,7 +163,7 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
   const dismissToast = useCallback((id: string) => actions.dismissToast(id), [actions]);
   const queueNames = useMemo(
     () => ({
-      character: activeCharacterName || pair?.character.name || "角色",
+      character: activeCharacterName,
       assistant: pair?.assistant.name ?? "助手",
     }),
     [activeCharacterName, pair],
@@ -297,9 +296,7 @@ export function AppShell({ vm, actions, backend }: AppShellProps) {
               <Workspace
                 workspace={workspace}
                 pair={pair ?? navigation.currentPair}
-                characterName={
-                  activeCharacterName || (pair ?? navigation.currentPair).character.name
-                }
+                characterName={activeCharacterName}
                 onQuickTask={submitQuickTask}
                 onCloseWorkbench={closeWorkbench}
                 onCancelDelegation={cancelDelegation}

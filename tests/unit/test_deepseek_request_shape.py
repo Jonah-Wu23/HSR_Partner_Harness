@@ -20,7 +20,7 @@ def _capturing_transport(bodies: list[dict]) -> MockTransport:
     def handler(request: Request) -> Response:
         bodies.append(json.loads(request.content.decode("utf-8")))
         delta = json.dumps(
-            {"choices": [{"delta": {"content": '{"speech":"ok"}'}}]}, ensure_ascii=True
+            {"choices": [{"delta": {"content": '{"speech":"ok","delegate":false}'}}]}, ensure_ascii=True
         )
         lines = [f"data: {delta}\n\n".encode("ascii"), b"data: [DONE]\n\n"]
         return _sse_response(b"".join(lines))
@@ -66,7 +66,7 @@ async def test_deepseek_structured_dialogue_disables_thinking() -> None:
     assert body["thinking"] == {"type": "disabled"}
     assert body["response_format"] == {"type": "json_object"}
     assert "reasoning_effort" not in body
-    assert "temperature" not in body  # 未配置温度时不写入
+    assert body["temperature"] == 1
     assert body["max_tokens"] == 8192
 
 
@@ -88,5 +88,5 @@ async def test_non_deepseek_host_keeps_standard_body() -> None:
     body = bodies[0]
     assert "thinking" not in body
     assert "reasoning_effort" not in body
-    assert "response_format" not in body
+    assert body["response_format"] == {"type": "json_object"}
     assert body["stream"] is True

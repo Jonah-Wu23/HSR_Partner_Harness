@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import type { ConversationSummary, PairMemory } from "../../contracts/protocol";
 import type { SummaryRegenerateTarget } from "../../contracts/view-models";
+import { pickMemoryScope } from "../../presenters/memoryScope";
 
 export interface ContextStatusStripProps {
   /** 摘要记录。null 或缺省表示没有数据，[] 是零条。 */
@@ -13,6 +14,10 @@ export interface ContextStatusStripProps {
   onRegenerate?: (target: SummaryRegenerateTarget) => void | Promise<void>;
   /** null 表示日常聊天（无项目），不读写长期记忆，界面加以说明。 */
   projectId?: string | null;
+  /** 当前会话的角色显示名；空或缺省时作用域栏回退原始 character_ref。 */
+  characterName?: string | null;
+  /** 作用域 pair_id 在搭档目录里对应的助手显示名；空或缺省时回退原始 assistant_identity。 */
+  assistantName?: string | null;
 }
 
 const STATUS_LABEL: Record<ConversationSummary["status"], string> = {
@@ -25,7 +30,8 @@ const STATUS_LABEL: Record<ConversationSummary["status"], string> = {
 /**
  * 上下文状态条（压缩与长期记忆），挂在聊天视图的输入区之上，不进入消息时间线，
  * 也不占用模态焦点。压缩失败的状态行一直显示，可展开 error_code 与原始 error。
- * 长期记忆只展示服务端解析出的作用域分量。
+ * 长期记忆展示服务端解析出的作用域分量：角色与助手身份显示接线层解析好的可读名，
+ * 服务端原值留在 title；配对配置一栏是运行配置 id，本身没有可读名，原样显示。
  */
 export function ContextStatusStrip({
   summaries,
@@ -33,6 +39,8 @@ export function ContextStatusStrip({
   regenerate,
   onRegenerate,
   projectId,
+  characterName,
+  assistantName,
 }: ContextStatusStripProps) {
   const [expanded, setExpanded] = useState<string[]>([]);
   const [pendingSummaryId, setPendingSummaryId] = useState<string | null>(null);
@@ -42,7 +50,7 @@ export function ContextStatusStrip({
   const activeMemories = memories === null || memories === undefined
     ? null
     : memories.filter((memory) => memory.status === "active");
-  const memoryScope = (activeMemories?.find((memory) => memory.scope) ?? memories?.find((memory) => memory.scope))?.scope ?? null;
+  const memoryScope = pickMemoryScope(memories);
 
   if (rows.length === 0 && activeMemories === null && projectId !== null) return null;
 
@@ -191,16 +199,26 @@ export function ContextStatusStrip({
           {memoryScope ? (
             <dl className="context-strip-scope-facts" data-testid="context-strip-memory-scope">
               <div>
-                <dt>搭档</dt>
-                <dd>{memoryScope.pair_id || "未报告"}</dd>
+                <dt>配对配置</dt>
+                <dd data-testid="context-strip-memory-scope-pair">{memoryScope.pair_id || "未报告"}</dd>
               </div>
               <div>
                 <dt>角色</dt>
-                <dd>{memoryScope.character_ref}</dd>
+                <dd
+                  title={memoryScope.character_ref}
+                  data-testid="context-strip-memory-scope-character"
+                >
+                  {characterName?.trim() ? characterName : memoryScope.character_ref}
+                </dd>
               </div>
               <div>
                 <dt>助手身份</dt>
-                <dd>{memoryScope.assistant_identity}</dd>
+                <dd
+                  title={memoryScope.assistant_identity}
+                  data-testid="context-strip-memory-scope-assistant"
+                >
+                  {assistantName?.trim() ? assistantName : memoryScope.assistant_identity}
+                </dd>
               </div>
               <div>
                 <dt>项目</dt>

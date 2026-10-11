@@ -297,8 +297,16 @@ class _GatedTitleModel(ScriptedDialogueModel):
 
     def __init__(self) -> None:
         super().__init__()
+        self.reply_started = asyncio.Event()
+        self.release_reply = asyncio.Event()
         self.title_started = asyncio.Event()
         self.release_title = asyncio.Event()
+
+    async def stream_reply(self, request):
+        self.reply_started.set()
+        await self.release_reply.wait()
+        async for event in super().stream_reply(request):
+            yield event
 
     async def generate_title(self, *, pair_id, context):
         self.title_started.set()
@@ -359,7 +367,9 @@ async def test_manual_rename_is_not_overwritten_by_auto_title(
             target="character",
             text="这是一个会被手动命名的聊天。",
         )
+        await asyncio.wait_for(model.reply_started.wait(), timeout=5.0)
         if rename_at == "during_generation":
+            model.release_reply.set()
             await asyncio.wait_for(model.title_started.wait(), timeout=5.0)
         await call(
             service,
@@ -368,6 +378,7 @@ async def test_manual_rename_is_not_overwritten_by_auto_title(
             conversation_id=conversation_id,
             title="手动命名",
         )
+        model.release_reply.set()
         model.release_title.set()
         await wait_until(
             lambda: _turn_terminal(service, "completed"),
@@ -376,6 +387,7 @@ async def test_manual_rename_is_not_overwritten_by_auto_title(
         # 回合完成时已经决定是否命名；等标题任务全部结束再看最终结果。
         await wait_until(lambda: not service._title_tasks, message="标题任务应结束")
     finally:
+        model.release_reply.set()
         model.release_title.set()
 
     conversation = service.store.get_conversation(conversation_id)
